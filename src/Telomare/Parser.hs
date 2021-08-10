@@ -61,9 +61,40 @@ data UnprocessedParsedTerm
   | CheckUP UnprocessedParsedTerm UnprocessedParsedTerm
   | HashUP UnprocessedParsedTerm -- ^ On ad hoc user defined types, this term will be substitued to a unique Int.
   -- TODO check
-  deriving (Eq, Ord, Show)
+  deriving (Eq, Ord)
 makeBaseFunctor ''UnprocessedParsedTerm -- Functorial version UnprocessedParsedTerm
 makePrisms ''UnprocessedParsedTerm
+
+instance Show UnprocessedParsedTerm where
+  show x = State.evalState (cata alg $ x) 0 where
+    -- |Helper function to indent. Usefull for indented Show instances.
+    alg :: (Base UnprocessedParsedTerm) (State Int String) -> State Int String
+    alg UnsizedRecursionUPF = sindent "UnsizedRecursionUP"
+    alg (VarUPF str) = sindent $ "VarUP" <> str
+    alg (IntUPF i) = sindent $ "IntUP " <> show i
+    alg (StringUPF str) = sindent $ "StringUP \"" <> str <> "\""
+    alg (ChurchUPF i) = sindent $ "ChurchUP " <> show i
+    alg (PairUPF sl sr) = indentWithTwoChildren "PairUP" sl sr
+    alg (ITEUPF sx sy sz) = do
+      i <- State.get
+      State.put $ i + 2
+      x <- sx
+      State.put $ i + 2
+      y <- sy
+      State.put $ i + 2
+      z <- sz
+      pure $ indent i "ITEUP\n" <> x <> "\n" <> y <> "\n" <> z
+    -- alg (LetUPF
+    -- alg (ListUPF ls) = do
+    --   i <- State.get
+    --   pure $ indent i "ListUP [ " <>
+    alg (AppUPF sl sr) = indentWithTwoChildren "AppUP" sl sr
+    alg (LamUPF str sx) = indentWithOneChild ("LamUP " <> str) sx
+    alg (LeftUPF l) = indentWithOneChild "LeftUP" l
+    alg (RightUPF r) = indentWithOneChild "RightUP" r
+    alg (TraceUPF x) = indentWithOneChild "TraceUP" x
+    alg (CheckUPF sl sr) = indentWithTwoChildren "CheckUP" sl sr
+    alg (HashUPF x) =  indentWithOneChild "HashUP" x
 
 instance Plated UnprocessedParsedTerm where
   plate f = \case
