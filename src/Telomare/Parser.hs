@@ -86,9 +86,15 @@ instance Show UnprocessedParsedTerm where
       pure $ indent i "ITEUP\n" <> x <> "\n" <> y <> "\n" <> z
     alg (LetUPF ys y) = do
       i <- State.get
+
       State.put $ i + 2
       y' <- y
-      (indent i "LetUP\n" <>) . (<> y') <$> (letAssignments i <$> sequence (sequence <$> ys))
+      let setIndentationForAssignments :: [(String, State Int String)] -> [(String, State Int String)]
+          setIndentationForAssignments = \case
+            []                 -> []
+            (l@(str, sstr):ls) -> (str, stateAux l (i + 4) ) : setIndentationForAssignments ls
+      -- (indent i "LetUP\n" <>) . (<> drop 2 y') <$> (sequence $ letAssignment i <$> ((sequence <$> setIndentationForAssignments ys)))
+      (indent i "LetUP\n" <>) . (<> y') <$> fmap concat (sequence $ letAssignment i <$> (sequence <$> setIndentationForAssignments ys))
     alg (ListUPF ls) = do
       i <- State.get
       (indent i "ListUP\n" <>) <$> (listItems i <$> sequence ls)
@@ -100,9 +106,14 @@ instance Show UnprocessedParsedTerm where
     alg (CheckUPF sl sr) = indentWithTwoChildren "CheckUP" sl sr
     alg (HashUPF x) =  indentWithOneChild "HashUP" x
     listItems :: Int -> [String] -> String
-    listItems i ls = concat $ (\y -> indent i y <> "\n") <$> ls
-    letAssignments :: Int -> [(String, String)] -> String
-    letAssignments i ls = concat $ (\(x,y) -> indent (i + 2) x <> " = " <> y <> "\n") <$> ls
+    listItems i ls = init . concat $ (\y -> indent i y <> "\n") <$> ls
+    stateAux :: (String, State Int String) -> Int -> State Int String
+    stateAux (str, sstr) i0 = State.put i0 >> sstr
+    letAssignment :: Int -> State Int (String, String) -> State Int String
+    letAssignment i sstr = State.put i >> (\(x,y) -> indent (i + 2) x <> " =\n" <> y <> "\n") <$> sstr
+    -- letAssignments i ls = concat $ (\(x,y) -> indent i x <> " =\n" <> y <> "\n") <$> ls
+
+a = PairUP (ListUP [IntUP 0, IntUP 0, IntUP 0]) $ PairUP (IntUP 0) (LetUP [("bar", PairUP (IntUP 0) (IntUP 1)), ("foo", PairUP (IntUP 0) (IntUP 2)), ("baz", PairUP (PairUP (PairUP (IntUP 0) (IntUP 0)) (IntUP 0)) (IntUP 0))] (IntUP 3))
 
 instance Plated UnprocessedParsedTerm where
   plate f = \case
