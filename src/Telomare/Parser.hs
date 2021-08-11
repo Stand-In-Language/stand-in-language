@@ -84,10 +84,14 @@ instance Show UnprocessedParsedTerm where
       State.put $ i + 2
       z <- sz
       pure $ indent i "ITEUP\n" <> x <> "\n" <> y <> "\n" <> z
-    -- alg (LetUPF
-    -- alg (ListUPF ls) = do
-    --   i <- State.get
-    --   pure $ indent i "ListUP [ " <>
+    alg (LetUPF ys y) = do
+      i <- State.get
+      State.put $ i + 2
+      y' <- y
+      (indent i "LetUP\n" <>) . (<> y') <$> (letAssignments i <$> sequence (sequence <$> ys))
+    alg (ListUPF ls) = do
+      i <- State.get
+      (indent i "ListUP\n" <>) <$> (listItems i <$> sequence ls)
     alg (AppUPF sl sr) = indentWithTwoChildren "AppUP" sl sr
     alg (LamUPF str sx) = indentWithOneChild ("LamUP " <> str) sx
     alg (LeftUPF l) = indentWithOneChild "LeftUP" l
@@ -95,6 +99,10 @@ instance Show UnprocessedParsedTerm where
     alg (TraceUPF x) = indentWithOneChild "TraceUP" x
     alg (CheckUPF sl sr) = indentWithTwoChildren "CheckUP" sl sr
     alg (HashUPF x) =  indentWithOneChild "HashUP" x
+    listItems :: Int -> [String] -> String
+    listItems i ls = concat $ (\y -> indent i y <> "\n") <$> ls
+    letAssignments :: Int -> [(String, String)] -> String
+    letAssignments i ls = concat $ (\(x,y) -> indent (i + 2) x <> " = " <> y <> "\n") <$> ls
 
 instance Plated UnprocessedParsedTerm where
   plate f = \case
