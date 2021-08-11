@@ -108,8 +108,6 @@ instance Show UnprocessedParsedTerm where
       []                 -> []
       (l@(str, sstr):ls) -> (str, State.put (i + 4) >> sstr ) : setIndentationForAssignments i ls
 
-a = PairUP (ListUP [IntUP 0, IntUP 0, IntUP 0]) $ PairUP (LetUP [("bar", PairUP (IntUP 0) (IntUP 1)), ("foo", PairUP (IntUP 0) (IntUP 2)), ("baz", PairUP (PairUP (PairUP (IntUP 0) (IntUP 0)) (IntUP 0)) (IntUP 0))] (IntUP 3)) (IntUP 0)
-
 instance Plated UnprocessedParsedTerm where
   plate f = \case
     ITEUP i t e -> ITEUP <$> f i <*> f t <*> f e
