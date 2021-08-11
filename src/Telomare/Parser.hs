@@ -98,20 +98,17 @@ instance Show UnprocessedParsedTerm where
       i <- State.get
       State.put $ i + 2
       y' <- y
-      let setIndentationForAssignments :: [(String, State Int String)] -> [(String, State Int String)]
-          setIndentationForAssignments = \case
-            []                 -> []
-            (l@(str, sstr):ls) -> (str, stateAux l (i + 4) ) : setIndentationForAssignments ls
-      (indent i "LetUP\n" <>) . (<> y') <$> fmap concat (sequence $ letAssignment i <$> (sequence <$> setIndentationForAssignments ys))
+      (indent i "LetUP\n" <>) . (<> y') <$> fmap concat (sequence $ letAssignment i <$> (sequence <$> setIndentationForAssignments i ys))
     listItems :: Int -> [String] -> String
     listItems i ls = init . concat $ (\y -> indent i y <> "\n") <$> ls
-    stateAux :: (String, State Int String) -> Int -> State Int String
-    stateAux (str, sstr) i0 = State.put i0 >> sstr
     letAssignment :: Int -> State Int (String, String) -> State Int String
     letAssignment i sstr = State.put i >> (\(x,y) -> indent (i + 2) x <> " =\n" <> y <> "\n") <$> sstr
+    setIndentationForAssignments :: Int -> [(String, State Int String)] -> [(String, State Int String)]
+    setIndentationForAssignments i = \case
+      []                 -> []
+      (l@(str, sstr):ls) -> (str, State.put (i + 4) >> sstr ) : setIndentationForAssignments i ls
 
-
-a = PairUP (ListUP [IntUP 0, IntUP 0, IntUP 0]) $ PairUP (IntUP 0) (LetUP [("bar", PairUP (IntUP 0) (IntUP 1)), ("foo", PairUP (IntUP 0) (IntUP 2)), ("baz", PairUP (PairUP (PairUP (IntUP 0) (IntUP 0)) (IntUP 0)) (IntUP 0))] (IntUP 3))
+a = PairUP (ListUP [IntUP 0, IntUP 0, IntUP 0]) $ PairUP (LetUP [("bar", PairUP (IntUP 0) (IntUP 1)), ("foo", PairUP (IntUP 0) (IntUP 2)), ("baz", PairUP (PairUP (PairUP (IntUP 0) (IntUP 0)) (IntUP 0)) (IntUP 0))] (IntUP 3)) (IntUP 0)
 
 instance Plated UnprocessedParsedTerm where
   plate f = \case
