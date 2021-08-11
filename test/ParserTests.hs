@@ -132,11 +132,12 @@ allHashesToTerm2 term2 =
 
 unitTests :: TestTree
 unitTests = testGroup "Unit tests"
-  [ testCase "different values get different hashes" $ do
+  [ testCase "Simple UPT pretty print test" $ do
+      (show prettyPrintUPTTest == prettyPrintUPTTestReference) `compare` True @?= EQ
+  , testCase "different values get different hashes" $ do
       let res1 = generateAllHashes <$> runTelomareParser2Term2 parseLet [] hashtest0
           res2 = generateAllHashes <$> runTelomareParser2Term2 parseLet [] hashtest1
       (res1 == res2) `compare` False @?= EQ
-      -- #^This commmented test tests if two variables having the same value are assigned the same hash
   , testCase "same functions have the same hash even with different variable names" $ do
      let res1 = generateAllHashes <$> runTelomareParser2Term2 parseLet [] hashtest2
          res2 = generateAllHashes <$> runTelomareParser2Term2 parseLet [] hashtest3
@@ -309,17 +310,48 @@ unitTests = testGroup "Unit tests"
       (fromRight TZero $ validateVariables [] res) `compare` expr2 @?= EQ
   ]
 
-hashtest0 = unlines ["let wrapper = 2",
-                "  in (# wrapper)"]
+prettyPrintUPTTest = PairUP (ListUP [IntUP 0, IntUP 0, IntUP 0]) $ PairUP (LetUP [("bar", PairUP (IntUP 0) (IntUP 1)), ("foo", PairUP (IntUP 0) (IntUP 2)), ("baz", PairUP (PairUP (PairUP (IntUP 0) (IntUP 0)) (IntUP 0)) (IntUP 0))] (IntUP 3)) (IntUP 0)
 
-hashtest1 = unlines ["let var = 3",
-                "  in (# var)"]
+prettyPrintUPTTestReference = init . unlines $
+  [ "PairUP"
+  , "  ListUP"
+  , "    IntUP 0"
+  , "    IntUP 0"
+  , "    IntUP 0"
+  , "  PairUP"
+  , "    LetUP"
+  , "      bar ="
+  , "        PairUP"
+  , "          IntUP 0"
+  , "          IntUP 1"
+  , "      foo ="
+  , "        PairUP"
+  , "          IntUP 0"
+  , "          IntUP 2"
+  , "      baz ="
+  , "        PairUP"
+  , "          PairUP"
+  , "            PairUP"
+  , "              IntUP 0"
+  , "              IntUP 0"
+  , "            IntUP 0"
+  , "          IntUP 0"
+  , "      IntUP 3"
+  , "    IntUP 0"
+  ]
+
+hashtest0 = unlines [ "let wrapper = 2"
+                    , "  in (# wrapper)"
+                    ]
+hashtest1 = unlines [ "let var = 3"
+                    , "  in (# var)"
+                    ]
 hashtest2 = unlines [ "let a = \\y -> y"
-               , "in (# a)"
-               ]
+                    , "in (# a)"
+                    ]
 hashtest3 = unlines [ "let b = \\x -> x"
-               , "in (# b)"
-               ]
+                    , "in (# b)"
+                    ]
 
 testUserDefAdHocTypes :: String -> IO String
 testUserDefAdHocTypes input = do
