@@ -66,7 +66,7 @@ makeBaseFunctor ''UnprocessedParsedTerm -- Functorial version UnprocessedParsedT
 makePrisms ''UnprocessedParsedTerm
 
 instance Show UnprocessedParsedTerm where
-  show x = State.evalState (cata alg $ x) 0 where
+  show x = State.evalState (cata alg x) 0 where
     -- |Helper function to indent. Usefull for indented Show instances.
     alg :: (Base UnprocessedParsedTerm) (State Int String) -> State Int String
     alg UnsizedRecursionUPF = sindent "UnsizedRecursionUP"
