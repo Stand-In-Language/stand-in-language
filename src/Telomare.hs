@@ -24,6 +24,7 @@ import Data.Char
 import Data.Functor.Classes
 import Data.Functor.Foldable
 import Data.Functor.Foldable.TH
+import Data.List (intercalate)
 import Data.Map (Map)
 import qualified Data.Map as Map
 import qualified Data.Set as Set
@@ -606,9 +607,26 @@ instance Show PrettyIExpr where
   show (PrettyIExpr iexpr) = case iexpr of
     p@(Pair a b) -> if isNum p
       then show $ g2i p
-      else concat ["(", show (PrettyIExpr a), ",", show (PrettyIExpr b), ")"]
+      else
+        if isList p
+          then "[" <> (showListElements . PrettyIExpr $ p) <> "]"
+          else concat ["(", show (PrettyIExpr a), ",", show (PrettyIExpr b), ")"]
     Zero -> "0"
     x -> show x
+
+iExprList2List :: IExpr -> [IExpr]
+iExprList2List = \case
+  Zero       -> []
+  (Pair l r) -> l : iExprList2List r
+  _          -> error "iExprList2List called with something that isn't a list"
+
+showListElements :: PrettyIExpr -> String
+showListElements (PrettyIExpr iexpr) =
+  case iexpr of
+    Zero       -> ""
+    p@(Pair _ _) -> let list = iExprList2List p
+                    in intercalate ", " $ show . PrettyIExpr <$> list
+    _          -> error "showListElements called with something that isn't a list"
 
 g2i :: IExpr -> Int
 g2i Zero       = 0
@@ -649,11 +667,22 @@ ints2gF = foldr (\i g -> PairFrag <$> i2gF i <*> g) (pure ZeroFrag)
 s2gF :: String -> BreakState' a b
 s2gF = ints2gF . fmap ord
 
--- convention is numbers are left-nested pairs with zero on right
+-- |Convention is numbers are left-nested pairs with zero on right
 isNum :: IExpr -> Bool
 isNum Zero          = True
 isNum (Pair n Zero) = isNum n
 isNum _             = False
+
+-- |Convention is lists are right-nested pairs with zero on the last left
+isList :: IExpr -> Bool
+isList = \case
+  Zero -> True
+  (Pair _ r) ->
+    case r of
+      Zero        -> True
+      (Pair _ r') -> isList r'
+      _           -> False
+  _ -> False
 
 nextI :: State EIndex EIndex
 nextI = State.state $ \(EIndex n) -> (EIndex n, EIndex (n + 1))
