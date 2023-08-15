@@ -553,7 +553,7 @@ unitTests parse = do
     unitTest "foldr" "13" $ app (app (app foldr_ d_plus) (i2g 1)) (ints2g [2,4,6])
     unitTest "listlength0" "0" $ app list_length zero
     unitTest "listlength3" "3" $ app list_length (ints2g [1,2,3])
-    unitTest "zipwith" "((4,1),((5,1),((6,2),0)))"
+    unitTest "zipwith" "[[4, 0], [5, 0], [6, 1]]"
       $ app (app (app zipWith_ (lam (lam (pair (varN 1) (varN 0)))))
                  (ints2g [4,5,6]))
             (ints2g [1,1,2,3])
@@ -561,7 +561,7 @@ unitTests parse = do
     unitTest "listequal0" "0" $ app (app list_equality (s2g "hey")) (s2g "he")
     unitTest "listequal00" "0" $ app (app list_equality (s2g "hey")) (s2g "hel")
   -- because of the way lists are represented, the last number will be prettyPrinted + 1
-    unitTest "map" "(2,(3,5))" $ app (app map_ (lam (pair (varN 0) zero)))
+    unitTest "map" "[2, 3, 4]" $ app (app map_ (lam (pair (varN 0) zero)))
                                      (ints2g [1,2,3])
 
   describe "refinement" $ do
@@ -593,24 +593,24 @@ unitTests parse = do
     unitTest2 "main = listEqual \"hey\" \"hey\"" "1"
     unitTest2 "main = listEqual \"hey\" \"he\"" "0"
     unitTest2 "main = listEqual \"hey\" \"hel\"" "0"
-    unitTest2 "main = listPlus [1,2] [3,4]" "(1,(2,(3,5)))"
+    unitTest2 "main = listPlus [1,2] [3,4]" "[1, 2, 3, 4]"
     unitTest2 "main = listPlus 0 [1]" "2"
     unitTest2 "main = listPlus [1] 0" "2"
-    unitTest2 "main = map left [1,2]" "(0,2)" -- test "left" as a function rather than builtin requiring argument
-    unitTest2 "main = concat [\"a\",\"b\",\"c\"]" "(97,(98,100))"
+    unitTest2 "main = map left [1,2]" "[0, 1]" -- test "left" as a function rather than builtin requiring argument
+    unitTest2 "main = concat [\"a\",\"b\",\"c\"]" "[97, 98, 99]"
     unitTest2 nestedNamedFunctionsIssue "2"
     unitTest2 "main = take $0 [1,2,3]" "0"
     unitTest2 "main = take $1 [1,2,3]" "2"
-    unitTest2 "main = take $5 [1,2,3]" "(1,(2,4))"
+    unitTest2 "main = take $5 [1,2,3]" "[1, 2, 3]"
     unitTest2 "main = c2d (minus $4 $3)" "1"
     unitTest2 "main = c2d (minus $4 $4)" "0"
     unitTest2 "main = dMinus 4 3" "1"
     unitTest2 "main = dMinus 4 4" "0"
     unitTest2 "main = (if 0 then (\\x -> (x,0)) else (\\x -> ((x,0),0))) 1" "3"
-    unitTest2 "main = range 2 5" "(2,(3,5))"
+    unitTest2 "main = range 2 5" "[2, 3, 4]"
     unitTest2 "main = range 6 6" "0"
     unitTest2 "main = filter (\\x -> dMinus x 3) (range 1 8)"
-      "(4,(5,(6,8)))"
+      "[4, 5, 6, 7]"
     unitTest2 "main = (\\a b -> if 0 then a b else b) (\\b -> times $2 b) $1 succ 0" "1"
     unitTest2 "main = c2d (factorial 0)" "1"
     unitTest2 "main = c2d (factorial 4)" "24"
