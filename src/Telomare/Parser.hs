@@ -11,7 +11,7 @@ import Control.Lens.Combinators (Plated (..), makePrisms)
 import Control.Lens.Plated (Plated (..))
 import Control.Monad (void)
 import Control.Monad.State (State)
-import Data.Bifunctor (Bifunctor (first, second))
+import Data.Bifunctor (Bifunctor (first, second), bimap)
 import Data.Functor (($>))
 import Data.Functor.Foldable (Base, Recursive (cata), para)
 import Data.Functor.Foldable.TH (MakeBaseFunctor (makeBaseFunctor))
@@ -478,6 +478,12 @@ parseSuccessful parser str =
   case runParser parser "" str of
     Right _ -> pure True
     Left _  -> pure False
+
+parseSingleExpression :: String -> Either String UnprocessedParsedTerm
+parseSingleExpression str = bimap errorBundlePretty forget' $ runParser parseLongExpr "" str
+  where
+    forget' :: Cofree (Base UnprocessedParsedTerm) LocTag -> UnprocessedParsedTerm
+    forget' = forget
 
 parsePrelude :: String -> Either String [(String, AnnotatedUPT)]
 parsePrelude str = let result = runParser (scn *> many parseAssignment <* eof) "" str
