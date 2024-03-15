@@ -167,9 +167,6 @@ instance Show MultiLineShowUPT where
                                                    )) <>
                           "  ]\n"
 
-                        -- "case " <> x <> " of\n" <>
-                        -- "  " <> indentSansFirstLine 2 (unlines ((\(p, r) -> indentSansFirstLine 2 (show (PrettyPattern p) <> " -> " <> r)) <$> ls))
-
 newtype PrettyUPT = PrettyUPT UnprocessedParsedTerm
 
 instance Show PrettyUPT where
@@ -564,10 +561,10 @@ parseSuccessful parser str =
     Right _ -> pure True
     Left _  -> pure False
 
-parseSingleExpression :: String -> Either String UnprocessedParsedTerm
-parseSingleExpression str = bimap errorBundlePretty forget' $ runParser parseLongExpr "" str
+runParseLongExpr :: String -> Either String UnprocessedParsedTerm
+runParseLongExpr str = bimap errorBundlePretty forget' $ runParser parseLongExpr "" str
   where
-    forget' :: Cofree (Base UnprocessedParsedTerm) LocTag -> UnprocessedParsedTerm
+    forget' :: Cofree UnprocessedParsedTermF LocTag -> UnprocessedParsedTerm
     forget' = forget
 
 parsePrelude :: String -> Either String [(String, AnnotatedUPT)]
