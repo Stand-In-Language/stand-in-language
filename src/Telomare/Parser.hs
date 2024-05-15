@@ -22,8 +22,8 @@ import qualified System.IO.Strict as Strict
 import Telomare (LocTag (..), ParserTerm (..), ParserTermF (..),
                  RecursionPieceFrag, RecursionSimulationPieces (..), Term1 (..),
                  Term2 (..), Term3 (..), UnsizedRecursionToken, appF, clamF,
-                 deferF, forget, lamF, nextBreakToken, unsizedRecursionWrapper,
-                 varNF)
+                 deferF, forget, indentSansFirstLine, lamF, nextBreakToken,
+                 unsizedRecursionWrapper, varNF)
 import Telomare.TypeChecker (typeCheck)
 import Text.Megaparsec (MonadParsec (eof, notFollowedBy, try), Parsec, Pos,
                         PosState (pstateSourcePos),
@@ -101,15 +101,6 @@ caseaux = CaseUP aux [(PatternVar "x", aux), (PatternVar "yy", aux), (PatternVar
 newtype MultiLineShowUPT = MultiLineShowUPT UnprocessedParsedTerm
 instance Show MultiLineShowUPT where
   show (MultiLineShowUPT upt) = cata alg upt where
-    indentSansFirstLine :: Int -> String -> String
-    indentSansFirstLine i x = removeLastNewLine res where
-      res = unlines $ (\(s:ns) -> s:((indent i <>) <$> ns)) (lines x)
-      indent 0 = []
-      indent n = ' ' : indent (n - 1)
-      removeLastNewLine str =
-        case reverse str of
-          '\n' : rest -> reverse rest
-          x           -> str
     alg :: Base UnprocessedParsedTerm String -> String
     alg = \case
       IntUPF i -> "IntUP " <> show i
@@ -171,15 +162,6 @@ newtype PrettyUPT = PrettyUPT UnprocessedParsedTerm
 
 instance Show PrettyUPT where
   show (PrettyUPT upt) = cata alg upt where
-    indentSansFirstLine :: Int -> String -> String
-    indentSansFirstLine i x = removeLastNewLine res where
-      res = unlines ((\(s:ns) -> s:((indent i <>) <$> ns)) (lines x))
-      indent 0 = []
-      indent n = ' ' : indent (n - 1)
-      removeLastNewLine str =
-        case reverse str of
-          '\n' : rest -> reverse rest
-          x           -> str
     alg :: Base UnprocessedParsedTerm String -> String
     alg = \case
       IntUPF i -> show i

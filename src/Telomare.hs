@@ -22,11 +22,13 @@ import Control.Lens.Combinators (Plated (..), transform)
 import Control.Monad.Except (ExceptT)
 import Control.Monad.State (State)
 import qualified Control.Monad.State as State
+import Data.Bool (bool)
 import Data.Char (chr, ord)
 import Data.Eq.Deriving (deriveEq1)
 import Data.Functor.Foldable (Base, Corecursive (embed),
                               Recursive (cata, project))
 import Data.Functor.Foldable.TH (MakeBaseFunctor (makeBaseFunctor))
+import Data.List (elemIndex)
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Ord.Deriving (deriveOrd1)
@@ -34,8 +36,8 @@ import qualified Data.Set as Set
 import Data.Void (Void)
 import Debug.Trace (trace, traceShow, traceShowId)
 import GHC.Generics (Generic)
+import Text.Read (readMaybe)
 import Text.Show.Deriving (deriveShow1)
-
 
 {- top level TODO list
  - change AbortFrag form to something more convenient
@@ -712,6 +714,53 @@ instance Show PrettyIExpr where
       else concat ["(", show (PrettyIExpr a), ",", show (PrettyIExpr b), ")"]
     Zero -> "0"
     x -> show x
+
+indentSansFirstLine :: Int -> String -> String
+indentSansFirstLine i x = removeLastNewLine res where
+  res = unlines $ (\(s:ns) -> s:((indent i <>) <$> ns)) (lines x)
+  indent 0 = []
+  indent n = ' ' : indent (n - 1)
+  removeLastNewLine str =
+    case reverse str of
+      '\n' : rest -> reverse rest
+      x           -> str
+
+newtype PrettierIExpr = PrettierIExpr IExpr
+
+instance Show PrettierIExpr where
+  show (PrettierIExpr iexpr) = removeRedundantParens $ cata alg iexpr where
+    removeRedundantParens :: String -> String
+    removeRedundantParens str = unlines $ removeRedundantParensOneLine <$> lines str
+    filterOnce :: Eq a => a -> [a] -> [a]
+    filterOnce y = \case
+      []     -> []
+      (x:xs) -> if x == y then xs else x : filterOnce y xs
+    removeRedundantParensOneLine :: String -> String
+    removeRedundantParensOneLine str =
+      case (elemIndex '(' str, elemIndex ')' str) of
+        (Just x, Just y) -> filterOnce ')' . filterOnce '(' $ str
+        _                -> str
+    alg :: Base IExpr String -> String
+    alg = \case
+      PairF x y -> case (y, readMaybe x :: Maybe Int) of
+                     ("0", Just x) -> show $ x + 1
+                     _ -> "P\n" <>
+                          "  (" <> indentSansFirstLine 3 x <> ")\n" <>
+                          "  (" <> indentSansFirstLine 3 y <> ")"
+      ZeroF -> "0"
+      EnvF -> "E"
+      TraceF -> "T"
+      SetEnvF x -> "S\n" <>
+                   "  (" <> indentSansFirstLine 3 x <> ")"
+      DeferF x -> "D\n" <>
+                   "  (" <> indentSansFirstLine 3 x <> ")"
+      GateF x y -> "G\n" <>
+                   "  (" <> indentSansFirstLine 3 x <> ")\n" <>
+                   "  (" <> indentSansFirstLine 3 y <> ")"
+      PLeftF x -> "L\n" <>
+                  "  (" <> indentSansFirstLine 3 x <> ")"
+      PRightF x -> "R\n" <>
+                   "  (" <> indentSansFirstLine 3 x <> ")"
 
 g2i :: IExpr -> Int
 g2i Zero       = 0
