@@ -317,6 +317,9 @@ prelude = do
     Right p -> pure p
     Left pe -> error pe
 
+eval2IExpr :: [(String, AnnotatedUPT)] -> String -> Either String IExpr
+eval2IExpr prelude str = first errorBundlePretty (runParser parseLongExpr "" str) >>= process prelude >>= first show . compileUnitTest
+
 tagUPTwithIExpr :: [(String, AnnotatedUPT)]
                 -> UnprocessedParsedTerm
                 -> Cofree UnprocessedParsedTermF (Int, Either String IExpr)
