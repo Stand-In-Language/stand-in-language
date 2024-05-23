@@ -33,24 +33,14 @@ import Telomare (BreakState, BreakState', ExprA (..), FragExpr (..),
                  TelomareLike (..), Term3 (Term3), Term4 (Term4),
                  UnsizedRecursionToken (..), app, forget, g2s, innerChurchF,
                  insertAndGetKey, pattern AbortAny, pattern AbortRecursion,
-                 pattern AbortUser, rootFrag, s2g, unFragExprUR, tag)
+                 pattern AbortUser, rootFrag, s2g, unFragExprUR, tag, IExprF (..))
 import Telomare.Optimizer (optimize)
-<<<<<<< HEAD
-import Telomare.Parser (AnnotatedUPT, UnprocessedParsedTerm (..), parsePrelude)
 import Telomare.Possible (AbortExpr, VoidF, abortExprToTerm4, evalA, sizeTerm,
                           term3ToUnsizedExpr)
-import Telomare.Resolver (parseMain)
-||||||| parent of 47c09d3 (Cofree UPT with evaluation to IExpr on every node)
-import Telomare.Parser (AnnotatedUPT, UnprocessedParsedTerm (..), parsePrelude)
-import Telomare.Possible (evalA)
-import Telomare.Resolver (parseMain)
-=======
 import Telomare.Parser (AnnotatedUPT, UnprocessedParsedTerm (..), parsePrelude,
-                        parseTopLevelWithPrelude, parseWithPrelude, PrettyUPT (PrettyUPT), UnprocessedParsedTermF (..), Pattern, parseLongExpr)
-import Telomare.Possible (evalA)
+                        PrettyUPT (PrettyUPT), UnprocessedParsedTermF (..), Pattern, parseLongExpr)
 import Telomare.Resolver (parseMain, process)
->>>>>>> 47c09d3 (Cofree UPT with evaluation to IExpr on every node)
-import Telomare.RunTime (hvmEval, optimizedEval, pureEval, simpleEval)
+import Telomare.RunTime (hvmEval, optimizedEval, pureEval, simpleEval, rEval')
 import Telomare.TypeChecker (TypeCheckError (..), typeCheck)
 import Text.Megaparsec (runParser, errorBundlePretty)
 
@@ -320,6 +310,55 @@ prelude = do
 eval2IExpr :: [(String, AnnotatedUPT)] -> String -> Either String IExpr
 eval2IExpr prelude str = first errorBundlePretty (runParser parseLongExpr "" str) >>= process prelude >>= first show . compileUnitTest
 
+tagIExprWithEval :: IExpr -> Cofree IExprF (Int, Either RunTimeError IExpr)
+tagIExprWithEval iexpr = evalState (para alg iexpr) 0 where
+  statePlus1 :: State Int Int
+  statePlus1 = do
+      i <- State.get
+      State.modify (+ 1)
+      pure i
+  alg :: Base IExpr
+              ( IExpr
+              , State Int (Cofree IExprF (Int, Either RunTimeError IExpr))
+              )
+      -> State Int (Cofree IExprF (Int, Either RunTimeError IExpr))
+  alg = \case
+    ZeroF -> do
+      i <- statePlus1
+      pure ((i, rEval' Zero Zero) :< ZeroF)
+    EnvF -> do
+      i <- statePlus1
+      pure ((i, rEval' Zero Env) :< EnvF)
+    TraceF -> do
+      i <- statePlus1
+      pure ((i, rEval' Zero Trace) :< TraceF)
+    SetEnvF (iexpr0, x) -> do
+      i <- statePlus1
+      x' <- x
+      pure $ (i, rEval' Zero $ SetEnv iexpr0) :< SetEnvF x'
+    DeferF (iexpr0, x) -> do
+      i <- statePlus1
+      x' <- x
+      pure $ (i, rEval' Zero $ Defer iexpr0) :< DeferF x'
+    PLeftF (iexpr0, x) -> do
+      i <- statePlus1
+      x' <- x
+      pure $ (i, rEval' Zero $ PLeft iexpr0) :< PLeftF x'
+    PRightF (iexpr0, x) -> do
+      i <- statePlus1
+      x' <- x
+      pure $ (i, rEval' Zero $ PRight iexpr0) :< PRightF x'
+    PairF (iexpr0, x) (iexpr1, y) -> do
+      i <- statePlus1
+      x' <- x
+      y' <- y
+      pure $ (i, rEval' Zero $ Pair iexpr0 iexpr1) :< PairF x' y'
+    GateF (iexpr0, x) (iexpr1, y) -> do
+      i <- statePlus1
+      x' <- x
+      y' <- y
+      pure $ (i, rEval' Zero $ Gate iexpr0 iexpr1) :< GateF x' y'
+
 tagUPTwithIExpr :: [(String, AnnotatedUPT)]
                 -> UnprocessedParsedTerm
                 -> Cofree UnprocessedParsedTermF (Int, Either String IExpr)
@@ -437,4 +476,3 @@ tagUPTwithIExpr prelude upt = evalState (para alg upt) 0 where
       x' <- x
       y' <- y
       pure $ (i, upt2iexpr $ PairUP upt1 upt2) :< PairUPF x' y'
->>>>>>> 47c09d3 (Cofree UPT with evaluation to IExpr on every node)

@@ -4,7 +4,7 @@
 
 module Telomare.RunTime where
 
-import Control.Exception
+-- import Control.Exception
 import Control.Monad.Except
 import Control.Monad.Fix
 import Data.Foldable
@@ -90,6 +90,34 @@ nEval (NExprs m) =
     (Just f) -> eval NZero f
     _        -> throwError $ GenericRunTimeError "nEval: no root frag" Zero
 
+
+rEval' :: IExpr -- ^ The enviroment.
+       -> IExpr -- ^ IExpr to be evaluated.
+       -> Either RunTimeError IExpr
+rEval' e = para alg where
+  alg :: (Base IExpr) (IExpr, Either RunTimeError IExpr)
+      -> Either RunTimeError IExpr
+  alg = \case
+    ZeroF -> pure Zero
+    EnvF -> pure e
+    (DeferF (ie, _)) -> pure . Defer $ ie
+    TraceF -> pure $ trace (show e) e
+    (GateF (ie1, _) (ie2, _)) -> pure $ Gate ie1 ie2
+    (PairF (_, l) (_, r)) -> Pair <$> l <*> r
+    (PRightF (_, x)) -> x >>= \case
+      (Pair _ r) -> pure r
+      _          -> pure Zero
+    (PLeftF (_, x)) -> x >>= \case
+      (Pair l _) -> pure l
+      _          -> pure Zero
+    (SetEnvF (_, x)) -> x >>= \case
+      Pair (Defer c) nenv  -> rEval' nenv c
+      Pair (Gate a _) Zero -> rEval' e a
+      Pair (Gate _ b) _    -> rEval' e b
+      -- The next case should never actually occur,
+      -- because it should be caught by `typeCheck`.
+      z                    -> Left . SetEnvError $ z
+
 -- |IExpr evaluation with a given enviroment `e`
 -- (as in the second element of a closure).
 rEval :: (MonadError RunTimeError m)
@@ -148,13 +176,40 @@ iEval f env g = let f' = f env in case g of
     (Pair _ x) -> pure x
     _          -> pure Zero
 
+iEval' :: (IExpr -> IExpr -> Either RunTimeError IExpr) -> IExpr -> IExpr -> Either RunTimeError IExpr
+iEval' f env g = let f' = f env in case g of
+  Trace -> pure $ trace (show env) env
+  Zero -> pure Zero
+  -- Abort -> pure Abort
+  Defer x -> pure $ Defer x
+  Pair a b -> Pair <$> f' a <*> f' b
+  Gate a b -> pure $ Gate a b
+  Env -> pure env
+  SetEnv x -> (f' x >>=) $ \case
+    Pair cf nenv -> case cf of
+      Defer c -> f nenv c
+      -- do we change env in evaluation of a/b, or leave it same? change seems more consistent, leave more convenient
+      Gate a b -> case nenv of
+        Zero -> f' a
+        _    -> f' b
+      z -> throwError $ SetEnvError z -- This should never actually occur, because it should be caught by typecheck
+    bx -> throwError $ SetEnvError bx -- This should never actually occur, because it should be caught by typecheck
+  PLeft g -> f' g >>= \case
+    (Pair a _) -> pure a
+    _          -> pure Zero
+  PRight g -> f' g >>= \case
+    (Pair _ x) -> pure x
+    _          -> pure Zero
+
 instance TelomareLike IExpr where
   fromTelomare = id
   toTelomare = pure
 
 instance AbstractRunTime IExpr where
-  eval = fix iEval Zero
+  -- eval = fix iEval Zero
+  eval = ExceptT . pure . fix iEval' Zero
   -- eval = rEval Zero
+  -- eval = ExceptT . pure . rEval' Zero
 
 resultIndex = FragIndex (-1)
 instance TelomareLike NExprs where
