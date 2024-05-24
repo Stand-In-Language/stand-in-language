@@ -744,14 +744,14 @@ instance Show PrettierIExpr where
     alg = \case
       PairF x y -> case (y, readMaybe x :: Maybe Int) of
                      ("0", Just x) -> show $ x + 1
-                     -- _ -> "P\n" <>
-                     --      "  (" <> indentSansFirstLine 3 x <> ")\n" <>
-                     --      "  (" <> indentSansFirstLine 3 y <> ")"
-                     _ -> if (length . lines $ x) == 1 && (length . lines $ y) == 1
-                            then "(" <> x <> ", " <> y  <> ")"
-                            else "( " <> indentSansFirstLine 2 x <> "\n" <>
-                                 ", " <> indentSansFirstLine 2 y <> "\n" <>
-                                 ")"
+                     _ -> "P\n" <>
+                          "  (" <> indentSansFirstLine 3 x <> ")\n" <>
+                          "  (" <> indentSansFirstLine 3 y <> ")"
+                     -- _ -> if (length . lines $ x) == 1 && (length . lines $ y) == 1
+                     --        then "(" <> x <> ", " <> y  <> ")"
+                     --        else "( " <> indentSansFirstLine 2 x <> "\n" <>
+                     --             ", " <> indentSansFirstLine 2 y <> "\n" <>
+                     --             ")"
       ZeroF -> "0"
       EnvF -> "E"
       TraceF -> "T"
