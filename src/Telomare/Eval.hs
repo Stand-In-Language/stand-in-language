@@ -308,7 +308,9 @@ prelude = do
     Left pe -> error pe
 
 eval2IExpr :: [(String, AnnotatedUPT)] -> String -> Either String IExpr
-eval2IExpr prelude str = first errorBundlePretty (runParser parseLongExpr "" str) >>= process prelude >>= first show . compileUnitTest
+eval2IExpr prelude str = bimap errorBundlePretty (\x -> DummyLoc :< LetUPF prelude x) (runParser parseLongExpr "" str)
+                     >>= process prelude
+                     >>= first show . compileUnitTest
 
 tagIExprWithEval :: IExpr -> Cofree IExprF (Int, Either RunTimeError IExpr)
 tagIExprWithEval iexpr = evalState (para alg iexpr) 0 where
