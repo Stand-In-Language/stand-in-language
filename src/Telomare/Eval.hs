@@ -37,8 +37,8 @@ import Telomare (BreakState, BreakState', ExprA (..), FragExpr (..),
 import Telomare.Optimizer (optimize)
 import Telomare.Possible (AbortExpr, VoidF, abortExprToTerm4, evalA, sizeTerm,
                           term3ToUnsizedExpr)
-import Telomare.Parser (AnnotatedUPT, UnprocessedParsedTerm (..), parsePrelude,
-                        PrettyUPT (PrettyUPT), UnprocessedParsedTermF (..), Pattern, parseLongExpr)
+import Telomare.Parser (AnnotatedUPT, UnprocessedParsedTerm (..), parsePrelude, parseOneExprOrTopLevelDefs,
+                        PrettyUPT (PrettyUPT), UnprocessedParsedTermF (..), Pattern)
 import Telomare.Resolver (parseMain, process)
 import Telomare.RunTime (hvmEval, optimizedEval, pureEval, simpleEval, rEval')
 import Telomare.TypeChecker (TypeCheckError (..), typeCheck)
@@ -308,7 +308,7 @@ prelude = do
     Left pe -> error pe
 
 eval2IExpr :: [(String, AnnotatedUPT)] -> String -> Either String IExpr
-eval2IExpr prelude str = bimap errorBundlePretty (\x -> DummyLoc :< LetUPF prelude x) (runParser parseLongExpr "" str)
+eval2IExpr prelude str = bimap errorBundlePretty (\x -> DummyLoc :< LetUPF prelude x) (runParser (parseOneExprOrTopLevelDefs prelude) "" str)
                            >>= process prelude
                            >>= first show . compileUnitTest
 

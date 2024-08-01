@@ -562,6 +562,6 @@ parseOneExprOrTopLevelDefs prelude = choice $ try <$> [ parseTopLevelWithPrelude
 
 -- |Parse with specified prelude
 parseWithPrelude :: [(String, AnnotatedUPT)]   -- ^Prelude
-                 -> String                              -- ^Raw string to be parsed
+                 -> String                     -- ^Raw string to be parsed
                  -> Either String AnnotatedUPT -- ^Error on Left
 parseWithPrelude prelude str = first errorBundlePretty $ runParser (parseTopLevelWithPrelude prelude) "" str
