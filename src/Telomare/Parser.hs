@@ -553,6 +553,13 @@ parsePrelude :: String -> Either String [(String, AnnotatedUPT)]
 parsePrelude str = let result = runParser (scn *> many parseAssignment <* eof) "" str
                     in first errorBundlePretty result
 
+-- |Parse either a single expression or top level definitions defaulting to the `main` definition.
+--  This function is useful and was made for telomare-evaluare
+parseOneExprOrTopLevelDefs :: [(String, AnnotatedUPT)] -> TelomareParser AnnotatedUPT
+parseOneExprOrTopLevelDefs prelude = choice $ try <$> [ parseTopLevelWithPrelude prelude
+                                                      , parseLongExpr
+                                                      ]
+
 -- |Parse with specified prelude
 parseWithPrelude :: [(String, AnnotatedUPT)]   -- ^Prelude
                  -> String                              -- ^Raw string to be parsed
