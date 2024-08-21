@@ -19,7 +19,7 @@ import qualified Data.Map as Map
 
 import Control.Comonad.Cofree
 import Data.Functor.Foldable
-import Data.SBV (sFPHalf)
+-- import Data.SBV (sFPHalf)
 
 
 class PrettyPrintable p where

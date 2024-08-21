@@ -57,7 +57,7 @@ library
                      , transformers
                      , megaparsec
                      , memory
-                     , sbv
+                     -- , sbv
                      , strict
                      , tasty
                      , tasty-hunit
