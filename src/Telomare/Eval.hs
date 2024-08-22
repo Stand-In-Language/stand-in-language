@@ -5,17 +5,16 @@
 module Telomare.Eval where
 
 import Control.Comonad.Cofree (Cofree ((:<)), hoistCofree)
-import qualified System.IO.Strict as Strict
-import Data.Bifunctor (first, bimap)
 import Control.Lens.Plated hiding (para)
 import Control.Monad.Except
 import Control.Monad.Reader (Reader, runReader)
-import Control.Monad.State (StateT, State, evalState)
+import Control.Monad.State (State, StateT, evalState)
 import qualified Control.Monad.State as State
 import Control.Monad.Trans.Accum (AccumT)
 import qualified Control.Monad.Trans.Accum as Accum
+import Data.Bifunctor (bimap, first)
 import Data.DList (DList)
-import Data.Functor.Foldable (cata, embed, project, Base, para)
+import Data.Functor.Foldable (Base, cata, embed, para, project)
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Set (Set)
@@ -23,26 +22,28 @@ import qualified Data.Set as Set
 import Data.Void
 import Debug.Trace
 import System.IO
+import qualified System.IO.Strict as Strict
 import System.Process
 
 import PrettyPrint
 import Telomare (BreakState, BreakState', ExprA (..), FragExpr (..),
-                 FragExprF (..), FragIndex (FragIndex), IExpr (..), LocTag (..),
-                 PartialType (..), RecursionPieceFrag,
+                 FragExprF (..), FragIndex (FragIndex), IExpr (..), IExprF (..),
+                 LocTag (..), PartialType (..), RecursionPieceFrag,
                  RecursionSimulationPieces (..), RunTimeError (..),
                  TelomareLike (..), Term3 (Term3), Term4 (Term4),
                  UnsizedRecursionToken (..), app, forget, g2s, innerChurchF,
                  insertAndGetKey, pattern AbortAny, pattern AbortRecursion,
-                 pattern AbortUser, rootFrag, s2g, unFragExprUR, tag, IExprF (..))
+                 pattern AbortUser, rootFrag, s2g, tag, unFragExprUR)
 import Telomare.Optimizer (optimize)
+import Telomare.Parser (AnnotatedUPT, Pattern, PrettyUPT (PrettyUPT),
+                        UnprocessedParsedTerm (..), UnprocessedParsedTermF (..),
+                        parseOneExprOrTopLevelDefs, parsePrelude)
 import Telomare.Possible (AbortExpr, VoidF, abortExprToTerm4, evalA, sizeTerm,
                           term3ToUnsizedExpr)
-import Telomare.Parser (AnnotatedUPT, UnprocessedParsedTerm (..), parsePrelude, parseOneExprOrTopLevelDefs,
-                        PrettyUPT (PrettyUPT), UnprocessedParsedTermF (..), Pattern)
 import Telomare.Resolver (parseMain, process)
-import Telomare.RunTime (hvmEval, optimizedEval, pureEval, simpleEval, rEval')
+import Telomare.RunTime (hvmEval, optimizedEval, pureEval, rEval, simpleEval)
 import Telomare.TypeChecker (TypeCheckError (..), typeCheck)
-import Text.Megaparsec (runParser, errorBundlePretty)
+import Text.Megaparsec (errorBundlePretty, runParser)
 
 debug :: Bool
 debug = False
@@ -278,28 +279,6 @@ calculateRecursionLimits t3 =
       Left a  -> Left . StaticCheckError . convertAbortMessage $ a
       Right t -> pure t
 
-upt :: UnprocessedParsedTerm
-upt = PairUP (IntUP 0) (IntUP 1)
--- upt = PairUP
---         (PairUP
---           (IntUP 0)
---           (IntUP 1))
---         (PairUP
---           (IntUP 2)
---           (IntUP 3))
-
-tagUPTwithIExprIO :: IO ()
-tagUPTwithIExprIO = do
-  -- str <- Strict.readFile "examples.tel"
-  p <- prelude
-  let -- Right upt = forget <$> parseWithPrelude p str
-      res = tagUPTwithIExpr p upt
-  print res
-
--- (0,Right (Pair Zero (Pair Zero Zero))) :< PairUPF ((1,Right Zero) :< IntUPF 0) ((2,Right (Pair Zero Zero)) :< IntUPF 1)
-
--- (0,Right (Pair (Pair Zero (Pair Zero Zero)) (Pair (Pair (Pair Zero Zero) Zero) (Pair (Pair (Pair Zero Zero) Zero) Zero)))) :< PairUPF ((1,Right (Pair Zero (Pair Zero Zero))) :< PairUPF ((2,Right Zero) :< IntUPF 0) ((3,Right (Pair Zero Zero)) :< IntUPF 1)) ((4,Right (Pair (Pair (Pair Zero Zero) Zero) (Pair (Pair (Pair Zero Zero) Zero) Zero))) :< PairUPF ((5,Right (Pair (Pair Zero Zero) Zero)) :< IntUPF 2) ((6,Right (Pair (Pair (Pair Zero Zero) Zero) Zero)) :< IntUPF 3))
-
 prelude :: IO [(String, AnnotatedUPT)]
 prelude = do
   preludeString <- Strict.readFile "Prelude.tel"
@@ -327,39 +306,39 @@ tagIExprWithEval iexpr = evalState (para alg iexpr) 0 where
   alg = \case
     ZeroF -> do
       i <- statePlus1
-      pure ((i, rEval' Zero Zero) :< ZeroF)
+      pure ((i, rEval Zero Zero) :< ZeroF)
     EnvF -> do
       i <- statePlus1
-      pure ((i, rEval' Zero Env) :< EnvF)
+      pure ((i, rEval Zero Env) :< EnvF)
     TraceF -> do
       i <- statePlus1
-      pure ((i, rEval' Zero Trace) :< TraceF)
+      pure ((i, rEval Zero Trace) :< TraceF)
     SetEnvF (iexpr0, x) -> do
       i <- statePlus1
       x' <- x
-      pure $ (i, rEval' Zero $ SetEnv iexpr0) :< SetEnvF x'
+      pure $ (i, rEval Zero $ SetEnv iexpr0) :< SetEnvF x'
     DeferF (iexpr0, x) -> do
       i <- statePlus1
       x' <- x
-      pure $ (i, rEval' Zero $ Defer iexpr0) :< DeferF x'
+      pure $ (i, rEval Zero $ Defer iexpr0) :< DeferF x'
     PLeftF (iexpr0, x) -> do
       i <- statePlus1
       x' <- x
-      pure $ (i, rEval' Zero $ PLeft iexpr0) :< PLeftF x'
+      pure $ (i, rEval Zero $ PLeft iexpr0) :< PLeftF x'
     PRightF (iexpr0, x) -> do
       i <- statePlus1
       x' <- x
-      pure $ (i, rEval' Zero $ PRight iexpr0) :< PRightF x'
+      pure $ (i, rEval Zero $ PRight iexpr0) :< PRightF x'
     PairF (iexpr0, x) (iexpr1, y) -> do
       i <- statePlus1
       x' <- x
       y' <- y
-      pure $ (i, rEval' Zero $ Pair iexpr0 iexpr1) :< PairF x' y'
+      pure $ (i, rEval Zero $ Pair iexpr0 iexpr1) :< PairF x' y'
     GateF (iexpr0, x) (iexpr1, y) -> do
       i <- statePlus1
       x' <- x
       y' <- y
-      pure $ (i, rEval' Zero $ Gate iexpr0 iexpr1) :< GateF x' y'
+      pure $ (i, rEval Zero $ Gate iexpr0 iexpr1) :< GateF x' y'
 
 tagUPTwithIExpr :: [(String, AnnotatedUPT)]
                 -> UnprocessedParsedTerm

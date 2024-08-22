@@ -767,21 +767,6 @@ instance Show PrettierIExpr where
       PRightF x -> "R\n" <>
                    "  (" <> indentSansFirstLine 3 x <> ")"
 
-aux = Pair (Defer (PLeft (Pair Env (Pair (Pair Zero Zero) Zero)))) Zero
--- ( D
---     (L
---        (E, 2))
--- , 0
--- )
-
--- P
---   (D
---      (L
---         (P
---            E
---            2)))
---   0
-
 g2i :: IExpr -> Int
 g2i Zero       = 0
 g2i (Pair a b) = 1 + g2i a + g2i b

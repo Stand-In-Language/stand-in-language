@@ -37,8 +37,6 @@ import Text.Megaparsec.Debug (dbg)
 import Text.Megaparsec.Pos (Pos)
 import Text.Read (readMaybe)
 import Text.Show.Deriving (deriveShow1)
--- import Data.Fix hiding (cata)
--- import Control.Comonad (Comonad(..))
 
 -- |AST for patterns in `case` expressions
 data Pattern
@@ -84,19 +82,6 @@ instance Show PrettyPattern where
     (PrettyPattern (PatternString x)) ->  show x
     (PrettyPattern (PatternPair x y)) -> "(" <> (show . PrettyPattern $ x) <> ", " <> (show . PrettyPattern $ y) <> ")"
     (PrettyPattern PatternIgnore) -> "_"
-
-
-aux = PairUP
-        (PairUP
-          (IntUP 0)
-          (IntUP 1))
-        (IntUP 2)
-
-letaux = LetUP [("x", aux), ("yy", aux), ("zzzzz", aux)] aux
-
-listaux = ListUP [aux,aux,aux]
-
-caseaux = CaseUP aux [(PatternVar "x", aux), (PatternVar "yy", aux), (PatternVar "zzz", aux)]
 
 newtype MultiLineShowUPT = MultiLineShowUPT UnprocessedParsedTerm
 instance Show MultiLineShowUPT where
@@ -229,9 +214,6 @@ instance Plated UnprocessedParsedTerm where
 -- |TelomareParser :: * -> *
 type TelomareParser = Parsec Void String
 
-
--- parseVariable :: TelomareParser UnprocessedParsedTerm
--- parseVariable = VarUP <$> identifier
 -- |Parse a variable.
 parseVariable :: TelomareParser AnnotatedUPT
 parseVariable = do
@@ -239,7 +221,6 @@ parseVariable = do
   let line = unPos . sourceLine . pstateSourcePos . statePosState $ s
       column = unPos . sourceColumn . pstateSourcePos . statePosState $ s
   (\str -> Loc line column :< VarUPF str) <$> identifier
-
 
 -- |Line comments start with "--".
 lineComment :: TelomareParser ()
@@ -314,8 +295,6 @@ getLineColumn = do
   let line = unPos . sourceLine . pstateSourcePos . statePosState $ s
       column = unPos . sourceColumn . pstateSourcePos . statePosState $ s
   pure $ Loc line column
-
-  -- (\str -> (line, column) :< VarUPF str) <$> identifier
 
 -- |Parse string literal.
 parseString :: TelomareParser AnnotatedUPT
