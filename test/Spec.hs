@@ -431,12 +431,12 @@ testRecur = concat
   , "       in $3 layer (\\x -> x) 0"
   ]
 
-testSBV'' = do
-  r <- runIO testSBV'
-  runIO $ if r == 4
-    then pure ()
-    else expectationFailure $ "testSBV failed, got result " <> show r
-  -- assertEqual "testing SBV" r 3
+-- testSBV'' = do
+--   r <- runIO testSBV'
+--   runIO $ if r == 4
+--     then pure ()
+--     else expectationFailure $ "testSBV failed, got result " <> show r
+--   -- assertEqual "testing SBV" r 3
 
 -- unitTests_ :: (String -> String -> Spec) -> (String -> PartialType -> (Maybe TypeCheckError -> Bool) -> Spec) -> Spec
 unitTests_ parse = do
@@ -503,7 +503,7 @@ unitTests_ parse = do
     it "test SBV" . liftIO $ do
       testSBV' == pure 3
 -}
-    testSBV''
+    -- testSBV''
   {-
     unitTest2 "main = plus $3 $2 succ 0" "5"
     unitTest2 "main = 0" "0"

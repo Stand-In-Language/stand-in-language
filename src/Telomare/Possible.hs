@@ -32,9 +32,9 @@ import Data.List (partition, sortBy)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Monoid
-import Data.SBV ((.<), (.>))
-import qualified Data.SBV as SBV
-import qualified Data.SBV.Control as SBVC
+-- import Data.SBV ((.<), (.>))
+-- import qualified Data.SBV as SBV
+-- import qualified Data.SBV.Control as SBVC
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Void
@@ -52,7 +52,7 @@ import Telomare (BreakState' (..), FragExpr (..), FragExprF (..),
                  pattern AbortRecursion, pattern AbortUnsizeable, rootFrag,
                  sindent)
 -- import           Telomare.TypeChecker
-import Data.SBV.RegExp (everything)
+-- import Data.SBV.RegExp (everything)
 import Telomare.RunTime (hvmEval)
 
 debug :: Bool
@@ -64,20 +64,20 @@ debugTrace s x = if debug then trace s x else x
 anaM' :: (Monad m, Corecursive t, x ~ Base t, Traversable x) => (a -> m (Base t a)) -> a -> m t
 anaM' f = c where c = (fmap embed . mapM c) <=< f
 
-testSBV :: SBV.Symbolic SBV.Word8
-testSBV = do
-  b <- SBV.sBool "b"
-  a <- SBV.sWord8 "a"
-  SBV.constrain $ a + 5 .< 10
-  SBV.constrain $ a .> 2
-  SBV.constrain b
-  SBVC.query $ SBVC.checkSat >>= \case
-      SBVC.Unk   -> undefined -- error "Solver returned unknown!"
-      SBVC.Unsat -> undefined -- error "Solver couldn't solve constraints"
-      SBVC.Sat   -> SBVC.getValue a
+-- testSBV :: SBV.Symbolic SBV.Word8
+-- testSBV = do
+--   b <- SBV.sBool "b"
+--   a <- SBV.sWord8 "a"
+--   SBV.constrain $ a + 5 .< 10
+--   SBV.constrain $ a .> 2
+--   SBV.constrain b
+--   SBVC.query $ SBVC.checkSat >>= \case
+--       SBVC.Unk   -> undefined -- error "Solver returned unknown!"
+--       SBVC.Unsat -> undefined -- error "Solver couldn't solve constraints"
+--       SBVC.Sat   -> SBVC.getValue a
 
-testSBV' :: IO Int
-testSBV' = fromIntegral <$> SBV.runSMT testSBV
+-- testSBV' :: IO Int
+-- testSBV' = fromIntegral <$> SBV.runSMT testSBV
 
 data PartExprF f
   = ZeroSF
