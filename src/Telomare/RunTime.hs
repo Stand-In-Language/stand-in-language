@@ -90,34 +90,6 @@ nEval (NExprs m) =
     (Just f) -> eval NZero f
     _        -> throwError $ GenericRunTimeError "nEval: no root frag" Zero
 
-
--- rEval' :: IExpr -- ^ The enviroment.
---        -> IExpr -- ^ IExpr to be evaluated.
---        -> Either RunTimeError IExpr
--- rEval' e = para alg where
---   alg :: (Base IExpr) (IExpr, Either RunTimeError IExpr)
---       -> Either RunTimeError IExpr
---   alg = \case
---     ZeroF -> pure Zero
---     EnvF -> pure e
---     (DeferF (ie, _)) -> pure . Defer $ ie
---     TraceF -> pure $ trace (show e) e
---     (GateF (ie1, _) (ie2, _)) -> pure $ Gate ie1 ie2
---     (PairF (_, l) (_, r)) -> Pair <$> l <*> r
---     (PRightF (_, x)) -> x >>= \case
---       (Pair _ r) -> pure r
---       _          -> pure Zero
---     (PLeftF (_, x)) -> x >>= \case
---       (Pair l _) -> pure l
---       _          -> pure Zero
---     (SetEnvF (_, x)) -> x >>= \case
---       Pair (Defer c) nenv  -> rEval' nenv c
---       Pair (Gate a _) Zero -> rEval' e a
---       Pair (Gate _ b) _    -> rEval' e b
---       -- The next case should never actually occur,
---       -- because it should be caught by `typeCheck`.
---       z                    -> Left . SetEnvError $ z
-
 -- |IExpr evaluation with a given enviroment `e`
 -- (as in the second element of a closure).
 rEval :: (MonadError RunTimeError m)
