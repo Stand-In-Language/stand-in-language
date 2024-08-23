@@ -16,12 +16,14 @@ import qualified Data.Set as Set
 import Debug.Trace
 import GHC.Exts (fromList)
 import Naturals hiding (debug, debugTrace)
-import PrettyPrint
-import System.IO
-import System.Process
+import PrettyPrint (PrettyIExpr (PrettyIExpr), showNExprs)
+import System.IO (hGetContents)
+import System.Process (CreateProcess (std_out), StdStream (CreatePipe),
+                       createProcess, shell)
 import Telomare (AbstractRunTime (eval), DataType (..), FragIndex (FragIndex),
-                 IExpr (..), IExprF (..), PrettyIExpr (PrettyIExpr), RunResult,
-                 RunTimeError (..), TelomareLike (fromTelomare, toTelomare))
+                 IExpr (..), IExprF (..), RunResult, RunTimeError (..),
+                 TelomareLike (fromTelomare, toTelomare))
+
 import Text.Read (readMaybe)
 
 debug :: Bool

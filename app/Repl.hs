@@ -25,8 +25,7 @@ import PrettyPrint
 import System.Console.Haskeline
 import System.Exit (exitSuccess)
 import qualified System.IO.Strict as Strict
-import Telomare (IExpr (..), LocTag (..), PrettyIExpr (PrettyIExpr),
-                 PrettyPartialType (PrettyPartialType),
+import Telomare (IExpr (..), LocTag (..),
                  TelomareLike (fromTelomare, toTelomare), Term3, forget, tag)
 import Telomare.Eval (EvalError (..), compileUnitTest)
 import Telomare.Parser (TelomareParser, UnprocessedParsedTerm (..),

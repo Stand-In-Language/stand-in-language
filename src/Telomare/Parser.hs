@@ -18,12 +18,13 @@ import Data.Functor.Foldable.TH (MakeBaseFunctor (makeBaseFunctor))
 import Data.Maybe (fromJust)
 import Data.Void (Void)
 import Data.Word (Word8)
+import PrettyPrint (indentSansFirstLine)
 import qualified System.IO.Strict as Strict
 import Telomare (LocTag (..), ParserTerm (..), ParserTermF (..),
                  RecursionPieceFrag, RecursionSimulationPieces (..), Term1 (..),
                  Term2 (..), Term3 (..), UnsizedRecursionToken, appF, clamF,
-                 deferF, forget, indentSansFirstLine, lamF, nextBreakToken,
-                 unsizedRecursionWrapper, varNF)
+                 deferF, forget, lamF, nextBreakToken, unsizedRecursionWrapper,
+                 varNF)
 import Telomare.TypeChecker (typeCheck)
 import Text.Megaparsec (MonadParsec (eof, notFollowedBy, try), Parsec, Pos,
                         PosState (pstateSourcePos),
