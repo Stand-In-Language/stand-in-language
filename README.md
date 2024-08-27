@@ -18,50 +18,50 @@ This project is in active development. Do expect bugs and general trouble, and p
 ## Quick Start
 
 1. Clone this repository and change directory to it:
-   ```
+   ```sh
    $ git clone https://github.com/Stand-In-Language/stand-in-language.git
    $ cd stand-in-language
    ```
 2. [Install Nix](https://nixos.org/nix/download.html):
-   ```
+   ```sh
    $ curl https://nixos.org/nix/install | sh
    ```
 3. Optional (reduces build time by using telomare's cache):
-   ```
+   ```sh
    # Install cachix with nix-env or adding `cachix` to your `/etc/nixos/configuration.nix`'s' `environment.systemPackages` if in NixOS.
-   $ nix-env -iA cachix -f https://cachix.org/api/v1/install
    $ cachix use telomare
    ```
 4. Enter a Nix shell. This will setup an environment where all external dependencies will be available (such as `cabal` for building):
-   ```
-   $ nix-shell shell.nix
+   ```sh
+   $ nix develop # or nix develop -c zsh
    ```
 5. Build the project:
-   ```
-   $ cabal new-build
+   ```sh
+   $ cabal build # or nix build
    ```
 6. Run the tictactoe example and start playing with a friend (or run your own telomare file):
-   ```
-   $ cabal new-run telomare -- tictactoe.tel
+   ```sh
+   $ cabal run telomare -- tictactoe.tel # or nix run . -- tictactoe.tel
    ```
 7. Profit!
 
-## Running `cabal new-repl`
-
-There is a known issue (#7) for getting a repl.
-
-To get around it, you should copy `libgc.so.1` (provided by the `bohem` garbage collector) into your repository (telomare/lib is a good choice) and rename it to `libgc.so`. You will also need to reference it on `telomare.cabal` under the `library` stanza. Be sure to use the complete path for `libgc.so` on `telomare.cabal` (a commented version on `telomare.cabal` is provided as an example).
-
 ## Telomare REPL
 1. Run:
-   ```
+   ```sh
    $ cd <your/local/proyect/location>/telomare
-   $ nix-shell shell.nix
-   $ cabal new-build
-   $ cabal new-run telomare-repl -- --haskell
+   $ nix develop -c zsh
+   $ cabal run telomare-repl -- --haskell # or nix run .#repl
    ```
 2. Profit!
    
+## Git Hooks
+
+You can setup your git configuration to automatically format and look for lint suggestions. Just run:
+
+``` sh
+$ git config core.hooksPath hooks
+```
+
 ## Contributing
 If you'd like to contribute, please fork the repository and use a feature branch. Pull requests are warmly welcome.
 
