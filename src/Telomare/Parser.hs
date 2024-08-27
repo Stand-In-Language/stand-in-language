@@ -455,7 +455,7 @@ parseDefinitions :: TelomareParser (AnnotatedUPT -> AnnotatedUPT)
 parseDefinitions = do
   x <- getLineColumn
   bindingList <- scn *> many parseAssignment <* eof
-  pure $ \y -> x :< (LetUPF bindingList y)
+  pure $ \y -> x :< LetUPF bindingList y
 
 -- |Helper function to test parsers without a result.
 runTelomareParser_ :: Show a => TelomareParser a -> String -> IO ()
