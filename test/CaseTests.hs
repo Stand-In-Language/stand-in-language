@@ -6,7 +6,8 @@ import Common
 import Control.Comonad.Cofree (Cofree ((:<)))
 import qualified Control.Monad.State as State
 import Data.Functor.Foldable (Base, Recursive (cata))
-import Telomare (LocTag (..), forget)
+import PrettyPrint
+import Telomare
 import Telomare.Parser
 import Telomare.Resolver (pattern2UPT)
 import Test.Tasty

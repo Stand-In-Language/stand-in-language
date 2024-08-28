@@ -1,13 +1,10 @@
-{-# LANGUAGE DeriveTraversable   #-}
 {-# LANGUAGE LambdaCase          #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TemplateHaskell     #-}
 {-# LANGUAGE TypeFamilies        #-}
 
 module Telomare.Parser where
 
 import Control.Comonad.Cofree (Cofree (..), unwrap)
-import Control.Lens.Combinators (Plated (..), makePrisms)
 import Control.Lens.Plated (Plated (..))
 import Control.Monad (void)
 import Control.Monad.State (State)
@@ -20,11 +17,7 @@ import Data.Void (Void)
 import Data.Word (Word8)
 import PrettyPrint (indentSansFirstLine)
 import qualified System.IO.Strict as Strict
-import Telomare (LocTag (..), ParserTerm (..), ParserTermF (..),
-                 RecursionPieceFrag, RecursionSimulationPieces (..), Term1 (..),
-                 Term2 (..), Term3 (..), UnsizedRecursionToken, appF, clamF,
-                 deferF, forget, lamF, nextBreakToken, unsizedRecursionWrapper,
-                 varNF)
+import Telomare
 import Telomare.TypeChecker (typeCheck)
 import Text.Megaparsec (MonadParsec (eof, notFollowedBy, try), Parsec, Pos,
                         PosState (pstateSourcePos),
@@ -39,161 +32,7 @@ import Text.Megaparsec.Pos (Pos)
 import Text.Read (readMaybe)
 import Text.Show.Deriving (deriveShow1)
 
--- |AST for patterns in `case` expressions
-data Pattern
-  = PatternVar String
-  | PatternInt Int
-  | PatternString String
-  | PatternIgnore
-  | PatternPair Pattern Pattern
-  deriving (Show, Eq, Ord)
-makeBaseFunctor ''Pattern
-
-data UnprocessedParsedTerm
-  = VarUP String
-  | ITEUP UnprocessedParsedTerm UnprocessedParsedTerm UnprocessedParsedTerm
-  | LetUP [(String, UnprocessedParsedTerm)] UnprocessedParsedTerm
-  | ListUP [UnprocessedParsedTerm]
-  | IntUP Int
-  | StringUP String
-  | PairUP UnprocessedParsedTerm UnprocessedParsedTerm
-  | AppUP UnprocessedParsedTerm UnprocessedParsedTerm
-  | LamUP String UnprocessedParsedTerm
-  | ChurchUP Int
-  | UnsizedRecursionUP UnprocessedParsedTerm UnprocessedParsedTerm UnprocessedParsedTerm
-  | LeftUP UnprocessedParsedTerm
-  | RightUP UnprocessedParsedTerm
-  | TraceUP UnprocessedParsedTerm
-  | CheckUP UnprocessedParsedTerm UnprocessedParsedTerm
-  | HashUP UnprocessedParsedTerm -- ^ On ad hoc user defined types, this term will be substitued to a unique Int.
-  | CaseUP UnprocessedParsedTerm [(Pattern, UnprocessedParsedTerm)]
-  deriving (Eq, Ord, Show)
-makeBaseFunctor ''UnprocessedParsedTerm -- Functorial version UnprocessedParsedTerm
-makePrisms ''UnprocessedParsedTerm
-deriveShow1 ''UnprocessedParsedTermF
-
 type AnnotatedUPT = Cofree UnprocessedParsedTermF LocTag
-
-newtype PrettyPattern = PrettyPattern Pattern
-
-instance Show PrettyPattern where
-  show = \case
-    (PrettyPattern (PatternInt x)) -> show x
-    (PrettyPattern (PatternVar x)) -> x
-    (PrettyPattern (PatternString x)) ->  show x
-    (PrettyPattern (PatternPair x y)) -> "(" <> (show . PrettyPattern $ x) <> ", " <> (show . PrettyPattern $ y) <> ")"
-    (PrettyPattern PatternIgnore) -> "_"
-
-newtype MultiLineShowUPT = MultiLineShowUPT UnprocessedParsedTerm
-instance Show MultiLineShowUPT where
-  show (MultiLineShowUPT upt) = cata alg upt where
-    alg :: Base UnprocessedParsedTerm String -> String
-    alg = \case
-      IntUPF i -> "IntUP " <> show i
-      VarUPF str -> "VarUP " <> str
-      StringUPF str -> "StringUP" <> str
-      PairUPF x y -> "PairUP" <> "\n" <>
-                        "  (" <> indentSansFirstLine 3 x <> ")\n" <>
-                        "  (" <> indentSansFirstLine 3 y <> ")"
-      (ITEUPF x y z) -> "ITEUP" <> "\n" <>
-                        "  (" <> indentSansFirstLine 3 x <> ")\n" <>
-                        "  (" <> indentSansFirstLine 3 x <> ")\n" <>
-                        "  (" <> indentSansFirstLine 3 z <> ")"
-      (AppUPF x y) -> "AppUP" <> "\n" <>
-                        "  (" <> indentSansFirstLine 3 x <> ")\n" <>
-                        "  (" <> indentSansFirstLine 3 y <> ")"
-      (LamUPF str y) -> "LamUP " <> str <> "\n" <>
-                        "  (" <> indentSansFirstLine 3 y <> ")"
-      (ChurchUPF x) -> "ChurchUP " <> show x
-      (LeftUPF x) -> "LeftUP \n" <>
-                       "  (" <> indentSansFirstLine 3 x <> ")"
-      (RightUPF x) -> "RightUP \n" <>
-                        "  (" <> indentSansFirstLine 3 x <> ")"
-      (TraceUPF x) -> "TraceUP \n" <>
-                        "  (" <> indentSansFirstLine 3 x <> ")"
-      (UnsizedRecursionUPF x y z) -> "UnsizedRecursionUP" <> "\n" <>
-                        "  (" <> indentSansFirstLine 3 x <> ")\n" <>
-                        "  (" <> indentSansFirstLine 3 x <> ")\n" <>
-                        "  (" <> indentSansFirstLine 3 z <> ")"
-      (HashUPF x) -> "HashUP \n" <>
-                       "  (" <> indentSansFirstLine 3 x <> ")"
-      (CheckUPF x y) -> "CheckUP" <> "\n" <>
-                        "  (" <> indentSansFirstLine 3 x <> ")\n" <>
-                        "  (" <> indentSansFirstLine 3 y <> ")"
-      (ListUPF []) -> "ListUP []"
-      (ListUPF [x]) -> "ListUP [" <> x <> "]"
-      (ListUPF ls) -> "ListUP\n" <>
-                        "  [" <> drop 3 (unlines (("  " <>) . indentSansFirstLine 4 . (", " <>) <$> ls)) <>
-                        "  ]"
-      (LetUPF ls x) -> "LetUP\n" <>
-                         "  [ " <> drop 4 (unlines ( ("  " <>)
-                                                   . indentSansFirstLine 3
-                                                   . (", " <>)
-                                                   . (\(x,y) -> "(" <> x <> ", " <> indentSansFirstLine (length x + 4) y <> ")")
-                                                   <$> ls
-                                                   )) <>
-                         "  ]\n" <>
-                         "  (" <> indentSansFirstLine 3 x <> ")"
-      (CaseUPF x ls) -> "CaseUP\n" <>
-                          "  (" <> indentSansFirstLine 3 x <> ")\n" <>
-                          "  [" <> drop 3 (unlines ( ("  " <>)
-                                                   . indentSansFirstLine 3
-                                                   . (", " <>)
-                                                   . (\(x,y) -> "(" <> show x <> ", " <> indentSansFirstLine ((length . show $ x) + 4) y <> ")")
-                                                   <$> ls
-                                                   )) <>
-                          "  ]\n"
-
-newtype PrettyUPT = PrettyUPT UnprocessedParsedTerm
-
-instance Show PrettyUPT where
-  show (PrettyUPT upt) = cata alg upt where
-    alg :: Base UnprocessedParsedTerm String -> String
-    alg = \case
-      IntUPF i -> show i
-      VarUPF str -> str
-      StringUPF str -> show str
-      PairUPF x y -> if length (lines (x <> y)) > 1
-                       then "( " <> indentSansFirstLine 2 x <> "\n" <>
-                            ", " <> indentSansFirstLine 2 y <> "\n" <>
-                            ")"
-                       else "(" <> x <> ", " <> y <>")"
-      (ITEUPF x y z) -> "if " <> indentSansFirstLine 3 x <> "\n" <>
-                          "  then " <> indentSansFirstLine 7 y <> "\n" <>
-                          "  else " <> indentSansFirstLine 7 z
-      (LetUPF ls x) ->
-        "let " <> indentSansFirstLine 4 (unlines (assignList <$> ls)) <> "\n" <>
-        "in " <> indentSansFirstLine 3 x
-          where
-            assignList :: (String, String) -> String
-            assignList (str, upt) = str <> " = " <> indentSansFirstLine (3 + length str) upt
-      (ListUPF []) -> "[]"
-      (ListUPF [x]) -> "[" <> x <> "]"
-      (ListUPF ls) ->
-        "[" <> removeFirstComma (unlines (indentSansFirstLine 2 . (", " <>) <$> ls)) <>
-        "]"
-          where
-            removeFirstComma = \case
-              (',':str) -> str
-              _         -> error "removeFirstComma: input does not start with a comma"
-      (AppUPF x y) -> (if (length . words $ x) == 1 then x else "(" <> x <> ")") <> " " <>
-                      if (length . words $ y) == 1 then y else "(" <> y <> ")"
-      (LamUPF str y) -> "\\ " <> str <> " -> " <> indentSansFirstLine (6 + length str) y
-      (ChurchUPF x) -> "$" <> show x
-      (LeftUPF x) -> "left (" <> indentSansFirstLine 6 x <> ")"
-      (RightUPF x) -> "right (" <> indentSansFirstLine 7 x <> ")"
-      (TraceUPF x) -> "trace (" <> indentSansFirstLine 7 x <> ")"
-      (UnsizedRecursionUPF x y z) -> "{ " <> indentSansFirstLine 2 x <>
-                                     ", " <> indentSansFirstLine 2 y <>
-                                     ", " <> indentSansFirstLine 2 z <>
-                                     "}"
-      (HashUPF x) -> "# " <> indentSansFirstLine 2 x
-      (CaseUPF x ls) -> "case " <> x <> " of\n" <>
-                        "  " <> indentSansFirstLine 2 (unlines ((\(p, r) -> indentSansFirstLine 2 (show (PrettyPattern p) <> " -> " <> r)) <$> ls))
-      (CheckUPF x y) -> if length (lines (x <> y)) > 1
-                          then "(" <> indentSansFirstLine 2 y <> " : " <> "\n" <>
-                               "    " <> indentSansFirstLine 4 y <> ")"
-                          else "(" <> y <> " : " <> x <> ")"
 
 instance Plated UnprocessedParsedTerm where
   plate f = \case

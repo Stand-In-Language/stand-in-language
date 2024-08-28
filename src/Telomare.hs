@@ -18,7 +18,7 @@ import Control.Applicative (Applicative (liftA2), liftA, liftA3)
 import Control.Comonad.Cofree (Cofree ((:<)))
 import qualified Control.Comonad.Trans.Cofree as CofreeT (CofreeF (..))
 import Control.DeepSeq (NFData (..))
-import Control.Lens.Combinators (Plated (..), transform)
+import Control.Lens.Combinators (Plated (..), makePrisms, transform)
 import Control.Monad.Except (ExceptT)
 import Control.Monad.State (State)
 import qualified Control.Monad.State as State
@@ -863,3 +863,37 @@ pattern AbortAny :: IExpr
 pattern AbortAny = Pair (Pair (Pair Zero Zero) Zero) Zero
 pattern AbortUnsizeable :: IExpr -> IExpr
 pattern AbortUnsizeable t = Pair (Pair (Pair (Pair Zero Zero) Zero) Zero) t
+
+-- |AST for patterns in `case` expressions
+data Pattern
+  = PatternVar String
+  | PatternInt Int
+  | PatternString String
+  | PatternIgnore
+  | PatternPair Pattern Pattern
+  deriving (Show, Eq, Ord)
+makeBaseFunctor ''Pattern
+
+-- |Firstly parsed AST sans location annotations
+data UnprocessedParsedTerm
+  = VarUP String
+  | ITEUP UnprocessedParsedTerm UnprocessedParsedTerm UnprocessedParsedTerm
+  | LetUP [(String, UnprocessedParsedTerm)] UnprocessedParsedTerm
+  | ListUP [UnprocessedParsedTerm]
+  | IntUP Int
+  | StringUP String
+  | PairUP UnprocessedParsedTerm UnprocessedParsedTerm
+  | AppUP UnprocessedParsedTerm UnprocessedParsedTerm
+  | LamUP String UnprocessedParsedTerm
+  | ChurchUP Int
+  | UnsizedRecursionUP UnprocessedParsedTerm UnprocessedParsedTerm UnprocessedParsedTerm
+  | LeftUP UnprocessedParsedTerm
+  | RightUP UnprocessedParsedTerm
+  | TraceUP UnprocessedParsedTerm
+  | CheckUP UnprocessedParsedTerm UnprocessedParsedTerm
+  | HashUP UnprocessedParsedTerm -- ^ On ad hoc user defined types, this term will be substitued to a unique Int.
+  | CaseUP UnprocessedParsedTerm [(Pattern, UnprocessedParsedTerm)]
+  deriving (Eq, Ord, Show)
+makeBaseFunctor ''UnprocessedParsedTerm -- Functorial version UnprocessedParsedTerm
+makePrisms ''UnprocessedParsedTerm
+deriveShow1 ''UnprocessedParsedTermF

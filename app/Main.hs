@@ -6,7 +6,6 @@ import Data.Char
 import qualified Options.Applicative as O
 import qualified System.IO.Strict as Strict
 import Telomare.Eval (compileMain, evalLoop, runMain, schemeEval)
-import Telomare.Parser (UnprocessedParsedTerm (..), parsePrelude)
 import Telomare.Resolver (parseMain)
 import Telomare.TypeChecker (inferType, typeCheck)
 

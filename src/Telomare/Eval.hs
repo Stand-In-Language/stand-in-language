@@ -1,5 +1,4 @@
 {-# LANGUAGE LambdaCase          #-}
-{-# LANGUAGE PatternSynonyms     #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Telomare.Eval where
@@ -26,18 +25,9 @@ import qualified System.IO.Strict as Strict
 import System.Process
 
 import PrettyPrint
-import Telomare (BreakState, BreakState', ExprA (..), FragExpr (..),
-                 FragExprF (..), FragIndex (FragIndex), IExpr (..), IExprF (..),
-                 LocTag (..), PartialType (..), RecursionPieceFrag,
-                 RecursionSimulationPieces (..), RunTimeError (..),
-                 TelomareLike (..), Term3 (Term3), Term4 (Term4),
-                 UnsizedRecursionToken (..), app, forget, g2s, innerChurchF,
-                 insertAndGetKey, pattern AbortAny, pattern AbortRecursion,
-                 pattern AbortUser, rootFrag, s2g, tag, unFragExprUR)
+import Telomare
 import Telomare.Optimizer (optimize)
-import Telomare.Parser (AnnotatedUPT, Pattern, PrettyUPT (PrettyUPT),
-                        UnprocessedParsedTerm (..), UnprocessedParsedTermF (..),
-                        parseOneExprOrTopLevelDefs, parsePrelude)
+import Telomare.Parser (AnnotatedUPT, parseOneExprOrTopLevelDefs, parsePrelude)
 import Telomare.Possible (AbortExpr, VoidF, abortExprToTerm4, evalA, sizeTerm,
                           term3ToUnsizedExpr)
 import Telomare.Resolver (parseMain, process)
