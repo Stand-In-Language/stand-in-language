@@ -18,10 +18,11 @@ import Control.Applicative (Applicative (liftA2), liftA, liftA3)
 import Control.Comonad.Cofree (Cofree ((:<)))
 import qualified Control.Comonad.Trans.Cofree as CofreeT (CofreeF (..))
 import Control.DeepSeq (NFData (..))
-import Control.Lens.Combinators (Plated (..), transform)
+import Control.Lens.Combinators (Plated (..), makePrisms, transform)
 import Control.Monad.Except (ExceptT)
 import Control.Monad.State (State)
 import qualified Control.Monad.State as State
+import Data.Bool (bool)
 import Data.Char (chr, ord)
 import Data.Eq.Deriving (deriveEq1)
 import Data.Functor.Foldable (Base, Corecursive (embed),
@@ -35,7 +36,6 @@ import Data.Void (Void)
 import Debug.Trace (trace, traceShow, traceShowId)
 import GHC.Generics (Generic)
 import Text.Show.Deriving (deriveShow1)
-
 
 {- top level TODO list
  - change AbortFrag form to something more convenient
@@ -152,7 +152,6 @@ instance Plated (ParserTerm l v) where
     THash x    -> THash <$> f x
     TCheck c x -> TCheck <$> f c <*> f x
     x          -> pure x
-
 
 instance (Show l, Show v) => Show (ParserTerm l v) where
   show x = State.evalState (cata alg x) 0 where
@@ -327,9 +326,6 @@ type BreakState a b = State (b, FragIndex, Map FragIndex (Cofree (FragExprF a) L
 type BreakState' a b = BreakState a b (Cofree (FragExprF a) LocTag)
 
 type IndExpr = ExprA EIndex
-
--- instance Show Term3 where
---   show = ppShow
 
 instance MonoidEndoFolder IExpr where
   monoidFold f Zero = f Zero
@@ -638,19 +634,6 @@ instance Plated DataType where
     PairType a b -> PairType <$> f a <*> f b
     x            -> pure x
 
-newtype PrettyDataType = PrettyDataType DataType
-
-showInternal :: DataType -> String
-showInternal at@(ArrType _ _) = concat ["(", show $ PrettyDataType at, ")"]
-showInternal t                = show . PrettyDataType $ t
-
-instance Show PrettyDataType where
-  show (PrettyDataType dt) = case dt of
-    ZeroType -> "D"
-    (ArrType a b) -> concat [showInternal a, " -> ", showInternal b]
-    (PairType a b) ->
-      concat ["(", show $ PrettyDataType a, ",", show $ PrettyDataType b, ")"]
-
 data PartialType
   = ZeroTypeP
   | AnyType
@@ -664,22 +647,6 @@ instance Plated PartialType where
     ArrTypeP i o  -> ArrTypeP <$> f i <*> f o
     PairTypeP a b -> PairTypeP <$> f a <*> f b
     x             -> pure x
-
-newtype PrettyPartialType = PrettyPartialType PartialType
-
-showInternalP :: PartialType -> String
-showInternalP at@(ArrTypeP _ _) = concat ["(", show $ PrettyPartialType at, ")"]
-showInternalP t                 = show . PrettyPartialType $ t
-
-instance Show PrettyPartialType where
-  show (PrettyPartialType dt) = case dt of
-    ZeroTypeP -> "Z"
-    AnyType -> "A"
-    (ArrTypeP a b) -> concat [showInternalP a, " -> ", showInternalP b]
-    (PairTypeP a b) ->
-      concat ["(", show $ PrettyPartialType a, ",", show $ PrettyPartialType b, ")"]
-    (TypeVariable _ (-1)) -> "badType"
-    (TypeVariable _ x) -> 'v' : show x
 
 mergePairType :: DataType -> DataType
 mergePairType = transform f where
@@ -702,16 +669,6 @@ cleanType = \case
   ZeroTypeP     -> True
   PairTypeP a b -> cleanType a && cleanType b
   _             -> False
-
-newtype PrettyIExpr = PrettyIExpr IExpr
-
-instance Show PrettyIExpr where
-  show (PrettyIExpr iexpr) = case iexpr of
-    p@(Pair a b) -> if isNum p
-      then show $ g2i p
-      else concat ["(", show (PrettyIExpr a), ",", show (PrettyIExpr b), ")"]
-    Zero -> "0"
-    x -> show x
 
 g2i :: IExpr -> Int
 g2i Zero       = 0
@@ -906,3 +863,37 @@ pattern AbortAny :: IExpr
 pattern AbortAny = Pair (Pair (Pair Zero Zero) Zero) Zero
 pattern AbortUnsizeable :: IExpr -> IExpr
 pattern AbortUnsizeable t = Pair (Pair (Pair (Pair Zero Zero) Zero) Zero) t
+
+-- |AST for patterns in `case` expressions
+data Pattern
+  = PatternVar String
+  | PatternInt Int
+  | PatternString String
+  | PatternIgnore
+  | PatternPair Pattern Pattern
+  deriving (Show, Eq, Ord)
+makeBaseFunctor ''Pattern
+
+-- |Firstly parsed AST sans location annotations
+data UnprocessedParsedTerm
+  = VarUP String
+  | ITEUP UnprocessedParsedTerm UnprocessedParsedTerm UnprocessedParsedTerm
+  | LetUP [(String, UnprocessedParsedTerm)] UnprocessedParsedTerm
+  | ListUP [UnprocessedParsedTerm]
+  | IntUP Int
+  | StringUP String
+  | PairUP UnprocessedParsedTerm UnprocessedParsedTerm
+  | AppUP UnprocessedParsedTerm UnprocessedParsedTerm
+  | LamUP String UnprocessedParsedTerm
+  | ChurchUP Int
+  | UnsizedRecursionUP UnprocessedParsedTerm UnprocessedParsedTerm UnprocessedParsedTerm
+  | LeftUP UnprocessedParsedTerm
+  | RightUP UnprocessedParsedTerm
+  | TraceUP UnprocessedParsedTerm
+  | CheckUP UnprocessedParsedTerm UnprocessedParsedTerm
+  | HashUP UnprocessedParsedTerm -- ^ On ad hoc user defined types, this term will be substitued to a unique Int.
+  | CaseUP UnprocessedParsedTerm [(Pattern, UnprocessedParsedTerm)]
+  deriving (Eq, Ord, Show)
+makeBaseFunctor ''UnprocessedParsedTerm -- Functorial version UnprocessedParsedTerm
+makePrisms ''UnprocessedParsedTerm
+deriveShow1 ''UnprocessedParsedTermF

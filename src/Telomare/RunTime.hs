@@ -4,7 +4,7 @@
 
 module Telomare.RunTime where
 
-import Control.Exception
+-- import Control.Exception
 import Control.Monad.Except
 import Control.Monad.Fix
 import Data.Foldable
@@ -16,12 +16,14 @@ import qualified Data.Set as Set
 import Debug.Trace
 import GHC.Exts (fromList)
 import Naturals hiding (debug, debugTrace)
-import PrettyPrint
-import System.IO
-import System.Process
+import PrettyPrint (PrettyIExpr (PrettyIExpr), showNExprs)
+import System.IO (hGetContents)
+import System.Process (CreateProcess (std_out), StdStream (CreatePipe),
+                       createProcess, shell)
 import Telomare (AbstractRunTime (eval), DataType (..), FragIndex (FragIndex),
-                 IExpr (..), IExprF (..), PrettyIExpr (PrettyIExpr), RunResult,
-                 RunTimeError (..), TelomareLike (fromTelomare, toTelomare))
+                 IExpr (..), IExprF (..), RunResult, RunTimeError (..),
+                 TelomareLike (fromTelomare, toTelomare))
+
 import Text.Read (readMaybe)
 
 debug :: Bool
@@ -148,13 +150,38 @@ iEval f env g = let f' = f env in case g of
     (Pair _ x) -> pure x
     _          -> pure Zero
 
+-- iEval' :: (IExpr -> IExpr -> Either RunTimeError IExpr) -> IExpr -> IExpr -> Either RunTimeError IExpr
+-- iEval' f env g = let f' = f env in case g of
+--   Trace -> pure $ trace (show env) env
+--   Zero -> pure Zero
+--   -- Abort -> pure Abort
+--   Defer x -> pure $ Defer x
+--   Pair a b -> Pair <$> f' a <*> f' b
+--   Gate a b -> pure $ Gate a b
+--   Env -> pure env
+--   SetEnv x -> (f' x >>=) $ \case
+--     Pair cf nenv -> case cf of
+--       Defer c -> f nenv c
+--       -- do we change env in evaluation of a/b, or leave it same? change seems more consistent, leave more convenient
+--       Gate a b -> case nenv of
+--         Zero -> f' a
+--         _    -> f' b
+--       z -> throwError $ SetEnvError z -- This should never actually occur, because it should be caught by typecheck
+--     bx -> throwError $ SetEnvError bx -- This should never actually occur, because it should be caught by typecheck
+--   PLeft g -> f' g >>= \case
+--     (Pair a _) -> pure a
+--     _          -> pure Zero
+--   PRight g -> f' g >>= \case
+--     (Pair _ x) -> pure x
+--     _          -> pure Zero
+
 instance TelomareLike IExpr where
   fromTelomare = id
   toTelomare = pure
 
 instance AbstractRunTime IExpr where
-  eval = fix iEval Zero
-  -- eval = rEval Zero
+  -- eval = fix iEval Zero
+  eval = rEval Zero
 
 resultIndex = FragIndex (-1)
 instance TelomareLike NExprs where

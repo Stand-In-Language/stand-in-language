@@ -14,6 +14,7 @@ import Data.Monoid
 import Data.Void
 import Debug.Trace
 import Naturals
+import PrettyPrint
 import System.Exit
 import System.IO
 import qualified System.IO.Strict as Strict

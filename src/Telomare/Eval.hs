@@ -1,19 +1,19 @@
 {-# LANGUAGE LambdaCase          #-}
-{-# LANGUAGE PatternSynonyms     #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Telomare.Eval where
 
 import Control.Comonad.Cofree (Cofree ((:<)), hoistCofree)
-import Control.Lens.Plated
+import Control.Lens.Plated hiding (para)
 import Control.Monad.Except
 import Control.Monad.Reader (Reader, runReader)
-import Control.Monad.State (StateT)
+import Control.Monad.State (State, StateT, evalState)
 import qualified Control.Monad.State as State
 import Control.Monad.Trans.Accum (AccumT)
 import qualified Control.Monad.Trans.Accum as Accum
+import Data.Bifunctor (bimap, first)
 import Data.DList (DList)
-import Data.Functor.Foldable (cata, embed, project)
+import Data.Functor.Foldable (Base, cata, embed, para, project)
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Set (Set)
@@ -21,24 +21,19 @@ import qualified Data.Set as Set
 import Data.Void
 import Debug.Trace
 import System.IO
+import qualified System.IO.Strict as Strict
 import System.Process
 
 import PrettyPrint
-import Telomare (BreakState, BreakState', ExprA (..), FragExpr (..),
-                 FragExprF (..), FragIndex (FragIndex), IExpr (..), LocTag (..),
-                 PartialType (..), RecursionPieceFrag,
-                 RecursionSimulationPieces (..), RunTimeError (..),
-                 TelomareLike (..), Term3 (Term3), Term4 (Term4),
-                 UnsizedRecursionToken (..), app, forget, g2s, innerChurchF,
-                 insertAndGetKey, pattern AbortAny, pattern AbortRecursion,
-                 pattern AbortUser, rootFrag, s2g, unFragExprUR)
+import Telomare
 import Telomare.Optimizer (optimize)
-import Telomare.Parser (AnnotatedUPT, UnprocessedParsedTerm (..), parsePrelude)
+import Telomare.Parser (AnnotatedUPT, parseOneExprOrTopLevelDefs, parsePrelude)
 import Telomare.Possible (AbortExpr, VoidF, abortExprToTerm4, evalA, sizeTerm,
                           term3ToUnsizedExpr)
-import Telomare.Resolver (parseMain)
-import Telomare.RunTime (hvmEval, optimizedEval, pureEval, simpleEval)
+import Telomare.Resolver (parseMain, process)
+import Telomare.RunTime (hvmEval, optimizedEval, pureEval, rEval, simpleEval)
 import Telomare.TypeChecker (TypeCheckError (..), typeCheck)
+import Text.Megaparsec (errorBundlePretty, runParser)
 
 debug :: Bool
 debug = False
@@ -273,3 +268,182 @@ calculateRecursionLimits t3 =
     Right t  -> case t of
       Left a  -> Left . StaticCheckError . convertAbortMessage $ a
       Right t -> pure t
+
+prelude :: IO [(String, AnnotatedUPT)]
+prelude = do
+  preludeString <- Strict.readFile "Prelude.tel"
+  case parsePrelude preludeString of
+    Right p -> pure p
+    Left pe -> error pe
+
+eval2IExpr :: [(String, AnnotatedUPT)] -> String -> Either String IExpr
+eval2IExpr prelude str = bimap errorBundlePretty (\x -> DummyLoc :< LetUPF prelude x) (runParser (parseOneExprOrTopLevelDefs prelude) "" str)
+                           >>= process prelude
+                           >>= first show . compileUnitTest
+
+tagIExprWithEval :: IExpr -> Cofree IExprF (Int, Either RunTimeError IExpr)
+tagIExprWithEval iexpr = evalState (para alg iexpr) 0 where
+  statePlus1 :: State Int Int
+  statePlus1 = do
+      i <- State.get
+      State.modify (+ 1)
+      pure i
+  alg :: Base IExpr
+              ( IExpr
+              , State Int (Cofree IExprF (Int, Either RunTimeError IExpr))
+              )
+      -> State Int (Cofree IExprF (Int, Either RunTimeError IExpr))
+  alg = \case
+    ZeroF -> do
+      i <- statePlus1
+      pure ((i, rEval Zero Zero) :< ZeroF)
+    EnvF -> do
+      i <- statePlus1
+      pure ((i, rEval Zero Env) :< EnvF)
+    TraceF -> do
+      i <- statePlus1
+      pure ((i, rEval Zero Trace) :< TraceF)
+    SetEnvF (iexpr0, x) -> do
+      i <- statePlus1
+      x' <- x
+      pure $ (i, rEval Zero $ SetEnv iexpr0) :< SetEnvF x'
+    DeferF (iexpr0, x) -> do
+      i <- statePlus1
+      x' <- x
+      pure $ (i, rEval Zero $ Defer iexpr0) :< DeferF x'
+    PLeftF (iexpr0, x) -> do
+      i <- statePlus1
+      x' <- x
+      pure $ (i, rEval Zero $ PLeft iexpr0) :< PLeftF x'
+    PRightF (iexpr0, x) -> do
+      i <- statePlus1
+      x' <- x
+      pure $ (i, rEval Zero $ PRight iexpr0) :< PRightF x'
+    PairF (iexpr0, x) (iexpr1, y) -> do
+      i <- statePlus1
+      x' <- x
+      y' <- y
+      pure $ (i, rEval Zero $ Pair iexpr0 iexpr1) :< PairF x' y'
+    GateF (iexpr0, x) (iexpr1, y) -> do
+      i <- statePlus1
+      x' <- x
+      y' <- y
+      pure $ (i, rEval Zero $ Gate iexpr0 iexpr1) :< GateF x' y'
+
+tagUPTwithIExpr :: [(String, AnnotatedUPT)]
+                -> UnprocessedParsedTerm
+                -> Cofree UnprocessedParsedTermF (Int, Either String IExpr)
+tagUPTwithIExpr prelude upt = evalState (para alg upt) 0 where
+  upt2iexpr :: UnprocessedParsedTerm -> Either String IExpr
+  upt2iexpr u = process prelude (tag DummyLoc u) >>= first show . compileUnitTest
+  alg :: Base UnprocessedParsedTerm
+              ( UnprocessedParsedTerm
+              , State Int (Cofree UnprocessedParsedTermF (Int, Either String IExpr))
+              )
+      -> State Int (Cofree UnprocessedParsedTermF (Int, Either String IExpr))
+  alg = \case
+    ITEUPF (utp1, x) (utp2, y) (utp3, z) -> do
+      i <- State.get
+      State.modify (+ 1)
+      x' <- x
+      y' <- y
+      z' <- z
+      pure $ (i, upt2iexpr $ ITEUP utp1 utp2 utp3) :< ITEUPF x' y' z'
+    ListUPF l -> do
+      i <- State.get
+      State.modify (+ 1)
+      let scupt :: State Int [Cofree UnprocessedParsedTermF (Int, Either String IExpr)]
+          scupt = mapM snd l
+      cupt <- scupt
+      pure $ (i, upt2iexpr . ListUP $ fst <$> l) :< ListUPF cupt
+    LetUPF l (upt0, x) -> do
+      i <- State.get
+      State.modify (+ 1)
+      let lupt :: [(String, UnprocessedParsedTerm)]
+          lupt = (fmap . fmap) fst l
+          slcupt :: State Int
+                     [Cofree UnprocessedParsedTermF (Int, Either String IExpr)]
+          slcupt = mapM snd (snd <$> l)
+          vnames :: [String]
+          vnames = fst <$> l
+      lcupt <- slcupt
+      x' <- x
+      pure $ (i, upt2iexpr $ LetUP lupt upt0) :< LetUPF (vnames `zip` lcupt) x'
+    CaseUPF (upt0, x) l -> do
+      i <- State.get
+      State.modify (+ 1)
+      x' <- x
+      let aux :: [ ( Pattern
+                   , UnprocessedParsedTerm
+                   )
+                 ]
+          aux = (fmap . fmap) fst l
+          aux0 = (fmap . fmap) snd l
+          aux1 :: State Int
+                    [ ( Pattern
+                      , Cofree UnprocessedParsedTermF (Int, Either String IExpr)
+                      )
+                    ]
+          aux1 = mapM sequence aux0
+      aux1' <- aux1
+      pure $ (i, upt2iexpr $ CaseUP upt0 aux) :< CaseUPF x' aux1'
+    LamUPF s (upt0, x) -> do
+      i <- State.get
+      State.modify (+ 1)
+      x' <- x
+      pure $ (i, upt2iexpr $ LamUP s upt0) :< LamUPF s x'
+    AppUPF (upt1, x) (upt2, y) -> do
+      i <- State.get
+      State.modify (+ 1)
+      x' <- x
+      y' <- y
+      pure $ (i, upt2iexpr $ AppUP upt1 upt2) :< AppUPF x' y'
+    UnsizedRecursionUPF (upt1, x) (upt2, y) (upt3, z) -> do
+      i <- State.get
+      State.modify (+ 1)
+      x' <- x
+      y' <- y
+      z' <- z
+      pure $ (i, upt2iexpr $
+                   UnsizedRecursionUP upt1 upt2 upt3) :<
+                     UnsizedRecursionUPF x' y' z'
+    CheckUPF (upt1, x) (upt2, y) -> do
+      i <- State.get
+      State.modify (+ 1)
+      x' <- x
+      y' <- y
+      pure $ (i, upt2iexpr $ CheckUP upt1 upt2) :< CheckUPF x' y'
+    LeftUPF (upt0, x) -> do
+      i <- State.get
+      State.modify (+ 1)
+      x' <- x
+      pure $ (i, upt2iexpr $ LeftUP upt0) :< LeftUPF x'
+    RightUPF (upt0, x) -> do
+      i <- State.get
+      State.modify (+ 1)
+      x' <- x
+      pure $ (i, upt2iexpr $ RightUP upt0) :< RightUPF x'
+    TraceUPF (upt0, x) -> do
+      i <- State.get
+      State.modify (+ 1)
+      x' <- x
+      pure $ (i, upt2iexpr $ TraceUP upt0) :< TraceUPF x'
+    HashUPF (upt0, x) -> do
+      i <- State.get
+      State.modify (+ 1)
+      x' <- x
+      pure $ (i, upt2iexpr $ LeftUP upt0) :< LeftUPF x'
+    IntUPF i -> do
+      x <- State.get
+      State.modify (+ 1)
+      pure ((x, upt2iexpr $ IntUP i) :< IntUPF i)
+    VarUPF s -> do
+      x <- State.get
+      State.modify (+ 1)
+      pure ((x, upt2iexpr $ VarUP s) :< VarUPF s)
+    PairUPF (upt1, x) (upt2, y) -> do
+      i <- State.get
+      State.modify (+ 1)
+      x' <- x
+      y' <- y
+      pure $ (i, upt2iexpr $ PairUP upt1 upt2) :< PairUPF x' y'

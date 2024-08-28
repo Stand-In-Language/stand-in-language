@@ -26,19 +26,8 @@ import Data.Set (Set, (\\))
 import qualified Data.Set as Set
 import Debug.Trace (trace, traceShow, traceShowId)
 import PrettyPrint (TypeDebugInfo (..), prettyPrint, showTypeDebugInfo)
-import Telomare (BreakState', DataType (..), FragExpr (..), FragExprF (..),
-                 FragExprUR (..), FragIndex (..), IExpr (..), IExprF (..),
-                 LamType (..), LocTag (..), ParserTerm (..), ParserTermF (..),
-                 PartialType (..), RecursionPieceFrag,
-                 RecursionSimulationPieces (..), Term1 (..), Term2 (..),
-                 Term3 (..), UnsizedRecursionToken, appF, clamF, deferF, forget,
-                 forgetAnnotationFragExprUR, gateF, i2cF, lamF, nextBreakToken,
-                 pairF, setEnvF, showRunBreakState', tag,
-                 unsizedRecursionWrapper, varNF)
-import Telomare.Parser (AnnotatedUPT, Pattern (..), PatternF (..),
-                        PrettyUPT (..), TelomareParser (..),
-                        UnprocessedParsedTerm (..), UnprocessedParsedTermF (..),
-                        parseWithPrelude)
+import Telomare
+import Telomare.Parser (AnnotatedUPT, TelomareParser, parseWithPrelude)
 import Text.Megaparsec (errorBundlePretty, runParser)
 
 debug :: Bool
