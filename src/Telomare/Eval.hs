@@ -201,6 +201,27 @@ compile staticCheck t = debugTrace ("compiling term3:\n" <> prettyPrint t)
       Right Nothing  -> Left CompileConversionError
       Left e         -> Left e
 
+-- converts between easily understood Haskell types and untyped IExprs around an iteration of a Telomare expression
+funWrap' :: (IExpr -> IExpr) -> IExpr -> Maybe (String, IExpr) -> (String, Maybe IExpr)
+funWrap' eval fun inp =
+  let iexpInp = case inp of
+        Nothing -> Zero
+        Just (userInp, oldState) -> Pair (s2g userInp) oldState
+  in case eval (app fun iexpInp) of
+    Zero -> ("aborted", Nothing)
+    Pair disp newState -> (g2s disp, Just newState)
+    z -> ("runtime error, dumped:\n" <> show z, Nothing)
+
+funWrap :: (IExpr -> RunResult IExpr) -> IExpr -> Maybe (String, IExpr) -> IO (String, Maybe IExpr)
+funWrap eval fun inp =
+  let iexpInp = case inp of
+        Nothing -> Zero
+        Just (userInp, oldState) -> Pair (s2g userInp) oldState
+  in runExceptT (eval (app fun iexpInp)) >>= \case
+    Right Zero -> pure ("aborted", Nothing)
+    Right (Pair disp newState) -> pure (g2s disp, Just newState)
+    z -> pure ("runtime error, dumped:\n" <> show z, Nothing)
+
 runMain :: String -> String -> IO ()
 runMain preludeString s =
   let prelude :: [(String, AnnotatedUPT)]
@@ -221,22 +242,18 @@ schemeEval iexpr = do
   scheme <- hGetContents mhout
   putStrLn scheme
 
-
 evalLoop :: IExpr -> IO ()
 evalLoop iexpr =
-  let mainLoop s = do
-        result <- simpleEval $ app iexpr s
-        case result of
-          Zero -> putStrLn "aborted"
-          (Pair disp newState) -> do
-            putStrLn . g2s $ disp
-            case newState of
-              Zero -> putStrLn "done"
-              _ -> do
-                inp <- s2g <$> getLine
-                mainLoop $ Pair inp newState
-          r -> putStrLn ("runtime error, dumped " <> show r)
-  in mainLoop Zero
+  let wrappedEval = funWrap eval iexpr
+      mainLoop s = do
+        (out, nextState) <- wrappedEval s
+        putStrLn out
+        case nextState of
+          Nothing -> pure ()
+          Just ns -> do
+            inp <- getLine
+            mainLoop $ pure (inp, ns)
+  in mainLoop Nothing
 
 -- |Same as `evalLoop`, but keeping what was displayed.
 -- TODO: make evalLoop and evalLoop always share eval method (i.e. simpleEval, hvmEval)
