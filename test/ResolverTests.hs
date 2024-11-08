@@ -135,10 +135,10 @@ unitTests = testGroup "Unit tests"
      res1 @?= res2
   , testCase "Ad hoc user defined types success" $ do
       res <- testUserDefAdHocTypes userDefAdHocTypesSuccess
-      res @?= "\a\ndone\n"
+      res @?= "\n\a\ndone"
   , testCase "Ad hoc user defined types failure" $ do
       res <- testUserDefAdHocTypes userDefAdHocTypesFailure
-      res @?= "MyInt must not be 0\ndone\n"
+      res @?= "\nMyInt must not be 0\ndone"
   , testCase "test automatic open close lambda" $ do
       res <- runTelomareParser (parseLambda <* scn <* eof) "\\x -> \\y -> (x, y)"
       (forget <$> validateVariables [] res) @?= Right closedLambdaPair
@@ -165,23 +165,16 @@ unitTests = testGroup "Unit tests"
       fullRunTicTacToeString @?= res
   ]
 
+-- "\n1|2|3\n-+-+-\n4|5|6\n-+-+-\n7|8|9\nPlayer 2's turn\nplease input number of square: \nO|2|3\n-+-+-\n4|5|6\n-+-+-\n7|8|9\nPlayer 1's turn\nplease input number of square: \nO|2|3\n-+-+-\n4|5|6\n-+-+-\n7|8|X\nPlayer 2's turn\nplease input number of square: \nO|O|3\n-+-+-\n4|5|6\n-+-+-\n7|8|X\nPlayer 1's turn\nplease input number of square: \nO|O|3\n-+-+-\n4|5|6\n-+-+-\n7|X|X\nPlayer 2's turn\nplease input number of square: \nPlayer 2 wins!\ndone"
+-- "1|2|3\n-+-+-\n4|5|6\n-+-+-\n7|8|9\nPlayer 2's turn\nplease input number of square: \nO|2|3\n-+-+-\n4|5|6\n-+-+-\n7|8|9\nPlayer 1's turn\nplease input number of square: \nO|2|3\n-+-+-\n4|5|6\n-+-+-\n7|8|X\nPlayer 2's turn\nplease input number of square: \nO|O|3\n-+-+-\n4|5|6\n-+-+-\n7|8|X\nPlayer 1's turn\nplease input number of square: \nO|O|3\n-+-+-\n4|5|6\n-+-+-\n7|X|X\nPlayer 2's turn\nplease input number of square: \nPlayer 2 wins!\ndone\n"
 tictactoe :: IO String
 tictactoe = do
-  telomareString <- Strict.readFile "tictactoe.tel"
-  runTelomare telomareString $ \(pid, hIn, hOut, hErr) -> do
-      hPutStrLn hIn "1"
-      hFlush hIn
-      hPutStrLn hIn "9"
-      hFlush hIn
-      hPutStrLn hIn "2"
-      hFlush hIn
-      hPutStrLn hIn "8"
-      hFlush hIn
-      hPutStrLn hIn "3"
-      hFlush hIn
+  telStr <- Strict.readFile "tictactoe.tel"
+  preludeStr <- Strict.readFile "Prelude.tel"
+  runMainWithInput ["1", "9", "2", "8", "3"] preludeStr telStr
 
-fullRunTicTacToeString = unlines
-  [ "1|2|3"
+fullRunTicTacToeString = init . unlines $
+  [ "\n1|2|3"
   , "-+-+-"
   , "4|5|6"
   , "-+-+-"
@@ -265,8 +258,7 @@ closedLambdaPair = TLam (Closed "x") (TLam (Open "y") (TPair (TVar "x") (TVar "y
 testUserDefAdHocTypes :: String -> IO String
 testUserDefAdHocTypes input = do
   preludeString <- Strict.readFile "Prelude.tel"
-  (_, _, hOut, _) <- forkWithStandardFds $ runMain preludeString input
-  hGetContents hOut
+  runMain_ preludeString input
 
 userDefAdHocTypesSuccess = unlines
   [ "MyInt = let wrapper = \\h -> ( \\i -> if not i"
