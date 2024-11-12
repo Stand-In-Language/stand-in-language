@@ -1,37 +1,31 @@
 {-# LANGUAGE LambdaCase          #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections       #-}
 
 module Telomare.Eval where
 
 import Control.Comonad.Cofree (Cofree ((:<)), hoistCofree)
-import Control.Lens.Plated hiding (para)
-import Control.Monad.Except
-import Control.Monad.Reader (Reader, runReader)
+import Control.Lens.Plated (Plated (..), transform, transformM)
+import Control.Monad.Except (fix, runExceptT, void)
 import Control.Monad.State (State, StateT, evalState)
 import qualified Control.Monad.State as State
-import Control.Monad.Trans.Accum (AccumT)
-import qualified Control.Monad.Trans.Accum as Accum
 import Data.Bifunctor (bimap, first)
-import Data.DList (DList)
-import Data.Functor.Foldable (Base, cata, embed, para, project)
+import Data.Functor.Foldable (Base, para)
 import Data.Map (Map)
 import qualified Data.Map as Map
-import Data.Set (Set)
-import qualified Data.Set as Set
-import Data.Void
-import Debug.Trace
-import System.IO
+import Debug.Trace (trace)
+import PrettyPrint (prettyPrint)
+import System.IO (hGetContents)
 import qualified System.IO.Strict as Strict
-import System.Process
-
-import PrettyPrint
+import System.Process (CreateProcess (std_out), StdStream (CreatePipe),
+                       createProcess, shell)
 import Telomare
 import Telomare.Optimizer (optimize)
 import Telomare.Parser (AnnotatedUPT, parseOneExprOrTopLevelDefs, parsePrelude)
-import Telomare.Possible (AbortExpr, VoidF, abortExprToTerm4, evalA, sizeTerm,
+import Telomare.Possible (AbortExpr, abortExprToTerm4, evalA, sizeTerm,
                           term3ToUnsizedExpr)
 import Telomare.Resolver (parseMain, process)
-import Telomare.RunTime (hvmEval, optimizedEval, pureEval, rEval, simpleEval)
+import Telomare.RunTime (pureEval, rEval)
 import Telomare.TypeChecker (TypeCheckError (..), typeCheck)
 import Text.Megaparsec (errorBundlePretty, runParser)
 
@@ -201,8 +195,29 @@ compile staticCheck t = debugTrace ("compiling term3:\n" <> prettyPrint t)
       Right Nothing  -> Left CompileConversionError
       Left e         -> Left e
 
-runMain :: String -> String -> IO ()
-runMain preludeString s =
+-- converts between easily understood Haskell types and untyped IExprs around an iteration of a Telomare expression
+funWrap' :: (IExpr -> IExpr) -> IExpr -> Maybe (String, IExpr) -> (String, Maybe IExpr)
+funWrap' eval fun inp =
+  let iexpInp = case inp of
+        Nothing                  -> Zero
+        Just (userInp, oldState) -> Pair (s2g userInp) oldState
+  in case eval (app fun iexpInp) of
+    Zero               -> ("aborted", Nothing)
+    Pair disp newState -> (g2s disp, Just newState)
+    z                  -> ("runtime error, dumped:\n" <> show z, Nothing)
+
+funWrap :: (IExpr -> RunResult IExpr) -> IExpr -> Maybe (String, IExpr) -> IO (String, Maybe IExpr)
+funWrap eval fun inp =
+  let iexpInp = case inp of
+        Nothing                  -> Zero
+        Just (userInp, oldState) -> Pair (s2g userInp) oldState
+  in runExceptT (eval (app fun iexpInp)) >>= \case
+    Right Zero -> pure ("aborted", Nothing)
+    Right (Pair disp newState) -> pure (g2s disp, Just newState)
+    z -> pure ("runtime error, dumped:\n" <> show z, Nothing)
+
+runMainCore :: String -> String -> (IExpr -> IO a) -> IO a
+runMainCore preludeString s e =
   let prelude :: [(String, AnnotatedUPT)]
       prelude =
         case parsePrelude preludeString of
@@ -210,9 +225,15 @@ runMain preludeString s =
           Left pe -> error pe
   in
     case compileMain <$> parseMain prelude s of
-      Left e -> putStrLn $ concat ["failed to parse ", s, " ", e]
-      Right (Right g) -> evalLoop g
-      Right z -> putStrLn $ "compilation failed somehow, with result " <> show z
+      Left e -> error $ concat ["failed to parse ", s, " ", e]
+      Right (Right g) -> e g
+      Right z -> error $ "compilation failed somehow, with result " <> show z
+
+runMain_ :: String -> String -> IO String
+runMain_ preludeString s = runMainCore preludeString s evalLoop_
+
+runMain :: String -> String -> IO ()
+runMain preludeString s = runMainCore preludeString s evalLoop
 
 schemeEval :: IExpr -> IO ()
 schemeEval iexpr = do
@@ -221,42 +242,62 @@ schemeEval iexpr = do
   scheme <- hGetContents mhout
   putStrLn scheme
 
+evalLoopCore :: IExpr
+             -> (String -> String -> IO String)
+             -> String
+             -> [String]
+             -> IO String
+evalLoopCore iexpr accumFn initAcc manualInput =
+  let wrappedEval = funWrap eval iexpr
+      mainLoop :: String -> [String] -> Maybe (String, IExpr) -> IO String
+      mainLoop acc strInput s = do
+        (out, nextState) <- wrappedEval s
+        newAcc <- accumFn acc out
+        case nextState of
+          Nothing -> pure acc
+          Just Zero -> pure $ newAcc <> "\n" <> "done"
+          Just ns -> do
+            (inp, rest) <-
+              if null strInput
+              then (, []) <$> getLine
+              else pure (head strInput, tail strInput)
+            mainLoop newAcc rest $ pure (inp, ns)
+  in mainLoop initAcc manualInput Nothing
 
 evalLoop :: IExpr -> IO ()
-evalLoop iexpr =
-  let mainLoop s = do
-        result <- simpleEval $ app iexpr s
-        case result of
-          Zero -> putStrLn "aborted"
-          (Pair disp newState) -> do
-            putStrLn . g2s $ disp
-            case newState of
-              Zero -> putStrLn "done"
-              _ -> do
-                inp <- s2g <$> getLine
-                mainLoop $ Pair inp newState
-          r -> putStrLn ("runtime error, dumped " <> show r)
-  in mainLoop Zero
+evalLoop iexpr = void $ evalLoopCore iexpr printAcc "" []
+  where
+    printAcc _ out = do
+      putStrLn out
+      pure ""
+
+evalLoopWithInput :: [String] -> IExpr -> IO String
+evalLoopWithInput inputList iexpr = evalLoopCore iexpr printAcc "" inputList
+  where
+    printAcc acc out = if acc == ""
+                       then pure out
+                       else pure (acc <> "\n" <> out)
+
+runMainWithInput :: [String] -> String -> String -> IO String
+runMainWithInput inputList preludeString s =
+  let prelude :: [(String, AnnotatedUPT)]
+      prelude =
+        case parsePrelude preludeString of
+          Right p -> p
+          Left pe -> error pe
+  in
+    case compileMain <$> parseMain prelude s of
+      Left e -> pure $ concat ["failed to parse ", s, " ", e]
+      Right (Right g) -> evalLoopWithInput inputList g
+      Right z -> pure $ "compilation failed somehow, with result " <> show z
 
 -- |Same as `evalLoop`, but keeping what was displayed.
--- TODO: make evalLoop and evalLoop always share eval method (i.e. simpleEval, hvmEval)
 evalLoop_ :: IExpr -> IO String
-evalLoop_ iexpr =
-  let mainLoop prev s = do
-        -- result <- optimizedEval (app peExp s)
-        result <- simpleEval (app iexpr s)
-        --result <- simpleEval $ traceShowId $ app peExp s
-        case result of
-          Zero -> pure $ prev <> "\n" <> "aborted"
-          (Pair disp newState) -> do
-            let d = g2s disp
-            case newState of
-              Zero -> pure $ prev <> "\n" <> d <> "\ndone"
-              _ -> do
-                inp <- s2g <$> getLine
-                mainLoop (prev <> "\n" <> d) $ Pair inp newState
-          r -> pure ("runtime error, dumped " <> show r)
-  in mainLoop "" Zero
+evalLoop_ iexpr = evalLoopCore iexpr printAcc "" []
+  where
+    printAcc acc out = if acc == ""
+                       then pure out
+                       else pure (acc <> "\n" <> out)
 
 calculateRecursionLimits :: Term3 -> Either EvalError Term4
 calculateRecursionLimits t3 =
@@ -268,13 +309,6 @@ calculateRecursionLimits t3 =
     Right t  -> case t of
       Left a  -> Left . StaticCheckError . convertAbortMessage $ a
       Right t -> pure t
-
-prelude :: IO [(String, AnnotatedUPT)]
-prelude = do
-  preludeString <- Strict.readFile "Prelude.tel"
-  case parsePrelude preludeString of
-    Right p -> pure p
-    Left pe -> error pe
 
 eval2IExpr :: [(String, AnnotatedUPT)] -> String -> Either String IExpr
 eval2IExpr prelude str = bimap errorBundlePretty (\x -> DummyLoc :< LetUPF prelude x) (runParser (parseOneExprOrTopLevelDefs prelude) "" str)

@@ -1,13 +1,8 @@
-{-# LANGUAGE ScopedTypeVariables #-}
-
 module Main where
 
-import Data.Char
 import qualified Options.Applicative as O
 import qualified System.IO.Strict as Strict
-import Telomare.Eval (compileMain, evalLoop, runMain, schemeEval)
-import Telomare.Resolver (parseMain)
-import Telomare.TypeChecker (inferType, typeCheck)
+import Telomare.Eval (runMain)
 
 data TelomareOpts = TelomareOpts
   { telomareFile :: String
