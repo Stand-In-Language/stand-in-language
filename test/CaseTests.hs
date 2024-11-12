@@ -56,27 +56,27 @@ qcPropsCase = testGroup "Property tests on case expressions (QuickCheck)"
       \x -> withMaxSuccess 16 . QC.idempotentIOProperty $ (do
         res <- runCaseExpWithPattern caseExprStrWithPattern x
         case res of
-          "\nTrue\ndone" -> pure True
-          _              -> pure False)
+          "True\ndone" -> pure True
+          _            -> pure False)
   , QC.testProperty "Ignore pattern accpets any pattern" $
       \x -> withMaxSuccess 16 . QC.idempotentIOProperty $ (do
         res <- runCaseExpWithPattern caseExprStrWithPatternIgnore x
         case res of
-          "\nTrue\ndone" -> pure True
-          _              -> pure False)
+          "True\ndone" -> pure True
+          _            -> pure False)
   ]
 
 unitTestsCase :: TestTree
 unitTestsCase = testGroup "Unit tests on case expressions"
   [ testCase "test case with int leaves" $ do
       res <- runTelomareStr caseExprIntLeavesStr
-      "\nTrue\ndone" @?= res
+      res @?= "True\ndone"
   , testCase "test case with string leaves" $ do
       res <- runTelomareStr caseExprStringLeavesStr
-      "\nTrue\ndone" @?= res
+      res @?= "True\ndone"
   , testCase "test case with all leaves" $ do
       res <- runTelomareStr caseExprAllLeavesStr
-      "\nHi, sam!\ndone" @?= res
+      res @?= "Hi, sam!\ndone"
   ]
 
 runTelomareStr :: String -> IO String
@@ -147,9 +147,11 @@ instance Arbitrary Pattern where
         ]
 
   shrink = \case
-    PatternVar str -> [PatternVar str]
+    PatternVar str -> case str of
+      "" -> []
+      _  -> pure . PatternVar $ tail str
     PatternString s -> case s of
-      [] -> []
+      "" -> []
       _  -> pure . PatternString $ tail s
     PatternInt i -> case i of
       0 -> []

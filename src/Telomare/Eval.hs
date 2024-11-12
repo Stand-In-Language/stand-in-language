@@ -274,7 +274,9 @@ evalLoop iexpr = void $ evalLoopCore iexpr printAcc "" []
 evalLoopWithInput :: [String] -> IExpr -> IO String
 evalLoopWithInput inputList iexpr = evalLoopCore iexpr printAcc "" inputList
   where
-    printAcc acc out = pure (acc <> "\n" <> out)
+    printAcc acc out = if acc == ""
+                       then pure out
+                       else pure (acc <> "\n" <> out)
 
 runMainWithInput :: [String] -> String -> String -> IO String
 runMainWithInput inputList preludeString s =
@@ -293,7 +295,9 @@ runMainWithInput inputList preludeString s =
 evalLoop_ :: IExpr -> IO String
 evalLoop_ iexpr = evalLoopCore iexpr printAcc "" []
   where
-    printAcc acc out = pure (acc <> "\n" <> out)
+    printAcc acc out = if acc == ""
+                       then pure out
+                       else pure (acc <> "\n" <> out)
 
 calculateRecursionLimits :: Term3 -> Either EvalError Term4
 calculateRecursionLimits t3 =

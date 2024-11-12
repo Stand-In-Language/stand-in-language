@@ -135,10 +135,10 @@ unitTests = testGroup "Unit tests"
      res1 @?= res2
   , testCase "Ad hoc user defined types success" $ do
       res <- testUserDefAdHocTypes userDefAdHocTypesSuccess
-      res @?= "\n\a\ndone"
+      res @?= "\a\ndone"
   , testCase "Ad hoc user defined types failure" $ do
       res <- testUserDefAdHocTypes userDefAdHocTypesFailure
-      res @?= "\nMyInt must not be 0\ndone"
+      res @?= "MyInt must not be 0\ndone"
   , testCase "test automatic open close lambda" $ do
       res <- runTelomareParser (parseLambda <* scn <* eof) "\\x -> \\y -> (x, y)"
       (forget <$> validateVariables [] res) @?= Right closedLambdaPair
@@ -162,11 +162,9 @@ unitTests = testGroup "Unit tests"
       (forget <$> validateVariables [] res) @?= Right expr2
   , testCase "test tictactoe.tel" $ do
       res <- tictactoe
-      fullRunTicTacToeString @?= res
+      res @?= fullRunTicTacToeString
   ]
 
--- "\n1|2|3\n-+-+-\n4|5|6\n-+-+-\n7|8|9\nPlayer 2's turn\nplease input number of square: \nO|2|3\n-+-+-\n4|5|6\n-+-+-\n7|8|9\nPlayer 1's turn\nplease input number of square: \nO|2|3\n-+-+-\n4|5|6\n-+-+-\n7|8|X\nPlayer 2's turn\nplease input number of square: \nO|O|3\n-+-+-\n4|5|6\n-+-+-\n7|8|X\nPlayer 1's turn\nplease input number of square: \nO|O|3\n-+-+-\n4|5|6\n-+-+-\n7|X|X\nPlayer 2's turn\nplease input number of square: \nPlayer 2 wins!\ndone"
--- "1|2|3\n-+-+-\n4|5|6\n-+-+-\n7|8|9\nPlayer 2's turn\nplease input number of square: \nO|2|3\n-+-+-\n4|5|6\n-+-+-\n7|8|9\nPlayer 1's turn\nplease input number of square: \nO|2|3\n-+-+-\n4|5|6\n-+-+-\n7|8|X\nPlayer 2's turn\nplease input number of square: \nO|O|3\n-+-+-\n4|5|6\n-+-+-\n7|8|X\nPlayer 1's turn\nplease input number of square: \nO|O|3\n-+-+-\n4|5|6\n-+-+-\n7|X|X\nPlayer 2's turn\nplease input number of square: \nPlayer 2 wins!\ndone\n"
 tictactoe :: IO String
 tictactoe = do
   telStr <- Strict.readFile "tictactoe.tel"
@@ -174,7 +172,7 @@ tictactoe = do
   runMainWithInput ["1", "9", "2", "8", "3"] preludeStr telStr
 
 fullRunTicTacToeString = init . unlines $
-  [ "\n1|2|3"
+  [ "1|2|3"
   , "-+-+-"
   , "4|5|6"
   , "-+-+-"
