@@ -319,9 +319,8 @@ unitTest name expected iexpr = it name $ if allowedTypeCheck (typeCheck ZeroType
 unitTestRefinement :: String -> Bool -> IExpr -> Spec
 unitTestRefinement name shouldSucceed iexpr = it name $ case inferType (fromTelomare iexpr) of
   Right t -> case (pureEval iexpr, shouldSucceed) of
-    (Left err, True) -> expectationFailure $ concat [name, ": failed refinement type -- ", show err]
-    (Right _, False) -> expectationFailure $ name <> ": expected refinement failure, but passed"
-    _ -> pure ()
+    (err, True) -> expectationFailure $ concat [name, ": failed refinement type -- ", show err]
+    (_, False) -> expectationFailure $ name <> ": expected refinement failure, but passed"
   Left err -> expectationFailure $ concat ["refinement test failed typecheck: ", name, " ", show err]
 
 unitTestQC :: Testable p => String -> Int -> p -> Spec
