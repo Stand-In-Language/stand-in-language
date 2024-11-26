@@ -362,14 +362,14 @@ instance Show RunTimeError where
   show (GenericRunTimeError s i) = "Generic Runtime Error: " <> s <> " -- " <> show i
   show (ResultConversionError s) = "Couldn't convert runtime result to IExpr: " <> s
 
-type RunResult = ExceptT RunTimeError IO
+-- type RunResult = ExceptT RunTimeError IO
 
 class TelomareLike a where
   fromTelomare :: IExpr -> a
   toTelomare :: a -> Maybe IExpr
 
 class TelomareLike a => AbstractRunTime a where
-  eval :: a -> RunResult a
+  eval :: a -> a
 
 rootFrag :: Map FragIndex a -> a
 rootFrag = (Map.! FragIndex 0)

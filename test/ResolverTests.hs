@@ -350,9 +350,9 @@ showAllTransformations input = do
 
 stepIEval :: IExpr -> IO IExpr
 stepIEval =
-  let wio :: IExpr -> WrappedIO IExpr
+  let wio :: IExpr -> IExpr
       wio = rEval Zero
-  in wioIO . wio
+  in pure . wio
 
 newtype WrappedIO a = WrappedIO
   { wioIO :: IO a

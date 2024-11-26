@@ -91,23 +91,23 @@ annotateEnv (PLeft x) = LeftP <$> annotateEnv x
 annotateEnv (PRight x) = RightP <$> annotateEnv x
 annotateEnv Trace = (False, TraceP)
 
-fromFullEnv :: Applicative a => (ExpP -> a IExpr) -> ExpP -> a IExpr
-fromFullEnv _ ZeroP         = pure Zero
-fromFullEnv f (PairP a b)   = Pair <$> f a <*> f b
-fromFullEnv _ VarP          = pure Env
-fromFullEnv f (SetEnvP x _) = SetEnv <$> f x
-fromFullEnv f (DeferP x)    = Defer <$> f x
-fromFullEnv f (GateP a b)   = Gate <$> f a <*> f b
-fromFullEnv f (LeftP x)     = PLeft <$> f x
-fromFullEnv f (RightP x)    = PRight <$> f x
-fromFullEnv _ TraceP        = pure Trace
+fromFullEnv :: (ExpP -> IExpr) -> ExpP -> IExpr
+fromFullEnv _ ZeroP         = Zero
+fromFullEnv f (PairP a b)   = Pair (f a) (f b)
+fromFullEnv _ VarP          = Env
+fromFullEnv f (SetEnvP x _) = SetEnv (f x)
+fromFullEnv f (DeferP x)    = Defer (f x)
+fromFullEnv f (GateP a b)   = Gate (f a) (f b)
+fromFullEnv f (LeftP x)     = PLeft (f x)
+fromFullEnv f (RightP x)    = PRight (f x)
+fromFullEnv _ TraceP        = Trace
 
 instance TelomareLike ExpP where
   fromTelomare = snd . annotateEnv
-  toTelomare = fix fromFullEnv
+  toTelomare = pure . fix fromFullEnv
 
-partiallyEvaluate :: ExpP -> Either RunTimeError IExpr
-partiallyEvaluate se@(SetEnvP _ True) = Defer <$> (fix fromFullEnv se >>= pureEval . optimize)
+partiallyEvaluate :: ExpP -> IExpr
+partiallyEvaluate se@(SetEnvP _ True) = Defer (pureEval . optimize $ fix fromFullEnv se)
 partiallyEvaluate x = fromFullEnv partiallyEvaluate x
 
 convertPT :: (UnsizedRecursionToken -> Int) -> Term3 -> Term4
@@ -196,8 +196,8 @@ compile staticCheck t = debugTrace ("compiling term3:\n" <> prettyPrint t)
       Left e         -> Left e
 
 -- converts between easily understood Haskell types and untyped IExprs around an iteration of a Telomare expression
-funWrap' :: (IExpr -> IExpr) -> IExpr -> Maybe (String, IExpr) -> (String, Maybe IExpr)
-funWrap' eval fun inp =
+funWrap :: (IExpr -> IExpr) -> IExpr -> Maybe (String, IExpr) -> (String, Maybe IExpr)
+funWrap eval fun inp =
   let iexpInp = case inp of
         Nothing                  -> Zero
         Just (userInp, oldState) -> Pair (s2g userInp) oldState
@@ -205,16 +205,6 @@ funWrap' eval fun inp =
     Zero               -> ("aborted", Nothing)
     Pair disp newState -> (g2s disp, Just newState)
     z                  -> ("runtime error, dumped:\n" <> show z, Nothing)
-
-funWrap :: (IExpr -> RunResult IExpr) -> IExpr -> Maybe (String, IExpr) -> IO (String, Maybe IExpr)
-funWrap eval fun inp =
-  let iexpInp = case inp of
-        Nothing                  -> Zero
-        Just (userInp, oldState) -> Pair (s2g userInp) oldState
-  in runExceptT (eval (app fun iexpInp)) >>= \case
-    Right Zero -> pure ("aborted", Nothing)
-    Right (Pair disp newState) -> pure (g2s disp, Just newState)
-    z -> pure ("runtime error, dumped:\n" <> show z, Nothing)
 
 runMainCore :: String -> String -> (IExpr -> IO a) -> IO a
 runMainCore preludeString s e =
@@ -248,10 +238,11 @@ evalLoopCore :: IExpr
              -> [String]
              -> IO String
 evalLoopCore iexpr accumFn initAcc manualInput =
-  let wrappedEval = funWrap eval iexpr
+  let wrappedEval :: Maybe (String, IExpr) -> (String, Maybe IExpr)
+      wrappedEval = funWrap eval iexpr
       mainLoop :: String -> [String] -> Maybe (String, IExpr) -> IO String
       mainLoop acc strInput s = do
-        (out, nextState) <- wrappedEval s
+        let (out, nextState) = wrappedEval s
         newAcc <- accumFn acc out
         case nextState of
           Nothing -> pure acc
@@ -315,7 +306,7 @@ eval2IExpr prelude str = bimap errorBundlePretty (\x -> DummyLoc :< LetUPF prelu
                            >>= process prelude
                            >>= first show . compileUnitTest
 
-tagIExprWithEval :: IExpr -> Cofree IExprF (Int, Either RunTimeError IExpr)
+tagIExprWithEval :: IExpr -> Cofree IExprF (Int, IExpr)
 tagIExprWithEval iexpr = evalState (para alg iexpr) 0 where
   statePlus1 :: State Int Int
   statePlus1 = do
@@ -324,9 +315,9 @@ tagIExprWithEval iexpr = evalState (para alg iexpr) 0 where
       pure i
   alg :: Base IExpr
               ( IExpr
-              , State Int (Cofree IExprF (Int, Either RunTimeError IExpr))
+              , State Int (Cofree IExprF (Int, IExpr))
               )
-      -> State Int (Cofree IExprF (Int, Either RunTimeError IExpr))
+      -> State Int (Cofree IExprF (Int, IExpr))
   alg = \case
     ZeroF -> do
       i <- statePlus1
