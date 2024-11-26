@@ -196,8 +196,8 @@ compile staticCheck t = debugTrace ("compiling term3:\n" <> prettyPrint t)
       Left e         -> Left e
 
 -- converts between easily understood Haskell types and untyped IExprs around an iteration of a Telomare expression
-funWrap' :: (IExpr -> IExpr) -> IExpr -> Maybe (String, IExpr) -> (String, Maybe IExpr)
-funWrap' eval fun inp =
+funWrap :: (IExpr -> IExpr) -> IExpr -> Maybe (String, IExpr) -> (String, Maybe IExpr)
+funWrap eval fun inp =
   let iexpInp = case inp of
         Nothing                  -> Zero
         Just (userInp, oldState) -> Pair (s2g userInp) oldState
@@ -205,16 +205,6 @@ funWrap' eval fun inp =
     Zero               -> ("aborted", Nothing)
     Pair disp newState -> (g2s disp, Just newState)
     z                  -> ("runtime error, dumped:\n" <> show z, Nothing)
-
-funWrap :: (IExpr -> IExpr) -> IExpr -> Maybe (String, IExpr) -> IO (String, Maybe IExpr)
-funWrap eval fun inp =
-  let iexpInp = case inp of
-        Nothing                  -> Zero
-        Just (userInp, oldState) -> Pair (s2g userInp) oldState
-  in case eval (app fun iexpInp) of
-    Zero               -> pure ("aborted", Nothing)
-    Pair disp newState -> pure (g2s disp, Just newState)
-    z                  -> pure ("runtime error, dumped:\n" <> show z, Nothing)
 
 runMainCore :: String -> String -> (IExpr -> IO a) -> IO a
 runMainCore preludeString s e =
@@ -248,10 +238,11 @@ evalLoopCore :: IExpr
              -> [String]
              -> IO String
 evalLoopCore iexpr accumFn initAcc manualInput =
-  let wrappedEval = funWrap eval iexpr
+  let wrappedEval :: Maybe (String, IExpr) -> (String, Maybe IExpr)
+      wrappedEval = funWrap eval iexpr
       mainLoop :: String -> [String] -> Maybe (String, IExpr) -> IO String
       mainLoop acc strInput s = do
-        (out, nextState) <- wrappedEval s
+        let (out, nextState) = wrappedEval s
         newAcc <- accumFn acc out
         case nextState of
           Nothing -> pure acc
