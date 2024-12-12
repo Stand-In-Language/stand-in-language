@@ -315,7 +315,7 @@ stuckStepDebug zeros handleOther = \case
     unhandledGate x = error ("stuckStepDebug unhandled gate input: " <> show x)
     unhandledError x = error ("stuckStepDebug unhandled case:\n" <> prettyPrint (embed x))
     gateResult = gateBasicResult (gateAbortResult (gateIndexedResult (gateSuperResult gateResult unhandledGate)))
-    evalStep = basicStepM (stuckStepM (abortStepM (indexedAbortStepM (indexedInputStepM (indexedSuperStepM (zeroedInputStepM zeros (superStepM gateResult evalStep (superAbortStepM evalStep (unsizedStepM 256 zeros evalStep unhandledError)))))))))
+    evalStep = basicStepM (stuckStepM (abortStepM (indexedAbortStepM (indexedInputStepM zeros (indexedSuperStepM (superStepM gateResult evalStep (superAbortStepM evalStep (unsizedStepM 256 zeros evalStep unhandledError))))))))
     e' = project e
     removeStages = cata $ \case
       UnsizedFW (SizeStageF _ x) -> x
@@ -850,16 +850,18 @@ indexedInputStep zeroes handleOther =
   x -> handleOther x
 
 indexedInputStepM :: (Base a ~ f, Traversable f, BasicBase f, StuckBase f, IndexedInputBase f, Recursive a, Corecursive a, PrettyPrintable a, Monad m)
-  => (f a -> m a) -> f a -> m a
-indexedInputStepM handleOther x = f x where
+  => Set Integer -> (f a -> m a) -> f a -> m a
+indexedInputStepM zeroes handleOther x = f x where
+  res n = if Set.member n zeroes then zeroB else indexedEE $ IVarF n
   f = \case
-    BasicFW (LeftSF (IndexedEE (IVarF n))) -> pure . indexedEE . IVarF $ n * 2 + 1
-    BasicFW (RightSF (IndexedEE (IVarF n))) -> pure . indexedEE . IVarF $ n * 2 + 2
+    BasicFW (LeftSF (IndexedEE (IVarF n))) -> pure . res $ n * 2 + 1
+    BasicFW (RightSF (IndexedEE (IVarF n))) -> pure . res $ n * 2 + 2
     BasicFW (LeftSF (IndexedEE AnyF)) -> pure $ indexedEE AnyF
     BasicFW (RightSF (IndexedEE AnyF)) -> pure $ indexedEE AnyF
     BasicFW (SetEnvSF (IndexedEE AnyF)) -> pure $ indexedEE AnyF
     FillFunction (IndexedEE AnyF) _ -> pure $ indexedEE AnyF
     GateSwitch _ _ (IndexedEE AnyF) -> pure $ indexedEE AnyF
+    IndexedFW (IVarF n) -> pure $ res n
     -- stuck values
     i@(IndexedFW _) -> pure $ embed i
 
@@ -1579,7 +1581,7 @@ getInputLimits = getAccum . transformNoDeferM evalStep . capMain (indexedEE $ IV
   convertIS :: UnsizedExpr -> InputSizingExpr
   convertIS = cata $ convertBasic (convertStuck (convertAbort convertU))
   unexpectedI x = error $ "getInputLimits eval, unexpected:\n" <> prettyPrint x
-  evalStep = basicStepM (stuckStepM (abortStepM (indexedInputStepM (indexedInputIgnoreSwitchStepM (findInputLimitStepM unexpectedI)))))
+  evalStep = basicStepM (stuckStepM (abortStepM (indexedInputStepM Set.empty (indexedInputIgnoreSwitchStepM (findInputLimitStepM unexpectedI)))))
 
 data SizedResult = AbortedSR | UnsizableSR UnsizedRecursionToken
   deriving (Eq, Ord, Show)
@@ -1688,20 +1690,13 @@ sizeTerm maxSize x = tidyUp . transformNoDeferM evalStep $ peTerm where
   unsizedTest ri reTest = debugTrace "unsizedTest" unsizedTestIndexed zeros (unsizedTestSuper reTest (\_ x -> error ("sizeTerm unsizedTest unhandled " <> prettyPrint x))) ri
   -- evalStep = debugTrace "s" basicStep (stuckStep (abortStep (indexedAbortStep (indexedInputStep zeros (indexedSuperStep (superUnsizedStep gateResult evalStep (superAbortStep evalStep (unsizedStep maxSize unsizedTest evalStep unhandledError))))))))
   -- evalStep = debugTrace "s" basicStep (stuckStepDebug zeros (abortStep (indexedAbortStep (indexedInputStep zeros (indexedSuperStep (superUnsizedStep gateResult evalStep (superAbortStep evalStep (unsizedStep maxSize unsizedTest evalStep unhandledError))))))))
-  evalStep = basicStepM (stuckStepDebugM zeros (abortStepM (indexedAbortStepM (indexedInputStepM (indexedSuperStepM (zeroedInputStepM zeros (superStepM gateResult evalStep (superAbortStepM evalStep (unsizedStepM 256 zeros evalStep unhandledError)))))))))
+  evalStep = basicStepM (stuckStepDebugM zeros (abortStepM (indexedAbortStepM (indexedInputStepM zeros (indexedSuperStepM (superStepM gateResult evalStep (superAbortStepM evalStep (unsizedStepM 256 zeros evalStep unhandledError))))))))
   unhandledError x = error ("sizeTerm unhandled case\n" <> prettyPrint x)
 
 sizeTermM :: Int -> UnsizedExpr -> Either UnsizedRecursionToken AbortExpr
 sizeTermM maxSize x = tidyUp . transformNoDeferM evalStep $ cm where
   failConvert x = error $ "sizeTerm convert, unhandled:\n" <> prettyPrint x
   zeros = (\x -> debugTrace ("sizeTerm zeros are " <> show x) x) $ getInputLimits x
-  {-
-  convertForPartial :: UnsizedExpr -> InputSizingExpr
-  convertForPartial = cata $ convertBasic (convertStuck (convertAbort (convertUnsized (convertIndexed failConvert))))
-  convertFromPartial :: InputSizingExpr -> UnsizedExpr
-  convertFromPartial = cata $ convertBasic (convertStuck (convertAbort (convertUnsized (convertIndexed failConvert))))
--}
-  -- cm = convertFromPartial . evalPartial' . convertForPartial . removeRefinementWrappers $ capMain (indexedEE $ IVarF 0) x
   cm = removeRefinementWrappers $ capMain (indexedEE $ IVarF 0) x
   tidyUp (StrictAccum (SizedRecursion sm) r) = debugTrace ("sizes are: " <> show sm <> "\nand result is:\n" <> prettyPrint r) $ case foldAborted r of
     Just (UnsizableSR i) -> Left i
@@ -1730,7 +1725,7 @@ sizeTermM maxSize x = tidyUp . transformNoDeferM evalStep $ cm where
   unhandledMerge x y = error ("sizeTerm unhandledMerge: " <> show (x,y))
   unhandledGate x = error ("sizeTerm unhandled gate input: " <> show x)
   gateResult = debugTrace "g" gateBasicResult (gateAbortResult (gateIndexedResult (gateSuperResult gateResult unhandledGate)))
-  evalStep = debugTrace "s" basicStepM (stuckStepM (abortStepM (indexedAbortStepM (indexedInputStepM (indexedSuperStepM (zeroedInputStepM zeros (superStepM gateResult evalStep (superAbortStepM evalStep (unsizedStepM maxSize zeros evalStep unhandledError)))))))))
+  evalStep = debugTrace "s" basicStepM (stuckStepM (abortStepM (indexedAbortStepM (indexedInputStepM zeros (indexedSuperStepM (superStepM gateResult evalStep (superAbortStepM evalStep (unsizedStepM maxSize zeros evalStep unhandledError))))))))
   unhandledError x = error ("sizeTerm unhandled case\n" <> prettyPrint x)
 
 removeRefinementWrappers :: (Base g ~ f, BasicBase f, StuckBase f, AbortBase f, UnsizedBase f, Recursive g, Corecursive g) => g -> g
