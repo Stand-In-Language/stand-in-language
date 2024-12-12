@@ -34,7 +34,7 @@ import Telomare (BreakState, BreakState', ExprA (..), FragExpr (..),
                  pattern AbortUser, rootFrag, s2g, setEnvF, tag, unFragExprUR)
 import Telomare.Optimizer (optimize)
 import Telomare.Parser (AnnotatedUPT, UnprocessedParsedTerm (..), parsePrelude)
-import Telomare.Possible (AbortExpr, VoidF, abortExprToTerm4, evalA, sizeTerm,
+import Telomare.Possible (AbortExpr, VoidF, abortExprToTerm4, evalA, sizeTerm, sizeTermM,
                           term3ToUnsizedExpr)
 import Telomare.Resolver (parseMain)
 import Telomare.RunTime (hvmEval, optimizedEval, pureEval, simpleEval)
@@ -283,7 +283,7 @@ calculateRecursionLimits t3 =
   let abortExprToTerm4' :: AbortExpr -> Either IExpr Term4
       abortExprToTerm4' = abortExprToTerm4
       limitSize = 256
-  in case fmap abortExprToTerm4' . sizeTerm limitSize $ term3ToUnsizedExpr limitSize t3 of
+  in case fmap abortExprToTerm4' . sizeTermM limitSize $ term3ToUnsizedExpr limitSize t3 of
     Left urt -> Left $ RecursionLimitError urt
     Right t  -> case t of
       Left a  -> Left . StaticCheckError . convertAbortMessage $ a
