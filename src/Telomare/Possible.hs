@@ -799,10 +799,10 @@ unsizedStepM maxSize zeroes fullStep handleOther x = f x where
                   argFive = leftB (rightB (rightB (rightB (rightB envB))))
                   iteB i t e = fillFunction (fillFunction (gateB (deferB unsizedStepMEInd e) (deferB unsizedStepMTInd t)) i) envB -- TODO THIS IS HOW TO DO LAZY IF/ELSE, COPY!
                   abrt = lamB unsizedStepMa . abortEE . AbortedF $ AbortRecursion
-                  rf n = lamB unsizedStepMrfb (lamB unsizedStepMrfa (unsizedEE . SizeStageF (SizedRecursion . Map.singleton tok $ pure n)
-                                                                     $ iteB (appB argFive argOne)
+                  rf n = lamB unsizedStepMrfb (lamB unsizedStepMrfa (iteB (appB argFive argOne)
                                                                          (appB (appB argFour argTwo) argOne)
-                                                                         (appB argThree argOne)))
+                                                                         (unsizedEE . SizeStageF (SizedRecursion . Map.singleton tok $ pure n)
+                                                                          $ appB argThree argOne)))
                   -- rf' n = appB (rf n) (rf' (n + 1))
                   rf' n = if n > maxSize
                     -- then error "reached recursion limit"
