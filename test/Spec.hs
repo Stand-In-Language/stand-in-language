@@ -22,7 +22,7 @@ import Telomare.Decompiler
 import Telomare.Eval
 import Telomare.Optimizer
 import Telomare.Parser
-import Telomare.Possible
+import Telomare.Possible (evalBU, evalBU', testSBV')
 import Telomare.Resolver
 import Telomare.RunTime
 import Telomare.TypeChecker
@@ -870,5 +870,5 @@ main = do
       Left pe -> error $ show pe
     parse = parseMain prelude
 
-  hspec $ unitTests_ parse
+  hspec $ unitTests parse
     --nexprTests
