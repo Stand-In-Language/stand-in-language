@@ -177,6 +177,7 @@ instance TelomareLike IExpr where
 instance AbstractRunTime IExpr where
   -- eval = fix iEval Zero
   eval = rEval Zero
+  -- hvmEval :: IExpr -> IO IExpr
 
 resultIndex = FragIndex (-1)
 instance TelomareLike NExprs where
@@ -203,6 +204,13 @@ evalAndConvert x = case toTelomare ar of
   Nothing -> error . show . ResultConversionError $ show ar
   Just ir -> ir
  where ar = eval x
+
+cowsay :: IO String
+cowsay = do
+  (_, mhout, _, _) <- createProcess (shell ("cowsay hola")) { std_out = CreatePipe }
+  case mhout of
+    Just hout -> hGetContents hout
+    Nothing -> pure "mhout failed"
 
 -- |Evaluation with hvm backend
 hvmEval :: IExpr -> IO IExpr

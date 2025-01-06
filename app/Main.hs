@@ -3,6 +3,8 @@ module Main where
 import qualified Options.Applicative as O
 import qualified System.IO.Strict as Strict
 import Telomare.Eval (runMain)
+import Telomare.RunTime (cowsay)
+import Telomare
 
 data TelomareOpts = TelomareOpts
   { telomareFile :: String
@@ -20,11 +22,17 @@ telomareOpts = TelomareOpts
         <> O.short 'p'
         <> O.help "Telomare prelude file" )
 
-main :: IO ()
+-- main :: IO ()
+-- main = do
+--   let opts = O.info (telomareOpts O.<**> O.helper)
+--         ( O.fullDesc
+--           <> O.progDesc "A simple but robust virtual machine" )
+--   topts <- O.execParser opts
+--   aux <- cowsay
+--   putStrLn aux
+--   preludeString <- Strict.readFile $ preludeFile topts
+--   Strict.readFile (telomareFile topts) >>= runMain preludeString
+
 main = do
-  let opts = O.info (telomareOpts O.<**> O.helper)
-        ( O.fullDesc
-          <> O.progDesc "A simple but robust virtual machine" )
-  topts <- O.execParser opts
-  preludeString <- Strict.readFile $ preludeFile topts
-  Strict.readFile (telomareFile topts) >>= runMain preludeString
+  aux <- cowsay
+  putStrLn aux
