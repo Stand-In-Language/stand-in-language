@@ -1,6 +1,7 @@
 {-# LANGUAGE FlexibleContexts    #-}
 {-# LANGUAGE LambdaCase          #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TemplateHaskell #-}
 
 module Telomare.RunTime where
 
@@ -22,6 +23,7 @@ import System.Process (CreateProcess (std_out), StdStream (CreatePipe),
                        createProcess, shell)
 import Telomare
 import Text.Read (readMaybe)
+import System.Which (staticWhich)
 
 debug :: Bool
 debug = False
@@ -205,9 +207,12 @@ evalAndConvert x = case toTelomare ar of
   Just ir -> ir
  where ar = eval x
 
+cowsayBin :: FilePath
+cowsayBin = $(staticWhich "cowsay")
+
 cowsay :: IO String
 cowsay = do
-  (_, mhout, _, _) <- createProcess (shell ("cowsay hola")) { std_out = CreatePipe }
+  (_, mhout, _, _) <- createProcess (shell $ show cowsayBin <> " hola") { std_out = CreatePipe }
   case mhout of
     Just hout -> hGetContents hout
     Nothing -> pure "mhout failed"
