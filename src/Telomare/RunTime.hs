@@ -7,7 +7,7 @@ module Telomare.RunTime where
 -- import Control.Exception
 import Control.Monad.Except
 import Control.Monad.Fix
-import Control.Monad.IO.Class (MonadIO(..))
+import Control.Monad.IO.Class (MonadIO (..))
 import Data.Foldable
 import Data.Functor.Foldable hiding (fold)
 import Data.Functor.Identity

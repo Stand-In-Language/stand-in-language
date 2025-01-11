@@ -26,7 +26,7 @@ import qualified Control.Monad.State as State
 import Data.Bool (bool)
 import Data.Char (chr, ord)
 import Data.Eq.Deriving (deriveEq1)
-import Data.Functor.Classes (Show2(..), Show1(..), Eq1(..), Eq2(..))
+import Data.Functor.Classes (Eq1 (..), Eq2 (..), Show1 (..), Show2 (..))
 import Data.Functor.Foldable (Base, Corecursive (embed),
                               Recursive (cata, project))
 import Data.Functor.Foldable.TH (MakeBaseFunctor (makeBaseFunctor))
@@ -309,45 +309,45 @@ instance Show a => Show (FragExpr a) where
   show fexp = State.evalState (cata showFragAlg fexp) 0
 
 instance (Eq a, Eq r) => Eq (FragExprF a r) where
-  ZeroFragF == ZeroFragF = True
+  ZeroFragF == ZeroFragF             = True
   PairFragF x1 y1 == PairFragF x2 y2 = x1 == x2 && y1 == y2
-  EnvFragF == EnvFragF = True
-  SetEnvFragF x1 == SetEnvFragF x2 = x1 == x2
-  DeferFragF i1 == DeferFragF i2 = i1 == i2
-  AbortFragF == AbortFragF = True
+  EnvFragF == EnvFragF               = True
+  SetEnvFragF x1 == SetEnvFragF x2   = x1 == x2
+  DeferFragF i1 == DeferFragF i2     = i1 == i2
+  AbortFragF == AbortFragF           = True
   GateFragF x1 y1 == GateFragF x2 y2 = x1 == x2 && y1 == y2
-  LeftFragF x1 == LeftFragF x2 = x1 == x2
-  RightFragF x1 == RightFragF x2 = x1 == x2
-  TraceFragF == TraceFragF = True
-  AuxFragF x1 == AuxFragF x2 = x1 == x2
-  _ == _ = False
+  LeftFragF x1 == LeftFragF x2       = x1 == x2
+  RightFragF x1 == RightFragF x2     = x1 == x2
+  TraceFragF == TraceFragF           = True
+  AuxFragF x1 == AuxFragF x2         = x1 == x2
+  _ == _                             = False
 
 instance Eq a => Eq1 (FragExprF a) where
-  liftEq eq (ZeroFragF) (ZeroFragF) = True
+  liftEq eq (ZeroFragF) (ZeroFragF)             = True
   liftEq eq (PairFragF x1 y1) (PairFragF x2 y2) = eq x1 x2 && eq y1 y2
-  liftEq eq (EnvFragF) (EnvFragF) = True
-  liftEq eq (SetEnvFragF x1) (SetEnvFragF x2) = eq x1 x2
-  liftEq eq (DeferFragF i1) (DeferFragF i2) = i1 == i2
-  liftEq eq (AbortFragF) (AbortFragF) = True
+  liftEq eq (EnvFragF) (EnvFragF)               = True
+  liftEq eq (SetEnvFragF x1) (SetEnvFragF x2)   = eq x1 x2
+  liftEq eq (DeferFragF i1) (DeferFragF i2)     = i1 == i2
+  liftEq eq (AbortFragF) (AbortFragF)           = True
   liftEq eq (GateFragF x1 y1) (GateFragF x2 y2) = eq x1 x2 && eq y1 y2
-  liftEq eq (LeftFragF x1) (LeftFragF x2) = eq x1 x2
-  liftEq eq (RightFragF x1) (RightFragF x2) = eq x1 x2
-  liftEq eq (TraceFragF) (TraceFragF) = True
-  liftEq eq (AuxFragF x1) (AuxFragF x2) = x1 == x2
-  liftEq _ _ _ = False
+  liftEq eq (LeftFragF x1) (LeftFragF x2)       = eq x1 x2
+  liftEq eq (RightFragF x1) (RightFragF x2)     = eq x1 x2
+  liftEq eq (TraceFragF) (TraceFragF)           = True
+  liftEq eq (AuxFragF x1) (AuxFragF x2)         = x1 == x2
+  liftEq _ _ _                                  = False
 
 instance (Show a, Show r) => Show (FragExprF a r) where
-  show ZeroFragF = "ZeroFragF"
+  show ZeroFragF       = "ZeroFragF"
   show (PairFragF x y) = "PairFragF " ++ show x ++ " " ++ show y
-  show EnvFragF = "EnvFragF"
+  show EnvFragF        = "EnvFragF"
   show (SetEnvFragF x) = "SetEnvFragF " ++ show x
-  show (DeferFragF i) = "DeferFragF " ++ show i
-  show AbortFragF = "AbortFragF"
+  show (DeferFragF i)  = "DeferFragF " ++ show i
+  show AbortFragF      = "AbortFragF"
   show (GateFragF x y) = "GateFragF " ++ show x ++ " " ++ show y
-  show (LeftFragF x) = "LeftFragF " ++ show x
-  show (RightFragF x) = "RightFragF " ++ show x
-  show TraceFragF = "TraceFragF"
-  show (AuxFragF x) = "AuxFragF " ++ show x
+  show (LeftFragF x)   = "LeftFragF " ++ show x
+  show (RightFragF x)  = "RightFragF " ++ show x
+  show TraceFragF      = "TraceFragF"
+  show (AuxFragF x)    = "AuxFragF " ++ show x
 
 instance Show a => Show1 (FragExprF a) where
   liftShowsPrec showsPrecf _ d ZeroFragF = showString "ZeroFragF"
