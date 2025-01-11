@@ -2,11 +2,13 @@
 {-# LANGUAGE DeriveAnyClass             #-}
 {-# LANGUAGE DeriveGeneric              #-}
 {-# LANGUAGE DeriveTraversable          #-}
+{-# LANGUAGE FlexibleInstances          #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE InstanceSigs               #-}
 {-# LANGUAGE LambdaCase                 #-}
 {-# LANGUAGE PatternSynonyms            #-}
 {-# LANGUAGE ScopedTypeVariables        #-}
+{-# LANGUAGE StandaloneDeriving         #-}
 {-# LANGUAGE TemplateHaskell            #-}
 {-# LANGUAGE TypeFamilies               #-}
 {-# LANGUAGE ViewPatterns               #-}
@@ -25,6 +27,7 @@ import qualified Control.Monad.State as State
 import Data.Bool (bool)
 import Data.Char (chr, ord)
 import Data.Eq.Deriving (deriveEq1)
+import Data.Functor.Classes (Show1)
 import Data.Functor.Foldable (Base, Corecursive (embed),
                               Recursive (cata, project))
 import Data.Functor.Foldable.TH (MakeBaseFunctor (makeBaseFunctor))
@@ -135,10 +138,14 @@ data ParserTerm l v
   | TLam (LamType l) (ParserTerm l v)
   | TLimitedRecursion (ParserTerm l v) (ParserTerm l v) (ParserTerm l v)
   deriving (Eq, Ord, Functor, Foldable, Traversable)
+-- deriving instance (Show l, Show v) => Show (ParserTerm l v)
 makeBaseFunctor ''ParserTerm -- Functorial version ParserTermF
-deriveShow1 ''ParserTermF
-deriveEq1 ''ParserTermF
-deriveOrd1 ''ParserTermF
+deriving instance (Show l, Show v, Show a) => Show (ParserTermF l v a)
+-- deriveShow1 ''ParserTermF
+-- deriveEq1 ''ParserTermF
+deriving instance (Eq l, Eq v, Eq a) => Eq (ParserTermF l v a)
+deriving instance (Ord l, Ord v, Ord a) => Ord (ParserTermF l v a)
+-- deriveOrd1 ''ParserTermF
 
 instance Plated (ParserTerm l v) where
   plate f = \case
@@ -260,7 +267,8 @@ data FragExpr a
   | AuxFrag a
   deriving (Eq, Ord, Generic, NFData)
 makeBaseFunctor ''FragExpr -- Functorial version FragExprF.
-deriveShow1 ''FragExprF
+deriving instance (Show a, Show b) => Show (FragExprF a b)
+-- deriveShow1 ''FragExprF
 deriveEq1 ''FragExprF
 
 instance Plated (FragExpr a) where
@@ -288,6 +296,11 @@ showFragAlg = \case
 
 instance Show a => Show (FragExpr a) where
   show fexp = State.evalState (cata showFragAlg fexp) 0
+
+deriving instance Show1 (FragExprF v)
+
+deriving instance Show (FragExprF (RecursionSimulationPieces FragExprUR) a)
+deriving instance Show (FragExprF Void a)
 
 newtype EIndex = EIndex { unIndex :: Int } deriving (Eq, Show, Ord)
 
