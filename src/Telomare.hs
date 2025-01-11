@@ -27,7 +27,7 @@ import qualified Control.Monad.State as State
 import Data.Bool (bool)
 import Data.Char (chr, ord)
 import Data.Eq.Deriving (deriveEq1)
-import Data.Functor.Classes (Show1)
+import Data.Functor.Classes (Show1(..), Eq1 (..))
 import Data.Functor.Foldable (Base, Corecursive (embed),
                               Recursive (cata, project))
 import Data.Functor.Foldable.TH (MakeBaseFunctor (makeBaseFunctor))
@@ -267,9 +267,8 @@ data FragExpr a
   | AuxFrag a
   deriving (Eq, Ord, Generic, NFData)
 makeBaseFunctor ''FragExpr -- Functorial version FragExprF.
-deriving instance (Show a, Show b) => Show (FragExprF a b)
 -- deriveShow1 ''FragExprF
-deriveEq1 ''FragExprF
+-- deriveEq1 ''FragExprF
 
 instance Plated (FragExpr a) where
   plate f = \case
@@ -297,10 +296,71 @@ showFragAlg = \case
 instance Show a => Show (FragExpr a) where
   show fexp = State.evalState (cata showFragAlg fexp) 0
 
-deriving instance Show1 (FragExprF v)
+instance (Eq a, Eq r) => Eq (FragExprF a r) where
+  ZeroFragF == ZeroFragF = True
+  PairFragF x1 y1 == PairFragF x2 y2 = x1 == x2 && y1 == y2
+  EnvFragF == EnvFragF = True
+  SetEnvFragF x1 == SetEnvFragF x2 = x1 == x2
+  DeferFragF i1 == DeferFragF i2 = i1 == i2
+  AbortFragF == AbortFragF = True
+  GateFragF x1 y1 == GateFragF x2 y2 = x1 == x2 && y1 == y2
+  LeftFragF x1 == LeftFragF x2 = x1 == x2
+  RightFragF x1 == RightFragF x2 = x1 == x2
+  TraceFragF == TraceFragF = True
+  AuxFragF x1 == AuxFragF x2 = x1 == x2
+  _ == _ = False
 
-deriving instance Show (FragExprF (RecursionSimulationPieces FragExprUR) a)
-deriving instance Show (FragExprF Void a)
+instance Eq a => Eq1 (FragExprF a) where
+  liftEq eq (ZeroFragF) (ZeroFragF) = True
+  liftEq eq (PairFragF x1 y1) (PairFragF x2 y2) = eq x1 x2 && eq y1 y2
+  liftEq eq (EnvFragF) (EnvFragF) = True
+  liftEq eq (SetEnvFragF x1) (SetEnvFragF x2) = eq x1 x2
+  liftEq eq (DeferFragF i1) (DeferFragF i2) = i1 == i2
+  liftEq eq (AbortFragF) (AbortFragF) = True
+  liftEq eq (GateFragF x1 y1) (GateFragF x2 y2) = eq x1 x2 && eq y1 y2
+  liftEq eq (LeftFragF x1) (LeftFragF x2) = eq x1 x2
+  liftEq eq (RightFragF x1) (RightFragF x2) = eq x1 x2
+  liftEq eq (TraceFragF) (TraceFragF) = True
+  liftEq eq (AuxFragF x1) (AuxFragF x2) = x1 == x2
+  liftEq _ _ _ = False
+
+instance (Show a, Show r) => Show (FragExprF a r) where
+  show ZeroFragF = "ZeroFragF"
+  show (PairFragF x y) = "PairFragF " ++ show x ++ " " ++ show y
+  show EnvFragF = "EnvFragF"
+  show (SetEnvFragF x) = "SetEnvFragF " ++ show x
+  show (DeferFragF i) = "DeferFragF " ++ show i
+  show AbortFragF = "AbortFragF"
+  show (GateFragF x y) = "GateFragF " ++ show x ++ " " ++ show y
+  show (LeftFragF x) = "LeftFragF " ++ show x
+  show (RightFragF x) = "RightFragF " ++ show x
+  show TraceFragF = "TraceFragF"
+  show (AuxFragF x) = "AuxFragF " ++ show x
+
+instance Show a => Show1 (FragExprF a) where
+  liftShowsPrec showsPrecf _ d ZeroFragF = showString "ZeroFragF"
+  liftShowsPrec showsPrecf _ d (PairFragF x y) =
+    showString "PairFragF " . showsPrecf d x . showChar ' ' . showsPrecf d y
+  liftShowsPrec _ _ _ EnvFragF = showString "EnvFragF"
+  liftShowsPrec showsPrecf _ d (SetEnvFragF x) =
+    showString "SetEnvFragF " . showsPrecf d x
+  liftShowsPrec _ _ d (DeferFragF i) =
+    showString "DeferFragF " . shows i
+  liftShowsPrec _ _ _ AbortFragF = showString "AbortFragF"
+  liftShowsPrec showsPrecf _ d (GateFragF x y) =
+    showString "GateFragF " . showsPrecf d x . showChar ' ' . showsPrecf d y
+  liftShowsPrec showsPrecf _ d (LeftFragF x) =
+    showString "LeftFragF " . showsPrecf d x
+  liftShowsPrec showsPrecf _ d (RightFragF x) =
+    showString "RightFragF " . showsPrecf d x
+  liftShowsPrec _ _ _ TraceFragF = showString "TraceFragF"
+  liftShowsPrec _ _ d (AuxFragF x) =
+    showString "AuxFragF " . shows x
+
+-- deriving instance Show1 (FragExprF v)
+
+-- deriving instance (Show a) => Show (FragExprF (RecursionSimulationPieces FragExprUR) a)
+-- deriving instance (Show a) => Show (FragExprF Void a)
 
 newtype EIndex = EIndex { unIndex :: Int } deriving (Eq, Show, Ord)
 
@@ -909,4 +969,23 @@ data UnprocessedParsedTerm
   deriving (Eq, Ord, Show)
 makeBaseFunctor ''UnprocessedParsedTerm -- Functorial version UnprocessedParsedTerm
 makePrisms ''UnprocessedParsedTerm
-deriveShow1 ''UnprocessedParsedTermF
+-- deriveShow1 ''UnprocessedParsedTermF
+
+instance (Show a) => Show (UnprocessedParsedTermF a) where
+  show (VarUPF s) = "VarUPF " ++ show s
+  show (ITEUPF c t e) = "ITEUPF " ++ show c ++ " " ++ show t ++ " " ++ show e
+  show (LetUPF bindings body) = "LetUPF " ++ show bindings ++ " " ++ show body
+  show (ListUPF terms) = "ListUPF " ++ show terms
+  show (IntUPF n) = "IntUPF " ++ show n
+  show (StringUPF s) = "StringUPF " ++ show s
+  show (PairUPF a b) = "PairUPF " ++ show a ++ " " ++ show b
+  show (AppUPF f x) = "AppUPF " ++ show f ++ " " ++ show x
+  show (LamUPF var body) = "LamUPF " ++ show var ++ " " ++ show body
+  show (ChurchUPF n) = "ChurchUPF " ++ show n
+  show (UnsizedRecursionUPF a b c) = "UnsizedRecursionUPF " ++ show a ++ " " ++ show b ++ " " ++ show c
+  show (LeftUPF x) = "LeftUPF " ++ show x
+  show (RightUPF x) = "RightUPF " ++ show x
+  show (TraceUPF x) = "TraceUPF " ++ show x
+  show (CheckUPF a b) = "CheckUPF " ++ show a ++ " " ++ show b
+  show (HashUPF x) = "HashUPF " ++ show x
+  show (CaseUPF scrutinee patterns) = "CaseUPF " ++ show scrutinee ++ " " ++ show patterns

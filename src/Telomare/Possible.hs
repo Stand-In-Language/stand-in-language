@@ -7,6 +7,8 @@
 {-# LANGUAGE ScopedTypeVariables        #-}
 {-# LANGUAGE TypeFamilies               #-}
 {-# LANGUAGE ViewPatterns               #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE UndecidableInstances #-}
 
 module Telomare.Possible where
 
@@ -456,11 +458,23 @@ unsizedStepM maxSize fullStep handleOther x = sequence x >>= f where
 data VoidF f
   deriving (Functor, Foldable, Traversable)
 
+instance Eq a => Eq (VoidF a) where
+  _ == _ = undefined  -- or you could use `case x of {}`
+
+instance Show a => Show (VoidF a) where
+  showsPrec _ x = case x of {_ -> undefined}  -- This properly handles the empty case
+
 instance Eq1 VoidF where
-  liftEq test a b = undefined
+  liftEq _ x = case x of {_ -> undefined}  -- This properly handles the empty case
 
 instance Show1 VoidF where
-  liftShowsPrec showsPrec showList prec x = undefined
+  liftShowsPrec _ _ _ x = case x of {_ -> undefined}  -- This properly handles the empty case
+
+-- instance Eq1 VoidF where
+--   liftEq test a b = undefined
+
+-- instance Show1 VoidF where
+--   liftShowsPrec showsPrec showList prec x = undefined
 
 data SuperPositionF f
   = EitherPF !f !f
@@ -685,6 +699,8 @@ instance UnsizedBase UnsizedExprF where
   extractU = \case
     UnsizedExprU x -> Just x
     _              -> Nothing
+instance (Eq a) => Eq (UnsizedExprF a) where
+  (==) = eq1
 instance Eq1 UnsizedExprF where
   liftEq test a b = case (a,b) of
     (UnsizedExprB x, UnsizedExprB y) -> liftEq test x y
@@ -731,6 +747,8 @@ instance SuperBase SuperExprF where
   extractP = \case
     SuperExprP x -> Just x
     _            -> Nothing
+instance (Eq1 PartExprF, Eq1 StuckF, Eq1 AbortableF, Eq1 SuperPositionF, Eq a) => Eq (SuperExprF a) where
+  (==) = eq1
 instance Eq1 SuperExprF where
   liftEq test a b = case (a,b) of
     (SuperExprB x, SuperExprB y) -> liftEq test x y
@@ -769,12 +787,20 @@ instance AbortBase AbortExprF where
   extractA = \case
     AbortExprA x -> Just x
     _            -> Nothing
-instance Eq1 AbortExprF where
+instance (Eq1 PartExprF, Eq1 StuckF, Eq1 AbortableF, Eq a) => Eq (AbortExprF a) where
+  (==) = eq1
+instance (Eq1 PartExprF, Eq1 StuckF, Eq1 AbortableF) => Eq1 AbortExprF where
   liftEq test a b = case (a,b) of
     (AbortExprB x, AbortExprB y) -> liftEq test x y
     (AbortExprS x, AbortExprS y) -> liftEq test x y
     (AbortExprA x, AbortExprA y) -> liftEq test x y
     _                            -> False
+-- instance Eq1 AbortExprF where
+--   liftEq test a b = case (a,b) of
+--     (AbortExprB x, AbortExprB y) -> liftEq test x y
+--     (AbortExprS x, AbortExprS y) -> liftEq test x y
+--     (AbortExprA x, AbortExprA y) -> liftEq test x y
+--     _                            -> False
 instance PrettyPrintable1 AbortExprF where
   showP1 = \case
     AbortExprB x -> showP1 x
