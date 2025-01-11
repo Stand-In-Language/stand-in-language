@@ -3,14 +3,13 @@
     nixpkgs.url = "github:nixos/nixpkgs";
     flake-parts.url = "github:hercules-ci/flake-parts";
     haskell-flake.url = "github:srid/haskell-flake";
-    hvm.url = "github:hhefesto/HVM";
     flake-compat = {
       url = "github:edolstra/flake-compat";
       flake = false;
     };
   };
 
-  outputs = inputs@{ self, nixpkgs, flake-compat, hvm, flake-parts, haskell-flake, ... }:
+  outputs = inputs@{ self, nixpkgs, flake-compat, flake-parts, haskell-flake, ... }:
     flake-parts.lib.mkFlake { inherit inputs; } {
       systems = [ "x86_64-linux" "aarch64-linux" ];
       imports = [ inputs.haskell-flake.flakeModule ];
@@ -51,18 +50,6 @@
               inherit (hp) cabal-install haskell-language-server;
             };
           };
-          # settings = {
-          #   unix.source = "2.8.1.0";
-          # };
-          # packages = {
-          #   unix.source = "2.8.1.0";
-          #   # foo.source = "0.1";
-          #   # bar.source = inputs.bar;
-          # };
-
-          # devShell = {
-          #   enable = true;
-          # };
       };
       packages.default = self'.packages.telomare;
       apps.default = {

@@ -1,27 +1,27 @@
 #!/usr/bin/env bash
 
-# echo "Formatting:"
-# # Formatting
-# nix develop -c stylish-haskell -irv .
-# output=$(git diff)
-# if [ "$output" = "" ]; then
-# 		echo "Success! No formatting suggestions applied."
-# else
-# 		echo "These stylish-haskell formatting changes will be made for your commit:"
-# 		echo "$output"
-# fi
-# echo "Finished formatting"
+echo "Formatting:"
+# Formatting
+nix develop -c stylish-haskell -irv .
+output=$(git diff)
+if [ "$output" = "" ]; then
+		echo "Success! No formatting suggestions applied."
+else
+		echo "These stylish-haskell formatting changes will be made for your commit:"
+		echo "$output"
+fi
+echo "Finished formatting"
 
-# # Linting
-# # TODO: The --refactor flag does not work even after adding `apply-refactor` to the devShell
-# echo "Linting:"
-# output=$(nix develop -c hlint . --no-exit-code)
-# if [ "$output" = "No hints" ]; then
-# 		echo "Success! No Hlint suggestions."
-# else
-# 		echo "Failure: Hlint has some suggestions for your commit"
-# 		echo "$output"
-# 		echo "Please fix or add an exception to the .hlint.yaml file"
-# 		exit 1
-# fi
-# echo "Finished linting"
+# Linting
+# TODO: The --refactor flag does not work even after adding `apply-refactor` to the devShell
+echo "Linting:"
+output=$(nix develop -c hlint . --no-exit-code)
+if [ "$output" = "No hints" ]; then
+		echo "Success! No Hlint suggestions."
+else
+		echo "Failure: Hlint has some suggestions for your commit"
+		echo "$output"
+		echo "Please fix or add an exception to the .hlint.yaml file"
+		exit 1
+fi
+echo "Finished linting"

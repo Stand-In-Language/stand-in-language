@@ -462,19 +462,13 @@ instance Eq a => Eq (VoidF a) where
   _ == _ = undefined  -- or you could use `case x of {}`
 
 instance Show a => Show (VoidF a) where
-  showsPrec _ x = case x of {_ -> undefined}  -- This properly handles the empty case
+  showsPrec _ x = case x of {_ -> undefined}
 
 instance Eq1 VoidF where
-  liftEq _ x = case x of {_ -> undefined}  -- This properly handles the empty case
+  liftEq _ x = case x of {_ -> undefined}
 
 instance Show1 VoidF where
-  liftShowsPrec _ _ _ x = case x of {_ -> undefined}  -- This properly handles the empty case
-
--- instance Eq1 VoidF where
---   liftEq test a b = undefined
-
--- instance Show1 VoidF where
---   liftShowsPrec showsPrec showList prec x = undefined
+  liftShowsPrec _ _ _ x = case x of {_ -> undefined}
 
 data SuperPositionF f
   = EitherPF !f !f
@@ -795,12 +789,6 @@ instance (Eq1 PartExprF, Eq1 StuckF, Eq1 AbortableF) => Eq1 AbortExprF where
     (AbortExprS x, AbortExprS y) -> liftEq test x y
     (AbortExprA x, AbortExprA y) -> liftEq test x y
     _                            -> False
--- instance Eq1 AbortExprF where
---   liftEq test a b = case (a,b) of
---     (AbortExprB x, AbortExprB y) -> liftEq test x y
---     (AbortExprS x, AbortExprS y) -> liftEq test x y
---     (AbortExprA x, AbortExprA y) -> liftEq test x y
---     _                            -> False
 instance PrettyPrintable1 AbortExprF where
   showP1 = \case
     AbortExprB x -> showP1 x

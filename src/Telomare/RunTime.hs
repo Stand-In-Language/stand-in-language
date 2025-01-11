@@ -178,7 +178,6 @@ instance TelomareLike IExpr where
 instance AbstractRunTime IExpr where
   -- eval = fix iEval Zero
   eval = rEval Zero
-  -- hvmEval :: IExpr -> IO IExpr
 
 resultIndex = FragIndex (-1)
 instance TelomareLike NExprs where
