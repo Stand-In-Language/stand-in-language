@@ -37,8 +37,8 @@ type AnnotatedUPT = Cofree UnprocessedParsedTermF LocTag
 instance Plated UnprocessedParsedTerm where
   plate f = \case
     ITEUP i t e -> ITEUP <$> f i <*> f t <*> f e
-    LetUP l x   -> LetUP <$> traverse sequenceA (second f <$> l) <*> f x
-    CaseUP x l  -> CaseUP <$> f x <*> traverse sequenceA (second f <$> l)
+    LetUP l x   -> LetUP <$> traverse (sequenceA . second f) l <*> f x
+    CaseUP x l  -> CaseUP <$> f x <*> traverse (sequenceA . second f) l
     ListUP l    -> ListUP <$> traverse f l
     PairUP a b  -> PairUP <$> f a <*> f b
     AppUP u x   -> AppUP <$> f u <*> f x

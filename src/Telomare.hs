@@ -143,7 +143,7 @@ deriving instance (Show l, Show v) => Show1 (ParserTermF l v)
 deriving instance (Show l) => Show2 (ParserTermF l)
 deriving instance (Eq l, Eq v, Eq a) => Eq (ParserTermF l v a)
 instance Eq l => Eq2 (ParserTermF l) where
-  liftEq2 eqv eqa (TZeroF) (TZeroF) = True
+  liftEq2 eqv eqa TZeroF TZeroF = True
   liftEq2 eqv eqa (TPairF x1 y1) (TPairF x2 y2) = eqa x1 x2 && eqa y1 y2
   liftEq2 eqv eqa (TVarF v1) (TVarF v2) = eqv v1 v2
   liftEq2 eqv eqa (TAppF x1 y1) (TAppF x2 y2) = eqa x1 x2 && eqa y1 y2
@@ -323,31 +323,31 @@ instance (Eq a, Eq r) => Eq (FragExprF a r) where
   _ == _                             = False
 
 instance Eq a => Eq1 (FragExprF a) where
-  liftEq eq (ZeroFragF) (ZeroFragF)             = True
+  liftEq eq ZeroFragF ZeroFragF                 = True
   liftEq eq (PairFragF x1 y1) (PairFragF x2 y2) = eq x1 x2 && eq y1 y2
-  liftEq eq (EnvFragF) (EnvFragF)               = True
+  liftEq eq EnvFragF EnvFragF                   = True
   liftEq eq (SetEnvFragF x1) (SetEnvFragF x2)   = eq x1 x2
   liftEq eq (DeferFragF i1) (DeferFragF i2)     = i1 == i2
-  liftEq eq (AbortFragF) (AbortFragF)           = True
+  liftEq eq AbortFragF AbortFragF               = True
   liftEq eq (GateFragF x1 y1) (GateFragF x2 y2) = eq x1 x2 && eq y1 y2
   liftEq eq (LeftFragF x1) (LeftFragF x2)       = eq x1 x2
   liftEq eq (RightFragF x1) (RightFragF x2)     = eq x1 x2
-  liftEq eq (TraceFragF) (TraceFragF)           = True
+  liftEq eq TraceFragF TraceFragF               = True
   liftEq eq (AuxFragF x1) (AuxFragF x2)         = x1 == x2
   liftEq _ _ _                                  = False
 
 instance (Show a, Show r) => Show (FragExprF a r) where
   show ZeroFragF       = "ZeroFragF"
-  show (PairFragF x y) = "PairFragF " ++ show x ++ " " ++ show y
+  show (PairFragF x y) = "PairFragF " <> show x <> " " <> show y
   show EnvFragF        = "EnvFragF"
-  show (SetEnvFragF x) = "SetEnvFragF " ++ show x
-  show (DeferFragF i)  = "DeferFragF " ++ show i
+  show (SetEnvFragF x) = "SetEnvFragF " <> show x
+  show (DeferFragF i)  = "DeferFragF " <> show i
   show AbortFragF      = "AbortFragF"
-  show (GateFragF x y) = "GateFragF " ++ show x ++ " " ++ show y
-  show (LeftFragF x)   = "LeftFragF " ++ show x
-  show (RightFragF x)  = "RightFragF " ++ show x
+  show (GateFragF x y) = "GateFragF " <> show x <> " " <> show y
+  show (LeftFragF x)   = "LeftFragF " <> show x
+  show (RightFragF x)  = "RightFragF " <> show x
   show TraceFragF      = "TraceFragF"
-  show (AuxFragF x)    = "AuxFragF " ++ show x
+  show (AuxFragF x)    = "AuxFragF " <> show x
 
 instance Show a => Show1 (FragExprF a) where
   liftShowsPrec showsPrecf _ d ZeroFragF = showString "ZeroFragF"
@@ -978,23 +978,23 @@ makeBaseFunctor ''UnprocessedParsedTerm -- Functorial version UnprocessedParsedT
 makePrisms ''UnprocessedParsedTerm
 
 instance (Show a) => Show (UnprocessedParsedTermF a) where
-  show (VarUPF s) = "VarUPF " ++ show s
-  show (ITEUPF c t e) = "ITEUPF " ++ show c ++ " " ++ show t ++ " " ++ show e
-  show (LetUPF bindings body) = "LetUPF " ++ show bindings ++ " " ++ show body
-  show (ListUPF terms) = "ListUPF " ++ show terms
-  show (IntUPF n) = "IntUPF " ++ show n
-  show (StringUPF s) = "StringUPF " ++ show s
-  show (PairUPF a b) = "PairUPF " ++ show a ++ " " ++ show b
-  show (AppUPF f x) = "AppUPF " ++ show f ++ " " ++ show x
-  show (LamUPF var body) = "LamUPF " ++ show var ++ " " ++ show body
-  show (ChurchUPF n) = "ChurchUPF " ++ show n
-  show (UnsizedRecursionUPF a b c) = "UnsizedRecursionUPF " ++ show a ++ " " ++ show b ++ " " ++ show c
-  show (LeftUPF x) = "LeftUPF " ++ show x
-  show (RightUPF x) = "RightUPF " ++ show x
-  show (TraceUPF x) = "TraceUPF " ++ show x
-  show (CheckUPF a b) = "CheckUPF " ++ show a ++ " " ++ show b
-  show (HashUPF x) = "HashUPF " ++ show x
-  show (CaseUPF scrutinee patterns) = "CaseUPF " ++ show scrutinee ++ " " ++ show patterns
+  show (VarUPF s) = "VarUPF " <> show s
+  show (ITEUPF c t e) = "ITEUPF " <> show c <> " " <> show t <> " " <> show e
+  show (LetUPF bindings body) = "LetUPF " <> show bindings <> " " <> show body
+  show (ListUPF terms) = "ListUPF " <> show terms
+  show (IntUPF n) = "IntUPF " <> show n
+  show (StringUPF s) = "StringUPF " <> show s
+  show (PairUPF a b) = "PairUPF " <> show a <> " " <> show b
+  show (AppUPF f x) = "AppUPF " <> show f <> " " <> show x
+  show (LamUPF var body) = "LamUPF " <> show var <> " " <> show body
+  show (ChurchUPF n) = "ChurchUPF " <> show n
+  show (UnsizedRecursionUPF a b c) = "UnsizedRecursionUPF " <> show a <> " " <> show b <> " " <> show c
+  show (LeftUPF x) = "LeftUPF " <> show x
+  show (RightUPF x) = "RightUPF " <> show x
+  show (TraceUPF x) = "TraceUPF " <> show x
+  show (CheckUPF a b) = "CheckUPF " <> show a <> " " <> show b
+  show (HashUPF x) = "HashUPF " <> show x
+  show (CaseUPF scrutinee patterns) = "CaseUPF " <> show scrutinee <> " " <> show patterns
 
 instance Show1 UnprocessedParsedTermF where
   liftShowsPrec showsPrecFunc showList d term = case term of
@@ -1005,11 +1005,11 @@ instance Show1 UnprocessedParsedTermF where
       let showBinding (str, x) = showChar '(' . shows str . showString ", "
                                 . showsPrecFunc 11 x . showChar ')'
           showBindings bs = showChar '[' . foldr1 (\a b -> a . showString ", " . b)
-                           (map showBinding bs) . showChar ']'
+                           (fmap showBinding bs) . showChar ']'
       in showString "LetUPF " . showBindings bindings . showChar ' ' . showsPrecFunc 11 body
     ListUPF terms -> showString "ListUPF [" .
                      foldr1 (\a b -> a . showString ", " . b)
-                           (map (showsPrecFunc 11) terms) .
+                           (fmap (showsPrecFunc 11) terms) .
                      showChar ']'
     IntUPF n -> showString "IntUPF " . shows n
     StringUPF s -> showString "StringUPF " . shows s
@@ -1034,6 +1034,6 @@ instance Show1 UnprocessedParsedTermF where
       let showPattern (pat, x) = showChar '(' . shows pat . showString ", "
                                 . showsPrecFunc 11 x . showChar ')'
           showPatterns ps = showChar '[' . foldr1 (\a b -> a . showString ", " . b)
-                           (map showPattern patterns) . showChar ']'
+                           (fmap showPattern patterns) . showChar ']'
       in showString "CaseUPF " . showsPrecFunc 11 scrutinee . showChar ' '
          . showPatterns patterns

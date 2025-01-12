@@ -240,7 +240,7 @@ removeCaseUPs = transform go where
           dirs2LeavesOnUPT f = fmap (\y -> anno :< ListUPF y) $ (($ x) <$>) . f <$> patterns
           dirs2LeavesOnPattern :: (Pattern -> [AnnotatedUPT -> AnnotatedUPT])
                                -> [AnnotatedUPT]
-          dirs2LeavesOnPattern f = (\a -> anno :< ListUPF a) <$> (pairApplyList <$> (bimap f (pattern2UPT anno) . duplicate <$> patterns))
+          dirs2LeavesOnPattern f = ((\a -> anno :< ListUPF a) . pairApplyList . bimap f (pattern2UPT anno) . duplicate <$> patterns)
       in case2annidatedIfs x
                            patterns
                            (dirs2LeavesOnUPT (findInts anno))

@@ -1,5 +1,6 @@
 {-# LANGUAGE DeriveTraversable          #-}
 {-# LANGUAGE DerivingVia                #-}
+{-# LANGUAGE EmptyCase                  #-}
 {-# LANGUAGE FlexibleContexts           #-}
 {-# LANGUAGE FlexibleInstances          #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
@@ -462,13 +463,13 @@ instance Eq a => Eq (VoidF a) where
   _ == _ = undefined  -- or you could use `case x of {}`
 
 instance Show a => Show (VoidF a) where
-  showsPrec _ x = case x of {_ -> undefined}
+  showsPrec _ x = case x of {}
 
 instance Eq1 VoidF where
-  liftEq _ x = case x of {_ -> undefined}
+  liftEq _ x = case x of {}
 
 instance Show1 VoidF where
-  liftShowsPrec _ _ _ x = case x of {_ -> undefined}
+  liftShowsPrec _ _ _ x = case x of {}
 
 data SuperPositionF f
   = EitherPF !f !f
