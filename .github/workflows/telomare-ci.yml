@@ -24,6 +24,9 @@ jobs:
         # cachix use iohk
         echo nix build and tests:
         nix -Lv flake check
+        echo "Setting up cabal..."
+
+        nix -Lv develop -c cabal update
 
         echo "Testing telomare-repl..."
         REPL_OUTPUT=$(nix -Lv develop -c cabal run telomare-repl -- --expr 'succ 7' 2>/dev/null | tail -n 1)
