@@ -6,10 +6,11 @@ module Telomare.Eval where
 
 import Control.Comonad.Cofree (Cofree ((:<)), hoistCofree)
 import Control.Lens.Plated (Plated (..), transform, transformM)
-import Control.Monad.Except (fix, runExceptT, void)
+import Control.Monad (void)
 import Control.Monad.State (State, StateT, evalState)
 import qualified Control.Monad.State as State
 import Data.Bifunctor (bimap, first)
+import Data.Function (fix)
 import Data.Functor.Foldable (Base, para)
 import Data.Map (Map)
 import qualified Data.Map as Map

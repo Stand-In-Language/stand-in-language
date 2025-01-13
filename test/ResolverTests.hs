@@ -69,7 +69,7 @@ containsTHash = \case
   x          -> False
 
 onlyHashUPsChanged :: Term2' -> Bool
-onlyHashUPsChanged term2 = and $ fmap (isHash . fst) diffList where
+onlyHashUPsChanged term2 = all (isHash . fst) diffList where
   diffList :: [(Term2', Term2')]
   diffList = diffTerm2 (term2, forget . generateAllHashes . tag DummyLoc $ term2)
   isHash :: Term2' -> Bool
