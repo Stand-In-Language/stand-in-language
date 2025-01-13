@@ -24,11 +24,24 @@ jobs:
         # cachix use iohk
         echo nix build and tests:
         nix -Lv flake check
-        echo testing telomare-repl and nix develop:
-        REPL_OUTPUT=$(nix -Lv develop -c cabal run telomare-repl -- --expr 'succ 7' | tail -n 1)
+        echo "Setting up cabal..."
+
+        nix -Lv develop -c cabal update
+
+        echo "Testing telomare-repl..."
+        REPL_OUTPUT=$(nix -Lv develop -c cabal run telomare-repl -- --expr 'succ 7' 2>/dev/null | tail -n 1)
         echo "REPL output: $REPL_OUTPUT"
-        # [[ "8" -eq $(nix -Lv develop -c cabal run telomare-repl -- --expr 'succ 7' | tail -n 1) ]]
-        [[ "8" -eq "$REPL_OUTPUT" ]] || { echo "REPL test failed: expected 8, got $REPL_OUTPUT"; exit 1; }
+        if [[ "$REPL_OUTPUT" == "8" ]]; then
+            echo "REPL test passed"
+        else
+            echo "REPL test failed: expected 8, got '$REPL_OUTPUT'"
+            exit 1
+        fi
+                # echo testing telomare-repl and nix develop:
+                # REPL_OUTPUT=$(nix -Lv develop -c cabal run telomare-repl -- --expr 'succ 7' | tail -n 1)
+                # echo "REPL output: $REPL_OUTPUT"
+                # # [[ "8" -eq $(nix -Lv develop -c cabal run telomare-repl -- --expr 'succ 7' | tail -n 1) ]]
+                # [[ "8" -eq "$REPL_OUTPUT" ]] || { echo "REPL test failed: expected 8, got $REPL_OUTPUT"; exit 1; }
         echo building for legacy nix-shell:
         nix-build
         nix-shell --run "echo OK"
