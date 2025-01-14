@@ -121,6 +121,7 @@ jobs:
         run: |
           ls
           cd telomare
+          nix -Lv develop -c cabal update
           (nix develop -c cabal haddock --haddock-hyperlink-source) > ../haddock-output
           echo OK Haddock build
       - name: haddock copy
