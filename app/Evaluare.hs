@@ -1,10 +1,10 @@
-{-# LANGUAGE ScopedTypeVariables #-}
+module Main where
 
 import Control.Comonad.Cofree (Cofree ((:<)))
 import qualified Control.Exception as Exception
 import Control.Monad
 import Control.Monad.Fix (MonadFix)
-import Data.Bifunctor (bimap, first)
+import Data.Bifunctor (first)
 import Data.Either (fromLeft)
 import Data.Map (Map)
 import qualified Data.Map as Map
@@ -14,14 +14,13 @@ import qualified Data.Text.Zipper as TZ
 import qualified Graphics.Vty as V
 import PrettyPrint (PrettierIExpr (..))
 import Reflex
-import Reflex.Network
 import Reflex.Vty
 import System.Environment (getArgs)
 import qualified System.IO.Strict as Strict
 import qualified Telomare as Tel
 import Telomare (IExpr (..), IExprF (..))
 import qualified Telomare.Eval as TE
-import Telomare.Parser (AnnotatedUPT (..), parsePrelude)
+import Telomare.Parser (AnnotatedUPT, parsePrelude)
 import Text.Read (readMaybe)
 
 type VtyExample t m =

@@ -122,7 +122,6 @@ executable telomare-evaluare
     free,
     strict
   default-language: Haskell2010
-  -- other-modules: Example.CPU
   default-extensions:
     BangPatterns
     ConstraintKinds
