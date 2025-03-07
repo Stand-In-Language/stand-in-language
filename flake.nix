@@ -15,7 +15,7 @@
       imports = [ inputs.haskell-flake.flakeModule ];
       perSystem = { self', system, pkgs, ... }: {
         haskellProjects.default = {
-          basePackages = pkgs.haskell.packages.ghc98;
+          basePackages = pkgs.haskell.packages.ghc96;
           # To get access to non-Haskell dependencies one most add them to `extraBuildDepends`
           # and then use the haskell package `which` to locate the Filepath of the executable
           # that's being added. In this toy example we'll be using the non-Haskell dependency
@@ -60,6 +60,11 @@
       apps.repl = {
         type = "app";
         program = self.packages.${system}.telomare + "/bin/telomare-repl";
+      };
+
+      apps.evaluare = {
+        type = "app";
+        program = self.packages.${system}.telomare + "/bin/telomare-evaluare";
       };
     };
   };
