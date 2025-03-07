@@ -61,6 +61,11 @@
         type = "app";
         program = self.packages.${system}.telomare + "/bin/telomare-repl";
       };
+
+      apps.evaluare = {
+        type = "app";
+        program = self.packages.${system}.telomare + "/bin/telomare-evaluare";
+      };
     };
   };
 }
