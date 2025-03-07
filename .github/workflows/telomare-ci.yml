@@ -13,6 +13,7 @@ jobs:
         nix_path: nixpkgs=channel:nixos-unstable
         extra_nix_config: |
           access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
+    - uses: DeterminateSystems/magic-nix-cache-action@v2
     - uses: cachix/cachix-action@v14
       with:
         name: telomare
@@ -46,12 +47,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout telomare repository
-        uses: actions/checkout@v3
-      - uses: cachix/install-nix-action@v20
+        uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v25
         with:
           extra_nix_config: |
             access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
-      - uses: cachix/cachix-action@v12
+      - uses: DeterminateSystems/magic-nix-cache-action@v2
+      - uses: cachix/cachix-action@v14
         with:
           name: telomare
           signingKey: '${{ secrets.CACHIX_SIGNING_KEY }}'
@@ -71,12 +73,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout telomare repository
-        uses: actions/checkout@v3
-      - uses: cachix/install-nix-action@v20
+        uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v25
         with:
           extra_nix_config: |
             access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
-      - uses: cachix/cachix-action@v12
+      - uses: DeterminateSystems/magic-nix-cache-action@v2
+      - uses: cachix/cachix-action@v14
         with:
           name: telomare
           signingKey: '${{ secrets.CACHIX_SIGNING_KEY }}'
@@ -97,22 +100,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout telomare repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           repository: Stand-In-Language/stand-in-language
           token: ${{ secrets.API_TOKEN_GITHUB }}
           path: ./telomare
       - name: Checkout telomare site repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           repository: Stand-In-Language/stand-in-language.github.io
           token: ${{ secrets.API_TOKEN_GITHUB }}
           path: ./stand-in-language.github.io
-      - uses: cachix/install-nix-action@v20
+      - uses: cachix/install-nix-action@v25
         with:
           extra_nix_config: |
             access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
-      - uses: cachix/cachix-action@v12
+      - uses: DeterminateSystems/magic-nix-cache-action@v2
+      - uses: cachix/cachix-action@v14
         with:
           name: telomare
           signingKey: '${{ secrets.CACHIX_SIGNING_KEY }}'
@@ -147,7 +151,7 @@ jobs:
           rm -rf stand-in-language.github.io/docs/haddock/
           mkdir stand-in-language.github.io/docs/haddock/
           cp -r "$doc_loc"/. stand-in-language.github.io/docs/haddock
-      - uses: EndBug/add-and-commit@v7
+      - uses: EndBug/add-and-commit@v9
         with:
           message: 'haddock documentation automatically updated'
           cwd: './stand-in-language.github.io/'
