@@ -1,0 +1,6 @@
+-- Ultra ultra minimal recursive test case
+main = \input -> let result = { \i -> 0                -- Base case (never used)
+                              , \recur i -> recur i     -- Recursion (infinite loop)
+                              , \i -> i                 -- Default: returns input
+                              } (left (left input))  
+                 in (if result then "EV" else "O", 0)

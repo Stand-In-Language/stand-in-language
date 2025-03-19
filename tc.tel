@@ -1,0 +1,21 @@
+-- returns whether the ascii value of a character is even
+isEven = \n -> { \i -> left i -- test for if a recursive call should be made, or the base case should be called
+               , \recur i -> recur (left (left i), not (right i)) -- function that will be made recursive, where recur is the continuation
+               , \i -> right i -- base case call
+               } (n, 1)
+
+-- limit the input space. This is necessary, because it's impossible to find limits to recursive functions operating on unbounded data
+validAscii = \x -> assert (not ($127 left x)) "!"
+
+main = \input -> let userInput = left input
+                     firstChar = left userInput
+                     limInput : validAscii = firstChar
+                     oldState = right input
+
+                     output = concat ["R "
+                                     , if isEven limInput then "EV" else "O" -- breaks
+                                     -- , if isEven limInput then "E" else "O" -- works
+                                     ]
+                 in if not input
+                    then (" ", 1)
+                    else (output, 0)

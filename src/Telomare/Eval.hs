@@ -162,6 +162,12 @@ convertPT ll (Term3 termMap) =
         AuxFragF z     -> error "convertPT should be no AuxFrags here TODO"
   in Term4 $ fmap (hoistCofree changeType) newMap
 
+findChurchSizeD :: Bool -> Term3 -> Either EvalError Term4
+findChurchSizeD useSizing t3 =
+  if useSizing
+    then calculateRecursionLimits t3  -- Use sizing algorithm
+    else pure (convertPT (const 255) t3)  -- Use fixed size of 255
+
 findChurchSize :: Term3 -> Either EvalError Term4
 -- findChurchSize = pure . convertPT (const 255)
 findChurchSize = calculateRecursionLimits -- works fine for unit tests, but uses too much memory for tictactoe
