@@ -38,6 +38,7 @@ library
                      , Telomare.Optimizer
                      , Telomare.Parser
                      , Telomare.Possible
+                     , Telomare.PossibleData
                      , Telomare.Resolver
                      , Telomare.RunTime
                      , Telomare.TypeChecker

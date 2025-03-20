@@ -34,8 +34,8 @@ import Telomare (BreakState, BreakState', ExprA (..), FragExpr (..),
                  pattern AbortUser, rootFrag, s2g, setEnvF, tag, unFragExprUR)
 import Telomare.Optimizer (optimize)
 import Telomare.Parser (AnnotatedUPT, UnprocessedParsedTerm (..), parsePrelude)
-import Telomare.Possible (AbortExpr, VoidF, abortExprToTerm4, evalA, sizeTerm, sizeTermM,
-                          term3ToUnsizedExpr)
+import Telomare.Possible (abortExprToTerm4, evalA, sizeTerm, sizeTermM, term3ToUnsizedExpr)
+import Telomare.PossibleData (AbortExpr, VoidF)
 import Telomare.Resolver (parseMain)
 import Telomare.RunTime (hvmEval, optimizedEval, pureEval, simpleEval)
 import Telomare.TypeChecker (TypeCheckError (..), typeCheck)
