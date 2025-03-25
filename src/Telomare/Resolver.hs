@@ -320,10 +320,9 @@ makeLambda str term1@(anno :< _) =
         unbound = v \\ Set.singleton str
 
 -- |Transformation from `AnnotatedUPT` to `Term1` validating and inlining `VarUP`s
-validateVariables :: [(String, AnnotatedUPT)] -- ^ Prelude
-                  -> AnnotatedUPT
+validateVariables :: AnnotatedUPT
                   -> Either String Term1
-validateVariables prelude term =
+validateVariables term =
   let validateWithEnvironment :: AnnotatedUPT
                               -> State.StateT (Map String Term1) (Either String) Term1
       validateWithEnvironment = \case
@@ -428,29 +427,26 @@ addBuiltins aupt = DummyLoc :< LetUPF
   aupt
 
 -- |Process an `AnnotatedUPT` to a `Term3` with failing capability.
-process :: [(String, AnnotatedUPT)] -- ^Prelude
-        -> AnnotatedUPT
+process :: AnnotatedUPT
         -> Either String Term3
-process prelude upt = (\dt -> debugTrace ("Resolver process term:\n" <> prettyPrint dt) dt) . splitExpr <$> process2Term2 prelude upt
+process upt = (\dt -> debugTrace ("Resolver process term:\n" <> prettyPrint dt) dt) . splitExpr <$> process2Term2 upt
 
-process2Term2 :: [(String, AnnotatedUPT)] -- ^Prelude
-              -> AnnotatedUPT
+process2Term2 :: AnnotatedUPT
               -> Either String Term2
-process2Term2 prelude = fmap generateAllHashes
-                      . debruijinize [] <=< validateVariables prelude
-                      . removeCaseUPs
-                      . optimizeBuiltinFunctions
-                      . addBuiltins
+process2Term2 = fmap generateAllHashes
+              . debruijinize [] <=< validateVariables
+              . removeCaseUPs
+              . optimizeBuiltinFunctions
+              . addBuiltins
 
 -- |Helper function to compile to Term2
 runTelomareParser2Term2 :: TelomareParser AnnotatedUPT -- ^Parser to run
-                        -> [(String, AnnotatedUPT)]    -- ^Prelude
-                        -> String                               -- ^Raw string to be parsed
-                        -> Either String Term2                  -- ^Error on Left
-runTelomareParser2Term2 parser prelude str =
-  first errorBundlePretty (runParser parser "" str) >>= process2Term2 prelude
+                        -> String                      -- ^Raw string to be parsed
+                        -> Either String Term2         -- ^Error on Left
+runTelomareParser2Term2 parser str =
+  first errorBundlePretty (runParser parser "" str) >>= process2Term2
 
 parseMain :: [(String, AnnotatedUPT)] -- ^Prelude: [(VariableName, BindedUPT)]
-          -> String                            -- ^Raw string to be parserd.
-          -> Either String Term3               -- ^Error on Left.
-parseMain prelude s = parseWithPrelude prelude s >>= process prelude
+          -> String                   -- ^Raw string to be parserd.
+          -> Either String Term3      -- ^Error on Left.
+parseMain prelude s = parseWithPrelude prelude s >>= process

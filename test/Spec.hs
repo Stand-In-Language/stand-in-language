@@ -360,7 +360,7 @@ qcDecompileIExprAndBackEvalsSame (IExprWrapper x) = pure (showResult $ eval' x)
         debruijinize' x = case debruijinize [] x of
           Just r -> r
           _      -> error "debruijinize error"
-        validateVariables' x = case validateVariables [] x of
+        validateVariables' x = case validateVariables x of
           Right r -> r
           Left e  -> error ("validateVariables " <> e)
         parseLongExpr' x = case runTelomareParser (scn *> parseLongExpr <* scn) x of

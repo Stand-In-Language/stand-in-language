@@ -304,7 +304,7 @@ calculateRecursionLimits t3 =
 
 eval2IExpr :: [(String, AnnotatedUPT)] -> String -> Either String IExpr
 eval2IExpr prelude str = bimap errorBundlePretty (\x -> DummyLoc :< LetUPF prelude x) (runParser (parseOneExprOrTopLevelDefs prelude) "" str)
-                           >>= process prelude
+                           >>= process
                            >>= first show . compileUnitTest
 
 tagIExprWithEval :: IExpr -> Cofree IExprF (Int, IExpr)
@@ -361,7 +361,7 @@ tagUPTwithIExpr :: [(String, AnnotatedUPT)]
                 -> Cofree UnprocessedParsedTermF (Int, Either String IExpr)
 tagUPTwithIExpr prelude upt = evalState (para alg upt) 0 where
   upt2iexpr :: UnprocessedParsedTerm -> Either String IExpr
-  upt2iexpr u = process prelude (tag DummyLoc u) >>= first show . compileUnitTest
+  upt2iexpr u = process (tag DummyLoc u) >>= first show . compileUnitTest
   alg :: Base UnprocessedParsedTerm
               ( UnprocessedParsedTerm
               , State Int (Cofree UnprocessedParsedTermF (Int, Either String IExpr))
