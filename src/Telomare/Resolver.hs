@@ -311,15 +311,13 @@ splitExpr t = let (bf, (_,_,m)) = State.runState (splitExpr' t) (toEnum 0, FragI
 
 -- |`makeLambda ps vl t1` makes a `TLam` around `t1` with `vl` as arguments.
 -- Automatic recognition of Close or Open type of `TLam`.
-makeLambda :: [(String, AnnotatedUPT)] -- ^Bindings
-           -> String                            -- ^Variable name
+makeLambda :: String                            -- ^Variable name
            -> Term1                             -- ^Lambda body
            -> Term1
-makeLambda bindings str term1@(anno :< _) =
+makeLambda str term1@(anno :< _) =
   if unbound == Set.empty then anno :< TLamF (Closed str) term1 else anno :< TLamF (Open str) term1
-  where bindings' = Set.fromList $ fst <$> bindings
-        v = varsTerm1 term1
-        unbound = (v \\ bindings') \\ Set.singleton str
+  where v = varsTerm1 term1
+        unbound = v \\ Set.singleton str
 
 -- |Transformation from `AnnotatedUPT` to `Term1` validating and inlining `VarUP`s
 validateVariables :: [(String, AnnotatedUPT)] -- ^ Prelude
@@ -334,7 +332,7 @@ validateVariables prelude term =
           State.modify (Map.insert v (anno :< TVarF v))
           result <- validateWithEnvironment x
           State.put oldState
-          pure $ makeLambda prelude v result
+          pure $ makeLambda v result
         anno :< VarUPF n -> do
           definitionsMap <- State.get
           case Map.lookup n definitionsMap of
