@@ -126,12 +126,12 @@ unitTests :: TestTree
 unitTests = testGroup "Unit tests"
   [
     testCase "different values get different hashes" $ do
-      let res1 = generateAllHashes <$> runTelomareParser2Term2 parseLet [] hashtest0
-          res2 = generateAllHashes <$> runTelomareParser2Term2 parseLet [] hashtest1
+      let res1 = generateAllHashes <$> runTelomareParser2Term2 parseLet hashtest0
+          res2 = generateAllHashes <$> runTelomareParser2Term2 parseLet hashtest1
       (res1 == res2) `compare` False @?= EQ
   , testCase "same functions have the same hash even with different variable names" $ do
-     let res1 = generateAllHashes <$> runTelomareParser2Term2 parseLet [] hashtest2
-         res2 = generateAllHashes <$> runTelomareParser2Term2 parseLet [] hashtest3
+     let res1 = generateAllHashes <$> runTelomareParser2Term2 parseLet hashtest2
+         res2 = generateAllHashes <$> runTelomareParser2Term2 parseLet hashtest3
      res1 @?= res2
   , testCase "Ad hoc user defined types success" $ do
       res <- testUserDefAdHocTypes userDefAdHocTypesSuccess
@@ -141,25 +141,25 @@ unitTests = testGroup "Unit tests"
       res @?= "MyInt must not be 0\ndone"
   , testCase "test automatic open close lambda" $ do
       res <- runTelomareParser (parseLambda <* scn <* eof) "\\x -> \\y -> (x, y)"
-      (forget <$> validateVariables [] res) @?= Right closedLambdaPair
+      (forget <$> validateVariables res) @?= Right closedLambdaPair
   , testCase "test automatic open close lambda 2" $ do
       res <- runTelomareParser (parseLambda <* scn <* eof) "\\x y -> (x, y)"
-      (forget <$> validateVariables [] res) @?= Right closedLambdaPair
+      (forget <$> validateVariables res) @?= Right closedLambdaPair
   , testCase "test automatic open close lambda 3" $ do
       res <- runTelomareParser (parseLambda <* scn <* eof) "\\x -> \\y -> \\z -> z"
-      (forget <$> validateVariables [] res) @?= Right expr6
+      (forget <$> validateVariables res) @?= Right expr6
   , testCase "test automatic open close lambda 4" $ do
       res <- runTelomareParser (parseLambda <* scn <* eof) "\\x -> (x, x)"
-      (forget <$> validateVariables [] res) @?= Right expr5
+      (forget <$> validateVariables res) @?= Right expr5
   , testCase "test automatic open close lambda 5" $ do
       res <- runTelomareParser (parseLambda <* scn <* eof) "\\x -> \\x -> \\x -> x"
-      (forget <$> validateVariables [] res) @?= Right expr4
+      (forget <$> validateVariables res) @?= Right expr4
   , testCase "test automatic open close lambda 6" $ do
       res <- runTelomareParser (parseLambda <* scn <* eof) "\\x -> \\y -> \\z -> [x,y,z]"
-      (forget <$> validateVariables [] res) @?= Right expr3
+      (forget <$> validateVariables res) @?= Right expr3
   , testCase "test automatic open close lambda 7" $ do
       res <- runTelomareParser (parseLambda <* scn <* eof) "\\a -> (a, (\\a -> (a,0)))"
-      (forget <$> validateVariables [] res) @?= Right expr2
+      (forget <$> validateVariables res) @?= Right expr2
   , testCase "test tictactoe.tel" $ do
       res <- tictactoe
       res @?= fullRunTicTacToeString
@@ -322,7 +322,7 @@ showAllTransformations input = do
   --     diff = getGroupedDiff str1 str2
   -- section "optimizeBindingsReference" . show $ optimizeBindingsReferenceVar
   -- section "Diff optimizeBindingsReference" $ ppDiff diff
-  let validateVariablesVar = validateVariables prelude optimizeBuiltinFunctionsVar
+  let validateVariablesVar = validateVariables optimizeBuiltinFunctionsVar
       str3 = lines . show $ validateVariablesVar
       diff = getGroupedDiff str3 str1
   section "validateVariables" . show $ validateVariablesVar

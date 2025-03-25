@@ -311,21 +311,18 @@ splitExpr t = let (bf, (_,_,m)) = State.runState (splitExpr' t) (toEnum 0, FragI
 
 -- |`makeLambda ps vl t1` makes a `TLam` around `t1` with `vl` as arguments.
 -- Automatic recognition of Close or Open type of `TLam`.
-makeLambda :: [(String, AnnotatedUPT)] -- ^Bindings
-           -> String                            -- ^Variable name
+makeLambda :: String                            -- ^Variable name
            -> Term1                             -- ^Lambda body
            -> Term1
-makeLambda bindings str term1@(anno :< _) =
+makeLambda str term1@(anno :< _) =
   if unbound == Set.empty then anno :< TLamF (Closed str) term1 else anno :< TLamF (Open str) term1
-  where bindings' = Set.fromList $ fst <$> bindings
-        v = varsTerm1 term1
-        unbound = (v \\ bindings') \\ Set.singleton str
+  where v = varsTerm1 term1
+        unbound = v \\ Set.singleton str
 
 -- |Transformation from `AnnotatedUPT` to `Term1` validating and inlining `VarUP`s
-validateVariables :: [(String, AnnotatedUPT)] -- ^ Prelude
-                  -> AnnotatedUPT
+validateVariables :: AnnotatedUPT
                   -> Either String Term1
-validateVariables prelude term =
+validateVariables term =
   let validateWithEnvironment :: AnnotatedUPT
                               -> State.StateT (Map String Term1) (Either String) Term1
       validateWithEnvironment = \case
@@ -334,7 +331,7 @@ validateVariables prelude term =
           State.modify (Map.insert v (anno :< TVarF v))
           result <- validateWithEnvironment x
           State.put oldState
-          pure $ makeLambda prelude v result
+          pure $ makeLambda v result
         anno :< VarUPF n -> do
           definitionsMap <- State.get
           case Map.lookup n definitionsMap of
@@ -430,29 +427,26 @@ addBuiltins aupt = DummyLoc :< LetUPF
   aupt
 
 -- |Process an `AnnotatedUPT` to a `Term3` with failing capability.
-process :: [(String, AnnotatedUPT)] -- ^Prelude
-        -> AnnotatedUPT
+process :: AnnotatedUPT
         -> Either String Term3
-process prelude upt = (\dt -> debugTrace ("Resolver process term:\n" <> prettyPrint dt) dt) . splitExpr <$> process2Term2 prelude upt
+process upt = (\dt -> debugTrace ("Resolver process term:\n" <> prettyPrint dt) dt) . splitExpr <$> process2Term2 upt
 
-process2Term2 :: [(String, AnnotatedUPT)] -- ^Prelude
-              -> AnnotatedUPT
+process2Term2 :: AnnotatedUPT
               -> Either String Term2
-process2Term2 prelude = fmap generateAllHashes
-                      . debruijinize [] <=< validateVariables prelude
-                      . removeCaseUPs
-                      . optimizeBuiltinFunctions
-                      . addBuiltins
+process2Term2 = fmap generateAllHashes
+              . debruijinize [] <=< validateVariables
+              . removeCaseUPs
+              . optimizeBuiltinFunctions
+              . addBuiltins
 
 -- |Helper function to compile to Term2
 runTelomareParser2Term2 :: TelomareParser AnnotatedUPT -- ^Parser to run
-                        -> [(String, AnnotatedUPT)]    -- ^Prelude
-                        -> String                               -- ^Raw string to be parsed
-                        -> Either String Term2                  -- ^Error on Left
-runTelomareParser2Term2 parser prelude str =
-  first errorBundlePretty (runParser parser "" str) >>= process2Term2 prelude
+                        -> String                      -- ^Raw string to be parsed
+                        -> Either String Term2         -- ^Error on Left
+runTelomareParser2Term2 parser str =
+  first errorBundlePretty (runParser parser "" str) >>= process2Term2
 
 parseMain :: [(String, AnnotatedUPT)] -- ^Prelude: [(VariableName, BindedUPT)]
-          -> String                            -- ^Raw string to be parserd.
-          -> Either String Term3               -- ^Error on Left.
-parseMain prelude s = parseWithPrelude prelude s >>= process prelude
+          -> String                   -- ^Raw string to be parserd.
+          -> Either String Term3      -- ^Error on Left.
+parseMain prelude s = parseWithPrelude prelude s >>= process
