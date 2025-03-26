@@ -27,7 +27,7 @@ import qualified Data.Set as Set
 import Debug.Trace (trace, traceShow, traceShowId)
 import PrettyPrint (TypeDebugInfo (..), prettyPrint, showTypeDebugInfo)
 import Telomare
-import Telomare.Parser (AnnotatedUPT, TelomareParser, parseWithPrelude)
+import Telomare.Parser (AnnotatedUPT, TelomareParser, parseWithExtraModuleBindings)
 import Text.Megaparsec (errorBundlePretty, runParser)
 
 debug :: Bool
@@ -446,7 +446,7 @@ runTelomareParser2Term2 :: TelomareParser AnnotatedUPT -- ^Parser to run
 runTelomareParser2Term2 parser str =
   first errorBundlePretty (runParser parser "" str) >>= process2Term2
 
-parseMain :: [(String, AnnotatedUPT)] -- ^Prelude: [(VariableName, BindedUPT)]
-          -> String                   -- ^Raw string to be parserd.
-          -> Either String Term3      -- ^Error on Left.
-parseMain prelude s = parseWithPrelude prelude s >>= process
+parseMain :: [(String, [(String, AnnotatedUPT)])] -- ^Modules: [(ModuleName, [(VariableName, BindedUPT)])]
+          -> String                               -- ^Raw string to be parsed
+          -> Either String Term3                  -- ^Error on Left
+parseMain moduleBindings s = parseWithExtraModuleBindings moduleBindings s >>= process

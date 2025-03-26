@@ -973,6 +973,9 @@ data UnprocessedParsedTerm
   | CheckUP UnprocessedParsedTerm UnprocessedParsedTerm
   | HashUP UnprocessedParsedTerm -- ^ On ad hoc user defined types, this term will be substitued to a unique Int.
   | CaseUP UnprocessedParsedTerm [(Pattern, UnprocessedParsedTerm)]
+  -- TODO: check if adding this doesn't create partial functions
+  | ImportQualifiedUP String String
+  | ImportUP String
   deriving (Eq, Ord, Show)
 makeBaseFunctor ''UnprocessedParsedTerm -- Functorial version UnprocessedParsedTerm
 makePrisms ''UnprocessedParsedTerm

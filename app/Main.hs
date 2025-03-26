@@ -1,3 +1,5 @@
+{-# LANGUAGE ScopedTypeVariables #-}
+
 module Main where
 
 import qualified Options.Applicative as O
@@ -6,19 +8,19 @@ import Telomare.Eval (runMain)
 
 data TelomareOpts = TelomareOpts
   { telomareFile :: String
-  , preludeFile  :: String
+  -- , preludeFile  :: String
   } deriving Show
 
 telomareOpts :: O.Parser TelomareOpts
 telomareOpts = TelomareOpts
   <$> O.argument O.str (O.metavar "TELOMARE-FILE")
-  <*> O.strOption
-      ( O.long "prelude"
-        <> O.metavar "PRELUDE-FILE"
-        <> O.showDefault
-        <> O.value "./Prelude.tel"
-        <> O.short 'p'
-        <> O.help "Telomare prelude file" )
+  -- <*> O.strOption
+  --     ( O.long "prelude"
+  --       <> O.metavar "PRELUDE-FILE"
+  --       <> O.showDefault
+  --       <> O.value "./Prelude.tel"
+  --       <> O.short 'p'
+  --       <> O.help "Telomare prelude file" )
 
 main :: IO ()
 main = do
@@ -26,5 +28,6 @@ main = do
         ( O.fullDesc
           <> O.progDesc "A simple but robust virtual machine" )
   topts <- O.execParser opts
-  preludeString <- Strict.readFile $ preludeFile topts
-  Strict.readFile (telomareFile topts) >>= runMain preludeString
+  allModules :: [(String, String)] <- undefined
+  -- preludeString <- Strict.readFile $ preludeFile topts
+  Strict.readFile (telomareFile topts) >>= runMain allModules

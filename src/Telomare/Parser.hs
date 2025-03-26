@@ -98,14 +98,14 @@ reserved w = (lexeme . try) (string w *> notFollowedBy alphaNumChar)
 
 -- |List of reserved words
 rws :: [String]
-rws = ["let", "in", "if", "then", "else", "case", "of" ]
+rws = ["let", "in", "if", "then", "else", "case", "of", "import"]
 
 -- |Variable identifiers can consist of alphanumeric characters, underscore,
 -- and must start with an English alphabet letter
 identifier :: TelomareParser String
 identifier = lexeme . try $ p >>= check
   where
-    p = (:) <$> letterChar <*> many (alphaNumChar <|> char '_' <?> "variable")
+    p = (:) <$> letterChar <*> many (alphaNumChar <|> char '_' <|> char '.' <?> "variable")
     check x = if x `elem` rws
               then fail ("keyword " <> (show x <> " cannot be an identifier"))
               else pure x
@@ -324,15 +324,45 @@ parseAssignment = do
 
 -- |Parse top level expressions.
 parseTopLevel :: TelomareParser AnnotatedUPT
-parseTopLevel = parseTopLevelWithPrelude []
+parseTopLevel = parseTopLevelWithExtraModuleBindings []
+
+parseImport :: TelomareParser AnnotatedUPT
+parseImport = do
+  x <- getLineColumn
+  reserved "import" <* scn
+  var <- identifier <* scn
+  pure $ x :< (ImportUPF var)
+
+parseImportQualified :: TelomareParser AnnotatedUPT
+parseImportQualified = do
+  x <- getLineColumn
+  reserved "import" <* scn
+  var <- identifier <* scn
+  reserved "qualified" <* scn
+  qualifier <- identifier <* scn
+  pure $ x :< (ImportQualifiedUPF qualifier var)
+
+resolveImports :: [(String, [(String, AnnotatedUPT)])] -> AnnotatedUPT -> [(String, AnnotatedUPT)]
+resolveImports modules = \case
+  (_ :< (ImportUPF var)) ->
+    case lookup var modules of
+      Nothing -> error $ "Import error from " <> var
+      Just x -> x
+  (_ :< (ImportQualifiedUPF q v)) ->
+    case lookup v modules of
+      Nothing -> error $ "Import error from " <> v
+      Just x -> (fmap . first) (\str -> q <> "." <> str) x
+  _ -> error "Expected import statement"
 
 -- |Parse top level expressions.
-parseTopLevelWithPrelude :: [(String, AnnotatedUPT)]    -- ^Prelude
-                         -> TelomareParser AnnotatedUPT
-parseTopLevelWithPrelude lst = do
+parseTopLevelWithExtraModuleBindings :: [(String, [(String, AnnotatedUPT)])]    -- ^Extra Module Bindings
+                                     -> TelomareParser AnnotatedUPT
+parseTopLevelWithExtraModuleBindings mb = do
   x <- getLineColumn
+  importList' <- scn *> many (parseImportQualified <|> parseImport) <* scn
+  let importList = concat $ resolveImports mb <$> importList'
   bindingList <- scn *> many parseAssignment <* eof
-  pure $ x :< LetUPF (lst <> bindingList) (fromJust $ lookup "main" bindingList)
+  pure $ x :< LetUPF (importList <> bindingList) (fromJust $ lookup "main" bindingList)
 
 parseDefinitions :: TelomareParser (AnnotatedUPT -> AnnotatedUPT)
 parseDefinitions = do
@@ -374,13 +404,14 @@ parsePrelude str = let result = runParser (scn *> many parseAssignment <* eof) "
 
 -- |Parse either a single expression or top level definitions defaulting to the `main` definition.
 --  This function is useful and was made for telomare-evaluare
-parseOneExprOrTopLevelDefs :: [(String, AnnotatedUPT)] -> TelomareParser AnnotatedUPT
-parseOneExprOrTopLevelDefs prelude = choice $ try <$> [ parseTopLevelWithPrelude prelude
-                                                      , parseLongExpr
-                                                      ]
+parseOneExprOrTopLevelDefs :: [(String, [(String, AnnotatedUPT)])] -> TelomareParser AnnotatedUPT
+parseOneExprOrTopLevelDefs extraModuleBindings =
+  choice $ try <$> [ parseTopLevelWithExtraModuleBindings extraModuleBindings
+                   , parseLongExpr
+                   ]
 
 -- |Parse with specified prelude
-parseWithPrelude :: [(String, AnnotatedUPT)]   -- ^Prelude
+parseWithExtraModuleBindings :: [(String, [(String, AnnotatedUPT)])]   -- ^Extra module bindings
                  -> String                     -- ^Raw string to be parsed
                  -> Either String AnnotatedUPT -- ^Error on Left
-parseWithPrelude prelude str = first errorBundlePretty $ runParser (parseTopLevelWithPrelude prelude) "" str
+parseWithExtraModuleBindings mb str = first errorBundlePretty $ runParser (parseTopLevelWithExtraModuleBindings mb) "" str
