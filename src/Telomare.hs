@@ -203,25 +203,29 @@ indentWithOneChild str sx = do
 indentWithOneChild' :: String -> State Int String -> State Int String
 indentWithOneChild' str sx = do
   i <- State.get
-  State.put $ i + 2
+  let sout = str <> " "
+  State.put $ i + length sout
   x <- sx
-  pure $ str <> " " <> x
+  pure $ sout <> x
 
 indentWithTwoChildren' :: String -> State Int String -> State Int String -> State Int String
 indentWithTwoChildren' str sl sr = do
   i <- State.get
-  State.put $ i + 2
+  let sout = str <> " "
+      newl = i + length sout
+  State.put newl
   l <- sl
-  State.put $ i + 2
+  State.put newl
   r <- sr
-  -- pure $ indent i (str <> "\n") <> l <> "\n" <> r
-  pure $ str <> " " <> l <> "\n" <> indent (i + 2) r
+  pure $ sout <> l <> "\n" <> indent newl r
 
 indentWithChildren' :: String -> [State Int String] -> State Int String
 indentWithChildren' str l = do
   i <- State.get
-  let doLine = fmap (<> "\n" <> indent (i + 2) "") . (State.put (i + 2) >>)
-  foldl (\s c -> (<>) <$> s <*> c) (pure $ str <> " ") $ fmap doLine l
+  let sout = str <> " "
+      newl = i + length sout
+  let doLine = fmap (<> "\n" <> indent newl "") . (State.put newl >>)
+  foldl (\s c -> (<>) <$> s <*> c) (pure sout) $ fmap doLine l
 
 -- |Two children indentation.
 indentWithTwoChildren :: String -> State Int String -> State Int String -> State Int String

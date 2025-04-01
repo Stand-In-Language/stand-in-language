@@ -4,3 +4,7 @@ cradle:
       component: "lib:telomare"
     - path: "./test/Spec.hs"
       component: "test:telomare-test"
+    - path: "./test/SizingTest.hs"
+      component: "test:telomare-sizing-test"
+    - path: "./test/SizingTests.hs"
+      component: "test:telomare-sizing-test"

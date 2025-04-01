@@ -179,6 +179,9 @@ instance Validity FunctionIndex
 instance PrettyPrintable FunctionIndex where
   showP = pure . ("F" <>) . show . fromEnum
 
+showFI :: FunctionIndex -> String
+showFI = ("F" <>) . show . fromEnum
+
 data GateResult a
   = GateResult
   { leftBranch :: Bool
@@ -195,7 +198,7 @@ instance Show1 StuckF where
     DeferSF fi x -> shows "DeferSF " . shows fi . shows " (" . showsPrec 0 x . shows ")"
 instance PrettyPrintable1 StuckF where
   showP1 = \case
-    DeferSF ind x -> liftM2 (<>) (fmap (<> " ") $ showP ind) (showP x)
+    DeferSF ind x -> indentWithOneChild' (showFI ind) $ showP x
 instance Eq1 StuckF where
   liftEq test a b = case (a,b) of
     (DeferSF ix _, DeferSF iy _) | ix == iy -> True -- test a b
