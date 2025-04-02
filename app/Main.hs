@@ -5,6 +5,8 @@ module Main where
 import qualified Options.Applicative as O
 import qualified System.IO.Strict as Strict
 import Telomare.Eval (runMain)
+import System.Directory (listDirectory)
+import System.FilePath (takeBaseName, takeExtension)
 
 data TelomareOpts = TelomareOpts
   { telomareFile :: String
@@ -22,12 +24,22 @@ telomareOpts = TelomareOpts
   --       <> O.short 'p'
   --       <> O.help "Telomare prelude file" )
 
+getAllModules :: IO [(String, String)]
+getAllModules = do
+  allEntries <- listDirectory "."
+  let telFiles = filter (\f -> takeExtension f == ".tel") allEntries
+      readTelFile :: FilePath -> IO (String, String)
+      readTelFile file = do
+          content <- readFile file
+          return (takeBaseName file, content)
+  mapM readTelFile telFiles
+
 main :: IO ()
 main = do
   let opts = O.info (telomareOpts O.<**> O.helper)
         ( O.fullDesc
           <> O.progDesc "A simple but robust virtual machine" )
   topts <- O.execParser opts
-  allModules :: [(String, String)] <- undefined
-  -- preludeString <- Strict.readFile $ preludeFile topts
+  allModules :: [(String, String)] <- getAllModules
+  -- putStrLn . show $ fst <$> allModules
   Strict.readFile (telomareFile topts) >>= runMain allModules

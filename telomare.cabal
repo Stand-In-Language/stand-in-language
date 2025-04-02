@@ -87,6 +87,8 @@ executable telomare
                      , telomare
                      , strict
                      , optparse-applicative
+                     , directory
+                     , filepath
   default-language:    Haskell2010
 
 executable telomare-repl

@@ -233,10 +233,15 @@ runMainCore modulesStrings s e =
                     in error . unlines $ joinModuleError <$> moduleWithError
 
   in
-    case compileMain <$> parseMain modules s of
-      Left e -> error $ concat ["failed to parse ", s, " ", e]
-      Right (Right g) -> e g
-      Right z -> error $ "compilation failed somehow, with result " <> show z
+    -- do
+    --   putStrLn . show $ lookup "Prelude" modules
+    --   putStrLn "--------------------------------------------------"
+    --   putStrLn "--------------------------------------------------"
+    --   putStrLn "--------------------------------------------------"
+      case compileMain <$> parseMain modules s of
+        Left e -> error $ concat ["failed to parse ", s, " ", e]
+        Right (Right g) -> e g
+        Right z -> error $ "compilation failed somehow, with result " <> show z
 
 runMain_ :: [(String, String)] -> String -> IO String
 runMain_ modulesStrings s = runMainCore modulesStrings s evalLoop_

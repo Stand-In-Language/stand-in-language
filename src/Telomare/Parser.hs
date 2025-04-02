@@ -359,7 +359,7 @@ parseTopLevelWithExtraModuleBindings :: [(String, [(String, AnnotatedUPT)])]    
                                      -> TelomareParser AnnotatedUPT
 parseTopLevelWithExtraModuleBindings mb = do
   x <- getLineColumn
-  importList' <- scn *> many (parseImportQualified <|> parseImport) <* scn
+  importList' <- scn *> many (try parseImportQualified <|> try parseImport) <* scn
   let importList = concat $ resolveImports mb <$> importList'
   bindingList <- scn *> many parseAssignment <* eof
   pure $ x :< LetUPF (importList <> bindingList) (fromJust $ lookup "main" bindingList)
@@ -377,6 +377,15 @@ runTelomareParser_ parser str = runTelomareParser parser str >>= print
 -- |Helper function to debug parsers without a result.
 runTelomareParserWDebug :: Show a => TelomareParser a -> String -> IO ()
 runTelomareParserWDebug parser str = runTelomareParser (dbg "debug" parser) str >>= print
+
+modulesAux :: [(String, [(String, AnnotatedUPT)])]
+modulesAux = [("Prelude",[("id", DummyLoc :< LamUPF "x" (DummyLoc :< VarUPF "x"))])]
+input = unlines
+  [ "import Prelude"
+  , "foo = bar"
+  , "main = id"
+  ]
+aux = runTelomareParserWDebug (parseTopLevelWithExtraModuleBindings modulesAux) input
 
 -- |Helper function to test Telomare parsers with any result.
 runTelomareParser :: Monad m => TelomareParser a -> String -> m a
