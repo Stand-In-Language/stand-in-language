@@ -27,7 +27,7 @@ import qualified Data.Set as Set
 import Debug.Trace (trace, traceShow, traceShowId)
 import PrettyPrint (TypeDebugInfo (..), prettyPrint, showTypeDebugInfo)
 import Telomare
-import Telomare.Parser (AnnotatedUPT, TelomareParser, parseWithExtraModuleBindings)
+import Telomare.Parser (AnnotatedUPT, TelomareParser)
 import Text.Megaparsec (errorBundlePretty, runParser)
 
 debug :: Bool
@@ -446,7 +446,68 @@ runTelomareParser2Term2 :: TelomareParser AnnotatedUPT -- ^Parser to run
 runTelomareParser2Term2 parser str =
   first errorBundlePretty (runParser parser "" str) >>= process2Term2
 
-parseMain :: [(String, [(String, AnnotatedUPT)])] -- ^Modules: [(ModuleName, [(VariableName, BindedUPT)])]
-          -> String                               -- ^Raw string to be parsed
-          -> Either String Term3                  -- ^Error on Left
-parseMain moduleBindings s = parseWithExtraModuleBindings moduleBindings s >>= process
+-- modules :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
+
+-- resolveModuleImports
+
+
+-- -- |Parse top level expressions.
+-- parseTopLevelWithExtraModuleBindings :: [(String, [(String, AnnotatedUPT)])]    -- ^Extra Module Bindings
+--                                      -> TelomareParser AnnotatedUPT
+-- parseTopLevelWithExtraModuleBindings mb = do
+--   x <- getLineColumn
+--   importList' <- scn *> many (try parseImportQualified <|> try parseImport) <* scn
+  -- let importList = concat $ resolveImports mb <$> importList'
+--   bindingList <- scn *> many parseAssignment <* eof
+--   pure $ x :< LetUPF (importList <> bindingList) (fromJust $ lookup "main" bindingList)
+-- resolveImports :: [(String, [(String, AnnotatedUPT)])] -> AnnotatedUPT -> [(String, AnnotatedUPT)]
+-- resolveImports modules = \case
+--   (_ :< (ImportUPF var)) ->
+--     case lookup var modules of
+--       Nothing -> error $ "Import error from " <> var
+--       Just x -> x
+--   (_ :< (ImportQualifiedUPF q v)) ->
+--     case lookup v modules of
+--       Nothing -> error $ "Import error from " <> v
+--       Just x -> (fmap . first) (\str -> q <> "." <> str) x
+--   _ -> error "Expected import statement"
+
+resolveImport :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
+              -> AnnotatedUPT -- ^Import UPT ----- REMOVE!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+              -> [Either AnnotatedUPT (String, AnnotatedUPT)] -- List with just Right
+resolveImport modules = \case
+  (_ :< (ImportUPF var)) ->
+    case lookup var modules of
+      Nothing -> error $ "Import error from " <> var
+      Just x -> x
+  (_ :< (ImportQualifiedUPF q v)) ->
+    case lookup v modules of
+      Nothing -> error $ "Import error from " <> v
+      Just x->  (fmap . fmap . first) (\str -> q <> "." <> str) x
+  _ -> error "Expected import statement"
+
+resolveImports :: String
+               -> [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
+               -> [(String, [(String, AnnotatedUPT)])]
+resolveImports moduleName = \case
+  [] -> []
+  (x:xs) -> undefined
+
+resolveMain :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -- ^Modules: [(ModuleName, [Either Import (VariableName, BindedUPT)])]
+            -> String -- ^Module name with main
+            -> Either String AnnotatedUPT
+resolveMain allModules mainModule = case lookup mainModule allModules of
+  Nothing -> Left $ "Module " <> mainModule <> " not found"
+  Just lst -> undefined
+
+-- -- |Parse with specified prelude
+-- parseWithExtraModuleBindings :: [(String, [(String, AnnotatedUPT)])]   -- ^Extra module bindings
+--                  -> String                     -- ^Raw string to be parsed
+--                  -> Either String AnnotatedUPT -- ^Error on Left
+-- parseWithExtraModuleBindings mb str = first errorBundlePretty $ runParser (parseTopLevelWithExtraModuleBindings mb) "" str
+
+
+main2Term3 :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -- ^Modules: [(ModuleName, [Either Import (VariableName, BindedUPT)])]
+          -> String -- ^Module name with main
+          -> Either String Term3 -- ^Error on Left
+main2Term3 moduleBindings s = resolveMain moduleBindings s >>= process

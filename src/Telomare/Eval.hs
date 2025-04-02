@@ -22,10 +22,10 @@ import System.Process (CreateProcess (std_out), StdStream (CreatePipe),
                        createProcess, shell)
 import Telomare
 import Telomare.Optimizer (optimize)
-import Telomare.Parser (AnnotatedUPT, parseOneExprOrTopLevelDefs, parsePrelude)
+import Telomare.Parser (AnnotatedUPT, parseOneExprOrTopLevelDefs, parseModule)
 import Telomare.Possible (AbortExpr, abortExprToTerm4, evalA, sizeTerm,
                           term3ToUnsizedExpr)
-import Telomare.Resolver (parseMain, process)
+import Telomare.Resolver (main2Term3, process)
 import Telomare.RunTime (pureEval, rEval)
 import Telomare.TypeChecker (TypeCheckError (..), typeCheck)
 import Text.Megaparsec (errorBundlePretty, runParser)
@@ -209,20 +209,20 @@ funWrap eval fun inp =
 
 runMainCore :: [(String, String)] -> String -> (IExpr -> IO a) -> IO a
 runMainCore modulesStrings s e =
-  let parsedModules :: [(String, Either String [(String, AnnotatedUPT)])]
-      parsedModules = (fmap . fmap) parsePrelude modulesStrings
-      parsedModulesErrors :: [(String, Either String [(String, AnnotatedUPT)])]
+  let parsedModules :: [(String, Either String [Either AnnotatedUPT (String, AnnotatedUPT)])]
+      parsedModules = (fmap . fmap) parseModule modulesStrings
+      parsedModulesErrors :: [(String, Either String [Either AnnotatedUPT (String, AnnotatedUPT)])]
       parsedModulesErrors = filter (\(moduleStr, parsed) -> case parsed of
                                       Left _ -> True
                                       Right _ -> False)
-                                  parsedModules
+                                   parsedModules
       flattenLeft = \case
         Left a -> a
         Right a -> error "flattenLeft error: got a Right when it should be Left"
       flattenRight = \case
         Right a -> a
         Left a -> error "flattenRight error: got a Left when it should be Right"
-      modules :: [(String, [(String, AnnotatedUPT)])]
+      modules :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
       modules =
         case parsedModulesErrors of
           [] -> (fmap . fmap) flattenRight parsedModules
@@ -238,7 +238,7 @@ runMainCore modulesStrings s e =
     --   putStrLn "--------------------------------------------------"
     --   putStrLn "--------------------------------------------------"
     --   putStrLn "--------------------------------------------------"
-      case compileMain <$> parseMain modules s of
+      case compileMain <$> main2Term3 modules s of
         Left e -> error $ concat ["failed to parse ", s, " ", e]
         Right (Right g) -> e g
         Right z -> error $ "compilation failed somehow, with result " <> show z

@@ -42,4 +42,4 @@ main = do
   topts <- O.execParser opts
   allModules :: [(String, String)] <- getAllModules
   -- putStrLn . show $ fst <$> allModules
-  Strict.readFile (telomareFile topts) >>= runMain allModules
+  runMain allModules . takeBaseName . telomareFile $ topts

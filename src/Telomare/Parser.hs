@@ -331,7 +331,7 @@ parseImport = do
   x <- getLineColumn
   reserved "import" <* scn
   var <- identifier <* scn
-  pure $ x :< (ImportUPF var)
+  pure $ x :< ImportUPF var
 
 parseImportQualified :: TelomareParser AnnotatedUPT
 parseImportQualified = do
@@ -340,7 +340,7 @@ parseImportQualified = do
   var <- identifier <* scn
   reserved "qualified" <* scn
   qualifier <- identifier <* scn
-  pure $ x :< (ImportQualifiedUPF qualifier var)
+  pure $ x :< ImportQualifiedUPF qualifier var
 
 resolveImports :: [(String, [(String, AnnotatedUPT)])] -> AnnotatedUPT -> [(String, AnnotatedUPT)]
 resolveImports modules = \case
@@ -411,6 +411,24 @@ parsePrelude :: String -> Either String [(String, AnnotatedUPT)]
 parsePrelude str = let result = runParser (scn *> many parseAssignment <* eof) "" str
                     in first errorBundlePretty result
 
+parseImportOrAssignment :: TelomareParser (Either AnnotatedUPT (String, AnnotatedUPT))
+parseImportOrAssignment = do
+  x <- getLineColumn
+  scn
+  maybeImport <- optional $ try parseImportQualified <|> try parseImport
+  maybeAssignment <- optional . try $ parseAssignment
+  case (maybeImport, maybeAssignment) of
+    (Just imp, _) -> return $ Left imp
+    (_, Just assignment) -> return $ Right assignment
+    (Nothing, Nothing) -> fail "Expected either an import statement or an assignment"
+
+parseModule :: String -> Either String [Either AnnotatedUPT (String, AnnotatedUPT)]
+parseModule str = let result = runParser (scn *> many parseImportOrAssignment <* eof) "" str
+                  in first errorBundlePretty result
+
+-- parseModule :: String -> Either String [Either AnnotatedUPT (String, AnnotatedUPT)]
+-- parseModule str =
+
 -- |Parse either a single expression or top level definitions defaulting to the `main` definition.
 --  This function is useful and was made for telomare-evaluare
 parseOneExprOrTopLevelDefs :: [(String, [(String, AnnotatedUPT)])] -> TelomareParser AnnotatedUPT
@@ -418,9 +436,3 @@ parseOneExprOrTopLevelDefs extraModuleBindings =
   choice $ try <$> [ parseTopLevelWithExtraModuleBindings extraModuleBindings
                    , parseLongExpr
                    ]
-
--- |Parse with specified prelude
-parseWithExtraModuleBindings :: [(String, [(String, AnnotatedUPT)])]   -- ^Extra module bindings
-                 -> String                     -- ^Raw string to be parsed
-                 -> Either String AnnotatedUPT -- ^Error on Left
-parseWithExtraModuleBindings mb str = first errorBundlePretty $ runParser (parseTopLevelWithExtraModuleBindings mb) "" str
