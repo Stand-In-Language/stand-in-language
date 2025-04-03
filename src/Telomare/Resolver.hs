@@ -486,19 +486,62 @@ resolveImport modules = \case
       Just x->  (fmap . fmap . first) (\str -> q <> "." <> str) x
   _ -> error "Expected import statement"
 
-resolveImports :: String
-               -> [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
-               -> [(String, [(String, AnnotatedUPT)])]
-resolveImports moduleName = \case
-  [] -> []
-  (x:xs) -> undefined
+resolveImports' :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
+                -> [Either AnnotatedUPT (String, AnnotatedUPT)] -- ^Main module with both Import and A
+                -> [Either AnnotatedUPT (String, AnnotatedUPT)]
+resolveImports' modules xs = lefts <> rights
+  where
+    lefts' = reverse . filter isLeft $ xs
+    lefts = reverse $ case lefts' of
+      [] -> lefts'
+      (y:ys) -> case y of
+        (Left (_ :< (ImportUPF var))) ->
+          case lookup var modules of
+            Nothing -> error $ "Import error from " <> var
+            Just x -> x
+        (Left (_ :< (ImportQualifiedUPF q v))) ->
+          case lookup v modules of
+            Nothing -> error $ "Import error from " <> v
+            Just x->  (fmap . fmap . first) (\str -> q <> "." <> str) x
+        e -> error $ "Expected import statement. Got:\n" <> show e
+    rights = filter isRight xs
+    isLeft (Left _) = True
+    isLeft _ = False
+    isRight (Right _) = True
+    isRight _ = False
+
+resolveAllImports :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
+                  -> [Either AnnotatedUPT (String, AnnotatedUPT)]
+                  -> [Either AnnotatedUPT (String, AnnotatedUPT)]
+resolveAllImports modules x =
+  let resolved = resolveImports' modules x
+  in if resolved == x
+     then resolved
+     else resolveAllImports modules resolved
+
+resolveImports :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
+               -> String
+               -> [(String, AnnotatedUPT)]
+resolveImports modules moduleName = removeRights <$> res
+  where
+    removeRights = \case
+      Left x -> error $ "resolveImports: Left when should be all Right: " <> show x
+      Right x -> x
+    principal = case lookup moduleName modules of
+      Nothing -> error $ "resolveImports: Module " <> moduleName <> " not found"
+      Just x -> x
+    res = resolveAllImports modules principal
 
 resolveMain :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -- ^Modules: [(ModuleName, [Either Import (VariableName, BindedUPT)])]
             -> String -- ^Module name with main
             -> Either String AnnotatedUPT
 resolveMain allModules mainModule = case lookup mainModule allModules of
   Nothing -> Left $ "Module " <> mainModule <> " not found"
-  Just lst -> undefined
+  Just lst -> let resolved = resolveImports allModules mainModule
+                  maybeMain = lookup "main" resolved
+              in case maybeMain of
+                   Nothing -> Left $ "No main function found in " <> mainModule
+                   Just x -> Right $ DummyLoc :< LetUPF resolved x
 
 -- -- |Parse with specified prelude
 -- parseWithExtraModuleBindings :: [(String, [(String, AnnotatedUPT)])]   -- ^Extra module bindings
