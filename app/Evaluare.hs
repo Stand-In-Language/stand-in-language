@@ -20,7 +20,7 @@ import qualified System.IO.Strict as Strict
 import qualified Telomare as Tel
 import Telomare (IExpr (..), IExprF (..))
 import qualified Telomare.Eval as TE
-import Telomare.Parser (AnnotatedUPT, parsePrelude)
+import Telomare.Parser (AnnotatedUPT, parseModule)
 import Text.Read (readMaybe)
 
 type VtyExample t m =
@@ -158,16 +158,19 @@ nodify = removeExtraNumbers . fmap go . allNodes 0 where
     x@(_ :< (PairF a b)) -> (i, x) : allNodes (i + 1) a <> allNodes (i + 1) b
     x@(_ :< (GateF a b)) -> (i, x) : allNodes (i + 1) a <> allNodes (i + 1) b
 
-loadFiles :: [String] -> IO [(String, AnnotatedUPT)]
-loadFiles filenames = do
-  filesStrings <- mapM Strict.readFile filenames
-  case parsePrelude . unlines $ filesStrings of
+
+-- parseModule :: String -> Either String [Either AnnotatedUPT (String, AnnotatedUPT)]
+loadModules :: [String] -> IO [Either AnnotatedUPT (String, AnnotatedUPT)]
+loadModules filenames = do
+  filesStrings :: [String] <- mapM Strict.readFile filenames
+  let rawModules = zip filenames filesStrings
+  case parseModule <$> filesStrings of
     Right p -> pure p
     Left pe -> error pe
 
 main :: IO ()
 main = do
-  prelude :: [(String, AnnotatedUPT)] <- getArgs >>= loadFiles
+  modules :: [Either AnnotatedUPT (String, AnnotatedUPT)] <- getArgs >>= loadModules
   let go :: Text -> IO ()
       go textErr =
         mainWidget $ initManager_ $ do
@@ -191,7 +194,7 @@ main = do
             rec
               eEitherIExpr :: Event t (Either String IExpr) <- grout flex $ col $ do
                 telomareTextInput :: TextInput t <- grout flex textBox
-                pure . updated $ TE.eval2IExpr prelude . T.unpack <$> _textInput_value telomareTextInput
+                pure . updated $ TE.eval2IExpr modules . T.unpack <$> _textInput_value telomareTextInput
               grout (fixed 2) . col . text $ ""
               let -- telomareNodes :: Event t (Either String [Node])
                   telomareNodes = fmap (nodify . TE.tagIExprWithEval) <$> eEitherIExpr

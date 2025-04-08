@@ -354,13 +354,18 @@ resolveImports modules = \case
       Just x -> (fmap . first) (\str -> q <> "." <> str) x
   _ -> error "Expected import statement"
 
+-- resolveMain :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -- ^Modules: [(ModuleName, [Either Import (VariableName, BindedUPT)])]
+--             -> String -- ^Module name with main
+--             -> Either String AnnotatedUPT
+
+
 -- |Parse top level expressions.
-parseTopLevelWithExtraModuleBindings :: [(String, [(String, AnnotatedUPT)])]    -- ^Extra Module Bindings
+parseTopLevelWithExtraModuleBindings :: [Either AnnotatedUPT (String, AnnotatedUPT)]    -- ^Extra Module Bindings
                                      -> TelomareParser AnnotatedUPT
 parseTopLevelWithExtraModuleBindings mb = do
   x <- getLineColumn
   importList' <- scn *> many (try parseImportQualified <|> try parseImport) <* scn
-  let importList = concat $ resolveImports mb <$> importList'
+  let importList = undefined -- concat $ resolveImports mb <$> importList'
   bindingList <- scn *> many parseAssignment <* eof
   pure $ x :< LetUPF (importList <> bindingList) (fromJust $ lookup "main" bindingList)
 
@@ -378,14 +383,9 @@ runTelomareParser_ parser str = runTelomareParser parser str >>= print
 runTelomareParserWDebug :: Show a => TelomareParser a -> String -> IO ()
 runTelomareParserWDebug parser str = runTelomareParser (dbg "debug" parser) str >>= print
 
-modulesAux :: [(String, [(String, AnnotatedUPT)])]
-modulesAux = [("Prelude",[("id", DummyLoc :< LamUPF "x" (DummyLoc :< VarUPF "x"))])]
-input = unlines
-  [ "import Prelude"
-  , "foo = bar"
-  , "main = id"
-  ]
-aux = runTelomareParserWDebug (parseTopLevelWithExtraModuleBindings modulesAux) input
+-- modulesAux :: [(String, [(String, AnnotatedUPT)])]
+-- modulesAux = [("Prelude",[("id", DummyLoc :< LamUPF "x" (DummyLoc :< VarUPF "x")), ("id2", DummyLoc :< LamUPF "x2" (DummyLoc :< VarUPF "x2"))])]
+-- parseImportOrAssignment
 
 -- |Helper function to test Telomare parsers with any result.
 runTelomareParser :: Monad m => TelomareParser a -> String -> m a
@@ -414,13 +414,24 @@ parsePrelude str = let result = runParser (scn *> many parseAssignment <* eof) "
 parseImportOrAssignment :: TelomareParser (Either AnnotatedUPT (String, AnnotatedUPT))
 parseImportOrAssignment = do
   x <- getLineColumn
-  scn
-  maybeImport <- optional $ try parseImportQualified <|> try parseImport
-  maybeAssignment <- optional . try $ parseAssignment
-  case (maybeImport, maybeAssignment) of
-    (Just imp, _) -> return $ Left imp
-    (_, Just assignment) -> return $ Right assignment
-    (Nothing, Nothing) -> fail "Expected either an import statement or an assignment"
+  maybeImport <- optional $ scn *> (try parseImportQualified <|> try parseImport) <* scn
+  case maybeImport of
+    Nothing -> do
+      maybeAssignment <- optional $ scn *> try parseAssignment <* scn
+      case maybeAssignment of
+        Nothing -> fail "Expected either an import statement or an assignment"
+        Just a -> pure $ Right a
+    Just imp -> pure $ Left imp
+
+input = unlines
+  [ "import Prelude"
+  , "foo = bar"
+  , "baz = wee"
+  , "import Foo"
+  , "main = id"
+  ]
+aux = runTelomareParserWDebug (scn *> many parseImportOrAssignment <* eof) input
+
 
 parseModule :: String -> Either String [Either AnnotatedUPT (String, AnnotatedUPT)]
 parseModule str = let result = runParser (scn *> many parseImportOrAssignment <* eof) "" str
@@ -430,8 +441,8 @@ parseModule str = let result = runParser (scn *> many parseImportOrAssignment <*
 -- parseModule str =
 
 -- |Parse either a single expression or top level definitions defaulting to the `main` definition.
---  This function is useful and was made for telomare-evaluare
-parseOneExprOrTopLevelDefs :: [(String, [(String, AnnotatedUPT)])] -> TelomareParser AnnotatedUPT
+--  This function was made for telomare-evaluare
+parseOneExprOrTopLevelDefs :: [Either AnnotatedUPT (String, AnnotatedUPT)] -> TelomareParser AnnotatedUPT
 parseOneExprOrTopLevelDefs extraModuleBindings =
   choice $ try <$> [ parseTopLevelWithExtraModuleBindings extraModuleBindings
                    , parseLongExpr

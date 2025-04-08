@@ -446,32 +446,6 @@ runTelomareParser2Term2 :: TelomareParser AnnotatedUPT -- ^Parser to run
 runTelomareParser2Term2 parser str =
   first errorBundlePretty (runParser parser "" str) >>= process2Term2
 
--- modules :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
-
--- resolveModuleImports
-
-
--- -- |Parse top level expressions.
--- parseTopLevelWithExtraModuleBindings :: [(String, [(String, AnnotatedUPT)])]    -- ^Extra Module Bindings
---                                      -> TelomareParser AnnotatedUPT
--- parseTopLevelWithExtraModuleBindings mb = do
---   x <- getLineColumn
---   importList' <- scn *> many (try parseImportQualified <|> try parseImport) <* scn
-  -- let importList = concat $ resolveImports mb <$> importList'
---   bindingList <- scn *> many parseAssignment <* eof
---   pure $ x :< LetUPF (importList <> bindingList) (fromJust $ lookup "main" bindingList)
--- resolveImports :: [(String, [(String, AnnotatedUPT)])] -> AnnotatedUPT -> [(String, AnnotatedUPT)]
--- resolveImports modules = \case
---   (_ :< (ImportUPF var)) ->
---     case lookup var modules of
---       Nothing -> error $ "Import error from " <> var
---       Just x -> x
---   (_ :< (ImportQualifiedUPF q v)) ->
---     case lookup v modules of
---       Nothing -> error $ "Import error from " <> v
---       Just x -> (fmap . first) (\str -> q <> "." <> str) x
---   _ -> error "Expected import statement"
-
 resolveImport :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
               -> AnnotatedUPT -- ^Import UPT ----- REMOVE!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
               -> [Either AnnotatedUPT (String, AnnotatedUPT)] -- List with just Right
@@ -492,7 +466,7 @@ resolveImports' :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
 resolveImports' modules xs = lefts <> rights
   where
     lefts' = reverse . filter isLeft $ xs
-    lefts = reverse $ case lefts' of
+    lefts = case lefts' of
       [] -> lefts'
       (y:ys) -> case y of
         (Left (_ :< (ImportUPF var))) ->
@@ -537,18 +511,15 @@ resolveMain :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -- ^Modu
             -> Either String AnnotatedUPT
 resolveMain allModules mainModule = case lookup mainModule allModules of
   Nothing -> Left $ "Module " <> mainModule <> " not found"
-  Just lst -> let resolved = resolveImports allModules mainModule
+  Just lst -> let resolved :: [(String, AnnotatedUPT)]
+                  resolved = resolveImports allModules mainModule
+                  -- resolvedPretty :: [(String, UnprocessedParsedTerm)]
+                  -- resolvedPretty = (fmap . fmap) forget resolved
                   maybeMain = lookup "main" resolved
               in case maybeMain of
                    Nothing -> Left $ "No main function found in " <> mainModule
                    Just x -> Right $ DummyLoc :< LetUPF resolved x
-
--- -- |Parse with specified prelude
--- parseWithExtraModuleBindings :: [(String, [(String, AnnotatedUPT)])]   -- ^Extra module bindings
---                  -> String                     -- ^Raw string to be parsed
---                  -> Either String AnnotatedUPT -- ^Error on Left
--- parseWithExtraModuleBindings mb str = first errorBundlePretty $ runParser (parseTopLevelWithExtraModuleBindings mb) "" str
-
+                   -- Just x -> Right $ DummyLoc :< LetUPF (trace ("!!!!!!@@@@@@@!!!!!!!! " <> (show resolvedPretty)) resolved) x
 
 main2Term3 :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -- ^Modules: [(ModuleName, [Either Import (VariableName, BindedUPT)])]
           -> String -- ^Module name with main

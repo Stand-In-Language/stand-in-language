@@ -315,7 +315,7 @@ calculateRecursionLimits t3 =
       Left a  -> Left . StaticCheckError . convertAbortMessage $ a
       Right t -> pure t
 
-eval2IExpr :: [(String, [(String, AnnotatedUPT)])] -> String -> Either String IExpr
+eval2IExpr :: [Either AnnotatedUPT (String, AnnotatedUPT)] -> String -> Either String IExpr
 eval2IExpr extraModuleBindings str = first errorBundlePretty (runParser (parseOneExprOrTopLevelDefs extraModuleBindings) "" str)
                            >>= process
                            >>= first show . compileUnitTest
