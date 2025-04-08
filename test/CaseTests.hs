@@ -82,7 +82,7 @@ unitTestsCase = testGroup "Unit tests on case expressions"
 runTelomareStr :: String -> IO String
 runTelomareStr str = do
   preludeStr <- Strict.readFile "Prelude.tel"
-  runMainWithInput [] preludeStr str
+  runMainWithInput [] [("Prelude", preludeStr)] str
 
 caseExprIntLeavesStr :: String
 caseExprIntLeavesStr = unlines

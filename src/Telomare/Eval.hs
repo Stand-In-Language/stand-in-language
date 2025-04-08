@@ -25,7 +25,7 @@ import Telomare.Optimizer (optimize)
 import Telomare.Parser (AnnotatedUPT, parseOneExprOrTopLevelDefs, parseModule)
 import Telomare.Possible (AbortExpr, abortExprToTerm4, evalA, sizeTerm,
                           term3ToUnsizedExpr)
-import Telomare.Resolver (main2Term3, process)
+import Telomare.Resolver (main2Term3, process, resolveAllImports)
 import Telomare.RunTime (pureEval, rEval)
 import Telomare.TypeChecker (TypeCheckError (..), typeCheck)
 import Text.Megaparsec (errorBundlePretty, runParser)
@@ -315,10 +315,19 @@ calculateRecursionLimits t3 =
       Left a  -> Left . StaticCheckError . convertAbortMessage $ a
       Right t -> pure t
 
-eval2IExpr :: [Either AnnotatedUPT (String, AnnotatedUPT)] -> String -> Either String IExpr
-eval2IExpr extraModuleBindings str = first errorBundlePretty (runParser (parseOneExprOrTopLevelDefs extraModuleBindings) "" str)
-                           >>= process
-                           >>= first show . compileUnitTest
+-- resolveAllImports :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
+--                   -> [Either AnnotatedUPT (String, AnnotatedUPT)]
+--                   -> [(String, AnnotatedUPT)]
+
+
+eval2IExpr :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -> String -> Either String IExpr
+eval2IExpr extraModuleBindings str =
+  first errorBundlePretty (runParser (parseOneExprOrTopLevelDefs resolved) "" str)
+  >>= process
+  >>= first show . compileUnitTest
+    where
+      aux = (\str -> Left (DummyLoc :< ImportQualifiedUPF str str)) . fst <$> extraModuleBindings
+      resolved = resolveAllImports extraModuleBindings aux
 
 tagIExprWithEval :: IExpr -> Cofree IExprF (Int, IExpr)
 tagIExprWithEval iexpr = evalState (para alg iexpr) 0 where

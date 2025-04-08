@@ -169,7 +169,7 @@ tictactoe :: IO String
 tictactoe = do
   telStr <- Strict.readFile "tictactoe.tel"
   preludeStr <- Strict.readFile "Prelude.tel"
-  runMainWithInput ["1", "9", "2", "8", "3"] preludeStr telStr
+  runMainWithInput ["1", "9", "2", "8", "3"] [("Prelude", preludeStr)] telStr
 
 fullRunTicTacToeString = init . unlines $
   [ "1|2|3"
@@ -256,7 +256,7 @@ closedLambdaPair = TLam (Closed "x") (TLam (Open "y") (TPair (TVar "x") (TVar "y
 testUserDefAdHocTypes :: String -> IO String
 testUserDefAdHocTypes input = do
   preludeString <- Strict.readFile "Prelude.tel"
-  runMain_ preludeString input
+  runMain_ [("Prelude", preludeString)] input
 
 userDefAdHocTypesSuccess = unlines
   [ "MyInt = let wrapper = \\h -> ( \\i -> if not i"

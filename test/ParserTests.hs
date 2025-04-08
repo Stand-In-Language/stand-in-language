@@ -46,7 +46,7 @@ unitTests :: TestTree
 unitTests = testGroup "Unit tests"
   [ testCase "parse uniqueUP" $ do
       res <- parseSuccessful parseHash "# (\\x -> x)"
-      res `compare` True @?= EQ
+      res @?= True
   , testCase "test function applied to a string that has whitespaces in both sides inside a structure" $ do
       res1 <- parseSuccessful parseLongExpr "(foo \"woops\" , 0)"
       res2 <- parseSuccessful parseLongExpr "(foo \"woops\" )"
@@ -55,127 +55,127 @@ unitTests = testGroup "Unit tests"
       (res1 && res2 && res3 && res4) `compare` True @?= EQ
   , testCase "test Pair 0" $ do
       res <- parseSuccessful (parsePair >> eof) testPair0
-      res `compare` True @?= EQ
+      res @?= True
   , testCase "test ITE 1" $ do
       res <- parseSuccessful parseITE testITE1
-      res `compare` True @?= EQ
+      res @?= True
   , testCase "test ITE 2" $ do
       res <- parseSuccessful parseITE testITE2
-      res `compare` True @?= EQ
+      res @?= True
   , testCase "test ITE 3" $ do
       res <- parseSuccessful parseITE testITE3
-      res `compare` True @?= EQ
+      res @?= True
   , testCase "test ITE 4" $ do
       res <- parseSuccessful parseITE testITE4
-      res `compare` True @?= EQ
+      res @?= True
   , testCase "test ITE with Pair" $ do
       res <- parseSuccessful parseITE testITEwPair
-      res `compare` True @?= EQ
+      res @?= True
   , testCase "test if Complete Lambda with ITE Pair parses successfuly" $ do
       res <- parseSuccessful (parseLambda <* eof) testCompleteLambdawITEwPair
-      res `compare` True @?= EQ
+      res @?= True
   , testCase "test if Lambda with ITE Pair parses successfuly" $ do
       res <- parseSuccessful (parseLambda <* eof) testLambdawITEwPair
-      res `compare` True @?= EQ
+      res @?= True
   , testCase "test parse assignment with Complete Lambda with ITE with Pair" $ do
       res <- parseSuccessful (parseTopLevel <* eof) testParseAssignmentwCLwITEwPair1
-      res `compare` True @?= EQ
+      res @?= True
   , testCase "test if testParseTopLevelwCLwITEwPair parses successfuly" $ do
       res <- parseSuccessful (parseTopLevel <* eof) testParseTopLevelwCLwITEwPair
-      res `compare` True @?= EQ
-  , testCase "test parseMain with CL with ITE with Pair parses" $ do
+      res @?= True
+  , testCase "test main2Term3 with CL with ITE with Pair parses" $ do
       res <- runTestMainwCLwITEwPair
-      res `compare` True @?= EQ
+      res @?= True
   , testCase "testList0" $ do
       res <- parseSuccessful parseList testList0
-      res `compare` True @?= EQ
+      res @?= True
   , testCase "testList1" $ do
       res <- parseSuccessful parseList testList1
-      res `compare` True @?= EQ
+      res @?= True
   , testCase "testList2" $ do
       res <- parseSuccessful parseList testList2
-      res `compare` True @?= EQ
+      res @?= True
   , testCase "testList3" $ do
       res <- parseSuccessful parseList testList3
-      res `compare` True @?= EQ
+      res @?= True
   , testCase "testList4" $ do
       res <- parseSuccessful parseList testList4
-      res `compare` True @?= EQ
+      res @?= True
   , testCase "testList5" $ do
       res <- parseSuccessful parseList testList5
-      res `compare` True @?= EQ
+      res @?= True
   , testCase "test parse Prelude.tel" $ do
       res <- runTestParsePrelude
-      res `compare` True @?= EQ
+      res @?= True
   , testCase "test parse tictactoe.tel" $ do
       res <- testWtictactoe
-      res `compare` True @?= EQ
+      res @?= True
   , testCase "test Main with Type" $ do
       res <- runTestMainWType
-      res `compare` True @?= EQ
+      res @?= True
   , testCase "testShowBoard0" $ do
       res <- parseSuccessful (parseTopLevel <* scn <* eof) testShowBoard0
-      res `compare` True @?= EQ
+      res @?= True
   , testCase "testShowBoard1" $ do
       res <- parseSuccessful (parseTopLevel <* scn <* eof) testShowBoard1
-      res `compare` True @?= EQ
+      res @?= True
   , testCase "testShowBoard2" $ do
       res <- parseSuccessful (parseTopLevel <* scn <* eof) testShowBoard2
-      res `compare` True @?= EQ
+      res @?= True
   , testCase "testShowBoard3" $ do
       res <- parseSuccessful (parseTopLevel <* scn <* eof) testShowBoard3
-      res `compare` True @?= EQ
+      res @?= True
   , testCase "testShowBoard4" $ do
       res <- parseSuccessful (parseTopLevel <* scn <* eof) testShowBoard4
-      res `compare` True @?= EQ
+      res @?= True
   , testCase "testShowBoard5" $ do
       res <- parseSuccessful (parseTopLevel <* scn <* eof) testShowBoard5
-      res `compare` True @?= EQ
+      res @?= True
   , testCase "testShowBoard6" $ do
       res <- parseSuccessful parseApplied testShowBoard6
-      res `compare` True @?= EQ
+      res @?= True
   , testCase "testLetShowBoard0" $ do
       res <- parseSuccessful (parseLet <* scn <* eof) testLetShowBoard0
-      res `compare` True @?= EQ
+      res @?= True
   , testCase "testLetShowBoard1" $ do
       res <- parseSuccessful (parseLet <* scn <* eof) testLetShowBoard1
-      res `compare` True @?= EQ
+      res @?= True
   , testCase "testLetShowBoard2" $ do
       res <- parseSuccessful (parseLet <* scn <* eof) testLetShowBoard2
-      res `compare` True @?= EQ
+      res @?= True
   , testCase "testLetShowBoard3" $ do
       res <- parseSuccessful (parseApplied <* scn <* eof) testLetShowBoard3
-      res `compare` True @?= EQ
+      res @?= True
   , testCase "testLetShowBoard4" $ do
       res <- parseSuccessful (parseTopLevel <* scn <* eof) testLetShowBoard4
-      res `compare` True @?= EQ
+      res @?= True
   , testCase "testLetShowBoard5" $ do
       res <- parseSuccessful (parseLet <* scn <* eof) testLetShowBoard5
-      res `compare` True @?= EQ
+      res @?= True
   , testCase "testLetShowBoard8" $ do
       res <- parseSuccessful (parseApplied <* scn <* eof) testLetShowBoard8
-      res `compare` True @?= EQ
+      res @?= True
   , testCase "testLetShowBoard9" $ do
       res <- parseSuccessful (parseApplied <* scn <* eof) testLetShowBoard9
-      res `compare` True @?= EQ
+      res @?= True
   , testCase "AST terms as functions" $ do
       res <- parseSuccessful (parseApplied <* scn <* eof) "app left (pair zero zero)"
-      res `compare` True @?= EQ
+      res @?= True
   , testCase "left with a lot of arguments" $ do
       res <- parseSuccessful (parseApplied <* scn <* eof) "left (\\x y z -> [x, y, z, 0], 0) 1 2 3"
-      res `compare` True @?= EQ
+      res @?= True
   , testCase "right with a lot of arguments" $ do
       res <- parseSuccessful (parseApplied <* scn <* eof) "right (\\x y z -> [x, y, z, 0], 0) 1 2 3"
-      res `compare` True @?= EQ
+      res @?= True
   , testCase "trace with a lot of arguments" $ do
       res <- parseSuccessful (parseApplied <* scn <* eof) "trace (\\x -> (\\y -> (x,y))) 0 0"
-      res `compare` True @?= EQ
+      res @?= True
   , testCase "app with a lot of arguments" $ do
       res <- parseSuccessful (parseApplied <* scn <* eof) "app (\\x y z -> x) 0 1 2"
-      res `compare` True @?= EQ
+      res @?= True
   , testCase "testLetIndentation" $ do
       res <- parseSuccessful (parseLet <* scn <* eof) testLetIndentation
-      res `compare` True @?= EQ
+      res @?= True
   , testCase "testLetIncorrectIndentation1" $ do
       res <- parseSuccessful (parseLet <* scn <* eof) testLetIncorrectIndentation1
       res `compare` False @?= EQ
@@ -205,19 +205,23 @@ caseExpr0 = unlines
   , "main = \\i -> (\"Success\", 0)"
   ]
 
--- |Usefull to see if tictactoe.tel was correctly parsed
--- and was usefull to compare with the deprecated Telomare.Parser
--- Parsec implementation
-testWtictactoe = do
+test2IExpr str =  do
   preludeFile <- Strict.readFile "Prelude.tel"
-  tictactoe <- Strict.readFile "tictactoe.tel"
   let
-    prelude = case parsePrelude preludeFile of
+    prelude :: [Either AnnotatedUPT (String, AnnotatedUPT)]
+    prelude = case parseModule preludeFile of
                 Right p -> p
                 Left pe -> error pe
-  case parseMain prelude tictactoe of
+  case traceShowId (eval2IExpr [("Prelude", prelude)] str) of
     Right _ -> return True
     Left _  -> return False
+
+-- |Usefull to see if tictactoe.tel was correctly parsed and precessed to an IExpr
+testWtictactoe = Strict.readFile "tictactoe.tel" >>= test2IExpr
+
+runTestMainwCLwITEwPair = test2IExpr testMainwCLwITEwPair
+
+runTestMainWType = test2IExpr "main : (\\x -> if x then \"fail\" else 0) = 0"
 
 testLetIndentation = unlines
   [ "let x = 0"
@@ -323,27 +327,6 @@ testMainwCLwITEwPair = unlines
   , "        (\"Hello, world!\", 0)"
   , "      else (\"Goodbye, world!\", 0)"
   ]
-
-runTestMainwCLwITEwPair = do
-  preludeFile <- Strict.readFile "Prelude.tel"
-  let
-    prelude = case parsePrelude preludeFile of
-      Right p -> p
-      Left pe -> error pe
-  case parseMain prelude testMainwCLwITEwPair of
-    Right x  -> return True
-    Left err -> return False
-
-runTestMainWType = do
-  let testMain2 = "main : (\\x -> if x then \"fail\" else 0) = 0"
-  preludeFile <- Strict.readFile "Prelude.tel"
-  let
-    prelude = case parsePrelude preludeFile of
-      Right p -> p
-      Left pe -> error pe
-  case parseMain prelude testMain2 of
-    Right x  -> return True
-    Left err -> return False
 
 testList0 = unlines [ "[ 0"
   , ", 1"

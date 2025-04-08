@@ -1,3 +1,5 @@
+{-# LANGUAGE RecursiveDo #-}
+
 module Main where
 
 import Control.Comonad.Cofree (Cofree ((:<)))
@@ -160,17 +162,17 @@ nodify = removeExtraNumbers . fmap go . allNodes 0 where
 
 
 -- parseModule :: String -> Either String [Either AnnotatedUPT (String, AnnotatedUPT)]
-loadModules :: [String] -> IO [Either AnnotatedUPT (String, AnnotatedUPT)]
+-- TODO: Load modules qualifed
+loadModules :: [String] -> IO [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
 loadModules filenames = do
   filesStrings :: [String] <- mapM Strict.readFile filenames
-  let rawModules = zip filenames filesStrings
-  case parseModule <$> filesStrings of
-    Right p -> pure p
+  case sequence $ parseModule <$> filesStrings of
+    Right p -> pure $ zip filesStrings p
     Left pe -> error pe
 
 main :: IO ()
 main = do
-  modules :: [Either AnnotatedUPT (String, AnnotatedUPT)] <- getArgs >>= loadModules
+  modules :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] <- getArgs >>= loadModules
   let go :: Text -> IO ()
       go textErr =
         mainWidget $ initManager_ $ do

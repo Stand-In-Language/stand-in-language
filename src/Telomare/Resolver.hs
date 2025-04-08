@@ -446,22 +446,22 @@ runTelomareParser2Term2 :: TelomareParser AnnotatedUPT -- ^Parser to run
 runTelomareParser2Term2 parser str =
   first errorBundlePretty (runParser parser "" str) >>= process2Term2
 
-resolveImport :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
-              -> AnnotatedUPT -- ^Import UPT ----- REMOVE!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-              -> [Either AnnotatedUPT (String, AnnotatedUPT)] -- List with just Right
-resolveImport modules = \case
-  (_ :< (ImportUPF var)) ->
-    case lookup var modules of
-      Nothing -> error $ "Import error from " <> var
-      Just x -> x
-  (_ :< (ImportQualifiedUPF q v)) ->
-    case lookup v modules of
-      Nothing -> error $ "Import error from " <> v
-      Just x->  (fmap . fmap . first) (\str -> q <> "." <> str) x
-  _ -> error "Expected import statement"
+-- resolveImport :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
+--               -> AnnotatedUPT -- ^Import UPT ----- REMOVE!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+--               -> [Either AnnotatedUPT (String, AnnotatedUPT)] -- List with just Right
+-- resolveImport modules = \case
+--   (_ :< (ImportUPF var)) ->
+--     case lookup var modules of
+--       Nothing -> error $ "Import error from " <> var
+--       Just x -> x
+--   (_ :< (ImportQualifiedUPF q v)) ->
+--     case lookup v modules of
+--       Nothing -> error $ "Import error from " <> v
+--       Just x->  (fmap . fmap . first) (\str -> q <> "." <> str) x
+--   _ -> error "Expected import statement"
 
 resolveImports' :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
-                -> [Either AnnotatedUPT (String, AnnotatedUPT)] -- ^Main module with both Import and A
+                -> [Either AnnotatedUPT (String, AnnotatedUPT)] -- ^Main module with both Import and Assignment
                 -> [Either AnnotatedUPT (String, AnnotatedUPT)]
 resolveImports' modules xs = lefts <> rights
   where
@@ -484,27 +484,32 @@ resolveImports' modules xs = lefts <> rights
     isRight (Right _) = True
     isRight _ = False
 
-resolveAllImports :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
-                  -> [Either AnnotatedUPT (String, AnnotatedUPT)]
-                  -> [Either AnnotatedUPT (String, AnnotatedUPT)]
-resolveAllImports modules x =
+resolveAllImports' :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
+                   -> [Either AnnotatedUPT (String, AnnotatedUPT)]
+                   -> [Either AnnotatedUPT (String, AnnotatedUPT)]
+resolveAllImports' modules x =
   let resolved = resolveImports' modules x
   in if resolved == x
      then resolved
-     else resolveAllImports modules resolved
+     else resolveAllImports' modules resolved
 
-resolveImports :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
-               -> String
-               -> [(String, AnnotatedUPT)]
-resolveImports modules moduleName = removeRights <$> res
+resolveAllImports :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
+                  -> [Either AnnotatedUPT (String, AnnotatedUPT)]
+                  -> [(String, AnnotatedUPT)]
+resolveAllImports x y = removeRights <$> resolveAllImports' x y
   where
     removeRights = \case
       Left x -> error $ "resolveImports: Left when should be all Right: " <> show x
       Right x -> x
+
+resolveImports :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
+               -> String
+               -> [(String, AnnotatedUPT)]
+resolveImports modules moduleName = resolveAllImports modules principal
+  where
     principal = case lookup moduleName modules of
       Nothing -> error $ "resolveImports: Module " <> moduleName <> " not found"
       Just x -> x
-    res = resolveAllImports modules principal
 
 resolveMain :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -- ^Modules: [(ModuleName, [Either Import (VariableName, BindedUPT)])]
             -> String -- ^Module name with main
@@ -522,6 +527,6 @@ resolveMain allModules mainModule = case lookup mainModule allModules of
                    -- Just x -> Right $ DummyLoc :< LetUPF (trace ("!!!!!!@@@@@@@!!!!!!!! " <> (show resolvedPretty)) resolved) x
 
 main2Term3 :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -- ^Modules: [(ModuleName, [Either Import (VariableName, BindedUPT)])]
-          -> String -- ^Module name with main
-          -> Either String Term3 -- ^Error on Left
+           -> String -- ^Module name with main
+           -> Either String Term3 -- ^Error on Left
 main2Term3 moduleBindings s = resolveMain moduleBindings s >>= process
