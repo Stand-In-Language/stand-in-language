@@ -289,7 +289,7 @@ calculateRecursionLimits t3 =
   let abortExprToTerm4' :: AbortExpr -> Either IExpr Term4
       abortExprToTerm4' = abortExprToTerm4
       limitSize = 256
-  in case fmap abortExprToTerm4' . sizeTermM limitSize $ term3ToUnsizedExpr limitSize t3 of
+  in case fmap abortExprToTerm4' . sizeTerm limitSize $ term3ToUnsizedExpr limitSize t3 of
     Left urt -> Left $ RecursionLimitError urt
     Right t  -> case t of
       Left a  -> Left . StaticCheckError . convertAbortMessage $ a

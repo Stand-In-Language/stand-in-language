@@ -505,6 +505,14 @@ unitTests_ parse = do
     it "test SBV" . liftIO $ do
       testSBV' == pure 3
 -}
+    -- unitTest2 "main = if concat [] [] then 2 else 3" "3"
+    -- unitTest2 "main = if concat [] then 2 else 3" "3"
+    {- works with lazy ite
+    unitTest2 "main = if (\\f -> makeRecur $3 id (\\r l accum -> f (left l) (r (right l) accum)) (\\l a -> a)) listPlus 0 [] then 2 else 3" "3"
+    unitTest2 "main = if (\\f -> makeRecur $4 id (\\r l accum -> f (left l) (r (right l) accum)) (\\l a -> a)) listPlus 0 [] then 2 else 3" "3"
+    unitTest2 "main = if foldr ((\\f a b -> makeRecur $3 id (\\r l accum -> f (left l) (r (right l) accum)) (\\l a -> a) b a) (\\x l -> (x,l))) 0 [] then 2 else 3" "3"
+    unitTest2 "main = if foldr ((\\f a b -> makeRecur $4 id (\\r l accum -> f (left l) (r (right l) accum)) (\\l a -> a) b a) (\\x l -> (x,l))) 0 [] then 2 else 3" "3"
+-}
     testSBV''
   {-
     unitTest2 "main = plus $3 $2 succ 0" "5"
@@ -513,18 +521,24 @@ unitTests_ parse = do
     unitTest2 "main = plus $3 $2 succ 0" "5"
     unitTest2 "main = times $3 $2 succ 0" "6"
 -}
+    -- unitTest2 "main = listEqual \"hey\" \"hey\"" "1"
+    -- unitTest2 "main = listEqual \"hey\" \"he\"" "0"
+    unitTest2 "main = listEqual \"hey\" \"hel\"" "0"
     -- unitTest2 "main = d2c 2 succ 0" "2"
     -- unitTestStaticChecks "main : (\\x -> assert 1 \"A\") = 1" (not . null)
+    -- unitTest2 "main = d2c 3 succ 0" "3"
+  {-
   describe "main function tests" $ do
-    testMain <- runIO $ Strict.readFile "testchar.tel"
+    testMain <- runIO $ Strict.readFile "tc.tel"
     case fmap compileMain (parse testMain) of
       Right (Right g) ->
         let eval = funWrap' evalBU g
             unitTestMain s i e = it ("main input " <> i) $ eval (Just (i, s)) `shouldBe` e
         in do
-        unitTestMain Zero "A" ("ascii value of first char is odd", Just Zero)
-        unitTestMain Zero "B" ("ascii value of first char is even", Just Zero)
+        unitTestMain Zero "A" ("R O", Just Zero)
+        unitTestMain Zero "B" ("R EV", Just Zero)
       z -> runIO . expectationFailure $ "failed to compile main: " <> show z
+-}
   {-
   describe "main function tests" $ do
     testMain <- runIO $ Strict.readFile "minimal.tel"
