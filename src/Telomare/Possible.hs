@@ -67,7 +67,7 @@ import Control.Monad.Reader.Class
 
 -- import           Telomare.TypeChecker
 debug :: Bool
-debug = False
+debug = True
 
 debugTrace :: String -> a -> a
 -- debugTrace s x = if debug then debugTrace' s x else x
@@ -266,12 +266,12 @@ gateIndexedResult handleOther = \case
   IndexedEE (IVarF n) -> GateResult True False Nothing
   x -> handleOther x
 
-mergeShallow :: (Base g ~ f, SuperBase f, ShallowEq1 f, Recursive g, Corecursive g) => Integer -> g -> g -> g
+mergeShallow :: (Base g ~ f, SuperBase f, ShallowEq1 f, Recursive g, Corecursive g) => Maybe Integer -> g -> g -> g
 mergeShallow n a b = if shallowEq1 (project a) (project b)
   then a
   else superEE $ EitherPF n a b
 
-foldGateResult :: forall g f. (Base g ~ f, SuperBase f, Recursive g, Corecursive g) => Integer -> g -> g -> GateResult g -> g
+foldGateResult :: forall g f. (Base g ~ f, SuperBase f, Recursive g, Corecursive g) => Maybe Integer -> g -> g -> GateResult g -> g
 foldGateResult n l r (GateResult doL doR o) =
   let filterLeft = \case
         SuperFW (EitherPF nt a _) | nt == n -> a
@@ -279,24 +279,27 @@ foldGateResult n l r (GateResult doL doR o) =
       filterRight = \case
         SuperFW (EitherPF nt _ b) | nt == n -> b
         x -> embed x
-      fl = cata filterLeft l
-      fr = cata filterRight r
-  in case o of
-    Just o' -> o'
-    _ -> case (doL, doR) of
-      (True, True) -> superEE $ EitherPF n fl fr
-      (True, _) -> fl
-      (_, True) -> fr
-      _ -> error "foldGateResult: no results"
+      fl = if null n then l else cata filterLeft l
+      fr = if null n then r else cata filterRight r
+      branchPart = case (doL, doR) of
+        (True, True) -> pure . superEE $ EitherPF n fl fr
+        (True, _) -> pure fl
+        (_, True) -> pure fr
+        _ -> Nothing
+  in case (o, branchPart) of
+    (Just o', Just bp) -> superEE $ EitherPF Nothing o' bp
+    (Just x, _) -> x
+    (_, Just x) -> x
+    _ -> error "foldGateResult: no results"
 
 superStep :: forall a f. (Base a ~ f, BasicBase f, SuperBase f, ShallowEq1 f, Recursive a, Corecursive a, PrettyPrintable a)
   => (a -> GateResult a) -> (f a -> a) -> (f a -> a) -> f a -> a
 superStep gateResult step handleOther =
-  let filterLeft :: Integer -> f a -> a
+  let filterLeft :: Maybe Integer -> f a -> a
       filterLeft n = \case
         SuperFW (EitherPF nt a _) | nt == n -> a
         x -> embed x
-      filterRight :: Integer -> f a -> a
+      filterRight :: Maybe Integer -> f a -> a
       filterRight n = \case
         SuperFW (EitherPF nt _ b) | nt == n -> b
         x -> embed x
@@ -306,8 +309,8 @@ superStep gateResult step handleOther =
     BasicFW (SetEnvSF (SuperEE (EitherPF n a b))) -> mergeShallow n (step . embedB . SetEnvSF $ a) (step . embedB . SetEnvSF $ b)
     GateSwitch l r x@(SuperEE (EitherPF n _ _)) -> (\dx -> debugTrace ("superStep gateSwitch\n" <> prettyPrint dx) dx) . foldGateResult n l r $ gateResult x
     (FillFunction (SuperEE (EitherPF n sca scb)) e) -> mergeShallow n
-      (step . embedB . SetEnvSF . basicEE . PairSF sca $ cata (filterLeft n) e)
-      (step . embedB . SetEnvSF . basicEE . PairSF scb $ cata (filterRight n) e)
+      (step . embedB . SetEnvSF . basicEE . PairSF sca $ if null n then e else cata (filterLeft n) e)
+      (step . embedB . SetEnvSF . basicEE . PairSF scb $ if null n then e else cata (filterRight n) e)
     -- stuck values
     x@(SuperFW (EitherPF _ _ _)) -> embed x
     x -> handleOther x
@@ -315,11 +318,11 @@ superStep gateResult step handleOther =
 superUnsizedStep :: forall a f. (Base a ~ f, Traversable f, BasicBase f, SuperBase f, UnsizedBase f, ShallowEq1 f, Recursive a, Corecursive a, PrettyPrintable a)
   => (a -> GateResult a) -> (f a -> a) -> (f a -> a) -> f a -> a
 superUnsizedStep gateResult step handleOther =
-  let filterLeft :: Integer -> f a -> a
+  let filterLeft :: Maybe Integer -> f a -> a
       filterLeft n = \case
         SuperFW (EitherPF nt a _) | nt == n -> a
         x -> embed x
-      filterRight :: Integer -> f a -> a
+      filterRight :: Maybe Integer -> f a -> a
       filterRight n = \case
         SuperFW (EitherPF nt _ b) | nt == n -> b
         x -> embed x
@@ -335,8 +338,8 @@ superUnsizedStep gateResult step handleOther =
         UnsizedFW (SizeStageF sr (srb, x)) -> (sr <> srb, x)
         x -> embed <$> sequence x
     (FillFunction (SuperEE (EitherPF n sca scb)) e) -> mergeShallow n
-      (step . embedB . SetEnvSF . basicEE . PairSF sca $ cata (filterLeft n) e)
-      (step . embedB . SetEnvSF . basicEE . PairSF scb $ cata (filterRight n) e)
+      (step . embedB . SetEnvSF . basicEE . PairSF sca $ if null n then e else cata (filterLeft n) e)
+      (step . embedB . SetEnvSF . basicEE . PairSF scb $ if null n then e else cata (filterRight n) e)
     -- stuck values
     x@(SuperFW (EitherPF _ _ _)) -> embed x
     x -> handleOther x
@@ -345,11 +348,11 @@ superStepM :: forall a f m. (Base a ~ f, Traversable f, BasicBase f, SuperBase f
   => (a -> GateResult a) -> (f a -> m a) -> (f a -> m a) -> f a -> m a
 superStepM gateResult step handleOther x = f x where
   pbStep bf = step . embedB . bf
-  filterLeft :: Integer -> f a -> a
+  filterLeft :: Maybe Integer -> f a -> a
   filterLeft n = \case
         SuperFW (EitherPF nt a _) | nt == n -> a
         x -> embed x
-  filterRight :: Integer -> f a -> a
+  filterRight :: Maybe Integer -> f a -> a
   filterRight n = \case
         SuperFW (EitherPF nt _ b) | nt == n -> b
         x -> embed x
@@ -359,8 +362,8 @@ superStepM gateResult step handleOther x = f x where
     BasicFW (SetEnvSF (SuperEE (EitherPF n a b))) -> mergeShallow n <$> pbStep SetEnvSF a <*> pbStep SetEnvSF b
     GateSwitch l r x@(SuperEE (EitherPF n _ _)) -> pure . foldGateResult n l r $ gateResult x
     FillFunction (SuperEE (EitherPF n sca scb)) e -> mergeShallow n
-       <$> (pbStep SetEnvSF . basicEE . PairSF sca $ cata (filterLeft n) e)
-       <*> (pbStep SetEnvSF . basicEE . PairSF scb $ cata (filterRight n) e)
+       <$> (pbStep SetEnvSF . basicEE . PairSF sca $ if null n then e else cata (filterLeft n) e)
+       <*> (pbStep SetEnvSF . basicEE . PairSF scb $ if null n then e else cata (filterRight n) e)
     -- stuck values
     x@(SuperFW (EitherPF _ _ _)) -> pure $ embed x
 
@@ -371,11 +374,11 @@ superStepM' :: forall a f m. (Base a ~ f, Traversable f, BasicBase f, SuperBase 
   => (a -> GateResult a) -> (f a -> m a) -> (f a -> m a) -> f a -> m a
 superStepM' gateResult step handleOther x = f x where
   pbStep bf = step . embedB . bf
-  filterLeft :: Integer -> f a -> a
+  filterLeft :: Maybe Integer -> f a -> a
   filterLeft n = \case
         SuperFW (EitherPF nt a _) | nt == n -> a
         x -> embed x
-  filterRight :: Integer -> f a -> a
+  filterRight :: Maybe Integer -> f a -> a
   filterRight n = \case
         SuperFW (EitherPF nt _ b) | nt == n -> b
         x -> embed x
@@ -385,8 +388,8 @@ superStepM' gateResult step handleOther x = f x where
     BasicFW (SetEnvSF (SuperEE (EitherPF n a b))) -> debugTrace ("superStep setenv") . mergeShallow n <$> pbStep SetEnvSF a <*> pbStep SetEnvSF b
     GateSwitch l r x@(SuperEE (EitherPF n _ _)) -> pure . foldGateResult n l r $ gateResult x
     ff@(FillFunction (SuperEE (EitherPF n sca scb)) e) -> debugTrace ("superStep fillfunction\n" <> prettyPrint (embed ff)) . mergeShallow n
-       <$> (pbStep SetEnvSF . basicEE . PairSF sca $ cata (filterLeft n) e)
-       <*> (pbStep SetEnvSF . basicEE . PairSF scb $ cata (filterRight n) e)
+       <$> (pbStep SetEnvSF . basicEE . PairSF sca $ if null n then e else cata (filterLeft n) e)
+       <*> (pbStep SetEnvSF . basicEE . PairSF scb $ if null n then e else cata (filterRight n) e)
     -- stuck values
     x@(SuperFW (EitherPF _ _ _)) -> pure $ embed x
 
@@ -425,13 +428,13 @@ indexedAbortStepM handleOther = \case
 indexedSuperStep :: (Base a ~ f, Traversable f, BasicBase f, SuperBase f, IndexedInputBase f, Recursive a, Corecursive a, PrettyPrintable a)
   => (f a -> a) -> f a -> a
 indexedSuperStep handleOther = \case
-  GateSwitch l r (IndexedEE (IVarF n)) -> superEE $ EitherPF n l r
+  GateSwitch l r (IndexedEE (IVarF n)) -> superEE $ EitherPF (pure n) l r
   x -> handleOther x
 
 indexedSuperStepM :: (Base a ~ f, Traversable f, BasicBase f, SuperBase f, IndexedInputBase f, Recursive a, Corecursive a, PrettyPrintable a, Monad m)
   => (f a -> m a) -> f a -> m a
 indexedSuperStepM handleOther = \case
-  GateSwitch l r (IndexedEE (IVarF n)) -> pure . superEE $ EitherPF n l r
+  GateSwitch l r (IndexedEE (IVarF n)) -> pure . superEE $ EitherPF (pure n) l r
 
   x -> handleOther x
 
@@ -804,7 +807,7 @@ indexedInputIgnoreSwitchStepM handleOther x = f x where
 
 indexSwitchSuperSplitStep :: (Base a ~ f, BasicBase f, IndexedInputBase f, SuperBase f, Recursive a, Corecursive a) => (f a -> a) -> f a -> a
 indexSwitchSuperSplitStep handleOther = \case
-  GateSwitch l r (IndexedEE AnyF) -> superEE $ EitherPF 0 l r -- is this 0 bad?
+  GateSwitch l r (IndexedEE AnyF) -> superEE $ EitherPF Nothing l r
 
   x -> handleOther x
 

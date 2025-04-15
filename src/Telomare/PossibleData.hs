@@ -246,7 +246,7 @@ instance Show1 VoidF where
   liftShowsPrec showsPrec showList prec x = undefined
 
 data SuperPositionF f
-  = EitherPF Integer !f !f
+  = EitherPF (Maybe Integer) !f !f
   deriving (Eq, Ord, Show, Functor, Foldable, Traversable, Generic)
 
 instance Eq1 SuperPositionF where
