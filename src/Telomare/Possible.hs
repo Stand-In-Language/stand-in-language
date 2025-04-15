@@ -248,12 +248,12 @@ gateBasicResult handleOther = \case
 
 gateSuperResult :: (Base g ~ f, SuperBase f, Recursive g, Corecursive g) => (g -> GateResult g) -> (g -> GateResult g) -> g -> GateResult g
 gateSuperResult step handleOther = \case
-  SuperEE (EitherPF a b) -> let GateResult la ra ba = step a
-                                GateResult lb rb bb = step b
-                                co = case (ba, bb) of
-                                  (Just ba', Just bb') -> pure . superEE $ EitherPF ba' bb'
-                                  _ -> ba <|> bb
-                            in debugTrace " " GateResult (la || lb) (ra || rb) co
+  SuperEE (EitherPF n a b) -> let GateResult la ra ba = step a
+                                  GateResult lb rb bb = step b
+                                  co = case (ba, bb) of
+                                    (Just ba', Just bb') -> pure . superEE $ EitherPF n ba' bb'
+                                    _ -> ba <|> bb
+                              in debugTrace " " GateResult (la || lb) (ra || rb) co
   x -> handleOther x
 
 gateAbortResult :: (Base g ~ f, AbortBase f, Recursive g, Corecursive g) => (g -> GateResult g) -> g -> GateResult g
@@ -266,126 +266,129 @@ gateIndexedResult handleOther = \case
   IndexedEE (IVarF n) -> GateResult True False Nothing
   x -> handleOther x
 
-mergeShallow :: (Base g ~ f, SuperBase f, ShallowEq1 f, Recursive g, Corecursive g) => g -> g -> g
-mergeShallow a b = if shallowEq1 (project a) (project b)
+mergeShallow :: (Base g ~ f, SuperBase f, ShallowEq1 f, Recursive g, Corecursive g) => Integer -> g -> g -> g
+mergeShallow n a b = if shallowEq1 (project a) (project b)
   then a
-  else superEE $ EitherPF a b
+  else superEE $ EitherPF n a b
 
-foldGateResult :: forall g f. (Base g ~ f, SuperBase f, Corecursive g) => g -> g -> GateResult g -> g
-foldGateResult l r (GateResult doL doR o) = fromJust $ foldr f Nothing [o, tm l doL, tm r doR] where
-  fromJust = \case
-    Nothing -> error "foldGateResult: no results"
-    Just x -> x
-  tm b s = if s then Just b else Nothing
-  f :: Maybe g -> Maybe g -> Maybe g
-  f a b = case (a,b) of
-    (Nothing, Nothing) -> Nothing
-    (Just _, Nothing) -> a
-    (Nothing, Just _) -> b
-    (Just a', Just b') -> pure . superEE $ EitherPF a' b'
+foldGateResult :: forall g f. (Base g ~ f, SuperBase f, Recursive g, Corecursive g) => Integer -> g -> g -> GateResult g -> g
+foldGateResult n l r (GateResult doL doR o) =
+  let filterLeft = \case
+        SuperFW (EitherPF nt a _) | nt == n -> a
+        x -> embed x
+      filterRight = \case
+        SuperFW (EitherPF nt _ b) | nt == n -> b
+        x -> embed x
+      fl = cata filterLeft l
+      fr = cata filterRight r
+  in case o of
+    Just o' -> o'
+    _ -> case (doL, doR) of
+      (True, True) -> superEE $ EitherPF n fl fr
+      (True, _) -> fl
+      (_, True) -> fr
+      _ -> error "foldGateResult: no results"
 
 superStep :: forall a f. (Base a ~ f, BasicBase f, SuperBase f, ShallowEq1 f, Recursive a, Corecursive a, PrettyPrintable a)
   => (a -> GateResult a) -> (f a -> a) -> (f a -> a) -> f a -> a
 superStep gateResult step handleOther =
-  \case
-    BasicFW (LeftSF (SuperEE (EitherPF a b))) -> mergeShallow (step . embedB . LeftSF $ a) (step . embedB . LeftSF $ b)
-    BasicFW (RightSF (SuperEE (EitherPF a b))) -> mergeShallow (step . embedB . RightSF $ a) (step . embedB . RightSF $ b)
-    BasicFW (SetEnvSF (SuperEE (EitherPF a b))) -> mergeShallow (step . embedB . SetEnvSF $ a) (step . embedB . SetEnvSF $ b)
-    GateSwitch l r x@(SuperEE _) -> (\dx -> debugTrace ("superStep gateSwitch\n" <> prettyPrint dx) dx) . foldGateResult l r $ gateResult x
-    (FillFunction (SuperEE (EitherPF sca scb)) e) -> mergeShallow
-      (step . embedB . SetEnvSF . basicEE $ PairSF sca e)
-      (step . embedB . SetEnvSF . basicEE $ PairSF scb e)
+  let filterLeft :: Integer -> f a -> a
+      filterLeft n = \case
+        SuperFW (EitherPF nt a _) | nt == n -> a
+        x -> embed x
+      filterRight :: Integer -> f a -> a
+      filterRight n = \case
+        SuperFW (EitherPF nt _ b) | nt == n -> b
+        x -> embed x
+  in \case
+    BasicFW (LeftSF (SuperEE (EitherPF n a b))) -> mergeShallow n (step . embedB . LeftSF $ a) (step . embedB . LeftSF $ b)
+    BasicFW (RightSF (SuperEE (EitherPF n a b))) -> mergeShallow n (step . embedB . RightSF $ a) (step . embedB . RightSF $ b)
+    BasicFW (SetEnvSF (SuperEE (EitherPF n a b))) -> mergeShallow n (step . embedB . SetEnvSF $ a) (step . embedB . SetEnvSF $ b)
+    GateSwitch l r x@(SuperEE (EitherPF n _ _)) -> (\dx -> debugTrace ("superStep gateSwitch\n" <> prettyPrint dx) dx) . foldGateResult n l r $ gateResult x
+    (FillFunction (SuperEE (EitherPF n sca scb)) e) -> mergeShallow n
+      (step . embedB . SetEnvSF . basicEE . PairSF sca $ cata (filterLeft n) e)
+      (step . embedB . SetEnvSF . basicEE . PairSF scb $ cata (filterRight n) e)
     -- stuck values
-    x@(SuperFW (EitherPF _ _)) -> embed x
+    x@(SuperFW (EitherPF _ _ _)) -> embed x
     x -> handleOther x
 
 superUnsizedStep :: forall a f. (Base a ~ f, Traversable f, BasicBase f, SuperBase f, UnsizedBase f, ShallowEq1 f, Recursive a, Corecursive a, PrettyPrintable a)
   => (a -> GateResult a) -> (f a -> a) -> (f a -> a) -> f a -> a
 superUnsizedStep gateResult step handleOther =
-  \case
-    BasicFW (LeftSF (SuperEE (EitherPF a b))) -> mergeShallow (step . embedB . LeftSF $ a) (step . embedB . LeftSF $ b)
-    BasicFW (RightSF (SuperEE (EitherPF a b))) -> mergeShallow (step . embedB . RightSF $ a) (step . embedB . RightSF $ b)
-    BasicFW (SetEnvSF (SuperEE (EitherPF a b))) -> mergeShallow (step . embedB . SetEnvSF $ a) (step . embedB . SetEnvSF $ b)
-    GateSwitch l r x@(SuperEE _) -> case foldr f Nothing [noBranch res, tm l $ leftBranch res, tm r $ rightBranch res] of
-      Nothing -> error "superStep gateswich should have at least one result"
-      Just res' -> if null (unSizedRecursion srx)
-        then res'
-        else unsizedEE $ SizeStageF srx res'
-      where
+  let filterLeft :: Integer -> f a -> a
+      filterLeft n = \case
+        SuperFW (EitherPF nt a _) | nt == n -> a
+        x -> embed x
+      filterRight :: Integer -> f a -> a
+      filterRight n = \case
+        SuperFW (EitherPF nt _ b) | nt == n -> b
+        x -> embed x
+  in \case
+    BasicFW (LeftSF (SuperEE (EitherPF n a b))) -> mergeShallow n (step . embedB . LeftSF $ a) (step . embedB . LeftSF $ b)
+    BasicFW (RightSF (SuperEE (EitherPF n a b))) -> mergeShallow n (step . embedB . RightSF $ a) (step . embedB . RightSF $ b)
+    BasicFW (SetEnvSF (SuperEE (EitherPF n a b))) -> mergeShallow n (step . embedB . SetEnvSF $ a) (step . embedB . SetEnvSF $ b)
+    GateSwitch l r x@(SuperEE (EitherPF n _ _)) -> wrapSS $ foldGateResult n l r res where
+      wrapSS = if null (unSizedRecursion srx) then id else unsizedEE . SizeStageF srx
       (srx, nx) = extractSizeStages x
       res = gateResult nx
-      tm b s = if s then Just b else Nothing
-      f :: Maybe a -> Maybe a -> Maybe a
-      f a b = case (a,b) of
-        (Nothing, Nothing) -> Nothing
-        (Just _, Nothing) -> a
-        (Nothing, Just _) -> b
-        (Just a', Just b') -> pure . superEE $ EitherPF a' b'
       extractSizeStages = cata $ \case
         UnsizedFW (SizeStageF sr (srb, x)) -> (sr <> srb, x)
         x -> embed <$> sequence x
-    (FillFunction (SuperEE (EitherPF sca scb)) e) -> mergeShallow
-      (step . embedB . SetEnvSF . basicEE $ PairSF sca e)
-      (step . embedB . SetEnvSF . basicEE $ PairSF scb e)
+    (FillFunction (SuperEE (EitherPF n sca scb)) e) -> mergeShallow n
+      (step . embedB . SetEnvSF . basicEE . PairSF sca $ cata (filterLeft n) e)
+      (step . embedB . SetEnvSF . basicEE . PairSF scb $ cata (filterRight n) e)
     -- stuck values
-    x@(SuperFW (EitherPF _ _)) -> embed x
+    x@(SuperFW (EitherPF _ _ _)) -> embed x
     x -> handleOther x
 
 superStepM :: forall a f m. (Base a ~ f, Traversable f, BasicBase f, SuperBase f, ShallowEq1 f, Recursive a, Corecursive a, PrettyPrintable a, Monad m)
   => (a -> GateResult a) -> (f a -> m a) -> (f a -> m a) -> f a -> m a
 superStepM gateResult step handleOther x = f x where
   pbStep bf = step . embedB . bf
-  -- f :: f a -> m a
+  filterLeft :: Integer -> f a -> a
+  filterLeft n = \case
+        SuperFW (EitherPF nt a _) | nt == n -> a
+        x -> embed x
+  filterRight :: Integer -> f a -> a
+  filterRight n = \case
+        SuperFW (EitherPF nt _ b) | nt == n -> b
+        x -> embed x
   f = \case
-    BasicFW (LeftSF (SuperEE (EitherPF a b))) -> mergeShallow <$> pbStep LeftSF a <*> pbStep LeftSF b
-    BasicFW (RightSF (SuperEE (EitherPF a b))) -> mergeShallow <$> pbStep RightSF a <*> pbStep RightSF b
-    BasicFW (SetEnvSF (SuperEE (EitherPF a b))) -> mergeShallow <$> pbStep SetEnvSF a <*> pbStep SetEnvSF b
-    GateSwitch l r x@(SuperEE _) -> case foldr f Nothing [noBranch res, tm l $ leftBranch res, tm r $ rightBranch res] of
-      Nothing -> error "superStepM gateswich should have at least one result"
-      Just res' -> pure res'
-      where
-      res = gateResult x
-      tm b s = if s then Just b else Nothing
-      f :: Maybe a -> Maybe a -> Maybe a
-      f a b = case (a,b) of
-        (Nothing, Nothing) -> Nothing
-        (Just _, Nothing) -> a
-        (Nothing, Just _) -> b
-        (Just a', Just b') -> pure . superEE $ EitherPF a' b'
-    FillFunction (SuperEE (EitherPF sca scb)) e -> mergeShallow
-       <$> (pbStep SetEnvSF . basicEE $ PairSF sca e)
-       <*> (pbStep SetEnvSF . basicEE $ PairSF scb e)
+    BasicFW (LeftSF (SuperEE (EitherPF n a b))) -> mergeShallow n <$> pbStep LeftSF a <*> pbStep LeftSF b
+    BasicFW (RightSF (SuperEE (EitherPF n a b))) -> mergeShallow n <$> pbStep RightSF a <*> pbStep RightSF b
+    BasicFW (SetEnvSF (SuperEE (EitherPF n a b))) -> mergeShallow n <$> pbStep SetEnvSF a <*> pbStep SetEnvSF b
+    GateSwitch l r x@(SuperEE (EitherPF n _ _)) -> pure . foldGateResult n l r $ gateResult x
+    FillFunction (SuperEE (EitherPF n sca scb)) e -> mergeShallow n
+       <$> (pbStep SetEnvSF . basicEE . PairSF sca $ cata (filterLeft n) e)
+       <*> (pbStep SetEnvSF . basicEE . PairSF scb $ cata (filterRight n) e)
     -- stuck values
-    x@(SuperFW (EitherPF _ _)) -> pure $ embed x
+    x@(SuperFW (EitherPF _ _ _)) -> pure $ embed x
 
     _ -> handleOther x
 
+-- just for debugging
 superStepM' :: forall a f m. (Base a ~ f, Traversable f, BasicBase f, SuperBase f, ShallowEq1 f, Recursive a, Corecursive a, PrettyPrintable a, Monad m)
   => (a -> GateResult a) -> (f a -> m a) -> (f a -> m a) -> f a -> m a
 superStepM' gateResult step handleOther x = f x where
   pbStep bf = step . embedB . bf
-  -- f :: f a -> m a
+  filterLeft :: Integer -> f a -> a
+  filterLeft n = \case
+        SuperFW (EitherPF nt a _) | nt == n -> a
+        x -> embed x
+  filterRight :: Integer -> f a -> a
+  filterRight n = \case
+        SuperFW (EitherPF nt _ b) | nt == n -> b
+        x -> embed x
   f = \case
-    BasicFW (LeftSF (SuperEE (EitherPF a b))) -> mergeShallow <$> pbStep LeftSF a <*> pbStep LeftSF b
-    BasicFW (RightSF (SuperEE (EitherPF a b))) -> mergeShallow <$> pbStep RightSF a <*> pbStep RightSF b
-    BasicFW (SetEnvSF (SuperEE (EitherPF a b))) -> debugTrace ("superStep setenv") . mergeShallow <$> pbStep SetEnvSF a <*> pbStep SetEnvSF b
-    GateSwitch l r x@(SuperEE _) -> case foldr f Nothing [noBranch res, tm l $ leftBranch res, tm r $ rightBranch res] of
-      Nothing -> error "superStepM gateswich should have at least one result"
-      Just res' -> pure res'
-      where
-      res = gateResult x
-      tm b s = if s then Just b else Nothing
-      f :: Maybe a -> Maybe a -> Maybe a
-      f a b = case (a,b) of
-        (Nothing, Nothing) -> Nothing
-        (Just _, Nothing) -> a
-        (Nothing, Just _) -> b
-        (Just a', Just b') -> pure . superEE $ EitherPF a' b'
-    ff@(FillFunction (SuperEE (EitherPF sca scb)) e) -> debugTrace ("superStep fillfunction\n" <> prettyPrint (embed ff)) . mergeShallow
-       <$> (pbStep SetEnvSF . basicEE $ PairSF sca e)
-       <*> (pbStep SetEnvSF . basicEE $ PairSF scb e)
+    BasicFW (LeftSF (SuperEE (EitherPF n a b))) -> mergeShallow n <$> pbStep LeftSF a <*> pbStep LeftSF b
+    BasicFW (RightSF (SuperEE (EitherPF n a b))) -> mergeShallow n <$> pbStep RightSF a <*> pbStep RightSF b
+    BasicFW (SetEnvSF (SuperEE (EitherPF n a b))) -> debugTrace ("superStep setenv") . mergeShallow n <$> pbStep SetEnvSF a <*> pbStep SetEnvSF b
+    GateSwitch l r x@(SuperEE (EitherPF n _ _)) -> pure . foldGateResult n l r $ gateResult x
+    ff@(FillFunction (SuperEE (EitherPF n sca scb)) e) -> debugTrace ("superStep fillfunction\n" <> prettyPrint (embed ff)) . mergeShallow n
+       <$> (pbStep SetEnvSF . basicEE . PairSF sca $ cata (filterLeft n) e)
+       <*> (pbStep SetEnvSF . basicEE . PairSF scb $ cata (filterRight n) e)
     -- stuck values
-    x@(SuperFW (EitherPF _ _)) -> pure $ embed x
+    x@(SuperFW (EitherPF _ _ _)) -> pure $ embed x
 
     _ -> handleOther x
 
@@ -394,8 +397,8 @@ superAbortStep :: (Base g ~ f, Traversable f, BasicBase f, SuperBase f, AbortBas
 superAbortStep step handleOther x = f x where
   pbStep bf = step . project . bf
   f = \case
-    FillFunction (AbortEE AbortF) (SuperEE (EitherPF a b)) ->
-      mergeShallow (pbStep (fillFunction (abortEE AbortF)) a) (pbStep (fillFunction (abortEE AbortF)) b)
+    FillFunction (AbortEE AbortF) (SuperEE (EitherPF n a b)) ->
+      mergeShallow n (pbStep (fillFunction (abortEE AbortF)) a) (pbStep (fillFunction (abortEE AbortF)) b)
     _ -> handleOther x
 
 superAbortStepM :: (Base g ~ f, Traversable f, BasicBase f, SuperBase f, AbortBase f, ShallowEq1 f, Recursive g, Corecursive g, Monad m)
@@ -403,8 +406,8 @@ superAbortStepM :: (Base g ~ f, Traversable f, BasicBase f, SuperBase f, AbortBa
 superAbortStepM step handleOther x = f x where
   pbStep bf = step . project . bf
   f = \case
-    FillFunction (AbortEE AbortF) (SuperEE (EitherPF a b)) ->
-      liftM2 mergeShallow (pbStep (fillFunction (abortEE AbortF)) a) (pbStep (fillFunction (abortEE AbortF)) b)
+    FillFunction (AbortEE AbortF) (SuperEE (EitherPF n a b)) ->
+      liftM2 (mergeShallow n) (pbStep (fillFunction (abortEE AbortF)) a) (pbStep (fillFunction (abortEE AbortF)) b)
     _ -> handleOther x
 
 indexedAbortStep :: (Base a ~ f, Traversable f, BasicBase f, AbortBase f, IndexedInputBase f, Recursive a, Corecursive a, PrettyPrintable a)
@@ -422,13 +425,13 @@ indexedAbortStepM handleOther = \case
 indexedSuperStep :: (Base a ~ f, Traversable f, BasicBase f, SuperBase f, IndexedInputBase f, Recursive a, Corecursive a, PrettyPrintable a)
   => (f a -> a) -> f a -> a
 indexedSuperStep handleOther = \case
-  GateSwitch l r (IndexedEE (IVarF _)) -> superEE $ EitherPF l r
+  GateSwitch l r (IndexedEE (IVarF n)) -> superEE $ EitherPF n l r
   x -> handleOther x
 
 indexedSuperStepM :: (Base a ~ f, Traversable f, BasicBase f, SuperBase f, IndexedInputBase f, Recursive a, Corecursive a, PrettyPrintable a, Monad m)
   => (f a -> m a) -> f a -> m a
 indexedSuperStepM handleOther = \case
-  GateSwitch l r (IndexedEE (IVarF _)) -> pure . superEE $ EitherPF l r
+  GateSwitch l r (IndexedEE (IVarF n)) -> pure . superEE $ EitherPF n l r
 
   x -> handleOther x
 
@@ -535,13 +538,13 @@ unsizedTestIndexed zeroes handleOther ri = \case
 unsizedTestSuper :: (Base g ~ f, SuperBase f, AbortBase f, Recursive g, Corecursive g)
   => (g -> g) -> (UnsizedRecursionToken -> g -> g) -> UnsizedRecursionToken -> g -> g
 unsizedTestSuper reTest handleOther ri = \case
-  SuperEE (EitherPF a b) -> let getAU = \case
-                                  a@(AbortEE (AbortedF (AbortUnsizeable _))) -> Just a
-                                  _ -> Nothing
-                                na = reTest a
-                                nb = reTest b
-                                Just r = getAU na <|> getAU nb <|> (Just . superEE $ EitherPF na nb)
-                            in r
+  SuperEE (EitherPF n a b) -> let getAU = \case
+                                    a@(AbortEE (AbortedF (AbortUnsizeable _))) -> Just a
+                                    _ -> Nothing
+                                  na = reTest a
+                                  nb = reTest b
+                                  Just r = getAU na <|> getAU nb <|> (Just . superEE $ EitherPF n na nb)
+                              in r
   x -> handleOther ri x
 
 unsizedTestDeferred :: (Base g ~ f, DeferredEvalBase f, Recursive g, Corecursive g)
@@ -801,7 +804,7 @@ indexedInputIgnoreSwitchStepM handleOther x = f x where
 
 indexSwitchSuperSplitStep :: (Base a ~ f, BasicBase f, IndexedInputBase f, SuperBase f, Recursive a, Corecursive a) => (f a -> a) -> f a -> a
 indexSwitchSuperSplitStep handleOther = \case
-  GateSwitch l r (IndexedEE AnyF) -> superEE $ EitherPF l r
+  GateSwitch l r (IndexedEE AnyF) -> superEE $ EitherPF 0 l r -- is this 0 bad?
 
   x -> handleOther x
 
@@ -1336,7 +1339,7 @@ genTypedTree ti t i = -- TODO generate UnsizedF sections?
         makeLeft ti' = ta . embedB . LeftSF <$> genTypedTree ti (PairTypeP t ti') (i - 1)
       rightOption = genValid >>= makeRight where
         makeRight ti' = ta . embedB . RightSF <$> genTypedTree ti (PairTypeP ti' t) (i - 1)
-      eitherOption = ta . embedP <$> (EitherPF <$> genTypedTree ti t half <*> genTypedTree ti t half)
+      eitherOption = ta . embedP <$> (EitherPF <$> genValid <*> genTypedTree ti t half <*> genTypedTree ti t half)
       abortedOption = pure . ta . embedA . AbortedF . AbortUser $ s2g "Arbitrary Test Data"
       addZeroPair = if t == ZeroTypeP
         then ((ta . embedB <$> (PairSF <$> genTypedTree ti ZeroTypeP half <*> genTypedTree ti ZeroTypeP half)) :)

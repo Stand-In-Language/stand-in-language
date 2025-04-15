@@ -246,17 +246,17 @@ instance Show1 VoidF where
   liftShowsPrec showsPrec showList prec x = undefined
 
 data SuperPositionF f
-  = EitherPF !f !f
+  = EitherPF Integer !f !f
   deriving (Eq, Ord, Show, Functor, Foldable, Traversable, Generic)
 
 instance Eq1 SuperPositionF where
   liftEq test a b = case (a,b) of
-    (EitherPF a b, EitherPF c d) -> test a c && test b d
+    (EitherPF x a b, EitherPF y c d) -> x == y && test a c && test b d
     _                            -> False
 
 instance Show1 SuperPositionF where
   liftShowsPrec showsPrec showList prec = \case
-    EitherPF a b -> shows "EitherPF (" . showsPrec 0 a . shows ", " . showsPrec 0 b . shows ")"
+    EitherPF x a b -> shows "EitherPF " . shows x . shows " (" . showsPrec 0 a . shows ", " . showsPrec 0 b . shows ")"
 
 data FuzzyInputF f
   = MaybePairF f f
@@ -345,7 +345,7 @@ instance PrettyPrintable1 PartExprF where
 
 instance PrettyPrintable1 SuperPositionF where
   showP1 = \case
-    EitherPF a b -> indentWithTwoChildren' "%" (showP a) (showP b)
+    EitherPF x a b -> indentWithTwoChildren' ("%" <> show x) (showP a) (showP b)
 
 instance PrettyPrintable1 FuzzyInputF where
   showP1 = \case
@@ -913,7 +913,7 @@ instance Annotatable1 StuckF where
 
 instance Annotatable1 SuperPositionF where
   liftAnno anno = \case
-    EitherPF a b -> do
+    EitherPF _ a b -> do
       at <- anno a
       bt <- anno b
       associateVar at bt
