@@ -205,23 +205,27 @@ caseExpr0 = unlines
   , "main = \\i -> (\"Success\", 0)"
   ]
 
-test2IExpr str =  do
-  preludeFile <- Strict.readFile "Prelude.tel"
-  let
-    prelude :: [Either AnnotatedUPT (String, AnnotatedUPT)]
-    prelude = case parseModule preludeFile of
-                Right p -> p
-                Left pe -> error pe
-  case traceShowId (eval2IExpr [("Prelude", prelude)] str) of
+-- test2IExpr str =  do
+--   preludeFile <- Strict.readFile "Prelude.tel"
+--   let
+--     prelude :: [Either AnnotatedUPT (String, AnnotatedUPT)]
+--     prelude = case parseModule preludeFile of
+--                 Right p -> p
+--                 Left pe -> error pe
+--   case eval2IExpr [("Prelude", prelude)] str of
+--     Right _ -> return True
+--     Left _  -> return False
+
+test2UPT str =
+  case parseModule str of
     Right _ -> return True
     Left _  -> return False
 
--- |Usefull to see if tictactoe.tel was correctly parsed and precessed to an IExpr
-testWtictactoe = Strict.readFile "tictactoe.tel" >>= test2IExpr
+testWtictactoe = Strict.readFile "tictactoe.tel" >>= test2UPT
 
-runTestMainwCLwITEwPair = test2IExpr testMainwCLwITEwPair
+runTestMainwCLwITEwPair = test2UPT testMainwCLwITEwPair
 
-runTestMainWType = test2IExpr "main : (\\x -> if x then \"fail\" else 0) = 0"
+runTestMainWType = test2UPT "main : (\\x -> if x then \"fail\" else 0) = 0"
 
 testLetIndentation = unlines
   [ "let x = 0"

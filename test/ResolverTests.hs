@@ -169,7 +169,7 @@ tictactoe :: IO String
 tictactoe = do
   telStr <- Strict.readFile "tictactoe.tel"
   preludeStr <- Strict.readFile "Prelude.tel"
-  runMainWithInput ["1", "9", "2", "8", "3"] [("Prelude", preludeStr)] telStr
+  runMainWithInput ["1", "9", "2", "8", "3"] [("Prelude", preludeStr), ("tictactoe", telStr)] "tictactoe"
 
 fullRunTicTacToeString = init . unlines $
   [ "1|2|3"
@@ -256,10 +256,11 @@ closedLambdaPair = TLam (Closed "x") (TLam (Open "y") (TPair (TVar "x") (TVar "y
 testUserDefAdHocTypes :: String -> IO String
 testUserDefAdHocTypes input = do
   preludeString <- Strict.readFile "Prelude.tel"
-  runMain_ [("Prelude", preludeString)] input
+  runMain_ [("Prelude", preludeString), ("DummyModule", input)] "DummyModule"
 
 userDefAdHocTypesSuccess = unlines
-  [ "MyInt = let wrapper = \\h -> ( \\i -> if not i"
+  [ "import Prelude"
+  , "MyInt = let wrapper = \\h -> ( \\i -> if not i"
   , "                                      then \"MyInt must not be 0\""
   , "                                      else  i"
   , "                             , \\i -> if dEqual (left i) h"
@@ -271,7 +272,8 @@ userDefAdHocTypesSuccess = unlines
   ]
 
 userDefAdHocTypesFailure = unlines
-  [ "MyInt = let wrapper = \\h -> ( \\i -> if not i"
+  [ "import Prelude"
+  , "MyInt = let wrapper = \\h -> ( \\i -> if not i"
   , "                                      then \"MyInt must not be 0\""
   , "                                      else  i"
   , "                             , \\i -> if dEqual (left i) h"

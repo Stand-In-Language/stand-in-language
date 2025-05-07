@@ -28,7 +28,8 @@ tests = testGroup "Tests" [unitTestsCase, qcPropsCase]
 
 caseExprStrWithPattern :: Pattern -> String
 caseExprStrWithPattern p = unlines
-  [ "main ="
+  [ "import Prelude"
+  , "main ="
   , "  let toCase = " <> (show . PrettyUPT . forget . pattern2UPT DummyLoc $ p)
   , "      caseTest ="
   , "        case toCase of"
@@ -39,7 +40,8 @@ caseExprStrWithPattern p = unlines
 
 caseExprStrWithPatternIgnore :: Pattern -> String
 caseExprStrWithPatternIgnore p = unlines
-  [ "main ="
+  [ "import Prelude"
+  , "main ="
   , "  let toCase = " <> (show . PrettyUPT . forget . pattern2UPT DummyLoc $ p)
   , "      caseTest ="
   , "        case toCase of"
@@ -82,11 +84,12 @@ unitTestsCase = testGroup "Unit tests on case expressions"
 runTelomareStr :: String -> IO String
 runTelomareStr str = do
   preludeStr <- Strict.readFile "Prelude.tel"
-  runMainWithInput [] [("Prelude", preludeStr)] str
+  runMainWithInput [] [("Prelude", preludeStr), ("dummyModule", str)] "dummyModule"
 
 caseExprIntLeavesStr :: String
 caseExprIntLeavesStr = unlines
-  [ "main ="
+  [ "import Prelude"
+  , "main ="
   , "  let toCase = (0,(8,2))"
   , "      caseTest ="
   , "        case toCase of"
@@ -98,7 +101,8 @@ caseExprIntLeavesStr = unlines
 
 caseExprStringLeavesStr :: String
 caseExprStringLeavesStr = unlines
-  [ "main ="
+  [ "import Prelude"
+  , "main ="
   , "  let toCase = (\"a string\",(\"hi, sam\",\"str\"))"
   , "      caseTest ="
   , "        case toCase of"
@@ -110,7 +114,8 @@ caseExprStringLeavesStr = unlines
 
 caseExprAllLeavesStr :: String
 caseExprAllLeavesStr = unlines
-  [ "main ="
+  [ "import Prelude"
+  , "main ="
   , "  let toCase = (\"a string\",(\"Hi, sam!\",\"str\"))"
   , "      caseTest ="
   , "        case toCase of"
