@@ -22,7 +22,7 @@ import System.Process (CreateProcess (std_out), StdStream (CreatePipe),
                        createProcess, shell)
 import Telomare
 import Telomare.Optimizer (optimize)
-import Telomare.Parser (AnnotatedUPT, parseOneExprOrTopLevelDefs, parseModule)
+import Telomare.Parser (AnnotatedUPT, parseModule, parseOneExprOrTopLevelDefs)
 import Telomare.Possible (AbortExpr, abortExprToTerm4, evalA, sizeTerm,
                           term3ToUnsizedExpr)
 import Telomare.Resolver (main2Term3, process, resolveAllImports)
@@ -213,7 +213,7 @@ runMainCore modulesStrings s e =
       parsedModules = (fmap . fmap) parseModule modulesStrings
       parsedModulesErrors :: [(String, Either String [Either AnnotatedUPT (String, AnnotatedUPT)])]
       parsedModulesErrors = filter (\(moduleStr, parsed) -> case parsed of
-                                      Left _ -> True
+                                      Left _  -> True
                                       Right _ -> False)
                                    parsedModules
       flattenLeft = \case
@@ -233,15 +233,10 @@ runMainCore modulesStrings s e =
                     in error . unlines $ joinModuleError <$> moduleWithError
 
   in
-    -- do
-    --   putStrLn . show $ lookup "Prelude" modules
-    --   putStrLn "--------------------------------------------------"
-    --   putStrLn "--------------------------------------------------"
-    --   putStrLn "--------------------------------------------------"
-      case compileMain <$> main2Term3 modules s of
-        Left e -> error $ concat ["failed to parse ", s, " ", e]
-        Right (Right g) -> e g
-        Right z -> error $ "compilation failed somehow, with result " <> show z
+    case compileMain <$> main2Term3 modules s of
+      Left e -> error $ concat ["failed to parse ", s, " ", e]
+      Right (Right g) -> e g
+      Right z -> error $ "compilation failed somehow, with result " <> show z
 
 runMain_ :: [(String, String)] -> String -> IO String
 runMain_ modulesStrings s = runMainCore modulesStrings s evalLoop_
@@ -314,11 +309,6 @@ calculateRecursionLimits t3 =
     Right t  -> case t of
       Left a  -> Left . StaticCheckError . convertAbortMessage $ a
       Right t -> pure t
-
--- resolveAllImports :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
---                   -> [Either AnnotatedUPT (String, AnnotatedUPT)]
---                   -> [(String, AnnotatedUPT)]
-
 
 eval2IExpr :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -> String -> Either String IExpr
 eval2IExpr extraModuleBindings str =

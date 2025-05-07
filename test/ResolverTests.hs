@@ -55,10 +55,13 @@ qcProps = testGroup "Property tests (QuickCheck)"
   , QC.testProperty "Check recursive imports work" $
       \() -> withMaxSuccess 16 . QC.idempotentIOProperty $ do
         modules <- generate genRecursiveImports
-        let expectedValue = "bla"
+        let expectedValue = recursiveImportsResult modules <> "\ndone"
         result <- runMain_ modules "Main"
         pure $ result === expectedValue
   ]
+
+recursiveImportsResult :: [(String, String)] -> String
+recursiveImportsResult = init . tail . drop 2 . dropWhile (/= '=') . snd . last
 
 -- Variable and Import str generator
 genName :: Gen String
@@ -78,7 +81,7 @@ genInteger = choose (0, 100)
 genAssignment :: Gen (String, String)
 genAssignment = do
   varName <- genName
-  value <- genInteger
+  value <- genName
   pure (varName, varName <> " = " <> show value)
 
 genImport :: Gen String
@@ -92,8 +95,8 @@ genRecursiveImports = do
   moduleNames              <- vectorOf numModules genName
   (varName, assignmentStr) <- genAssignment
   let
-    assignments = map ( "import " <> ) (tail moduleNames) <> [assignmentStr]
-    mainModule  = ("Main", "import " <> head moduleNames <> "\nmain = " <> varName)
+    assignments = fmap ( "import " <> ) (tail moduleNames) <> [assignmentStr]
+    mainModule  = ("Main", "import " <> head moduleNames <> "\nmain = \\input -> (" <> varName <> ",0)")
   pure $ mainModule : zip moduleNames assignments
 
 aux222 =
@@ -212,6 +215,9 @@ unitTests = testGroup "Unit tests"
   , testCase "test tictactoe.tel" $ do
       res <- tictactoe
       res @?= fullRunTicTacToeString
+  , testCase "test recursive imports" $ do
+      res <- runMain_ aux222 "Main"
+      res @?= "whattt\ndone"
   ]
 
 tictactoe :: IO String

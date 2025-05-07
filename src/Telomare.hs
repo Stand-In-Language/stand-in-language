@@ -15,7 +15,6 @@
 
 module Telomare where
 
-import Data.Functor.Classes (eq1)
 import Control.Applicative (Applicative (liftA2), liftA, liftA3)
 import Control.Comonad.Cofree (Cofree ((:<)))
 import qualified Control.Comonad.Trans.Cofree as CofreeT (CofreeF (..))
@@ -27,7 +26,7 @@ import qualified Control.Monad.State as State
 import Data.Bool (bool)
 import Data.Char (chr, ord)
 import Data.Eq.Deriving (deriveEq1)
-import Data.Functor.Classes (Eq1 (..), Eq2 (..), Show1 (..), Show2 (..))
+import Data.Functor.Classes (Eq1 (..), Eq2 (..), Show1 (..), Show2 (..), eq1)
 import Data.Functor.Foldable (Base, Corecursive (embed),
                               Recursive (cata, project))
 import Data.Functor.Foldable.TH (MakeBaseFunctor (makeBaseFunctor))

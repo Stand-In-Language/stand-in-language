@@ -1,5 +1,3 @@
-{-# LANGUAGE RecursiveDo #-}
-
 module Main where
 
 import Control.Comonad.Cofree (Cofree ((:<)))
@@ -66,7 +64,7 @@ node n0 = do
     tile ( fixed . pure . (+1) . T.length . _node_label $ n0) $ do
       grout flex . text . pure . _node_label $ n0
       pure ()
-    value :: Dynamic t Bool <- tile (fixed 4) $ checkbox def $ _node_selected n0
+    value :: Dynamic t Bool <- tile (fixed 4) . checkbox def $ _node_selected n0
     pure $ NodeOutput
       { _nodeOutput_node = Node (_node_label n0) (_node_eval n0) <$> value
       , _nodeOutput_expand = updated value
@@ -150,9 +148,9 @@ nodify = removeExtraNumbers . fmap go . allNodes 0 where
            -> Cofree IExprF (Int, IExpr)
            -> [(Int, Cofree IExprF (Int, IExpr))]
   allNodes i = \case
-    x@(_ :< ZeroF) -> (i, x) : []
-    x@(_ :< EnvF) -> (i, x) : []
-    x@(_ :< TraceF) -> (i, x) : []
+    x@(_ :< ZeroF) -> [(i, x)]
+    x@(_ :< EnvF) -> [(i, x)]
+    x@(_ :< TraceF) -> [(i, x)]
     x@(_ :< (SetEnvF a)) -> (i, x) : allNodes (i + 1) a
     x@(_ :< (DeferF a)) -> (i, x) : allNodes (i + 1) a
     x@(_ :< (PLeftF a)) -> (i, x) : allNodes (i + 1) a

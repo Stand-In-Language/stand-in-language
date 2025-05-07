@@ -343,11 +343,6 @@ parseImportQualified = do
   qualifier <- identifier <* scn
   pure $ x :< ImportQualifiedUPF qualifier m
 
--- resolveMain :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -- ^Modules: [(ModuleName, [Either Import (VariableName, BindedUPT)])]
---             -> String -- ^Module name with main
---             -> Either String AnnotatedUPT
-
-
 -- |Parse top level expressions.
 parseTopLevelWithExtraModuleBindings :: [(String, AnnotatedUPT)]
                                      -> TelomareParser AnnotatedUPT
@@ -355,17 +350,6 @@ parseTopLevelWithExtraModuleBindings lst = do
   x <- getLineColumn
   bindingList <- scn *> many parseAssignment <* eof
   pure $ x :< LetUPF (lst <> bindingList) (fromJust $ lookup "main" bindingList)
-
-
--- -- |Parse top level expressions.
--- parseTopLevelWithExtraModuleBindings :: [(String, AnnotatedUPT)]    -- ^Extra Module Bindings
---                                      -> TelomareParser AnnotatedUPT
--- parseTopLevelWithExtraModuleBindings mb = do
---   x <- getLineColumn
---   importList' <- scn *> many (try parseImportQualified <|> try parseImport) <* scn
---   let importList = undefined -- concat $ resolveImports mb <$> importList'
---   bindingList <- scn *> many parseAssignment <* eof
---   pure $ x :< LetUPF (importList <> bindingList) (fromJust $ lookup "main" bindingList)
 
 parseDefinitions :: TelomareParser (AnnotatedUPT -> AnnotatedUPT)
 parseDefinitions = do
@@ -380,10 +364,6 @@ runTelomareParser_ parser str = runTelomareParser parser str >>= print
 -- |Helper function to debug parsers without a result.
 runTelomareParserWDebug :: Show a => TelomareParser a -> String -> IO ()
 runTelomareParserWDebug parser str = runTelomareParser (dbg "debug" parser) str >>= print
-
--- modulesAux :: [(String, [(String, AnnotatedUPT)])]
--- modulesAux = [("Prelude",[("id", DummyLoc :< LamUPF "x" (DummyLoc :< VarUPF "x")), ("id2", DummyLoc :< LamUPF "x2" (DummyLoc :< VarUPF "x2"))])]
--- parseImportOrAssignment
 
 -- |Helper function to test Telomare parsers with any result.
 runTelomareParser :: Monad m => TelomareParser a -> String -> m a
@@ -420,18 +400,6 @@ parseImportOrAssignment = do
         Nothing -> fail "Expected either an import statement or an assignment"
         Just a  -> pure $ Right a
     Just imp -> pure $ Left imp
-
-input = unlines
-  [ "import Prelude"
-  , "foo = bar"
-  , "baz = wee"
-  , "import Foo"
-  , "main = id"
-  ]
-aux = runTelomareParserWDebug (scn *> many parseImportOrAssignment <* eof) input
-
--- parseTopLevelWithExtraModuleBindings :: [(String, AnnotatedUPT)]
---                                      -> TelomareParser AnnotatedUPT
 
 parseWithPrelude :: [(String, AnnotatedUPT)]   -- ^Prelude
                  -> String                     -- ^Raw string to be parsed

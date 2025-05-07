@@ -798,12 +798,6 @@ unitTestSameResult' parse a b = it ("comparing to " <> a) $ case (parse a, parse
   _ -> expectationFailure "unitTestSameResult failed parsing somewhere"
 -}
 
--- main2Term3 :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -- ^Modules: [(ModuleName, [Either Import (VariableName, BindedUPT)])]
---           -> String -- ^Module name with main
---           -> Either String Term3 -- ^Error on Left
-
--- parseModule :: String -> Either String [Either AnnotatedUPT (String, AnnotatedUPT)]
-
 main = do
   preludeFile <- Strict.readFile "Prelude.tel"
 
@@ -816,7 +810,7 @@ main = do
     parseAuxModule :: String -> (String, [Either AnnotatedUPT (String, AnnotatedUPT)])
     parseAuxModule str =
       case sequence ("AuxModule", parseModule ("import Prelude\n" <> str)) of
-        Left e -> error $ show e
+        Left e    -> error $ show e
         Right pam -> pam
     parse :: String -> Either String Term3
     parse str = main2Term3 (parseAuxModule str:prelude) "AuxModule"

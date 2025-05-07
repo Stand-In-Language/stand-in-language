@@ -446,20 +446,6 @@ runTelomareParser2Term2 :: TelomareParser AnnotatedUPT -- ^Parser to run
 runTelomareParser2Term2 parser str =
   first errorBundlePretty (runParser parser "" str) >>= process2Term2
 
--- resolveImport :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
---               -> AnnotatedUPT -- ^Import UPT ----- REMOVE!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
---               -> [Either AnnotatedUPT (String, AnnotatedUPT)] -- List with just Right
--- resolveImport modules = \case
---   (_ :< (ImportUPF var)) ->
---     case lookup var modules of
---       Nothing -> error $ "Import error from " <> var
---       Just x -> x
---   (_ :< (ImportQualifiedUPF q v)) ->
---     case lookup v modules of
---       Nothing -> error $ "Import error from " <> v
---       Just x->  (fmap . fmap . first) (\str -> q <> "." <> str) x
---   _ -> error "Expected import statement"
-
 resolveImports' :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
                 -> [Either AnnotatedUPT (String, AnnotatedUPT)] -- ^Main module with both Import and Assignment
                 -> [Either AnnotatedUPT (String, AnnotatedUPT)]
@@ -472,17 +458,17 @@ resolveImports' modules xs = lefts <> rights
         (Left (_ :< (ImportUPF var))) ->
           case lookup var modules of
             Nothing -> error $ "Import error from " <> var
-            Just x -> x
+            Just x  -> x
         (Left (_ :< (ImportQualifiedUPF q v))) ->
           case lookup v modules of
             Nothing -> error $ "Import error from " <> v
-            Just x->  (fmap . fmap . first) (\str -> q <> "." <> str) x
+            Just x  -> (fmap . fmap . first) (\str -> q <> "." <> str) x
         e -> error $ "Expected import statement. Got:\n" <> show e
     rights = filter isRight xs
     isLeft (Left _) = True
-    isLeft _ = False
+    isLeft _        = False
     isRight (Right _) = True
-    isRight _ = False
+    isRight _         = False
 
 resolveAllImports' :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
                    -> [Either AnnotatedUPT (String, AnnotatedUPT)]
@@ -509,7 +495,7 @@ resolveImports modules moduleName = resolveAllImports modules principal
   where
     principal = case lookup moduleName modules of
       Nothing -> error $ "resolveImports: Module " <> moduleName <> " not found"
-      Just x -> x
+      Just x  -> x
 
 resolveMain :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -- ^Modules: [(ModuleName, [Either Import (VariableName, BindedUPT)])]
             -> String -- ^Module name with main
@@ -518,13 +504,10 @@ resolveMain allModules mainModule = case lookup mainModule allModules of
   Nothing -> Left $ "Module " <> mainModule <> " not found"
   Just lst -> let resolved :: [(String, AnnotatedUPT)]
                   resolved = resolveImports allModules mainModule
-                  -- resolvedPretty :: [(String, UnprocessedParsedTerm)]
-                  -- resolvedPretty = (fmap . fmap) forget resolved
                   maybeMain = lookup "main" resolved
               in case maybeMain of
                    Nothing -> Left $ "No main function found in " <> mainModule
-                   Just x -> Right $ DummyLoc :< LetUPF resolved x
-                   -- Just x -> Right $ DummyLoc :< LetUPF (trace ("!!!!!!@@@@@@@!!!!!!!! " <> (show resolvedPretty)) resolved) x
+                   Just x  -> Right $ DummyLoc :< LetUPF resolved x
 
 main2Term3 :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -- ^Modules: [(ModuleName, [Either Import (VariableName, BindedUPT)])]
            -> String -- ^Module name with main
