@@ -86,47 +86,22 @@ genImport = do
   modName <- genName
   pure $ "import " <> modName
 
--- genMain :: Gen (String, String) -> Gen String
--- genMain genVar = do
---   (varName, _) <- genVar
---   pure $ "main = " <> varName
 genRecursiveImports :: Gen [(String, String)]
 genRecursiveImports = do
-  numModules <- choose (2, 6)
-  moduleNames <- vectorOf numModules genName
+  numModules               <- choose (2, 6)
+  moduleNames              <- vectorOf numModules genName
   (varName, assignmentStr) <- genAssignment
   let
-    lastModule = (last moduleNames, assignmentStr)
-    middleModules = zipWith (\name nextName ->
-                              (name, "import " <> nextName))
-                    (init (init moduleNames))
-                    (tail moduleNames)
-    mainModule = ("Main", "import " <> head moduleNames <> "\nmain = " <> varName)
-  pure $ mainModule : middleModules ++ [lastModule]
+    assignments = map ( "import " <> ) (tail moduleNames) <> [assignmentStr]
+    mainModule  = ("Main", "import " <> head moduleNames <> "\nmain = " <> varName)
+  pure $ mainModule : zip moduleNames assignments
 
 aux222 =
   [ ("Main", "import Abc\nmain = \\input -> (xyz, 0)")
-    -- ("Main", "import Abc\nmain = xyz")
   , ("Abc", "import Def")
   , ("Def", "import Ghi")
   , ("Ghi", "xyz = \"whattt\"")
   ]
-
-
--- [a, b, c, d]
--- [main, a, b, c, d]
--- [main = ]
-
--- [(main, i_a),(a,i_b),(b, i_c), (c, i_d), (d, asign)]
-
--- genRecursiveImports :: Gen [String]
--- genRecursiveImports = do
---   assignmentPair <- genAssignment
---   let (_, assignmentStr) = assignmentPair
---   mainFunction <- genMain (pure assignmentPair)
---   numImports <- choose (2, 6) -- First one will be included in the Main module
---   importStmts <- vectorOf numImports genImport
---   pure $ [ head importStmts <> "\n" <> mainFunction ] <> tail importStmts <> [assignmentStr]
 
 containsTHash :: Term2' -> Bool
 containsTHash = \case
