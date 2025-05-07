@@ -52,7 +52,81 @@ qcProps = testGroup "Property tests (QuickCheck)"
       \(x' :: Term2) -> withMaxSuccess 16 $
         let x = forget x'
         in containsTHash x QC.==> onlyHashUPsChanged x
+  , QC.testProperty "Check recursive imports work" $
+      \() -> withMaxSuccess 16 . QC.idempotentIOProperty $ do
+        modules <- generate genRecursiveImports
+        let expectedValue = "bla"
+        result <- runMain_ modules "Main"
+        pure $ result === expectedValue
   ]
+
+-- Variable and Import str generator
+genName :: Gen String
+genName = do
+  firstChar <- elements $ ['a'..'z'] <> ['A'..'Z']
+  len <- choose (3, 15)
+  rest <- vectorOf (len - 1)
+                   (frequency [ (10, elements (['a'..'z'] <> ['A'..'Z'] <> ['0'..'9']))
+                              , (1, pure '_')
+                              , (1, pure '.')
+                              ])
+  pure (firstChar : rest)
+
+genInteger :: Gen Int
+genInteger = choose (0, 100)
+
+genAssignment :: Gen (String, String)
+genAssignment = do
+  varName <- genName
+  value <- genInteger
+  pure (varName, varName <> " = " <> show value)
+
+genImport :: Gen String
+genImport = do
+  modName <- genName
+  pure $ "import " <> modName
+
+-- genMain :: Gen (String, String) -> Gen String
+-- genMain genVar = do
+--   (varName, _) <- genVar
+--   pure $ "main = " <> varName
+genRecursiveImports :: Gen [(String, String)]
+genRecursiveImports = do
+  numModules <- choose (2, 6)
+  moduleNames <- vectorOf numModules genName
+  (varName, assignmentStr) <- genAssignment
+  let
+    lastModule = (last moduleNames, assignmentStr)
+    middleModules = zipWith (\name nextName ->
+                              (name, "import " <> nextName))
+                    (init (init moduleNames))
+                    (tail moduleNames)
+    mainModule = ("Main", "import " <> head moduleNames <> "\nmain = " <> varName)
+  pure $ mainModule : middleModules ++ [lastModule]
+
+aux222 =
+  [ ("Main", "import Abc\nmain = \\input -> (xyz, 0)")
+    -- ("Main", "import Abc\nmain = xyz")
+  , ("Abc", "import Def")
+  , ("Def", "import Ghi")
+  , ("Ghi", "xyz = \"whattt\"")
+  ]
+
+
+-- [a, b, c, d]
+-- [main, a, b, c, d]
+-- [main = ]
+
+-- [(main, i_a),(a,i_b),(b, i_c), (c, i_d), (d, asign)]
+
+-- genRecursiveImports :: Gen [String]
+-- genRecursiveImports = do
+--   assignmentPair <- genAssignment
+--   let (_, assignmentStr) = assignmentPair
+--   mainFunction <- genMain (pure assignmentPair)
+--   numImports <- choose (2, 6) -- First one will be included in the Main module
+--   importStmts <- vectorOf numImports genImport
+--   pure $ [ head importStmts <> "\n" <> mainFunction ] <> tail importStmts <> [assignmentStr]
 
 containsTHash :: Term2' -> Bool
 containsTHash = \case

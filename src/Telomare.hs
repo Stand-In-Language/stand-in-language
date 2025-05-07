@@ -1048,7 +1048,7 @@ instance (Show a) => Show (UnprocessedParsedTermF a) where
 instance Show1 UnprocessedParsedTermF where
   liftShowsPrec showsPrecFunc showList d term = case term of
     ImportQualifiedUPF s1 s2 -> showString "ImportQualifedUPF " . shows s1 . showString " " . shows s2
-    ImportUPF s -> showString "ImoprtUPF " . shows s
+    ImportUPF s -> showString "ImportUPF " . shows s
     VarUPF s -> showString "VarUPF " . shows s
     ITEUPF c t e -> showString "ITEUPF " . showsPrecFunc 11 c . showChar ' '
                     . showsPrecFunc 11 t . showChar ' ' . showsPrecFunc 11 e

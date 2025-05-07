@@ -186,7 +186,31 @@ unitTests = testGroup "Unit tests"
       res' <- runTelomareParser parseTopLevel caseExpr0
       let res = forget res'
       res @?= caseExpr0UPT
+  , testCase "Simple import parsing" $ do
+      res' <- runTelomareParser parseImport importExpr0str
+      forget res' @?= importExpr0
+  , testCase "Simple import qualified parsing" $ do
+      res' <- runTelomareParser parseImportQualified importQualifiedExpr0str
+      forget res' @?= importQualifiedExpr0
+  , testCase "Simple import parsing with ." $ do
+      res' <- runTelomareParser parseImport importExpr1str
+      forget res' @?= importExpr1
+  , testCase "Simple import qualified parsing with ." $ do
+      res' <- runTelomareParser parseImportQualified importQualifiedExpr1str
+      forget res' @?= importQualifiedExpr1
   ]
+
+importQualifiedExpr1str = "import qualified Data.List as L"
+importQualifiedExpr1 = ImportQualifiedUP "L" "Data.List"
+
+importExpr1str = "import Control.Monad"
+importExpr1 = ImportUP "Control.Monad"
+
+importQualifiedExpr0str = "import qualified Foo as F"
+importQualifiedExpr0 = ImportQualifiedUP "F" "Foo"
+
+importExpr0str = "import Foo"
+importExpr0 = ImportUP "Foo"
 
 caseExpr0UPT =
   LetUP [ ("foo", LamUP "a" (CaseUP (VarUP "a")
@@ -204,17 +228,6 @@ caseExpr0 = unlines
   , ""
   , "main = \\i -> (\"Success\", 0)"
   ]
-
--- test2IExpr str =  do
---   preludeFile <- Strict.readFile "Prelude.tel"
---   let
---     prelude :: [Either AnnotatedUPT (String, AnnotatedUPT)]
---     prelude = case parseModule preludeFile of
---                 Right p -> p
---                 Left pe -> error pe
---   case eval2IExpr [("Prelude", prelude)] str of
---     Right _ -> return True
---     Left _  -> return False
 
 test2UPT str =
   case parseModule str of

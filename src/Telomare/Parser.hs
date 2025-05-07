@@ -337,22 +337,11 @@ parseImportQualified :: TelomareParser AnnotatedUPT
 parseImportQualified = do
   x <- getLineColumn
   reserved "import" <* scn
-  var <- identifier <* scn
   reserved "qualified" <* scn
+  m <- identifier <* scn
+  reserved "as" <* scn
   qualifier <- identifier <* scn
-  pure $ x :< ImportQualifiedUPF qualifier var
-
-resolveImports :: [(String, [(String, AnnotatedUPT)])] -> AnnotatedUPT -> [(String, AnnotatedUPT)]
-resolveImports modules = \case
-  (_ :< (ImportUPF var)) ->
-    case lookup var modules of
-      Nothing -> error $ "Import error from " <> var
-      Just x -> x
-  (_ :< (ImportQualifiedUPF q v)) ->
-    case lookup v modules of
-      Nothing -> error $ "Import error from " <> v
-      Just x -> (fmap . first) (\str -> q <> "." <> str) x
-  _ -> error "Expected import statement"
+  pure $ x :< ImportQualifiedUPF qualifier m
 
 -- resolveMain :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -- ^Modules: [(ModuleName, [Either Import (VariableName, BindedUPT)])]
 --             -> String -- ^Module name with main
@@ -429,7 +418,7 @@ parseImportOrAssignment = do
       maybeAssignment <- optional $ scn *> try parseAssignment <* scn
       case maybeAssignment of
         Nothing -> fail "Expected either an import statement or an assignment"
-        Just a -> pure $ Right a
+        Just a  -> pure $ Right a
     Just imp -> pure $ Left imp
 
 input = unlines
