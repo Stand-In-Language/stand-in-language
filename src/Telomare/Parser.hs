@@ -98,14 +98,14 @@ reserved w = (lexeme . try) (string w *> notFollowedBy alphaNumChar)
 
 -- |List of reserved words
 rws :: [String]
-rws = ["let", "in", "if", "then", "else", "case", "of" ]
+rws = ["let", "in", "if", "then", "else", "case", "of", "import"]
 
 -- |Variable identifiers can consist of alphanumeric characters, underscore,
 -- and must start with an English alphabet letter
 identifier :: TelomareParser String
 identifier = lexeme . try $ p >>= check
   where
-    p = (:) <$> letterChar <*> many (alphaNumChar <|> char '_' <?> "variable")
+    p = (:) <$> letterChar <*> many (alphaNumChar <|> char '_' <|> char '.' <?> "variable")
     check x = if x `elem` rws
               then fail ("keyword " <> (show x <> " cannot be an identifier"))
               else pure x
@@ -324,12 +324,29 @@ parseAssignment = do
 
 -- |Parse top level expressions.
 parseTopLevel :: TelomareParser AnnotatedUPT
-parseTopLevel = parseTopLevelWithPrelude []
+parseTopLevel = parseTopLevelWithExtraModuleBindings []
+
+parseImport :: TelomareParser AnnotatedUPT
+parseImport = do
+  x <- getLineColumn
+  reserved "import" <* scn
+  var <- identifier <* scn
+  pure $ x :< ImportUPF var
+
+parseImportQualified :: TelomareParser AnnotatedUPT
+parseImportQualified = do
+  x <- getLineColumn
+  reserved "import" <* scn
+  reserved "qualified" <* scn
+  m <- identifier <* scn
+  reserved "as" <* scn
+  qualifier <- identifier <* scn
+  pure $ x :< ImportQualifiedUPF qualifier m
 
 -- |Parse top level expressions.
-parseTopLevelWithPrelude :: [(String, AnnotatedUPT)]    -- ^Prelude
-                         -> TelomareParser AnnotatedUPT
-parseTopLevelWithPrelude lst = do
+parseTopLevelWithExtraModuleBindings :: [(String, AnnotatedUPT)]
+                                     -> TelomareParser AnnotatedUPT
+parseTopLevelWithExtraModuleBindings lst = do
   x <- getLineColumn
   bindingList <- scn *> many parseAssignment <* eof
   pure $ x :< LetUPF (lst <> bindingList) (fromJust $ lookup "main" bindingList)
@@ -372,15 +389,31 @@ parsePrelude :: String -> Either String [(String, AnnotatedUPT)]
 parsePrelude str = let result = runParser (scn *> many parseAssignment <* eof) "" str
                     in first errorBundlePretty result
 
--- |Parse either a single expression or top level definitions defaulting to the `main` definition.
---  This function is useful and was made for telomare-evaluare
-parseOneExprOrTopLevelDefs :: [(String, AnnotatedUPT)] -> TelomareParser AnnotatedUPT
-parseOneExprOrTopLevelDefs prelude = choice $ try <$> [ parseTopLevelWithPrelude prelude
-                                                      , parseLongExpr
-                                                      ]
+parseImportOrAssignment :: TelomareParser (Either AnnotatedUPT (String, AnnotatedUPT))
+parseImportOrAssignment = do
+  x <- getLineColumn
+  maybeImport <- optional $ scn *> (try parseImportQualified <|> try parseImport) <* scn
+  case maybeImport of
+    Nothing -> do
+      maybeAssignment <- optional $ scn *> try parseAssignment <* scn
+      case maybeAssignment of
+        Nothing -> fail "Expected either an import statement or an assignment"
+        Just a  -> pure $ Right a
+    Just imp -> pure $ Left imp
 
--- |Parse with specified prelude
 parseWithPrelude :: [(String, AnnotatedUPT)]   -- ^Prelude
                  -> String                     -- ^Raw string to be parsed
                  -> Either String AnnotatedUPT -- ^Error on Left
-parseWithPrelude prelude str = first errorBundlePretty $ runParser (parseTopLevelWithPrelude prelude) "" str
+parseWithPrelude prelude str = first errorBundlePretty $ runParser (parseTopLevelWithExtraModuleBindings prelude) "" str
+
+parseModule :: String -> Either String [Either AnnotatedUPT (String, AnnotatedUPT)]
+parseModule str = let result = runParser (scn *> many parseImportOrAssignment <* eof) "" str
+                  in first errorBundlePretty result
+
+-- |Parse either a single expression or top level definitions defaulting to the `main` definition.
+--  This function was made for telomare-evaluare
+parseOneExprOrTopLevelDefs :: [(String, AnnotatedUPT)] -> TelomareParser AnnotatedUPT
+parseOneExprOrTopLevelDefs extraModuleBindings =
+  choice $ try <$> [ parseTopLevelWithExtraModuleBindings extraModuleBindings
+                   , parseLongExpr
+                   ]

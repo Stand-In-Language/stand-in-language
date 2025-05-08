@@ -26,7 +26,7 @@ import qualified Control.Monad.State as State
 import Data.Bool (bool)
 import Data.Char (chr, ord)
 import Data.Eq.Deriving (deriveEq1)
-import Data.Functor.Classes (Eq1 (..), Eq2 (..), Show1 (..), Show2 (..))
+import Data.Functor.Classes (Eq1 (..), Eq2 (..), Show1 (..), Show2 (..), eq1)
 import Data.Functor.Foldable (Base, Corecursive (embed),
                               Recursive (cata, project))
 import Data.Functor.Foldable.TH (MakeBaseFunctor (makeBaseFunctor))
@@ -973,9 +973,57 @@ data UnprocessedParsedTerm
   | CheckUP UnprocessedParsedTerm UnprocessedParsedTerm
   | HashUP UnprocessedParsedTerm -- ^ On ad hoc user defined types, this term will be substitued to a unique Int.
   | CaseUP UnprocessedParsedTerm [(Pattern, UnprocessedParsedTerm)]
+  -- TODO: check if adding this doesn't create partial functions
+  | ImportQualifiedUP String String
+  | ImportUP String
   deriving (Eq, Ord, Show)
 makeBaseFunctor ''UnprocessedParsedTerm -- Functorial version UnprocessedParsedTerm
 makePrisms ''UnprocessedParsedTerm
+
+instance Eq a => Eq (UnprocessedParsedTermF a) where
+  (==) = eq1
+
+instance Eq1 UnprocessedParsedTermF where
+  liftEq eq (VarUPF s1) (VarUPF s2) = s1 == s2
+  liftEq eq (ITEUPF c1 t1 e1) (ITEUPF c2 t2 e2) =
+    eq c1 c2 && eq t1 t2 && eq e1 e2
+  liftEq eq (LetUPF binds1 body1) (LetUPF binds2 body2) =
+    liftEq (\(s1, t1) (s2, t2) -> s1 == s2 && eq t1 t2) binds1 binds2 && eq body1 body2
+  liftEq eq (ListUPF items1) (ListUPF items2) =
+    liftEq eq items1 items2
+  liftEq eq (IntUPF n1) (IntUPF n2) =
+    n1 == n2
+  liftEq eq (StringUPF s1) (StringUPF s2) =
+    s1 == s2
+  liftEq eq (PairUPF a1 b1) (PairUPF a2 b2) =
+    eq a1 a2 && eq b1 b2
+  liftEq eq (AppUPF f1 x1) (AppUPF f2 x2) =
+    eq f1 f2 && eq x1 x2
+  liftEq eq (LamUPF var1 body1) (LamUPF var2 body2) =
+    var1 == var2 && eq body1 body2
+  liftEq eq (ChurchUPF n1) (ChurchUPF n2) =
+    n1 == n2
+  liftEq eq (UnsizedRecursionUPF a1 b1 c1) (UnsizedRecursionUPF a2 b2 c2) =
+    eq a1 a2 && eq b1 b2 && eq c1 c2
+  liftEq eq (LeftUPF x1) (LeftUPF x2) =
+    eq x1 x2
+  liftEq eq (RightUPF x1) (RightUPF x2) =
+    eq x1 x2
+  liftEq eq (TraceUPF x1) (TraceUPF x2) =
+    eq x1 x2
+  liftEq eq (CheckUPF a1 b1) (CheckUPF a2 b2) =
+    eq a1 a2 && eq b1 b2
+  liftEq eq (HashUPF x1) (HashUPF x2) =
+    eq x1 x2
+  liftEq eq (CaseUPF scrutinee1 patterns1) (CaseUPF scrutinee2 patterns2) =
+    eq scrutinee1 scrutinee2 &&
+    liftEq (\(pat1, expr1) (pat2, expr2) -> pat1 == pat2 && eq expr1 expr2) patterns1 patterns2
+  liftEq eq (ImportQualifiedUPF mod1 alias1) (ImportQualifiedUPF mod2 alias2) =
+    mod1 == mod2 && alias1 == alias2
+  liftEq eq (ImportUPF mod1) (ImportUPF mod2) =
+    mod1 == mod2
+  liftEq _ _ _ = False
+
 
 instance (Show a) => Show (UnprocessedParsedTermF a) where
   show (VarUPF s) = "VarUPF " <> show s
@@ -998,6 +1046,8 @@ instance (Show a) => Show (UnprocessedParsedTermF a) where
 
 instance Show1 UnprocessedParsedTermF where
   liftShowsPrec showsPrecFunc showList d term = case term of
+    ImportQualifiedUPF s1 s2 -> showString "ImportQualifedUPF " . shows s1 . showString " " . shows s2
+    ImportUPF s -> showString "ImportUPF " . shows s
     VarUPF s -> showString "VarUPF " . shows s
     ITEUPF c t e -> showString "ITEUPF " . showsPrecFunc 11 c . showChar ' '
                     . showsPrecFunc 11 t . showChar ' ' . showsPrecFunc 11 e

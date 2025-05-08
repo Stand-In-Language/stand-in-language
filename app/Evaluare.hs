@@ -20,7 +20,7 @@ import qualified System.IO.Strict as Strict
 import qualified Telomare as Tel
 import Telomare (IExpr (..), IExprF (..))
 import qualified Telomare.Eval as TE
-import Telomare.Parser (AnnotatedUPT, parsePrelude)
+import Telomare.Parser (AnnotatedUPT, parseModule)
 import Text.Read (readMaybe)
 
 type VtyExample t m =
@@ -64,7 +64,7 @@ node n0 = do
     tile ( fixed . pure . (+1) . T.length . _node_label $ n0) $ do
       grout flex . text . pure . _node_label $ n0
       pure ()
-    value :: Dynamic t Bool <- tile (fixed 4) $ checkbox def $ _node_selected n0
+    value :: Dynamic t Bool <- tile (fixed 4) . checkbox def $ _node_selected n0
     pure $ NodeOutput
       { _nodeOutput_node = Node (_node_label n0) (_node_eval n0) <$> value
       , _nodeOutput_expand = updated value
@@ -148,9 +148,9 @@ nodify = removeExtraNumbers . fmap go . allNodes 0 where
            -> Cofree IExprF (Int, IExpr)
            -> [(Int, Cofree IExprF (Int, IExpr))]
   allNodes i = \case
-    x@(_ :< ZeroF) -> (i, x) : []
-    x@(_ :< EnvF) -> (i, x) : []
-    x@(_ :< TraceF) -> (i, x) : []
+    x@(_ :< ZeroF) -> [(i, x)]
+    x@(_ :< EnvF) -> [(i, x)]
+    x@(_ :< TraceF) -> [(i, x)]
     x@(_ :< (SetEnvF a)) -> (i, x) : allNodes (i + 1) a
     x@(_ :< (DeferF a)) -> (i, x) : allNodes (i + 1) a
     x@(_ :< (PLeftF a)) -> (i, x) : allNodes (i + 1) a
@@ -158,16 +158,19 @@ nodify = removeExtraNumbers . fmap go . allNodes 0 where
     x@(_ :< (PairF a b)) -> (i, x) : allNodes (i + 1) a <> allNodes (i + 1) b
     x@(_ :< (GateF a b)) -> (i, x) : allNodes (i + 1) a <> allNodes (i + 1) b
 
-loadFiles :: [String] -> IO [(String, AnnotatedUPT)]
-loadFiles filenames = do
-  filesStrings <- mapM Strict.readFile filenames
-  case parsePrelude . unlines $ filesStrings of
-    Right p -> pure p
+
+-- parseModule :: String -> Either String [Either AnnotatedUPT (String, AnnotatedUPT)]
+-- TODO: Load modules qualifed
+loadModules :: [String] -> IO [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
+loadModules filenames = do
+  filesStrings :: [String] <- mapM Strict.readFile filenames
+  case sequence $ parseModule <$> filesStrings of
+    Right p -> pure $ zip filesStrings p
     Left pe -> error pe
 
 main :: IO ()
 main = do
-  prelude :: [(String, AnnotatedUPT)] <- getArgs >>= loadFiles
+  modules :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] <- getArgs >>= loadModules
   let go :: Text -> IO ()
       go textErr =
         mainWidget $ initManager_ $ do
@@ -191,7 +194,7 @@ main = do
             rec
               eEitherIExpr :: Event t (Either String IExpr) <- grout flex $ col $ do
                 telomareTextInput :: TextInput t <- grout flex textBox
-                pure . updated $ TE.eval2IExpr prelude . T.unpack <$> _textInput_value telomareTextInput
+                pure . updated $ TE.eval2IExpr modules . T.unpack <$> _textInput_value telomareTextInput
               grout (fixed 2) . col . text $ ""
               let -- telomareNodes :: Event t (Either String [Node])
                   telomareNodes = fmap (nodify . TE.tagIExprWithEval) <$> eEitherIExpr

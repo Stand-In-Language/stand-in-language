@@ -52,6 +52,58 @@ qcProps = testGroup "Property tests (QuickCheck)"
       \(x' :: Term2) -> withMaxSuccess 16 $
         let x = forget x'
         in containsTHash x QC.==> onlyHashUPsChanged x
+  , QC.testProperty "Check recursive imports work" $
+      \() -> withMaxSuccess 16 . QC.idempotentIOProperty $ do
+        modules <- generate genRecursiveImports
+        let expectedValue = recursiveImportsResult modules <> "\ndone"
+        result <- runMain_ modules "Main"
+        pure $ result === expectedValue
+  ]
+
+recursiveImportsResult :: [(String, String)] -> String
+recursiveImportsResult = init . tail . drop 2 . dropWhile (/= '=') . snd . last
+
+-- Variable and Import str generator
+genName :: Gen String
+genName = do
+  firstChar <- elements $ ['a'..'z'] <> ['A'..'Z']
+  len <- choose (3, 15)
+  rest <- vectorOf (len - 1)
+                   (frequency [ (10, elements (['a'..'z'] <> ['A'..'Z'] <> ['0'..'9']))
+                              , (1, pure '_')
+                              , (1, pure '.')
+                              ])
+  pure (firstChar : rest)
+
+genInteger :: Gen Int
+genInteger = choose (0, 100)
+
+genAssignment :: Gen (String, String)
+genAssignment = do
+  varName <- genName
+  value <- genName
+  pure (varName, varName <> " = " <> show value)
+
+genImport :: Gen String
+genImport = do
+  modName <- genName
+  pure $ "import " <> modName
+
+genRecursiveImports :: Gen [(String, String)]
+genRecursiveImports = do
+  numModules               <- choose (2, 6)
+  moduleNames              <- vectorOf numModules genName
+  (varName, assignmentStr) <- genAssignment
+  let
+    assignments = fmap ( "import " <> ) (tail moduleNames) <> [assignmentStr]
+    mainModule  = ("Main", "import " <> head moduleNames <> "\nmain = \\input -> (" <> varName <> ",0)")
+  pure $ mainModule : zip moduleNames assignments
+
+aux222 =
+  [ ("Main", "import Abc\nmain = \\input -> (xyz, 0)")
+  , ("Abc", "import Def")
+  , ("Def", "import Ghi")
+  , ("Ghi", "xyz = \"whattt\"")
   ]
 
 containsTHash :: Term2' -> Bool
@@ -163,13 +215,16 @@ unitTests = testGroup "Unit tests"
   , testCase "test tictactoe.tel" $ do
       res <- tictactoe
       res @?= fullRunTicTacToeString
+  , testCase "test recursive imports" $ do
+      res <- runMain_ aux222 "Main"
+      res @?= "whattt\ndone"
   ]
 
 tictactoe :: IO String
 tictactoe = do
   telStr <- Strict.readFile "tictactoe.tel"
   preludeStr <- Strict.readFile "Prelude.tel"
-  runMainWithInput ["1", "9", "2", "8", "3"] preludeStr telStr
+  runMainWithInput ["1", "9", "2", "8", "3"] [("Prelude", preludeStr), ("tictactoe", telStr)] "tictactoe"
 
 fullRunTicTacToeString = init . unlines $
   [ "1|2|3"
@@ -256,10 +311,11 @@ closedLambdaPair = TLam (Closed "x") (TLam (Open "y") (TPair (TVar "x") (TVar "y
 testUserDefAdHocTypes :: String -> IO String
 testUserDefAdHocTypes input = do
   preludeString <- Strict.readFile "Prelude.tel"
-  runMain_ preludeString input
+  runMain_ [("Prelude", preludeString), ("DummyModule", input)] "DummyModule"
 
 userDefAdHocTypesSuccess = unlines
-  [ "MyInt = let wrapper = \\h -> ( \\i -> if not i"
+  [ "import Prelude"
+  , "MyInt = let wrapper = \\h -> ( \\i -> if not i"
   , "                                      then \"MyInt must not be 0\""
   , "                                      else  i"
   , "                             , \\i -> if dEqual (left i) h"
@@ -271,7 +327,8 @@ userDefAdHocTypesSuccess = unlines
   ]
 
 userDefAdHocTypesFailure = unlines
-  [ "MyInt = let wrapper = \\h -> ( \\i -> if not i"
+  [ "import Prelude"
+  , "MyInt = let wrapper = \\h -> ( \\i -> if not i"
   , "                                      then \"MyInt must not be 0\""
   , "                                      else  i"
   , "                             , \\i -> if dEqual (left i) h"

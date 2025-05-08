@@ -27,7 +27,7 @@ import qualified Data.Set as Set
 import Debug.Trace (trace, traceShow, traceShowId)
 import PrettyPrint (TypeDebugInfo (..), prettyPrint, showTypeDebugInfo)
 import Telomare
-import Telomare.Parser (AnnotatedUPT, TelomareParser, parseWithPrelude)
+import Telomare.Parser (AnnotatedUPT, TelomareParser)
 import Text.Megaparsec (errorBundlePretty, runParser)
 
 debug :: Bool
@@ -446,7 +446,70 @@ runTelomareParser2Term2 :: TelomareParser AnnotatedUPT -- ^Parser to run
 runTelomareParser2Term2 parser str =
   first errorBundlePretty (runParser parser "" str) >>= process2Term2
 
-parseMain :: [(String, AnnotatedUPT)] -- ^Prelude: [(VariableName, BindedUPT)]
-          -> String                   -- ^Raw string to be parserd.
-          -> Either String Term3      -- ^Error on Left.
-parseMain prelude s = parseWithPrelude prelude s >>= process
+resolveImports' :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
+                -> [Either AnnotatedUPT (String, AnnotatedUPT)] -- ^Main module with both Import and Assignment
+                -> [Either AnnotatedUPT (String, AnnotatedUPT)]
+resolveImports' modules xs = lefts <> rights
+  where
+    lefts' = reverse . filter isLeft $ xs
+    lefts = case lefts' of
+      [] -> lefts'
+      (y:ys) -> case y of
+        (Left (_ :< (ImportUPF var))) ->
+          case lookup var modules of
+            Nothing -> error $ "Import error from " <> var
+            Just x  -> x
+        (Left (_ :< (ImportQualifiedUPF q v))) ->
+          case lookup v modules of
+            Nothing -> error $ "Import error from " <> v
+            Just x  -> (fmap . fmap . first) (\str -> q <> "." <> str) x
+        e -> error $ "Expected import statement. Got:\n" <> show e
+    rights = filter isRight xs
+    isLeft (Left _) = True
+    isLeft _        = False
+    isRight (Right _) = True
+    isRight _         = False
+
+resolveAllImports' :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
+                   -> [Either AnnotatedUPT (String, AnnotatedUPT)]
+                   -> [Either AnnotatedUPT (String, AnnotatedUPT)]
+resolveAllImports' modules x =
+  let resolved = resolveImports' modules x
+  in if resolved == x
+     then resolved
+     else resolveAllImports' modules resolved
+
+resolveAllImports :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
+                  -> [Either AnnotatedUPT (String, AnnotatedUPT)]
+                  -> [(String, AnnotatedUPT)]
+resolveAllImports x y = removeRights <$> resolveAllImports' x y
+  where
+    removeRights = \case
+      Left x -> error $ "resolveImports: Left when should be all Right: " <> show x
+      Right x -> x
+
+resolveImports :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
+               -> String
+               -> [(String, AnnotatedUPT)]
+resolveImports modules moduleName = resolveAllImports modules principal
+  where
+    principal = case lookup moduleName modules of
+      Nothing -> error $ "resolveImports: Module " <> moduleName <> " not found"
+      Just x  -> x
+
+resolveMain :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -- ^Modules: [(ModuleName, [Either Import (VariableName, BindedUPT)])]
+            -> String -- ^Module name with main
+            -> Either String AnnotatedUPT
+resolveMain allModules mainModule = case lookup mainModule allModules of
+  Nothing -> Left $ "Module " <> mainModule <> " not found"
+  Just lst -> let resolved :: [(String, AnnotatedUPT)]
+                  resolved = resolveImports allModules mainModule
+                  maybeMain = lookup "main" resolved
+              in case maybeMain of
+                   Nothing -> Left $ "No main function found in " <> mainModule
+                   Just x  -> Right $ DummyLoc :< LetUPF resolved x
+
+main2Term3 :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -- ^Modules: [(ModuleName, [Either Import (VariableName, BindedUPT)])]
+           -> String -- ^Module name with main
+           -> Either String Term3 -- ^Error on Left
+main2Term3 moduleBindings s = resolveMain moduleBindings s >>= process

@@ -229,17 +229,27 @@ instance Arbitrary UnprocessedParsedTerm where
           ]
     lambdaTerms = ["w", "x", "y", "z"]
     letTerms = fmap (("l" <>) . show) [1..255]
+    identifierList :: Gen [String]
     identifierList = frequency
       [ (1, pure . cycle $ letTerms)
       , (3, pure . cycle $ lambdaTerms <> letTerms)
       , (1, cycle <$> shuffle (lambdaTerms <> letTerms))
       ]
+    genImportName :: Gen String
+    genImportName = do
+      firstChar <- elements $ ['a'..'z'] <> ['A'..'Z']
+      len <- choose (3, 15)
+      rest <- vectorOf (len - 1)
+                       (frequency [ (10, elements (['a'..'z'] <> ['A'..'Z'] <> ['0'..'9']))
+                                  , (1, pure '_')
+                                  , (1, pure '.')
+                                  ])
+      return (firstChar : rest)
     genTree :: [String] -> Int -> Gen UnprocessedParsedTerm
     genTree varList i = let half = div i 2
                             third = div i 3
                             recur = genTree varList
                             childList = do
-                              -- listSize <- chooseInt (0, i)
                               listSize <- choose (0, i)
                               let childShare = div i listSize
                               vectorOf listSize $ genTree varList childShare
@@ -247,6 +257,8 @@ instance Arbitrary UnprocessedParsedTerm where
                                  0 -> leaves varList
                                  x -> oneof
                                    [ leaves varList
+                                   , ImportUP <$> genImportName
+                                   , ImportQualifiedUP <$> genImportName <*> genImportName
                                    , HashUP <$> recur (i - 1)
                                    , LeftUP <$> recur (i - 1)
                                    , RightUP <$> recur (i - 1)

@@ -22,10 +22,10 @@ import System.Process (CreateProcess (std_out), StdStream (CreatePipe),
                        createProcess, shell)
 import Telomare
 import Telomare.Optimizer (optimize)
-import Telomare.Parser (AnnotatedUPT, parseOneExprOrTopLevelDefs, parsePrelude)
+import Telomare.Parser (AnnotatedUPT, parseModule, parseOneExprOrTopLevelDefs)
 import Telomare.Possible (AbortExpr, abortExprToTerm4, evalA, sizeTerm,
                           term3ToUnsizedExpr)
-import Telomare.Resolver (parseMain, process)
+import Telomare.Resolver (main2Term3, process, resolveAllImports)
 import Telomare.RunTime (pureEval, rEval)
 import Telomare.TypeChecker (TypeCheckError (..), typeCheck)
 import Text.Megaparsec (errorBundlePretty, runParser)
@@ -207,24 +207,45 @@ funWrap eval fun inp =
     Pair disp newState -> (g2s disp, Just newState)
     z                  -> ("runtime error, dumped:\n" <> show z, Nothing)
 
-runMainCore :: String -> String -> (IExpr -> IO a) -> IO a
-runMainCore preludeString s e =
-  let prelude :: [(String, AnnotatedUPT)]
-      prelude =
-        case parsePrelude preludeString of
-          Right p -> p
-          Left pe -> error pe
+runMainCore :: [(String, String)] -> String -> (IExpr -> IO a) -> IO a
+runMainCore modulesStrings s e =
+  let parsedModules :: [(String, Either String [Either AnnotatedUPT (String, AnnotatedUPT)])]
+      parsedModules = (fmap . fmap) parseModule modulesStrings
+      parsedModulesErrors :: [(String, Either String [Either AnnotatedUPT (String, AnnotatedUPT)])]
+      parsedModulesErrors = filter (\(moduleStr, parsed) -> case parsed of
+                                      Left _  -> True
+                                      Right _ -> False)
+                                   parsedModules
+      flattenLeft = \case
+        Left a -> a
+        Right a -> error "flattenLeft error: got a Right when it should be Left"
+      flattenRight = \case
+        Right a -> a
+        Left a -> error "flattenRight error: got a Left when it should be Right"
+      modules :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
+      modules =
+        case parsedModulesErrors of
+          [] -> (fmap . fmap) flattenRight parsedModules
+          errors -> let moduleWithError :: [(String, String)]
+                        moduleWithError = (fmap . fmap) flattenLeft parsedModulesErrors
+                        joinModuleError :: (String, String) -> String
+                        joinModuleError (moduleName, errorStr) = "Error in module " <> moduleName <> ":\n" <> errorStr
+                    in error . unlines $ joinModuleError <$> moduleWithError
+
   in
-    case compileMain <$> parseMain prelude s of
+    case compileMain <$> main2Term3 modules s of
       Left e -> error $ concat ["failed to parse ", s, " ", e]
       Right (Right g) -> e g
       Right z -> error $ "compilation failed somehow, with result " <> show z
 
-runMain_ :: String -> String -> IO String
-runMain_ preludeString s = runMainCore preludeString s evalLoop_
+runMain_ :: [(String, String)] -> String -> IO String
+runMain_ modulesStrings s = runMainCore modulesStrings s evalLoop_
 
-runMain :: String -> String -> IO ()
-runMain preludeString s = runMainCore preludeString s evalLoop
+runMain :: [(String, String)] -> String -> IO ()
+runMain modulesStrings s = runMainCore modulesStrings s evalLoop
+
+runMainWithInput :: [String] -> [(String, String)] -> String -> IO String
+runMainWithInput inputList modulesStrings s = runMainCore modulesStrings s (evalLoopWithInput inputList)
 
 schemeEval :: IExpr -> IO ()
 schemeEval iexpr = do
@@ -270,19 +291,6 @@ evalLoopWithInput inputList iexpr = evalLoopCore iexpr printAcc "" inputList
                        then pure out
                        else pure (acc <> "\n" <> out)
 
-runMainWithInput :: [String] -> String -> String -> IO String
-runMainWithInput inputList preludeString s =
-  let prelude :: [(String, AnnotatedUPT)]
-      prelude =
-        case parsePrelude preludeString of
-          Right p -> p
-          Left pe -> error pe
-  in
-    case compileMain <$> parseMain prelude s of
-      Left e -> pure $ concat ["failed to parse ", s, " ", e]
-      Right (Right g) -> evalLoopWithInput inputList g
-      Right z -> pure $ "compilation failed somehow, with result " <> show z
-
 -- |Same as `evalLoop`, but keeping what was displayed.
 evalLoop_ :: IExpr -> IO String
 evalLoop_ iexpr = evalLoopCore iexpr printAcc "" []
@@ -302,10 +310,14 @@ calculateRecursionLimits t3 =
       Left a  -> Left . StaticCheckError . convertAbortMessage $ a
       Right t -> pure t
 
-eval2IExpr :: [(String, AnnotatedUPT)] -> String -> Either String IExpr
-eval2IExpr prelude str = bimap errorBundlePretty (\x -> DummyLoc :< LetUPF prelude x) (runParser (parseOneExprOrTopLevelDefs prelude) "" str)
-                           >>= process
-                           >>= first show . compileUnitTest
+eval2IExpr :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -> String -> Either String IExpr
+eval2IExpr extraModuleBindings str =
+  first errorBundlePretty (runParser (parseOneExprOrTopLevelDefs resolved) "" str)
+  >>= process
+  >>= first show . compileUnitTest
+    where
+      aux = (\str -> Left (DummyLoc :< ImportQualifiedUPF str str)) . fst <$> extraModuleBindings
+      resolved = resolveAllImports extraModuleBindings aux
 
 tagIExprWithEval :: IExpr -> Cofree IExprF (Int, IExpr)
 tagIExprWithEval iexpr = evalState (para alg iexpr) 0 where
