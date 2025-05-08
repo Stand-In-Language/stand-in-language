@@ -21,8 +21,6 @@ jobs:
         extraPullNames: nix-community
     - name: Build and test
       run: |
-        # echo cachix use
-        # cachix use iohk
         echo nix build and tests:
         nix -Lv flake check
         echo "Setting up cabal..."
@@ -30,7 +28,7 @@ jobs:
         nix -Lv develop -c cabal update
 
         echo "Testing telomare-repl..."
-        REPL_OUTPUT=$(nix -Lv develop -c cabal run telomare-repl -- --expr 'succ 7' 2>/dev/null | tail -n 1)
+        REPL_OUTPUT=$(nix -Lv run .#telomare-repl -- --expr 'succ 7' 2>/dev/null | tail -n 1)
         echo "REPL output: $REPL_OUTPUT"
         if [[ "$REPL_OUTPUT" == "8" ]]; then
             echo "REPL test passed"
