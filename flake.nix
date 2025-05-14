@@ -51,21 +51,23 @@
             };
           };
       };
+
       packages.default = self'.packages.telomare;
+
       apps.default = {
         type = "app";
         program = self.packages.${system}.telomare + "/bin/telomare";
       };
-
       apps.repl = {
         type = "app";
         program = self.packages.${system}.telomare + "/bin/telomare-repl";
       };
-
       apps.evaluare = {
         type = "app";
         program = self.packages.${system}.telomare + "/bin/telomare-evaluare";
       };
+
+      checks = self'.packages;
     };
   };
 }
