@@ -1,0 +1,21 @@
+validDigit = \x -> and ($47 left x) (not ($57 left x))
+
+validInput = \x -> assert (and (validDigit (left x))
+                               (and (validDigit (left (right (right x))))
+                                    (not ($3 right x))))
+                          "invalid input"
+
+toI = \x -> $48 left x
+
+doAdd = \x y -> c2d (plus (d2c (toI x)) (d2c (toI y)))
+
+main = \input -> let inString : validInput = left input
+                     x = left inString
+                     y = left (right (right inString))
+                     r = doAdd x y
+                     dr = if dMinus r 9
+                          then concat ["1", $49 succ (dMinus r 10)]
+                          else $49 succ r
+                 in if not input
+                    then ("enter two digits separated by a space", 1)
+                    else (concat [succ x, " plus ", succ y, " is ", dr], 0)
