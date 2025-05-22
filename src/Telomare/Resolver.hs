@@ -19,7 +19,7 @@ import qualified Data.ByteString as BS
 import Data.Char (ord)
 import qualified Data.Foldable as F
 import Data.Functor.Foldable (Base, Corecursive (ana, apo), Recursive (cata))
-import Data.List (delete, elem, elemIndex, zip4)
+import Data.List (break, delete, elem, elemIndex, isInfixOf, zip4)
 import qualified Data.Map as Map
 import Data.Map.Strict (Map, fromList, keys)
 import Data.Set (Set, (\\))
@@ -319,6 +319,22 @@ makeLambda str term1@(anno :< _) =
   where v = varsTerm1 term1
         unbound = v \\ Set.singleton str
 
+formatCycleErrorVar :: [String] -> String
+formatCycleErrorVar [v1,v2] =
+  trimEnd . unlines $
+    [ "\nCycle detected in definitions:"
+    , "      variable " <> v1
+    , "      depends on variable " <> v2
+    , "which depends on variable " <> v1]
+formatCycleErrorVar (v1:v2:rest) =
+  trimEnd . unlines $
+    ([ "\nCycle detected in definitions:"
+     , "      variable " <> v1
+     , "      depends on variable " <> v2]
+     <> concatMap (\mod -> ["which depends on variable " <> mod]) rest)
+formatCycleErrorVar _ = error "Error: Cycle error in variables"
+
+
 -- |Transformation from `AnnotatedUPT` to `Term1` validating and inlining `VarUP`s
 validateVariables :: AnnotatedUPT
                   -> Either String Term1
@@ -336,13 +352,40 @@ validateVariables term =
           definitionsMap <- State.get
           case Map.lookup n definitionsMap of
             Just v -> pure v
-            _      -> State.lift . Left  $ "No definition found for " <> n
+            _      -> State.lift . Left  $ "No definition found for defMap " <> n
         anno :< LetUPF preludeMap inner -> do
           oldPrelude <- State.get
-          let addBinding (k,v) = do
-                newTerm <- validateWithEnvironment v
-                State.modify (Map.insert k newTerm)
-          mapM_ addBinding preludeMap
+          let findBinding :: String -> [(String, AnnotatedUPT)] -> Either String [(String, AnnotatedUPT)]
+              findBinding name lets =
+                case break (\(str,_) -> name `isInfixOf` str) lets of
+                  (before, []) -> Left $ "No definition found for (findBinding) " <> name
+                  (before, nameTerm : after) -> Right (nameTerm : before <> after)
+
+              addBindingRecursive :: [String] -> [(String, AnnotatedUPT)]
+                                  -> State.StateT (Map String Term1) (Either String) ()
+              addBindingRecursive visited terms = case terms of
+                [] -> pure ()
+                (k,v):rest -> do
+                  snewTerm <- State.get
+                  let newTerm = State.evalStateT (validateWithEnvironment v) snewTerm
+                  case newTerm of
+                    Left a -> do
+                      let varName = reverse . takeWhile (/= ' ') . reverse $ a
+                      if varName `elem` visited
+                        then State.lift . Left $ formatCycleErrorVar (varName : visited)
+                        else case findBinding varName terms of
+                          Left err -> State.lift . Left $ formatCycleErrorVar (k : varName : visited)
+                          Right terms' -> addBindingRecursive (k : varName : visited) terms'
+                    Right _ -> do
+                      newTerm' <- validateWithEnvironment v
+                      State.modify (Map.insert k newTerm')
+                      addBindingRecursive (k : visited) rest
+
+          addBindingRecursive [] preludeMap
+          -- let addBinding (k,v) = do
+          --       newTerm <- validateWithEnvironment v
+          --       State.modify (Map.insert k newTerm)
+          -- mapM_ addBinding preludeMap
           result <- validateWithEnvironment inner
           State.put oldPrelude
           pure result
@@ -509,7 +552,55 @@ resolveMain allModules mainModule = case lookup mainModule allModules of
                    Nothing -> Left $ "No main function found in " <> mainModule
                    Just x  -> Right $ DummyLoc :< LetUPF resolved x
 
+trimEnd :: String -> String
+trimEnd s = reverse (dropWhile (`elem` [' ', '\n']) (reverse s))
+
+formatCycleError :: [String] -> String
+formatCycleError [m1,m2] =
+  trimEnd . unlines $
+    [ "\nModule imports form a cycle:"
+    , "      module " <> m1
+    , "      imports module " <> m2
+    , "which imports module " <> m1]
+formatCycleError (m1:m2:rest) =
+  trimEnd . unlines $
+    (["\nModule imports form a cycle:"
+     , "      module " <> m1
+     , "      imports module " <> m2]
+     <> concatMap (\mod -> ["which imports module " <> mod]) rest)
+formatCycleError _ = "Error: Cycle formatting failed"
+
+extractModuleName :: AnnotatedUPT -- ^Import statement
+                  -> Either String String -- ^Either module name or error
+extractModuleName (x :< ImportUPF var) = Right var
+extractModuleName (x :< ImportQualifiedUPF _ m) = Right m
+extractModuleName _ = Left "Unexpected AnnotatedUPT structure"
+
+getImports :: [Either AnnotatedUPT (String, AnnotatedUPT)] -> [String]
+getImports = foldr (\x acc -> case x of
+                    Left imp -> case extractModuleName imp of
+                                  Right modName -> modName : acc
+                                  Left _        -> acc -- TODO: Handle this possible error
+                    Right _  -> acc) []
+
+detectCycle :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -> Maybe [String]
+detectCycle = findCycle []
+  where
+    findCycle :: [String] -> [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -> Maybe [String]
+    findCycle _ [] = Nothing
+    findCycle visited ((moduleName, imports) : rest)
+      | moduleName `elem` visited = Just (reverse (moduleName : visited))
+      | otherwise =
+          let importedModules = getImports imports
+          in case filter (`elem` visited) importedModules of
+              (m:_) -> Just (reverse (m : moduleName : visited))
+              []    -> findCycle (moduleName : visited) rest
+
 main2Term3 :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -- ^Modules: [(ModuleName, [Either Import (VariableName, BindedUPT)])]
            -> String -- ^Module name with main
            -> Either String Term3 -- ^Error on Left
-main2Term3 moduleBindings s = resolveMain moduleBindings s >>= process
+main2Term3 moduleBindings s = case (detectCycle . reverse) moduleBindings of
+  Just cycleModules -> case detectCycle moduleBindings of
+    Just cycleModules' -> Left $ formatCycleError cycleModules'
+    Nothing            -> resolveMain moduleBindings s >>= process
+  Nothing           -> resolveMain moduleBindings s >>= process

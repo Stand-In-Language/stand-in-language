@@ -9,6 +9,7 @@ module Main where
 import CaseTests (qcPropsCase, unitTestsCase)
 import Common
 import Control.Comonad.Cofree (Cofree ((:<)))
+import Control.Exception (SomeException, try)
 import Control.Monad.Except (ExceptT, MonadError, catchError, runExceptT,
                              throwError)
 import Data.Algorithm.Diff (getGroupedDiff)
@@ -58,10 +59,58 @@ qcProps = testGroup "Property tests (QuickCheck)"
         let expectedValue = recursiveImportsResult modules <> "\ndone"
         result <- runMain_ modules "Main"
         pure $ result === expectedValue
+  , QC.testProperty "Cyclic imports are stopped to avoid loops" $
+      \() -> withMaxSuccess 16 . QC.idempotentIOProperty $ do
+        modules <- generate genRecursiveImportsWithCycle
+        result <- try (runMain_ modules "Main") :: IO (Either SomeException String)
+        let cycleModules = concat (detectCycle (constructModules modules))
+            unwrappedExpectedError = formatCycleError cycleModules
+            expectedError = "failed to parse Main " <> unwrappedExpectedError
+        case result of
+          Left err  -> pure $ trimEnd (removeCallStack (show err)) === trimEnd expectedError
+          Right res -> pure $ res === trimEnd expectedError
+  , QC.testProperty "Check recursive let work backward" $
+      \() -> withMaxSuccess 16 . QC.idempotentIOProperty $ do
+        assignments <- generate genRecursiveLet
+        let dummymodule = wrapRecursiveBackwardLet assignments
+            expectedValue = recursiveLetResult assignments <> "\ndone"
+        result <- testUserDefAdHocTypes dummymodule
+        pure $ result === expectedValue
+  , QC.testProperty "Check recursive let work forward" $
+      \() -> withMaxSuccess 16 . QC.idempotentIOProperty $ do
+        assignments <- generate genRecursiveLet
+        let dummymodule = wrapRecursiveForwardLet assignments
+            expectedValue = recursiveLetResult assignments <> "\ndone"
+        result <- testUserDefAdHocTypes dummymodule
+        pure $ result === expectedValue
+  -- TODO: Refactor with runCycleLet responses
+  -- , QC.testProperty "Cyclic let backward are stopped to avoid loops" $
+  --     \() -> withMaxSuccess 16 . QC.idempotentIOProperty $ do
+  --       assignments <- generate genRecursiveLetWithCycle
+  --       let dummymodule = wrapRecursiveBackwardLet assignments
+  --           expectedValue = recursiveLetResult assignments <> "\ndone"
+  --       result <- testUserDefAdHocTypes dummymodule
+  --       pure $ result === expectedValue
+  -- , QC.testProperty "Cyclic let forward are stopped to avoid loops" $
+  --     \() -> withMaxSuccess 16 . QC.idempotentIOProperty $ do
+  --       assignments <- generate genRecursiveLetWithCycle
+  --       let dummymodule = wrapRecursiveForwardLet assignments
+  --           expectedValue = recursiveLetResult assignments <> "\ndone"
+  --       result <- testUserDefAdHocTypes dummymodule
+  --       pure $ result === expectedValue
   ]
 
+removeCallStack :: String -> String
+removeCallStack = unlines . takeWhile (/= "CallStack (from HasCallStack):") . lines
+
+recursiveResult :: String -> String
+recursiveResult = init . tail . drop 2 . dropWhile (/= '=')
+
+recursiveLetResult :: [String] -> String
+recursiveLetResult = recursiveResult . last
+
 recursiveImportsResult :: [(String, String)] -> String
-recursiveImportsResult = init . tail . drop 2 . dropWhile (/= '=') . snd . last
+recursiveImportsResult = recursiveResult . snd . last
 
 -- Variable and Import str generator
 genName :: Gen String
@@ -73,10 +122,10 @@ genName = do
                               , (1, pure '_')
                               , (1, pure '.')
                               ])
-  pure (firstChar : rest)
+  pure $ firstChar : rest
 
-genInteger :: Gen Int
-genInteger = choose (0, 100)
+removeDuplicates :: Eq a => [a] -> [a]
+removeDuplicates = foldr (\x acc -> if x `elem` acc then acc else x : acc) []
 
 genAssignment :: Gen (String, String)
 genAssignment = do
@@ -84,27 +133,72 @@ genAssignment = do
   value <- genName
   pure (varName, varName <> " = " <> show value)
 
-genImport :: Gen String
-genImport = do
-  modName <- genName
-  pure $ "import " <> modName
-
 genRecursiveImports :: Gen [(String, String)]
 genRecursiveImports = do
-  numModules               <- choose (2, 6)
-  moduleNames              <- vectorOf numModules genName
+  numModules               <- choose (3, 7)
+  rawModuleNames           <- vectorOf numModules genName
+  let moduleNames = removeDuplicates $ filter (/= "Main") rawModuleNames
   (varName, assignmentStr) <- genAssignment
   let
     assignments = fmap ( "import " <> ) (tail moduleNames) <> [assignmentStr]
     mainModule  = ("Main", "import " <> head moduleNames <> "\nmain = \\input -> (" <> varName <> ",0)")
   pure $ mainModule : zip moduleNames assignments
 
-aux222 =
-  [ ("Main", "import Abc\nmain = \\input -> (xyz, 0)")
-  , ("Abc", "import Def")
-  , ("Def", "import Ghi")
-  , ("Ghi", "xyz = \"whattt\"")
-  ]
+genRecursiveImportsWithCycle :: Gen [(String, String)]
+genRecursiveImportsWithCycle = do
+  modules <- genRecursiveImports
+  let moduleNames = fmap fst modules
+  cycleModuleIndex <- choose (1, length modules - 1)
+  let (before, (modName, modContent) : after) = splitAt cycleModuleIndex modules
+      modContent' = modContent <> "\nimport Main"
+  pure $ before <> ((modName, modContent') : after)
+
+genRecursiveLetWithCycle :: Gen [String]
+genRecursiveLetWithCycle = do
+  assignments <- genRecursiveLet
+  cycleLetIndex <- choose (1, length assignments - 1)
+  let (before, assignment : after) = splitAt cycleLetIndex assignments
+      assignment' = takeWhile (/= '=') assignment
+                 <> "= concat ["
+                 <> (drop 2 . dropWhile (/= '=')) assignment
+                 <> " , "
+                 <> ( takeWhile (/= ' ' ) . head) assignments
+                 <> "]"
+  pure $ before <> [assignment'] <> after
+
+genRecursiveLet :: Gen [String]
+genRecursiveLet = do
+  numLines <- choose (4, 8)
+  rawVarNames <- vectorOf numLines genName
+  lastValue <- genName
+  let varNames = (fmap ( filter (/= '.') ) . removeDuplicates) $
+                 filter (`notElem` ["Main", "input"]) rawVarNames
+      assignments = fmap (\i -> varNames !! i <> " = " <> varNames !! (i + 1)) [0 .. length varNames - 2]
+      lastVar = last varNames
+      lastLine = lastVar <> " = " <> show lastValue
+  pure (assignments <> [lastLine])
+
+linewrap :: String -> String -> String -> String
+linewrap firstAssignment letBlock firstVar =
+  unlines
+    [ "import Prelude"
+    , "main = let " <> firstAssignment
+    , letBlock <> "       in \\input -> (" <> firstVar <> ", 0)"
+    ]
+
+wrapRecursiveForwardLet :: [String] -> String
+wrapRecursiveForwardLet assignments = do
+  let firstVar = takeWhile (/= ' ') (head assignments)
+      firstAssignment = head assignments
+      letBlock = unlines $ fmap ("           " <>) (tail assignments)
+  linewrap firstAssignment letBlock firstVar
+
+wrapRecursiveBackwardLet :: [String] -> String
+wrapRecursiveBackwardLet assignments = do
+  let firstVar = takeWhile (/= ' ') (head assignments)
+      firstAssignment = last assignments
+      letBlock = unlines $ fmap ("           " <>) ((tail . reverse) assignments)
+  linewrap firstAssignment letBlock firstVar
 
 containsTHash :: Term2' -> Bool
 containsTHash = \case
@@ -218,6 +312,124 @@ unitTests = testGroup "Unit tests"
   , testCase "test recursive imports" $ do
       res <- runMain_ aux222 "Main"
       res @?= "whattt\ndone"
+  , testCase "test recursive imports with simple cycle" $ do
+      result <- try (runMain_ simpleCycle "Main") :: IO (Either SomeException String)
+      case result of
+          Left err -> trimEnd (removeCallStack (show err)) @?= trimEnd runsimpleCycle
+          Right res -> trimEnd res @?= trimEnd runsimpleCycle
+  , testCase "test recursive imports with full cycle" $ do
+      result <- try (runMain_ fullCycle "Main") :: IO (Either SomeException String)
+      case result of
+          Left err -> trimEnd (removeCallStack (show err)) @?= trimEnd runfullCycle
+          Right res -> trimEnd res @?= trimEnd runfullCycle
+  , testCase "test recursive backward let" $ do
+      res <- testUserDefAdHocTypes recursiveBackwardLet
+      res @?= "whattt\ndone"
+  , testCase "test recursive forward let" $ do
+      res <- testUserDefAdHocTypes recursiveForwardLet
+      res @?= "whattt\ndone"
+  -- TODO: Refactor with runCycleLet responses
+  , testCase "test backward cycle let" $ do
+      result <- try ( testUserDefAdHocTypes backwardCycleLet ) :: IO (Either SomeException String)
+      case result of
+        Left err -> trimEnd (removeCallStack (show err)) @?= trimEnd runBackwardCycleLet
+        Right res -> trimEnd res @?= trimEnd runBackwardCycleLet
+  , testCase "test forward cycle let" $ do
+      result <- try ( testUserDefAdHocTypes forwardCycleLet ) :: IO (Either SomeException String)
+      case result of
+        Left err -> trimEnd (removeCallStack (show err)) @?= trimEnd runForwardCycleLet
+        Right res -> trimEnd res @?= trimEnd runForwardCycleLet
+  ]
+
+backwardCycleLet = unlines
+  [ "import Prelude"
+  , "main = let xyz = succ abc"
+  , "           ghi = xyz"
+  , "           def = ghi"
+  , "           abc = def"
+  , "       in \\input -> (abc, 0)"
+  ]
+
+runBackwardCycleLet = unlines
+  [ "Cycle detected in definitions:"
+  , "      variable xyz"
+  , "      depends on variable abc"
+  , "which depends on variable def"
+  , "which depends on variable ghi"
+  , "which depends on variable xyz"
+  ]
+
+forwardCycleLet = unlines
+  [ "import Prelude"
+  , "main = let abc = def"
+  , "           def = ghi"
+  , "           ghi = xyz"
+  , "           xyz = succ abc"
+  , "       in \\input -> (abc, 0)"
+  ]
+
+runForwardCycleLet = unlines
+  [ "Cycle detected in definitions:"
+  , "      variable abc"
+  , "      depends on variable def"
+  , "which depends on variable ghi"
+  , "which depends on variable xyz"
+  ]
+
+recursiveBackwardLet = unlines
+  [ "main = let xyz = \"whattt\""
+  , "           ghi = xyz"
+  , "           def = ghi"
+  , "           abc = def"
+  , "       in  \\input -> (abc, 0)"
+  ]
+
+recursiveForwardLet = unlines
+  [ "main = let abc = def"
+  , "           def = ghi"
+  , "           ghi = xyz"
+  , "           xyz = \"whattt\""
+  , "       in \\input -> (abc, 0)"
+  ]
+
+aux222 =
+  [ ("Main", "import Abc\nmain = \\input -> (xyz, 0)")
+  , ("Abc", "import Def")
+  , ("Def", "import Ghi")
+  , ("Ghi", "xyz = \"whattt\"")
+  ]
+
+fullCycle =
+  [ ("Main", "import Abc\nmain = \\input -> (xyz, 0)")
+  , ("Abc", "import Def")
+  , ("Def", "import Ghi")
+  , ("Ghi", "import Jkl")
+  , ("Jkl", "import Main\nxyz = \"whattt\"")]
+
+runfullCycle = unlines
+  [ "failed to parse Main "
+  , "Module imports form a cycle:"
+  , "      module Main"
+  , "      imports module Abc"
+  , "which imports module Def"
+  , "which imports module Ghi"
+  , "which imports module Jkl"
+  , "which imports module Main"
+  ]
+
+simpleCycle =
+  [ ("Main","import Abc\nmain = \\input -> (xyz,0)")
+  , ("Abc","import Def\nimport Main")
+  , ("Def","import Ghi")
+  , ("Ghi","import Jkl")
+  , ("Jkl","xyz = \"CdVK\"")]
+
+runsimpleCycle = unlines
+  [ "failed to parse Main "
+  , "Module imports form a cycle:"
+  , "      module Main"
+  , "      imports module Abc"
+  , "which imports module Main"
   ]
 
 tictactoe :: IO String

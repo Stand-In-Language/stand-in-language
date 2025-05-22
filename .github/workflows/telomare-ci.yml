@@ -86,7 +86,7 @@ jobs:
           extraPullNames: nix-community
       - name: hlint linting
         run: |
-          output=$(nix develop -c hlint "--ignore=Parse error" app/Evaluare.hs . --no-exit-code)
+          output=$(nix develop -c hlint . --no-exit-code)
           if [ "$output" = "No hints" ]; then
               echo "Success! No Hlint suggestions."
           else
