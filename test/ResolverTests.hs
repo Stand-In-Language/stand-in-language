@@ -76,6 +76,28 @@ qcProps = testGroup "Property tests (QuickCheck)"
             expectedValue = recursiveLetResult assignments <> "\ndone"
         result <- testUserDefAdHocTypes dummymodule
         pure $ result === expectedValue
+  , QC.testProperty "Check recursive let work forward" $
+      \() -> withMaxSuccess 16 . QC.idempotentIOProperty $ do
+        assignments <- generate genRecursiveLet
+        let dummymodule = wrapRecursiveForwardLet assignments
+            expectedValue = recursiveLetResult assignments <> "\ndone"
+        result <- testUserDefAdHocTypes dummymodule
+        pure $ result === expectedValue
+  -- TODO: Refactor with runCycleLet responses
+  , QC.testProperty "Cyclic let backward are stopped to avoid loops" $
+      \() -> withMaxSuccess 16 . QC.idempotentIOProperty $ do
+        assignments <- generate genRecursiveLetWithCycle
+        let dummymodule = wrapRecursiveBackwardLet assignments
+            expectedValue = recursiveLetResult assignments <> "\ndone"
+        result <- testUserDefAdHocTypes dummymodule
+        pure $ result === expectedValue
+  , QC.testProperty "Cyclic let forward are stopped to avoid loops" $
+      \() -> withMaxSuccess 16 . QC.idempotentIOProperty $ do
+        assignments <- generate genRecursiveLetWithCycle
+        let dummymodule = wrapRecursiveForwardLet assignments
+            expectedValue = recursiveLetResult assignments <> "\ndone"
+        result <- testUserDefAdHocTypes dummymodule
+        pure $ result === expectedValue
   ]
 
 removeCallStack :: String -> String
@@ -131,12 +153,26 @@ genRecursiveImportsWithCycle = do
       modContent' = modContent <> "\nimport Main"
   pure $ before <> ((modName, modContent') : after)
 
+genRecursiveLetWithCycle :: Gen [String]
+genRecursiveLetWithCycle = do
+  assignments <- genRecursiveLet
+  cycleLetIndex <- choose (1, length assignments - 1)
+  let (before, assignment : after) = splitAt cycleLetIndex assignments
+      assignment' = takeWhile (/= '=') assignment
+                 <> "= concat ["
+                 <> (drop 2 . dropWhile (/= '=')) assignment
+                 <> " , "
+                 <> ( takeWhile (/= ' ' ) . head) assignments
+                 <> "]"
+  pure $ before <> [assignment'] <> after
+
 genRecursiveLet :: Gen [String]
 genRecursiveLet = do
   numLines <- choose (4, 8)
   rawVarNames <- vectorOf numLines genName
   lastValue <- genName
-  let varNames = removeDuplicates $ filter (`notElem` ["Main", "input"]) rawVarNames
+  let varNames = (fmap ( filter (/= '.') ) . removeDuplicates) $
+                 filter (`notElem` ["Main", "input"]) rawVarNames
       assignments = fmap (\i -> varNames !! i <> " = " <> varNames !! (i + 1)) [0 .. length varNames - 2]
       lastVar = last varNames
       lastLine = lastVar <> " = " <> show lastValue
