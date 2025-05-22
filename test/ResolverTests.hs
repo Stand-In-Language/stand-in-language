@@ -11,6 +11,7 @@ import Common
 import Control.Comonad.Cofree (Cofree ((:<)))
 import Control.Monad.Except (ExceptT, MonadError, catchError, runExceptT,
                              throwError)
+import Control.Exception (try, SomeException)
 import Data.Algorithm.Diff (getGroupedDiff)
 import Data.Algorithm.DiffOutput (ppDiff)
 import Debug.Trace (trace, traceShow, traceShowId)
@@ -58,12 +59,18 @@ qcProps = testGroup "Property tests (QuickCheck)"
         let expectedValue = recursiveImportsResult modules <> "\ndone"
         result <- runMain_ modules "Main"
         pure $ result === expectedValue
-  -- , QC.testProperty "Cyclic imports are stopped to avoid loops" $
-  --     \() -> withMaxSuccess 16 $ do
-  --       modules <- generate genRecursiveImportswithCycle
-  --       result <- runMain_ modules "Main"
-  --       pure $ result === "Cyclic imports are not allowed\ndone"
+  , QC.testProperty "Cyclic imports are stopped to avoid loops" $
+      \() -> withMaxSuccess 16 . QC.idempotentIOProperty $ do
+        modules <- generate genRecursiveImportsWithCycle
+        result <- try (runMain_ modules "Main") :: IO (Either SomeException String)
+        case result of
+          --TODO: Refactor expected error message
+          Left err -> pure $ show err === "Cyclic imports are not allowed\ndone"
+          Right res -> pure $ res === "Cyclic imports are not allowed\ndone"
   ]
+
+trimEnd :: String -> String
+trimEnd s = reverse (dropWhile (`elem` [' ', '\n']) (reverse s))
 
 recursiveImportsResult :: [(String, String)] -> String
 recursiveImportsResult = init . tail . drop 2 . dropWhile (/= '=') . snd . last
@@ -106,20 +113,6 @@ genRecursiveImportsWithCycle = do
   let (before, (modName, modContent) : after) = splitAt cycleModuleIndex modules
       modContent' = modContent <> "\nimport Main"
   pure $ before <> ((modName, modContent') : after)
-
-aux222 =
-  [ ("Main", "import Abc\nmain = \\input -> (xyz, 0)")
-  , ("Abc", "import Def")
-  , ("Def", "import Ghi")
-  , ("Ghi", "xyz = \"whattt\"")
-  ]
-
-aux222' =
-  [ ("Main","import Abc\nmain = \\input -> (xyz,0)")
-  , ("Abc","import Def\nimport Main")
-  , ("Def","import Ghi")
-  , ("Ghi","import Jkl")
-  , ("Jkl","xyz = \"CdVK\"")]
 
 containsTHash :: Term2' -> Bool
 containsTHash = \case
@@ -233,20 +226,61 @@ unitTests = testGroup "Unit tests"
   , testCase "test recursive imports" $ do
       res <- runMain_ aux222 "Main"
       res @?= "whattt\ndone"
-  , testCase "test recursive imports with cycle" $ do
-      res <- runExceptT $ runMain_ aux222' "Main" `catchError` \err -> pure (show err)
-      case res of
-          Left err -> err @?= runaux222'
-          Right _ -> assertFailure "Expected an exception but got a result"
+  , testCase "test recursive imports with simple cycle" $ do
+      result <- try (runMain_ simpleCycle "Main") :: IO (Either SomeException String)
+      let trimEnd s = reverse (dropWhile (`elem` [' ', '\n']) (reverse s))
+      case result of
+          Left err -> trimEnd (show err) @?= trimEnd runsimpleCycle
+          Right res -> trimEnd res @?= trimEnd runsimpleCycle
+  , testCase "test recursive imports with full cycle" $ do
+      result <- try (runMain_ fullCycle "Main") :: IO (Either SomeException String)
+      case result of
+          Left err -> trimEnd (show err) @?= trimEnd runfullCycle
+          Right res -> trimEnd res @?= trimEnd runfullCycle
   ]
 
-runaux222' = unlines
-  [ "Exception: Module imports form a cycle:"
-  , "  module Main"
-  , "  imports module Abc"
+aux222 =
+  [ ("Main", "import Abc\nmain = \\input -> (xyz, 0)")
+  , ("Abc", "import Def")
+  , ("Def", "import Ghi")
+  , ("Ghi", "xyz = \"whattt\"")
+  ]
+
+fullCycle =
+  [ ("Main", "import Abc\nmain = \\input -> (xyz, 0)")
+  , ("Abc", "import Def")
+  , ("Def", "import Ghi")
+  , ("Ghi", "import Jkl")
+  , ("Jkl", "import Main\nxyz = \"whattt\"")]
+
+runfullCycle = unlines
+  [ "failed to parse Main "
+  , "Module imports form a cycle:"
+  , "      module Main"
+  , "      imports module Abc"
+  , "which imports module Def"
+  , "which imports module Ghi"
+  , "which imports module Jkl"
   , "which imports module Main"
   , "CallStack (from HasCallStack):"
-  , "  error, called at src/Telomare/Eval.hs:259:21 in telomare-0.1.0.0-inplace:Telomare.Eval"
+  , "  error, called at src/Telomare/Eval.hs:236:19 in telomare-0.1.0.0-inplace:Telomare.Eval"
+  ]
+
+simpleCycle =
+  [ ("Main","import Abc\nmain = \\input -> (xyz,0)")
+  , ("Abc","import Def\nimport Main")
+  , ("Def","import Ghi")
+  , ("Ghi","import Jkl")
+  , ("Jkl","xyz = \"CdVK\"")]
+
+runsimpleCycle= unlines
+  [ "failed to parse Main "
+  , "Module imports form a cycle:"
+  , "      module Main"
+  , "      imports module Abc"
+  , "which imports module Main"
+  , "CallStack (from HasCallStack):"
+  , "  error, called at src/Telomare/Eval.hs:236:19 in telomare-0.1.0.0-inplace:Telomare.Eval"
   ]
 
 tictactoe :: IO String

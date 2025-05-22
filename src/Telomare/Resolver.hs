@@ -513,15 +513,18 @@ main2Term3 :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -- ^Modul
            -> String -- ^Module name with main
            -> Either String Term3 -- ^Error on Left
 main2Term3 moduleBindings s = case detectCycle moduleBindings of
-  Just (module1, module2) -> 
-    Left $ "Module imports form a cycle:\n  module " 
-           <> module1 
-           <> "\n  imports module " 
-           <> module2 
-           <> "\nwhich imports module " 
-           <> module1
+  Just cycleModules -> Left $ formatCycleError cycleModules
   Nothing -> resolveMain moduleBindings s >>= process
   where
+    trimEnd s = reverse (dropWhile (`elem` [' ', '\n']) (reverse s))
+    formatCycleError :: [String] -> String
+    formatCycleError (m1:m2:rest) =
+      trimEnd . unlines $
+        ["\nModule imports form a cycle:"
+        , "      module " <> m1
+        , "      imports module " <> m2]
+        ++ concatMap (\mod -> ["which imports module " <> mod]) rest
+    formatCycleError _ = "Error: Cycle formatting failed"
     extractModuleName :: AnnotatedUPT -- ^Import statement 
                       -> Either String String -- ^Either module name or error
     extractModuleName (x :< ImportUPF var) = Right var
@@ -533,12 +536,15 @@ main2Term3 moduleBindings s = case detectCycle moduleBindings of
                                      Right modName -> modName : acc
                                      Left _        -> acc -- TODO: Handle this possible error
                         Right _  -> acc) []
-    detectCycle :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -> Maybe (String, String)
-    detectCycle [] = Nothing
-    detectCycle [(moduleName, imports)] = Nothing
-    detectCycle ((moduleName, imports):(moduleName', imports'):modules) =
-      case moduleName' `elem` getImports imports of
-       True  -> case moduleName `elem` getImports imports' of
-                  True  -> Just (moduleName, moduleName')
-                  False -> Nothing
-       False -> detectCycle ((moduleName', imports') : modules)
+    detectCycle :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -> Maybe [String]
+    detectCycle moduleBindings = findCycle [] moduleBindings
+      where
+        findCycle :: [String] -> [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -> Maybe [String]
+        findCycle _ [] = Nothing
+        findCycle visited ((moduleName, imports) : rest)
+          | moduleName `elem` visited = Just (reverse (moduleName : visited))
+          | otherwise =
+              let importedModules = getImports imports
+              in case filter (`elem` visited) importedModules of
+                  (m:_) -> Just (reverse (m : moduleName : visited)) 
+                  []    -> findCycle (moduleName : visited) rest
