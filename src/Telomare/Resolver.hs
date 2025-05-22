@@ -334,6 +334,7 @@ formatCycleErrorVar (v1:v2:rest) =
      <> concatMap (\mod -> ["which depends on variable " <> mod]) rest)
 formatCycleErrorVar _ = error "Error: Cycle error in variables"
 
+
 -- |Transformation from `AnnotatedUPT` to `Term1` validating and inlining `VarUP`s
 validateVariables :: AnnotatedUPT
                   -> Either String Term1
@@ -359,6 +360,7 @@ validateVariables term =
                 case break (\(str,_) -> name `isInfixOf` str) lets of
                   (before, []) -> Left $ "No definition found for (findBinding) " <> name
                   (before, nameTerm : after) -> Right (nameTerm : before <> after)
+
               addBindingRecursive :: [String] -> [(String, AnnotatedUPT)]
                                   -> State.StateT (Map String Term1) (Either String) ()
               addBindingRecursive visited terms = case terms of
@@ -369,17 +371,16 @@ validateVariables term =
                   case newTerm of
                     Left a -> do
                       let varName = reverse . takeWhile (/= ' ') . reverse $ a
-                      (if varName `elem` visited then
-                          (do State.lift . Left
-                                $ "Cycle detected in definitions: " <> k <> " " <> varName)
-                      else
-                          (do case findBinding varName terms of
-                                Left err -> do State.lift . Left $ err <> " " <> k <> " " <> varName
-                                Right terms' -> do addBindingRecursive (k : varName : visited) terms'))
+                      if varName `elem` visited
+                        then State.lift . Left $ formatCycleErrorVar (varName : visited)
+                        else case findBinding varName terms of
+                          Left err -> State.lift . Left $ formatCycleErrorVar (k : varName : visited)
+                          Right terms' -> addBindingRecursive (k : varName : visited) terms'
                     Right _ -> do
                       newTerm' <- validateWithEnvironment v
                       State.modify (Map.insert k newTerm')
                       addBindingRecursive (k : visited) rest
+
           addBindingRecursive [] preludeMap
           -- let addBinding (k,v) = do
           --       newTerm <- validateWithEnvironment v
