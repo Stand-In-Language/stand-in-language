@@ -330,12 +330,12 @@ unitTests = testGroup "Unit tests"
       res <- testUserDefAdHocTypes recursiveForwardLet
       res @?= "whattt\ndone"
   -- TODO: Refactor with runCycleLet responses
-  -- , testCase "test backward cycle let" $ do
-  --     res <- testUserDefAdHocTypes backwardCycleLet
-  --     res @?= "whattt\ndone"
-  -- , testCase "test forward cycle let" $ do
-  --     res <- testUserDefAdHocTypes forwardCycleLet
-  --     res @?= "whattt\ndone"
+  , testCase "test backward cycle let" $ do
+      res <- testUserDefAdHocTypes backwardCycleLet
+      res @?= "whattt\ndone"
+  , testCase "test forward cycle let" $ do
+      res <- testUserDefAdHocTypes forwardCycleLet
+      res @?= "whattt\ndone"
   ]
 
 runCycleLet = undefined

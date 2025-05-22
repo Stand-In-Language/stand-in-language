@@ -19,7 +19,7 @@ import qualified Data.ByteString as BS
 import Data.Char (ord)
 import qualified Data.Foldable as F
 import Data.Functor.Foldable (Base, Corecursive (ana, apo), Recursive (cata))
-import Data.List (delete, elem, elemIndex, zip4)
+import Data.List (break, delete, elem, elemIndex, isInfixOf, zip4)
 import qualified Data.Map as Map
 import Data.Map.Strict (Map, fromList, keys)
 import Data.Set (Set, (\\))
@@ -319,6 +319,21 @@ makeLambda str term1@(anno :< _) =
   where v = varsTerm1 term1
         unbound = v \\ Set.singleton str
 
+formatCycleErrorVar :: [String] -> String
+formatCycleErrorVar [v1,v2] =
+  trimEnd . unlines $
+    [ "\nCycle detected in definitions:"
+    , "      variable " <> v1
+    , "      depends on variable " <> v2
+    , "which depends on variable " <> v1]
+formatCycleErrorVar (v1:v2:rest) =
+  trimEnd . unlines $
+    ([ "\nCycle detected in definitions:"
+     , "      variable " <> v1
+     , "      depends on variable " <> v2]
+     <> concatMap (\mod -> ["which depends on variable " <> mod]) rest)
+formatCycleErrorVar _ = error "Error: Cycle error in variables"
+
 -- |Transformation from `AnnotatedUPT` to `Term1` validating and inlining `VarUP`s
 validateVariables :: AnnotatedUPT
                   -> Either String Term1
@@ -336,20 +351,36 @@ validateVariables term =
           definitionsMap <- State.get
           case Map.lookup n definitionsMap of
             Just v -> pure v
-            _      -> State.lift . Left  $ "No definition found for " <> n
+            _      -> State.lift . Left  $ "No definition found for defMap " <> n
         anno :< LetUPF preludeMap inner -> do
           oldPrelude <- State.get
-          let addBindingRecursive terms = case terms of
+          let findBinding :: String -> [(String, AnnotatedUPT)] -> Either String [(String, AnnotatedUPT)]
+              findBinding name lets =
+                case break (\(str,_) -> name `isInfixOf` str) lets of
+                  (before, []) -> Left $ "No definition found for (findBinding) " <> name
+                  (before, nameTerm : after) -> Right (nameTerm : before <> after)
+              addBindingRecursive :: [String] -> [(String, AnnotatedUPT)]
+                                  -> State.StateT (Map String Term1) (Either String) ()
+              addBindingRecursive visited terms = case terms of
                 [] -> pure ()
                 (k,v):rest -> do
-                  newTerm <- validateWithEnvironment v
+                  snewTerm <- State.get
+                  let newTerm = State.evalStateT (validateWithEnvironment v) snewTerm
                   case newTerm of
                     Left a -> do
-                      addBindingRecursive (reverse terms)
+                      let varName = reverse . takeWhile (/= ' ') . reverse $ a
+                      (if varName `elem` visited then
+                          (do State.lift . Left
+                                $ "Cycle detected in definitions: " <> k <> " " <> varName)
+                      else
+                          (do case findBinding varName terms of
+                                Left err -> do State.lift . Left $ err <> " " <> k <> " " <> varName
+                                Right terms' -> do addBindingRecursive (k : varName : visited) terms'))
                     Right _ -> do
-                      State.modify (Map.insert k newTerm)
-                      addBindingRecursive rest
-          addBindingRecursive preludeMap
+                      newTerm' <- validateWithEnvironment v
+                      State.modify (Map.insert k newTerm')
+                      addBindingRecursive (k : visited) rest
+          addBindingRecursive [] preludeMap
           -- let addBinding (k,v) = do
           --       newTerm <- validateWithEnvironment v
           --       State.modify (Map.insert k newTerm)
@@ -524,6 +555,12 @@ trimEnd :: String -> String
 trimEnd s = reverse (dropWhile (`elem` [' ', '\n']) (reverse s))
 
 formatCycleError :: [String] -> String
+formatCycleError [m1,m2] =
+  trimEnd . unlines $
+    [ "\nModule imports form a cycle:"
+    , "      module " <> m1
+    , "      imports module " <> m2
+    , "which imports module " <> m1]
 formatCycleError (m1:m2:rest) =
   trimEnd . unlines $
     (["\nModule imports form a cycle:"
