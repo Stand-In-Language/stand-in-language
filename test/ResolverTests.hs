@@ -101,7 +101,7 @@ genRecursiveImports = do
 genRecursiveImportsWithCycle :: Gen [(String, String)]
 genRecursiveImportsWithCycle = do
   modules <- genRecursiveImports
-  let moduleNames = map fst modules
+  let moduleNames = fmap fst modules
   cycleModuleIndex <- choose (1, length modules - 1)
   let (before, (modName, modContent) : after) = splitAt cycleModuleIndex modules
       modContent' = modContent <> "\nimport Main"
