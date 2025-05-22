@@ -58,6 +58,11 @@ qcProps = testGroup "Property tests (QuickCheck)"
         let expectedValue = recursiveImportsResult modules <> "\ndone"
         result <- runMain_ modules "Main"
         pure $ result === expectedValue
+  -- , QC.testProperty "Cyclic imports are stopped to avoid loops" $
+  --     \() -> withMaxSuccess 16 $ do
+  --       modules <- generate genRecursiveImportswithCycle
+  --       result <- runMain_ modules "Main"
+  --       pure $ result === "Cyclic imports are not allowed\ndone"
   ]
 
 recursiveImportsResult :: [(String, String)] -> String
@@ -73,10 +78,7 @@ genName = do
                               , (1, pure '_')
                               , (1, pure '.')
                               ])
-  pure (firstChar : rest)
-
-genInteger :: Gen Int
-genInteger = choose (0, 100)
+  pure $ firstChar : rest
 
 genAssignment :: Gen (String, String)
 genAssignment = do
@@ -84,20 +86,26 @@ genAssignment = do
   value <- genName
   pure (varName, varName <> " = " <> show value)
 
-genImport :: Gen String
-genImport = do
-  modName <- genName
-  pure $ "import " <> modName
-
 genRecursiveImports :: Gen [(String, String)]
 genRecursiveImports = do
-  numModules               <- choose (2, 6)
-  moduleNames              <- vectorOf numModules genName
+  numModules               <- choose (3, 7)
+  rawModuleNames           <- vectorOf numModules genName
+  let removeDuplicates = foldr (\x acc -> if x `elem` acc then acc else x : acc) []
+      moduleNames      = removeDuplicates $ filter (/= "Main") rawModuleNames
   (varName, assignmentStr) <- genAssignment
   let
     assignments = fmap ( "import " <> ) (tail moduleNames) <> [assignmentStr]
     mainModule  = ("Main", "import " <> head moduleNames <> "\nmain = \\input -> (" <> varName <> ",0)")
   pure $ mainModule : zip moduleNames assignments
+
+genRecursiveImportsWithCycle :: Gen [(String, String)]
+genRecursiveImportsWithCycle = do
+  modules <- genRecursiveImports
+  let moduleNames = map fst modules
+  cycleModuleIndex <- choose (1, length modules - 1)
+  let (before, (modName, modContent) : after) = splitAt cycleModuleIndex modules
+      modContent' = modContent <> "\nimport Main"
+  pure $ before <> ((modName, modContent') : after)
 
 aux222 =
   [ ("Main", "import Abc\nmain = \\input -> (xyz, 0)")
@@ -105,6 +113,13 @@ aux222 =
   , ("Def", "import Ghi")
   , ("Ghi", "xyz = \"whattt\"")
   ]
+
+aux222' =
+  [ ("Main","import Abc\nmain = \\input -> (xyz,0)")
+  , ("Abc","import Def\nimport Main")
+  , ("Def","import Ghi")
+  , ("Ghi","import Jkl")
+  , ("Jkl","xyz = \"CdVK\"")]
 
 containsTHash :: Term2' -> Bool
 containsTHash = \case
@@ -218,6 +233,9 @@ unitTests = testGroup "Unit tests"
   , testCase "test recursive imports" $ do
       res <- runMain_ aux222 "Main"
       res @?= "whattt\ndone"
+  -- , testCase "test recursive imports with cycle" $ do
+  --     res <- runMain_ aux222' "Main"
+  --     res @?= "Cyclic imports are not allowed\ndone"
   ]
 
 tictactoe :: IO String
