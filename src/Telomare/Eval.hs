@@ -207,22 +207,6 @@ funWrap eval fun inp =
     Pair disp newState -> (g2s disp, Just newState)
     z                  -> ("runtime error, dumped:\n" <> show z, Nothing)
 
--- detectCycle :: [(String, [String])] -> Maybe (String, String)
--- detectCycle [] = Nothing
--- detectCycle [moduleName, subDeps] = Nothing
--- detectCycle ((moduleName, subDeps):(moduleName', subDeps'):rest) =
---   case moduleName' `elem` subDeps of
---     True  -> case moduleName `elem` subDeps' of
---       True  -> Just (moduleName, moduleName')
---       False -> Nothing
---     False -> detectCycle $ [(moduleName', subDeps')] <> rest
-
--- checkCyclicImports :: [(String, [String])] -> Either String ()
--- checkCyclicImports modules =
---   case detectCycle modules of
---     Just (culprit, cycleMod) -> Left $ "Module imports form a cycle:\n  module " ++ culprit ++ "\n  imports module " ++ cycleMod ++ "\nwhich imports module " ++ culprit
---     Nothing -> Right ()
-
 runMainCore :: [(String, String)] -> String -> (IExpr -> IO a) -> IO a
 runMainCore modulesStrings s e =
   let parsedModules :: [(String, Either String [Either AnnotatedUPT (String, AnnotatedUPT)])]
@@ -247,21 +231,11 @@ runMainCore modulesStrings s e =
                         joinModuleError :: (String, String) -> String
                         joinModuleError (moduleName, errorStr) = "Error in module " <> moduleName <> ":\n" <> errorStr
                     in error . unlines $ joinModuleError <$> moduleWithError
-      -- dependencies :: [(String, [String])]
-      -- dependencies =
-      --   [(moduleName, extractImports code) | (moduleName, code) <- modulesStrings]
-      --   where
-      --     extractImports :: String -> [String]
-      --     extractImports code =
-      --       [modName | line <- lines code, let wordsLine = words line, wordsLine /= [], head wordsLine == "import", let modName = wordsLine !! 1]
   in
-      -- case checkCyclicImports dependencies of
-      --   Left err -> error err
-      --   Right _  -> 
-          case compileMain <$> main2Term3 modules s of
-            Left e -> error $ concat ["failed to parse ", s, " ", e]
-            Right (Right g) -> e g
-            Right z -> error $ "compilation failed somehow, with result " <> show z
+      case compileMain <$> main2Term3 modules s of
+        Left e -> error $ concat ["failed to parse ", s, " ", e]
+        Right (Right g) -> e g
+        Right z -> error $ "compilation failed somehow, with result " <> show z
 
 runMain_ :: [(String, String)] -> String -> IO String
 runMain_ modulesStrings s = runMainCore modulesStrings s evalLoop_
