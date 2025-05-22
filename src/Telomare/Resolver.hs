@@ -512,4 +512,33 @@ resolveMain allModules mainModule = case lookup mainModule allModules of
 main2Term3 :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -- ^Modules: [(ModuleName, [Either Import (VariableName, BindedUPT)])]
            -> String -- ^Module name with main
            -> Either String Term3 -- ^Error on Left
-main2Term3 moduleBindings s = resolveMain moduleBindings s >>= process
+main2Term3 moduleBindings s = case detectCycle moduleBindings of
+  Just (module1, module2) -> 
+    Left $ "Module imports form a cycle:\n  module " 
+           <> module1 
+           <> "\n  imports module " 
+           <> module2 
+           <> "\nwhich imports module " 
+           <> module1
+  Nothing -> resolveMain moduleBindings s >>= process
+  where
+    extractModuleName :: AnnotatedUPT -- ^Import statement 
+                      -> Either String String -- ^Either module name or error
+    extractModuleName (x :< ImportUPF var) = Right var
+    extractModuleName (x :< ImportQualifiedUPF _ m) = Right m
+    extractModuleName _ = Left "Unexpected AnnotatedUPT structure"
+    getImports :: [Either AnnotatedUPT (String, AnnotatedUPT)] -> [String]
+    getImports = foldr (\x acc -> case x of
+                        Left imp -> case extractModuleName imp of
+                                     Right modName -> modName : acc
+                                     Left _        -> acc -- TODO: Handle this possible error
+                        Right _  -> acc) []
+    detectCycle :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -> Maybe (String, String)
+    detectCycle [] = Nothing
+    detectCycle [(moduleName, imports)] = Nothing
+    detectCycle ((moduleName, imports):(moduleName', imports'):modules) =
+      case moduleName' `elem` getImports imports of
+       True  -> case moduleName `elem` getImports imports' of
+                  True  -> Just (moduleName, moduleName')
+                  False -> Nothing
+       False -> detectCycle ((moduleName', imports') : modules)
