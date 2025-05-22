@@ -222,7 +222,7 @@ flattenRight = \case Right a -> a; Left _ -> error "flattenRight error: got a Le
 constructModules :: [(String, String)] -> [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
 constructModules modulesStrings =
   case parsedModulesErrors modulesStrings of
-    [] -> fmap (fmap flattenRight) (parsedModules modulesStrings)
+    []     -> fmap (fmap flattenRight) (parsedModules modulesStrings)
     errors -> error . unlines $ fmap (joinModuleError . fmap flattenLeft) errors
   where
     joinModuleError :: (String, String) -> String
