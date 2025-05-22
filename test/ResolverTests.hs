@@ -314,7 +314,6 @@ unitTests = testGroup "Unit tests"
       res @?= "whattt\ndone"
   , testCase "test recursive imports with simple cycle" $ do
       result <- try (runMain_ simpleCycle "Main") :: IO (Either SomeException String)
-      let trimEnd s = reverse (dropWhile (`elem` [' ', '\n']) (reverse s))
       case result of
           Left err -> trimEnd (removeCallStack (show err)) @?= trimEnd runsimpleCycle
           Right res -> trimEnd res @?= trimEnd runsimpleCycle
@@ -331,29 +330,50 @@ unitTests = testGroup "Unit tests"
       res @?= "whattt\ndone"
   -- TODO: Refactor with runCycleLet responses
   , testCase "test backward cycle let" $ do
-      res <- testUserDefAdHocTypes backwardCycleLet
-      res @?= "whattt\ndone"
+      result <- try ( testUserDefAdHocTypes backwardCycleLet ) :: IO (Either SomeException String)
+      case result of
+        Left err -> trimEnd (removeCallStack (show err)) @?= trimEnd runBackwardCycleLet
+        Right res -> trimEnd res @?= trimEnd runBackwardCycleLet
   , testCase "test forward cycle let" $ do
-      res <- testUserDefAdHocTypes forwardCycleLet
-      res @?= "whattt\ndone"
+      result <- try ( testUserDefAdHocTypes forwardCycleLet ) :: IO (Either SomeException String)
+      case result of
+        Left err -> trimEnd (removeCallStack (show err)) @?= trimEnd runForwardCycleLet
+        Right res -> trimEnd res @?= trimEnd runForwardCycleLet
   ]
-
-runCycleLet = undefined
 
 backwardCycleLet = unlines
   [ "import Prelude"
-  , "main = let ghi = succ abc"
+  , "main = let xyz = succ abc"
+  , "           ghi = xyz"
   , "           def = ghi"
   , "           abc = def"
   , "       in \\input -> (abc, 0)"
+  ]
+
+runBackwardCycleLet = unlines
+  [ "Cycle detected in definitions:"
+  , "      variable xyz"
+  , "      depends on variable abc"
+  , "which depends on variable def"
+  , "which depends on variable ghi"
+  , "which depends on variable xyz"
   ]
 
 forwardCycleLet = unlines
   [ "import Prelude"
   , "main = let abc = def"
   , "           def = ghi"
-  , "           ghi = succ abc"
+  , "           ghi = xyz"
+  , "           xyz = succ abc"
   , "       in \\input -> (abc, 0)"
+  ]
+
+runForwardCycleLet = unlines
+  [ "Cycle detected in definitions:"
+  , "      variable abc"
+  , "      depends on variable def"
+  , "which depends on variable ghi"
+  , "which depends on variable xyz"
   ]
 
 recursiveBackwardLet = unlines
@@ -404,7 +424,7 @@ simpleCycle =
   , ("Ghi","import Jkl")
   , ("Jkl","xyz = \"CdVK\"")]
 
-runsimpleCycle= unlines
+runsimpleCycle = unlines
   [ "failed to parse Main "
   , "Module imports form a cycle:"
   , "      module Main"
