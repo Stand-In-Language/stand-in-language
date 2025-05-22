@@ -339,10 +339,21 @@ validateVariables term =
             _      -> State.lift . Left  $ "No definition found for " <> n
         anno :< LetUPF preludeMap inner -> do
           oldPrelude <- State.get
-          let addBinding (k,v) = do
-                newTerm <- validateWithEnvironment v
-                State.modify (Map.insert k newTerm)
-          mapM_ addBinding preludeMap
+          let addBindingRecursive terms = case terms of
+                [] -> pure ()
+                (k,v):rest -> do
+                  newTerm <- validateWithEnvironment v
+                  case newTerm of
+                    Left a -> do
+                      addBindingRecursive (reverse terms)
+                    Right _ -> do
+                      State.modify (Map.insert k newTerm)
+                      addBindingRecursive rest
+          addBindingRecursive preludeMap
+          -- let addBinding (k,v) = do
+          --       newTerm <- validateWithEnvironment v
+          --       State.modify (Map.insert k newTerm)
+          -- mapM_ addBinding preludeMap
           result <- validateWithEnvironment inner
           State.put oldPrelude
           pure result
@@ -550,6 +561,8 @@ detectCycle = findCycle []
 main2Term3 :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -- ^Modules: [(ModuleName, [Either Import (VariableName, BindedUPT)])]
            -> String -- ^Module name with main
            -> Either String Term3 -- ^Error on Left
-main2Term3 moduleBindings s = case detectCycle moduleBindings of
-  Just cycleModules -> Left $ formatCycleError cycleModules
+main2Term3 moduleBindings s = case (detectCycle . reverse) moduleBindings of
+  Just cycleModules -> case detectCycle moduleBindings of
+    Just cycleModules' -> Left $ formatCycleError cycleModules'
+    Nothing            -> resolveMain moduleBindings s >>= process
   Nothing           -> resolveMain moduleBindings s >>= process
