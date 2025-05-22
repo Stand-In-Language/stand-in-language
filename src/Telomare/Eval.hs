@@ -207,35 +207,33 @@ funWrap eval fun inp =
     Pair disp newState -> (g2s disp, Just newState)
     z                  -> ("runtime error, dumped:\n" <> show z, Nothing)
 
+parsedModules :: [(String, String)] -> [(String, Either String [Either AnnotatedUPT (String, AnnotatedUPT)])]
+parsedModules = fmap (fmap parseModule)
+
+parsedModulesErrors :: [(String, String)] -> [(String, Either String [Either AnnotatedUPT (String, AnnotatedUPT)])]
+parsedModulesErrors mods = filter (\(_, parsed) -> case parsed of Left _ -> True; Right _ -> False) (parsedModules mods)
+
+flattenLeft :: Either String a -> String
+flattenLeft = \case Left a -> a; Right _ -> error "flattenLeft error: got a Right when it should be Left"
+
+flattenRight :: Either a [Either AnnotatedUPT (String, AnnotatedUPT)] -> [Either AnnotatedUPT (String, AnnotatedUPT)]
+flattenRight = \case Right a -> a; Left _ -> error "flattenRight error: got a Left when it should be Right"
+
+constructModules :: [(String, String)] -> [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
+constructModules modulesStrings =
+  case parsedModulesErrors modulesStrings of
+    [] -> fmap (fmap flattenRight) (parsedModules modulesStrings)
+    errors -> error . unlines $ fmap joinModuleError (fmap (fmap flattenLeft) errors)
+  where
+    joinModuleError :: (String, String) -> String
+    joinModuleError (moduleName, errorStr) = "Error in module " <> moduleName <> ":\n" <> errorStr
+
 runMainCore :: [(String, String)] -> String -> (IExpr -> IO a) -> IO a
 runMainCore modulesStrings s e =
-  let parsedModules :: [(String, Either String [Either AnnotatedUPT (String, AnnotatedUPT)])]
-      parsedModules = (fmap . fmap) parseModule modulesStrings
-      parsedModulesErrors :: [(String, Either String [Either AnnotatedUPT (String, AnnotatedUPT)])]
-      parsedModulesErrors = filter (\(moduleStr, parsed) -> case parsed of
-                                      Left _  -> True
-                                      Right _ -> False)
-                                   parsedModules
-      flattenLeft = \case
-        Left a -> a
-        Right a -> error "flattenLeft error: got a Right when it should be Left"
-      flattenRight = \case
-        Right a -> a
-        Left a -> error "flattenRight error: got a Left when it should be Right"
-      modules :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
-      modules =
-        case parsedModulesErrors of
-          [] -> (fmap . fmap) flattenRight parsedModules
-          errors -> let moduleWithError :: [(String, String)]
-                        moduleWithError = (fmap . fmap) flattenLeft parsedModulesErrors
-                        joinModuleError :: (String, String) -> String
-                        joinModuleError (moduleName, errorStr) = "Error in module " <> moduleName <> ":\n" <> errorStr
-                    in error . unlines $ joinModuleError <$> moduleWithError
-  in
-      case compileMain <$> main2Term3 modules s of
-        Left e -> error $ concat ["failed to parse ", s, " ", e]
-        Right (Right g) -> e g
-        Right z -> error $ "compilation failed somehow, with result " <> show z
+  case compileMain <$> main2Term3 (constructModules modulesStrings) s of
+    Left e -> error $ "failed to parse " <> s <> " " <> e
+    Right (Right g) -> e g
+    Right z -> error $ "compilation failed somehow, with result " <> show z
 
 runMain_ :: [(String, String)] -> String -> IO String
 runMain_ modulesStrings s = runMainCore modulesStrings s evalLoop_

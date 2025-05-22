@@ -60,17 +60,19 @@ qcProps = testGroup "Property tests (QuickCheck)"
         result <- runMain_ modules "Main"
         pure $ result === expectedValue
   , QC.testProperty "Cyclic imports are stopped to avoid loops" $
-      \() -> withMaxSuccess 16 . QC.idempotentIOProperty $ do
-        modules <- generate genRecursiveImportsWithCycle
-        result <- try (runMain_ modules "Main") :: IO (Either SomeException String)
-        case result of
-          --TODO: Refactor expected error message
-          Left err -> pure $ show err === "Cyclic imports are not allowed\ndone"
-          Right res -> pure $ res === "Cyclic imports are not allowed\ndone"
+  \() -> withMaxSuccess 16 . QC.idempotentIOProperty $ do
+    modules <- generate genRecursiveImportsWithCycle
+    result <- try (runMain_ modules "Main") :: IO (Either SomeException String)
+    let cycleModules = maybe [] id (detectCycle (constructModules modules))
+        unwrappedExpectedError = formatCycleError cycleModules
+        expectedError = "failed to parse Main " <> unwrappedExpectedError
+    case result of
+      Left err  -> pure $ trimEnd (removeCallStack (show err)) === trimEnd expectedError
+      Right res -> pure $ res === trimEnd expectedError
   ]
 
-trimEnd :: String -> String
-trimEnd s = reverse (dropWhile (`elem` [' ', '\n']) (reverse s))
+removeCallStack :: String -> String
+removeCallStack = unlines . takeWhile (/= "CallStack (from HasCallStack):") . lines
 
 recursiveImportsResult :: [(String, String)] -> String
 recursiveImportsResult = init . tail . drop 2 . dropWhile (/= '=') . snd . last
@@ -230,12 +232,12 @@ unitTests = testGroup "Unit tests"
       result <- try (runMain_ simpleCycle "Main") :: IO (Either SomeException String)
       let trimEnd s = reverse (dropWhile (`elem` [' ', '\n']) (reverse s))
       case result of
-          Left err -> trimEnd (show err) @?= trimEnd runsimpleCycle
+          Left err -> trimEnd (removeCallStack (show err)) @?= trimEnd runsimpleCycle
           Right res -> trimEnd res @?= trimEnd runsimpleCycle
   , testCase "test recursive imports with full cycle" $ do
       result <- try (runMain_ fullCycle "Main") :: IO (Either SomeException String)
       case result of
-          Left err -> trimEnd (show err) @?= trimEnd runfullCycle
+          Left err -> trimEnd (removeCallStack (show err)) @?= trimEnd runfullCycle
           Right res -> trimEnd res @?= trimEnd runfullCycle
   ]
 
@@ -262,8 +264,6 @@ runfullCycle = unlines
   , "which imports module Ghi"
   , "which imports module Jkl"
   , "which imports module Main"
-  , "CallStack (from HasCallStack):"
-  , "  error, called at src/Telomare/Eval.hs:236:19 in telomare-0.1.0.0-inplace:Telomare.Eval"
   ]
 
 simpleCycle =
@@ -279,8 +279,6 @@ runsimpleCycle= unlines
   , "      module Main"
   , "      imports module Abc"
   , "which imports module Main"
-  , "CallStack (from HasCallStack):"
-  , "  error, called at src/Telomare/Eval.hs:236:19 in telomare-0.1.0.0-inplace:Telomare.Eval"
   ]
 
 tictactoe :: IO String
