@@ -234,15 +234,19 @@ unitTests = testGroup "Unit tests"
       res <- runMain_ aux222 "Main"
       res @?= "whattt\ndone"
   , testCase "test recursive imports with cycle" $ do
-      res <- runMain_ aux222' "Main"
-      res @?= runaux222'
+      res <- runExceptT $ runMain_ aux222' "Main" `catchError` \err -> pure (show err)
+      case res of
+          Left err -> err @?= runaux222'
+          Right _ -> assertFailure "Expected an exception but got a result"
   ]
 
 runaux222' = unlines
-  [ "Module imports form a cycle:"
-  , "  module Abc"
-  , "  imports module Main"
-  , "which imports module Abc"
+  [ "Exception: Module imports form a cycle:"
+  , "  module Main"
+  , "  imports module Abc"
+  , "which imports module Main"
+  , "CallStack (from HasCallStack):"
+  , "  error, called at src/Telomare/Eval.hs:259:21 in telomare-0.1.0.0-inplace:Telomare.Eval"
   ]
 
 tictactoe :: IO String

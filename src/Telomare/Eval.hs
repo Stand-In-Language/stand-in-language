@@ -14,7 +14,7 @@ import Data.Function (fix)
 import Data.Functor.Foldable (Base, para)
 import Data.Map (Map)
 import qualified Data.Map as Map
-import Debug.Trace (trace)
+import Debug.Trace (trace, traceShowId, traceShow)
 import PrettyPrint (prettyPrint)
 import System.IO (hGetContents)
 import qualified System.IO.Strict as Strict
@@ -208,23 +208,20 @@ funWrap eval fun inp =
     z                  -> ("runtime error, dumped:\n" <> show z, Nothing)
 
 detectCycle :: [(String, [String])] -> Maybe (String, String)
-detectCycle modules = go [] [] (map fst modules)
-  where
-    go _ _ [] = Nothing
-    go cyclePath visited (m:ms)
-      | m `elem` visited =
-          let culprit = head [modName | (modName, deps) <- modules, m `elem` deps]
-          in Just (culprit, m)
-      | otherwise =
-          case lookup m modules of
-            Just subDeps -> go (m : cyclePath) (m : visited) (subDeps ++ ms)
-            Nothing      -> go cyclePath visited ms
+detectCycle [] = Nothing
+detectCycle [moduleName, subDeps] = Nothing
+detectCycle ((moduleName, subDeps):(moduleName', subDeps'):rest) =
+  case moduleName' `elem` subDeps of
+    True  -> case moduleName `elem` subDeps' of
+      True  -> Just (moduleName, moduleName')
+      False -> Nothing
+    False -> detectCycle $ [(moduleName', subDeps')] <> rest
 
 checkCyclicImports :: [(String, [String])] -> Either String ()
 checkCyclicImports modules =
   case detectCycle modules of
     Just (culprit, cycleMod) -> Left $ "Module imports form a cycle:\n  module " ++ culprit ++ "\n  imports module " ++ cycleMod ++ "\nwhich imports module " ++ culprit
-    Nothing -> pure ()
+    Nothing -> Right ()
 
 runMainCore :: [(String, String)] -> String -> (IExpr -> IO a) -> IO a
 runMainCore modulesStrings s e =
@@ -258,11 +255,6 @@ runMainCore modulesStrings s e =
           extractImports code =
             [modName | line <- lines code, let wordsLine = words line, wordsLine /= [], head wordsLine == "import", let modName = wordsLine !! 1]
   in
-    -- do
-    --   putStrLn . show $ lookup "Prelude" modules
-    --   putStrLn "--------------------------------------------------"
-    --   putStrLn "--------------------------------------------------"
-    --   putStrLn "--------------------------------------------------"
       case checkCyclicImports dependencies of
         Left err -> error err
         Right _  -> case compileMain <$> main2Term3 modules s of
