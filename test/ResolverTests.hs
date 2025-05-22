@@ -63,7 +63,7 @@ qcProps = testGroup "Property tests (QuickCheck)"
   \() -> withMaxSuccess 16 . QC.idempotentIOProperty $ do
     modules <- generate genRecursiveImportsWithCycle
     result <- try (runMain_ modules "Main") :: IO (Either SomeException String)
-    let cycleModules = maybe [] id (detectCycle (constructModules modules))
+    let cycleModules = concat (detectCycle (constructModules modules))
         unwrappedExpectedError = formatCycleError cycleModules
         expectedError = "failed to parse Main " <> unwrappedExpectedError
     case result of

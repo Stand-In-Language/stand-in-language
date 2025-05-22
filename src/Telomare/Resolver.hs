@@ -515,10 +515,10 @@ trimEnd s = reverse (dropWhile (`elem` [' ', '\n']) (reverse s))
 formatCycleError :: [String] -> String
 formatCycleError (m1:m2:rest) =
   trimEnd . unlines $
-    ["\nModule imports form a cycle:"
-    , "      module " <> m1
-    , "      imports module " <> m2]
-    ++ concatMap (\mod -> ["which imports module " <> mod]) rest
+    (["\nModule imports form a cycle:"
+     , "      module " <> m1
+     , "      imports module " <> m2]
+     <> concatMap (\mod -> ["which imports module " <> mod]) rest)
 formatCycleError _ = "Error: Cycle formatting failed"
 
 extractModuleName :: AnnotatedUPT -- ^Import statement
@@ -535,7 +535,7 @@ getImports = foldr (\x acc -> case x of
                     Right _  -> acc) []
 
 detectCycle :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -> Maybe [String]
-detectCycle moduleBindings = findCycle [] moduleBindings
+detectCycle = findCycle []
   where
     findCycle :: [String] -> [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -> Maybe [String]
     findCycle _ [] = Nothing

@@ -223,7 +223,7 @@ constructModules :: [(String, String)] -> [(String, [Either AnnotatedUPT (String
 constructModules modulesStrings =
   case parsedModulesErrors modulesStrings of
     [] -> fmap (fmap flattenRight) (parsedModules modulesStrings)
-    errors -> error . unlines $ fmap joinModuleError (fmap (fmap flattenLeft) errors)
+    errors -> error . unlines $ fmap (joinModuleError . fmap flattenLeft) errors
   where
     joinModuleError :: (String, String) -> String
     joinModuleError (moduleName, errorStr) = "Error in module " <> moduleName <> ":\n" <> errorStr

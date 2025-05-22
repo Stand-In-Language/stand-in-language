@@ -164,7 +164,7 @@ nodify = removeExtraNumbers . fmap go . allNodes 0 where
 loadModules :: [String] -> IO [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
 loadModules filenames = do
   filesStrings :: [String] <- mapM Strict.readFile filenames
-  case sequence $ parseModule <$> filesStrings of
+  case mapM parseModule filesStrings of
     Right p -> pure $ zip filesStrings p
     Left pe -> error pe
 
