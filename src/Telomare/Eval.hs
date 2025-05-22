@@ -14,7 +14,7 @@ import Data.Function (fix)
 import Data.Functor.Foldable (Base, para)
 import Data.Map (Map)
 import qualified Data.Map as Map
-import Debug.Trace (trace, traceShowId, traceShow)
+import Debug.Trace (trace, traceShow, traceShowId)
 import PrettyPrint (prettyPrint)
 import System.IO (hGetContents)
 import qualified System.IO.Strict as Strict

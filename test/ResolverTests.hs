@@ -9,9 +9,9 @@ module Main where
 import CaseTests (qcPropsCase, unitTestsCase)
 import Common
 import Control.Comonad.Cofree (Cofree ((:<)))
+import Control.Exception (SomeException, try)
 import Control.Monad.Except (ExceptT, MonadError, catchError, runExceptT,
                              throwError)
-import Control.Exception (try, SomeException)
 import Data.Algorithm.Diff (getGroupedDiff)
 import Data.Algorithm.DiffOutput (ppDiff)
 import Debug.Trace (trace, traceShow, traceShowId)

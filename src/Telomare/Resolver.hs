@@ -552,4 +552,4 @@ main2Term3 :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -- ^Modul
            -> Either String Term3 -- ^Error on Left
 main2Term3 moduleBindings s = case detectCycle moduleBindings of
   Just cycleModules -> Left $ formatCycleError cycleModules
-  Nothing -> resolveMain moduleBindings s >>= process
+  Nothing           -> resolveMain moduleBindings s >>= process
