@@ -287,7 +287,7 @@ tictactoe :: IO String
 tictactoe = do
   telStr <- Strict.readFile "tictactoe.tel"
   preludeStr <- Strict.readFile "Prelude.tel"
-  runMainWithInput ["1", "9", "2", "8", "3"] [("Prelude", preludeStr), ("tictactoe", telStr)] "tictactoe"
+  runMainWithInput ["1", "9", "2", "8", "3"] [("tictactoe", telStr), ("Prelude", preludeStr)] "tictactoe"
 
 fullRunTicTacToeString = init . unlines $
   [ "1|2|3"
@@ -374,7 +374,7 @@ closedLambdaPair = TLam (Closed "x") (TLam (Open "y") (TPair (TVar "x") (TVar "y
 testUserDefAdHocTypes :: String -> IO String
 testUserDefAdHocTypes input = do
   preludeString <- Strict.readFile "Prelude.tel"
-  runMain_ [("Prelude", preludeString), ("DummyModule", input)] "DummyModule"
+  runMain_ [("DummyModule", input), ("Prelude", preludeString)] "DummyModule"
 
 userDefAdHocTypesSuccess = unlines
   [ "import Prelude"
