@@ -233,9 +233,16 @@ unitTests = testGroup "Unit tests"
   , testCase "test recursive imports" $ do
       res <- runMain_ aux222 "Main"
       res @?= "whattt\ndone"
-  -- , testCase "test recursive imports with cycle" $ do
-  --     res <- runMain_ aux222' "Main"
-  --     res @?= "Cyclic imports are not allowed\ndone"
+  , testCase "test recursive imports with cycle" $ do
+      res <- runMain_ aux222' "Main"
+      res @?= runaux222'
+  ]
+
+runaux222' = unlines
+  [ "Module imports form a cycle:"
+  , "  module Abc"
+  , "  imports module Main"
+  , "which imports module Abc"
   ]
 
 tictactoe :: IO String
