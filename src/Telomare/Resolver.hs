@@ -9,7 +9,7 @@ import Control.Comonad.Cofree (Cofree (..))
 import Control.Comonad.Trans.Cofree (CofreeF)
 import qualified Control.Comonad.Trans.Cofree as C
 import Control.Lens.Combinators (transform)
-import Control.Monad ((<=<))
+import Control.Monad ((<=<), forM_, forM)
 import qualified Control.Monad.State as State
 import Crypto.Hash (Digest, SHA256, hash)
 import Data.Bifunctor (Bifunctor (first), bimap)
@@ -19,7 +19,7 @@ import qualified Data.ByteString as BS
 import Data.Char (ord)
 import qualified Data.Foldable as F
 import Data.Functor.Foldable (Base, Corecursive (ana, apo), Recursive (cata))
-import Data.List (delete, elem, elemIndex, zip4)
+import Data.List (delete, elem, elemIndex, zip4, find, intercalate)
 import qualified Data.Map as Map
 import Data.Map.Strict (Map, fromList, keys)
 import Data.Set (Set, (\\))
@@ -319,6 +319,35 @@ makeLambda str term1@(anno :< _) =
   where v = varsTerm1 term1
         unbound = v \\ Set.singleton str
 
+-- Topological sort with cycle detection
+topologicalSort :: [String] -> Map String (Set String) -> Either [String] [String]
+topologicalSort names deps = go [] Set.empty names
+  where
+    go :: [String] -> Set String -> [String] -> Either [String] [String]
+    go result _ [] = Right (reverse result)
+    go result inProgress remaining =
+      case find (canProcess inProgress) remaining of
+        Nothing ->
+          -- Must be a cycle - find it for error message
+          let findCycleFrom start = go' start Set.empty
+                where go' curr visited
+                        | curr `Set.member` visited = [curr]
+                        | otherwise =
+                            case find (`elem` remaining) (Set.toList $ Map.findWithDefault Set.empty curr deps) of
+                              Nothing -> []
+                              Just next -> curr : go' next (Set.insert curr visited)
+          in Left (findCycleFrom (head remaining))
+        Just name ->
+          let inProgress' = inProgress `Set.union`
+                           Map.findWithDefault Set.empty name deps
+          in go (name : result) inProgress' (delete name remaining)
+      where
+        canProcess inProgress name =
+          all (`notElem` remaining) (Set.toList $ Map.findWithDefault Set.empty name deps)
+
+        delete x = filter (/= x)
+
+
 -- |Transformation from `AnnotatedUPT` to `Term1` validating and inlining `VarUP`s
 validateVariables :: AnnotatedUPT
                   -> Either String Term1
@@ -326,6 +355,54 @@ validateVariables term =
   let validateWithEnvironment :: AnnotatedUPT
                               -> State.StateT (Map String Term1) (Either String) Term1
       validateWithEnvironment = \case
+        anno :< LetUPF preludeMap inner -> do
+          oldPrelude <- State.get
+
+          -- Build dependency graph
+          let dependencies :: Map String (Set String)
+              dependencies = Map.fromList
+                [(name, Set.fromList $ getDirectDeps def) | (name, def) <- preludeMap]
+
+              -- Get direct variable dependencies (only those defined in this let block)
+              getDirectDeps :: AnnotatedUPT -> [String]
+              getDirectDeps (_ :< VarUPF n)
+                | any ((== n) . fst) preludeMap = [n]  -- Only if it's defined in this let
+                | otherwise = []
+              getDirectDeps (_ :< LamUPF _ body) = getDirectDeps body
+              getDirectDeps (_ :< ITEUPF i t e) = getDirectDeps i <> getDirectDeps t <> getDirectDeps e
+              getDirectDeps (_ :< PairUPF a b) = getDirectDeps a <> getDirectDeps b
+              getDirectDeps (_ :< ListUPF l) = concatMap getDirectDeps l
+              getDirectDeps (_ :< AppUPF f x) = getDirectDeps f <> getDirectDeps x
+              getDirectDeps (_ :< UnsizedRecursionUPF t r b) = getDirectDeps t <> getDirectDeps r <> getDirectDeps b
+              getDirectDeps (_ :< LeftUPF x) = getDirectDeps x
+              getDirectDeps (_ :< RightUPF x) = getDirectDeps x
+              getDirectDeps (_ :< TraceUPF x) = getDirectDeps x
+              getDirectDeps (_ :< CheckUPF cf x) = getDirectDeps cf <> getDirectDeps x
+              getDirectDeps (_ :< HashUPF x) = getDirectDeps x
+              getDirectDeps _ = []
+
+          -- Topological sort with cycle detection
+          case topologicalSort (Map.keys dependencies) dependencies of
+            Left cycle -> State.lift $ Left $ "Recursion not allowed: circular dependency "
+                                            <> intercalate " -> " cycle
+            Right sortedNames -> do
+              -- Process bindings in dependency order
+              let sortedBindings = [(name, def) | name <- sortedNames
+                                                , (name', def) <- preludeMap
+                                                , name == name'
+                                                ]
+
+              -- Now process in the sorted order - each var is defined before use
+              forM_ sortedBindings $ \(name, def) -> do
+                validatedDef <- validateWithEnvironment def
+                State.modify (Map.insert name validatedDef)
+
+              result <- validateWithEnvironment inner
+              State.put oldPrelude
+              pure result
+
+
+
         anno :< LamUPF v x -> do
           oldState <- State.get
           State.modify (Map.insert v (anno :< TVarF v))
@@ -337,15 +414,15 @@ validateVariables term =
           case Map.lookup n definitionsMap of
             Just v -> pure v
             _      -> State.lift . Left  $ "No definition found for " <> n
-        anno :< LetUPF preludeMap inner -> do
-          oldPrelude <- State.get
-          let addBinding (k,v) = do
-                newTerm <- validateWithEnvironment v
-                State.modify (Map.insert k newTerm)
-          mapM_ addBinding preludeMap
-          result <- validateWithEnvironment inner
-          State.put oldPrelude
-          pure result
+        -- anno :< LetUPF preludeMap inner -> do
+        --   oldPrelude <- State.get
+        --   let addBinding (k,v) = do
+        --         newTerm <- validateWithEnvironment v
+        --         State.modify (Map.insert k newTerm)
+        --   mapM_ addBinding preludeMap
+        --   result <- validateWithEnvironment inner
+        --   State.put oldPrelude
+        --   pure result
         anno :< ITEUPF i t e -> (\a b c -> anno :< TITEF a b c) <$> validateWithEnvironment i
                                                                 <*> validateWithEnvironment t
                                                                 <*> validateWithEnvironment e

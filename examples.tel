@@ -1,7 +1,13 @@
 -- File for small illustrative telomare programs and for testing
 
 -- Hello World example.
-main = \input -> ("Hello, World!", 0)
+-- main = \input -> ("Hello, World!", 0)
+
+main =
+  let
+    a = b
+    b = a
+  in \input -> (a, 0)
 
 -- -- refinement fail
 -- main : (\x -> if x then "fail" else 0) = 1
