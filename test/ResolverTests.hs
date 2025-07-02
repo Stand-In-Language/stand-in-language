@@ -9,10 +9,12 @@ module Main where
 import CaseTests (qcPropsCase, unitTestsCase)
 import Common
 import Control.Comonad.Cofree (Cofree ((:<)))
+import Control.Exception (SomeException, try)
 import Control.Monad.Except (ExceptT, MonadError, catchError, runExceptT,
                              throwError)
 import Data.Algorithm.Diff (getGroupedDiff)
 import Data.Algorithm.DiffOutput (ppDiff)
+import Data.List (sortOn)
 import Debug.Trace (trace, traceShow, traceShowId)
 import System.IO
 import qualified System.IO.Strict as Strict
@@ -44,7 +46,29 @@ tests = testGroup "Tests" [unitTests, qcProps, unitTestsCase, qcPropsCase]
 ---------------------
 
 qcProps = testGroup "Property tests (QuickCheck)"
-  [ QC.testProperty "Arbitrary UnprocessedParsedTerm to test hash uniqueness of HashUP's" $
+  [ QC.testProperty "Check recursive let work backward" $
+      \() -> withMaxSuccess 16 . QC.idempotentIOProperty $ do
+        assignments <- generate genRecursiveLet
+        let dummymodule = wrapRecursiveBackwardLet assignments
+            expectedValue = recursiveLetResult assignments <> "\ndone"
+        result <- testUserDefAdHocTypes dummymodule
+        pure $ result === expectedValue
+  , QC.testProperty "Check recursive let work forward" $
+      \() -> withMaxSuccess 16 . QC.idempotentIOProperty $ do
+        assignments <- generate genRecursiveLet
+        let dummymodule = wrapRecursiveForwardLet assignments
+            expectedValue = recursiveLetResult assignments <> "\ndone"
+        result <- testUserDefAdHocTypes dummymodule
+        pure $ result === expectedValue
+  , QC.testProperty "Check recursive let work" $
+      \() -> withMaxSuccess 16 . QC.idempotentIOProperty $ do
+        assignments <- generate genRecursiveLet
+        shuffleInt  <- generate genInt
+        let dummymodule   = wrapRecursiveRandomLet assignments shuffleInt
+            expectedValue = recursiveLetResult assignments <> "\ndone"
+        result <- testUserDefAdHocTypes dummymodule
+        pure $ result === expectedValue
+  , QC.testProperty "Arbitrary UnprocessedParsedTerm to test hash uniqueness of HashUP's" $
       \x' -> withMaxSuccess 16 $
         let x = forget x'
         in containsTHash x QC.==> checkAllHashes . forget . generateAllHashes $ x'
@@ -60,8 +84,63 @@ qcProps = testGroup "Property tests (QuickCheck)"
         pure $ result === expectedValue
   ]
 
+recursiveResult :: String -> String
+recursiveResult = init . tail . drop 2 . dropWhile (/= '=')
+
+genInt :: Gen [Int]
+genInt = vectorOf 10 (choose (0,100))
+
+genRecursiveLet :: Gen [String]
+genRecursiveLet = do
+  numLines <- choose (4, 8)
+  rawVarNames <- vectorOf numLines genName
+  lastValue <- genName
+  let varNames = (fmap ( filter (/= '.') ) . removeDuplicates) $
+                 filter (`notElem` ["Main", "input"]) rawVarNames
+      assignments = fmap (\i -> varNames !! i <> " = " <> varNames !! (i + 1)) [0 .. length varNames - 2]
+      lastVar = last varNames
+      lastLine = lastVar <> " = " <> show lastValue
+  pure (assignments <> [lastLine])
+
 recursiveImportsResult :: [(String, String)] -> String
 recursiveImportsResult = init . tail . drop 2 . dropWhile (/= '=') . snd . last
+
+linewrap :: String -> String -> String -> String
+linewrap firstAssignment letBlock firstVar =
+  unlines
+    [ "import Prelude"
+    , "main = let " <> firstAssignment
+    , letBlock <> "       in \\input -> (" <> firstVar <> ", 0)"
+    ]
+
+wrapRecursiveForwardLet :: [String] -> String
+wrapRecursiveForwardLet assignments = do
+  let firstVar = takeWhile (/= ' ') (head assignments)
+      firstAssignment = head assignments
+      letBlock = unlines $ fmap ("           " <>) (tail assignments)
+  linewrap firstAssignment letBlock firstVar
+
+wrapRecursiveBackwardLet :: [String] -> String
+wrapRecursiveBackwardLet assignments = do
+  let firstVar = takeWhile (/= ' ') (head assignments)
+      firstAssignment = last assignments
+      letBlock = unlines $ fmap ("           " <>) ((tail . reverse) assignments)
+  linewrap firstAssignment letBlock firstVar
+
+wrapRecursiveRandomLet :: [String] -> [Int] -> String
+wrapRecursiveRandomLet assignments shuffleInt = do
+  let firstVar           = takeWhile (/= ' ') (head assignments)
+      shuffleAssignments = snd <$> sortOn fst (zip shuffleInt assignments)
+      firstAssignment    = head shuffleAssignments
+      letBlock           = unlines $ fmap ("           " <>) (tail shuffleAssignments)
+  linewrap firstAssignment letBlock firstVar
+
+recursiveLetResult :: [String] -> String
+recursiveLetResult = recursiveResult . last
+
+removeDuplicates :: Eq a => [a] -> [a]
+removeDuplicates = foldr (\x acc -> if x `elem` acc then acc else x : acc) []
+
 
 -- Variable and Import str generator
 genName :: Gen String
@@ -176,8 +255,32 @@ diffTerm2 = \case
 
 unitTests :: TestTree
 unitTests = testGroup "Unit tests"
-  [
-    testCase "different values get different hashes" $ do
+  [ testCase "test recursive backward let" $ do
+      let recursiveBackwardLet = wrapRecursiveBackwardLet recursiveLet
+      res <- testUserDefAdHocTypes recursiveBackwardLet
+      res @?= "whattt\ndone"
+  , testCase "test recursive forward let" $ do
+      let recursiveForwardLet = wrapRecursiveForwardLet recursiveLet
+      res <- testUserDefAdHocTypes recursiveForwardLet
+      res @?= "whattt\ndone"
+  , testCase "test recursive let" $ do
+      shuffleInt <- generate genInt
+      let recursiveRandomLet = wrapRecursiveRandomLet recursiveLet shuffleInt
+      res <- testUserDefAdHocTypes recursiveRandomLet
+      res @?= "whattt\ndone"
+  , testCase "test backward cycle let" $ do
+      let backwardCycleLet = wrapRecursiveBackwardLet cycleLet
+      result <- try ( testUserDefAdHocTypes backwardCycleLet ) :: IO (Either SomeException String)
+      case result of
+        Left err -> trimEnd (removeCallStack (show err)) @?= trimEnd runBackwardCycleLet
+        Right res -> trimEnd res @?= trimEnd runBackwardCycleLet
+  , testCase "test forward cycle let" $ do
+      let forwardCycleLet = wrapRecursiveForwardLet cycleLet
+      result <- try ( testUserDefAdHocTypes forwardCycleLet ) :: IO (Either SomeException String)
+      case result of
+        Left err -> trimEnd (removeCallStack (show err)) @?= trimEnd runForwardCycleLet
+        Right res -> trimEnd res @?= trimEnd runForwardCycleLet
+  , testCase "different values get different hashes" $ do
       let res1 = generateAllHashes <$> runTelomareParser2Term2 parseLet hashtest0
           res2 = generateAllHashes <$> runTelomareParser2Term2 parseLet hashtest1
       (res1 == res2) `compare` False @?= EQ
@@ -218,6 +321,32 @@ unitTests = testGroup "Unit tests"
   , testCase "test recursive imports" $ do
       res <- runMain_ aux222 "Main"
       res @?= "whattt\ndone"
+  ]
+
+runBackwardCycleLet = "failed to parse DummyModule Recursion not allowed: circular dependency xyz -> abc -> def -> ghi -> jkl -> xyz"
+
+runForwardCycleLet = "failed to parse DummyModule Recursion not allowed: circular dependency abc -> def -> ghi -> jkl -> xyz -> abc"
+
+removeCallStack :: String -> String
+removeCallStack = unlines . takeWhile (/= "CallStack (from HasCallStack):") . lines
+
+trimEnd :: String -> String
+trimEnd s = reverse (dropWhile (`elem` [' ', '\n']) (reverse s))
+
+recursiveLet =
+  [ "abc = def"
+  , "def = ghi"
+  , "ghi = jkl"
+  , "jkl = xyz"
+  , "xyz = \"whattt\""
+  ]
+
+cycleLet =
+  [ "abc = def"
+  , "def = ghi"
+  , "ghi = jkl"
+  , "jkl = xyz"
+  , "xyz = concat [abc, \"hola\"]"
   ]
 
 tictactoe :: IO String
