@@ -319,34 +319,6 @@ makeLambda str term1@(anno :< _) =
   where v = varsTerm1 term1
         unbound = v \\ Set.singleton str
 
--- Topological sort with cycle detection
-topologicalSort :: [String] -> Map String (Set String) -> Either [String] [String]
-topologicalSort names deps = go [] Set.empty names
-  where
-    go :: [String] -> Set String -> [String] -> Either [String] [String]
-    go result _ [] = Right (reverse result)
-    go result inProgress remaining =
-      case find (canProcess inProgress) remaining of
-        Nothing ->
-          -- Must be a cycle - find it for error message
-          let findCycleFrom start = go' start Set.empty
-                where go' curr visited
-                        | curr `Set.member` visited = [curr]
-                        | otherwise =
-                            case find (`elem` remaining) (Set.toList $ Map.findWithDefault Set.empty curr deps) of
-                              Nothing -> []
-                              Just next -> curr : go' next (Set.insert curr visited)
-          in Left (findCycleFrom (head remaining))
-        Just name ->
-          let inProgress' = inProgress `Set.union`
-                           Map.findWithDefault Set.empty name deps
-          in go (name : result) inProgress' (delete name remaining)
-      where
-        canProcess inProgress name =
-          all (`notElem` remaining) (Set.toList $ Map.findWithDefault Set.empty name deps)
-
-        delete x = filter (/= x)
-
 
 -- |Transformation from `AnnotatedUPT` to `Term1` validating and inlining `VarUP`s
 validateVariables :: AnnotatedUPT
@@ -365,44 +337,76 @@ validateVariables term =
 
               -- Get direct variable dependencies (only those defined in this let block)
               getDirectDeps :: AnnotatedUPT -> [String]
-              getDirectDeps (_ :< VarUPF n)
-                | any ((== n) . fst) preludeMap = [n]  -- Only if it's defined in this let
-                | otherwise = []
-              getDirectDeps (_ :< LamUPF _ body) = getDirectDeps body
-              getDirectDeps (_ :< ITEUPF i t e) = getDirectDeps i <> getDirectDeps t <> getDirectDeps e
-              getDirectDeps (_ :< PairUPF a b) = getDirectDeps a <> getDirectDeps b
-              getDirectDeps (_ :< ListUPF l) = concatMap getDirectDeps l
-              getDirectDeps (_ :< AppUPF f x) = getDirectDeps f <> getDirectDeps x
-              getDirectDeps (_ :< UnsizedRecursionUPF t r b) = getDirectDeps t <> getDirectDeps r <> getDirectDeps b
-              getDirectDeps (_ :< LeftUPF x) = getDirectDeps x
-              getDirectDeps (_ :< RightUPF x) = getDirectDeps x
-              getDirectDeps (_ :< TraceUPF x) = getDirectDeps x
-              getDirectDeps (_ :< CheckUPF cf x) = getDirectDeps cf <> getDirectDeps x
-              getDirectDeps (_ :< HashUPF x) = getDirectDeps x
-              getDirectDeps _ = []
+              getDirectDeps = cata alg where
+                alg :: CofreeF UnprocessedParsedTermF LocTag [String] -> [String]
+                alg = \case
+                    (_ C.:< VarUPF n) -> [n | any ((== n) . fst) preludeMap]
+                    (_ C.:< LamUPF _ body) -> body
+                    (_ C.:< ITEUPF i t e) -> i <> t <> e
+                    (_ C.:< PairUPF a b) -> a <> b
+                    (_ C.:< ListUPF l) -> concat l
+                    (_ C.:< AppUPF f x) -> f <> x
+                    (_ C.:< UnsizedRecursionUPF t r b) -> t <> r <> b
+                    (_ C.:< LeftUPF x) -> x
+                    (_ C.:< RightUPF x) -> x
+                    (_ C.:< TraceUPF x) -> x
+                    (_ C.:< CheckUPF cf x) -> cf <> x
+                    (_ C.:< HashUPF x) -> x
+                    _ -> []
 
-          -- Topological sort with cycle detection
-          case topologicalSort (Map.keys dependencies) dependencies of
-            Left cycle -> State.lift $ Left $ "Recursion not allowed: circular dependency "
-                                            <> intercalate " -> " cycle
-            Right sortedNames -> do
-              -- Process bindings in dependency order
-              let sortedBindings = [(name, def) | name <- sortedNames
-                                                , (name', def) <- preludeMap
-                                                , name == name'
-                                                ]
+          -- Check if original order works (no forward references)
+          let originalOrder = fmap fst preludeMap
+              hasForwardRef = any (\(i, name) ->
+                let deps = Map.findWithDefault Set.empty name dependencies
+                    laterNames = Set.fromList $ drop (i + 1) originalOrder
+                in not . Set.null $ deps `Set.intersection` laterNames
+                ) (zip [0..] originalOrder)
+              -- Topological sort with cycle detection
+              topologicalSort :: [String] -> Map String (Set String) -> Either [String] [String]
+              topologicalSort names deps = go [] Set.empty names
+                where
+                  go :: [String] -> Set String -> [String] -> Either [String] [String]
+                  go result _ [] = Right (reverse result)
+                  go result inProgress remaining =
+                    case find (canProcess remaining inProgress) remaining of
+                      Nothing ->
+                        -- Must be a cycle - find it for error message
+                        let findCycleFrom start = go' start Set.empty
+                              where go' curr visited
+                                      | curr `Set.member` visited = [curr]
+                                      | otherwise =
+                                          case find (`elem` remaining) (Set.toList $ Map.findWithDefault Set.empty curr deps) of
+                                            Nothing -> []
+                                            Just next -> curr : go' next (Set.insert curr visited)
+                        in Left (findCycleFrom (head remaining))
+                      Just name ->
+                        let inProgress' = inProgress `Set.union`
+                                         Map.findWithDefault Set.empty name deps
+                        in go (name : result) inProgress' (delete name remaining)
 
-              -- Now process in the sorted order - each var is defined before use
-              forM_ sortedBindings $ \(name, def) -> do
-                validatedDef <- validateWithEnvironment def
-                State.modify (Map.insert name validatedDef)
+                  canProcess rn inProgress name =
+                    all (`notElem` rn) (Set.toList $ Map.findWithDefault Set.empty name deps)
 
-              result <- validateWithEnvironment inner
-              State.put oldPrelude
-              pure result
+                  delete x = filter (/= x)
 
+          -- Only reorder if necessary
+          sortedBindings <- if hasForwardRef
+            then case topologicalSort originalOrder dependencies of
+              Left cycle -> State.lift . Left $ "Recursion not allowed: circular dependency "
+                                                  <> intercalate " -> " cycle
+              Right sortedNames ->
+                pure [(name, def) | name <- sortedNames,
+                      (name', def) <- preludeMap, name == name']
+            else pure preludeMap  -- Keep original order
 
+          -- Process bindings in order
+          forM_ sortedBindings $ \(name, def) -> do
+            validatedDef <- validateWithEnvironment def
+            State.modify (Map.insert name validatedDef)
 
+          result <- validateWithEnvironment inner
+          State.put oldPrelude
+          pure result
         anno :< LamUPF v x -> do
           oldState <- State.get
           State.modify (Map.insert v (anno :< TVarF v))
@@ -414,15 +418,7 @@ validateVariables term =
           case Map.lookup n definitionsMap of
             Just v -> pure v
             _      -> State.lift . Left  $ "No definition found for " <> n
-        -- anno :< LetUPF preludeMap inner -> do
-        --   oldPrelude <- State.get
-        --   let addBinding (k,v) = do
-        --         newTerm <- validateWithEnvironment v
-        --         State.modify (Map.insert k newTerm)
-        --   mapM_ addBinding preludeMap
-        --   result <- validateWithEnvironment inner
-        --   State.put oldPrelude
-        --   pure result
+
         anno :< ITEUPF i t e -> (\a b c -> anno :< TITEF a b c) <$> validateWithEnvironment i
                                                                 <*> validateWithEnvironment t
                                                                 <*> validateWithEnvironment e

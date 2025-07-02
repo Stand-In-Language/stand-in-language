@@ -6,7 +6,7 @@
 main =
   let
     a = b
-    b = a
+    b = "hello"
   in \input -> (a, 0)
 
 -- -- refinement fail
