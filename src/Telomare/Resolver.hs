@@ -9,7 +9,7 @@ import Control.Comonad.Cofree (Cofree (..))
 import Control.Comonad.Trans.Cofree (CofreeF)
 import qualified Control.Comonad.Trans.Cofree as C
 import Control.Lens.Combinators (transform)
-import Control.Monad ((<=<), forM_, forM)
+import Control.Monad (forM, forM_, (<=<))
 import qualified Control.Monad.State as State
 import Crypto.Hash (Digest, SHA256, hash)
 import Data.Bifunctor (Bifunctor (first), bimap)
@@ -19,7 +19,7 @@ import qualified Data.ByteString as BS
 import Data.Char (ord)
 import qualified Data.Foldable as F
 import Data.Functor.Foldable (Base, Corecursive (ana, apo), Recursive (cata))
-import Data.List (delete, elem, elemIndex, zip4, find, intercalate)
+import Data.List (delete, elem, elemIndex, find, intercalate, zip4)
 import qualified Data.Map as Map
 import Data.Map.Strict (Map, fromList, keys)
 import Data.Set (Set, (\\))
