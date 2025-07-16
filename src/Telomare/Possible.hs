@@ -151,6 +151,10 @@ class UnsizedBase g where
   embedU :: UnsizedRecursionF x -> g x
   extractU :: g x -> Maybe (UnsizedRecursionF x)
 
+class DeferredEvalBase g where
+  embedD :: DeferredEvalF x -> g x
+  extractD :: g x -> Maybe (DeferredEvalF x)
+
 pattern BasicFW :: BasicBase g => PartExprF x -> g x
 pattern BasicFW x <- (extractB -> Just x)
 pattern BasicEE :: (Base g ~ f, BasicBase f, Recursive g) => PartExprF g -> g
@@ -171,6 +175,10 @@ pattern UnsizedFW :: UnsizedBase g => UnsizedRecursionF x -> g x
 pattern UnsizedFW x <- (extractU -> Just x)
 pattern UnsizedEE :: (Base g ~ f, UnsizedBase f, Recursive g) => UnsizedRecursionF g -> g
 pattern UnsizedEE x <- (project -> (UnsizedFW x))
+pattern DeferredFW :: DeferredEvalBase g => DeferredEvalF x -> g x
+pattern DeferredFW x <- (extractD -> Just x)
+pattern DeferredEE :: (Base g ~ f, DeferredEvalBase f, Recursive g) => DeferredEvalF g -> g
+pattern DeferredEE x <- (project -> (DeferredFW x))
 basicEE :: (Base g ~ f, BasicBase f, Corecursive g) => PartExprF g -> g
 basicEE = embed . embedB
 stuckEE :: (Base g ~ f, StuckBase f, Corecursive g) => StuckF g -> g
@@ -181,6 +189,8 @@ abortEE :: (Base g ~ f, AbortBase f, Corecursive g) => AbortableF g -> g
 abortEE = embed . embedA
 unsizedEE :: (Base g ~ f, UnsizedBase f, Corecursive g) => UnsizedRecursionF g -> g
 unsizedEE = embed . embedU
+deferredEE :: (Base g ~ f, DeferredEvalBase f, Corecursive g) => DeferredEvalF g -> g
+deferredEE = embed . embedD
 zeroB :: (Base g ~ f, BasicBase f, Corecursive g) => g
 zeroB = basicEE ZeroSF
 pairB :: (Base g ~ f, BasicBase f, Corecursive g) => g -> g -> g
@@ -410,6 +420,9 @@ instance Monoid a => Monad (StrictAccum a) where
 instance PrettyPrintable1 (StrictAccum SizedRecursion) where
   showP1 (StrictAccum _ x) = showP x
 
+deferB :: (Base g ~ f, StuckBase f, Recursive g, Corecursive g) => Int -> g -> g
+deferB n = stuckEE . DeferSF (toEnum n)
+
 unsizedStepM :: (Base a ~ f, Traversable f, BasicBase f, StuckBase f, SuperBase f, AbortBase f, UnsizedBase f, Recursive a, Corecursive a, Eq a, PrettyPrintable a)
   => Int -> (f (StrictAccum SizedRecursion a) -> StrictAccum SizedRecursion a) -> (f (StrictAccum SizedRecursion a) -> StrictAccum SizedRecursion a)
   -> f (StrictAccum SizedRecursion a) -> StrictAccum SizedRecursion a
@@ -455,6 +468,40 @@ unsizedStepM maxSize fullStep handleOther x = sequence x >>= f where
     -- stuck value
     t@(UnsizedFW (RecursionTestF _ _)) -> pure $ embed t
     _ -> handleOther x
+
+deferredEvalStep :: (Base a ~ f, Traversable f, BasicBase f, DeferredEvalBase f, Recursive a, Corecursive a, PrettyPrintable a)
+  => (f a -> a) -> f a -> a
+deferredEvalStep handleOther = \case
+    -- combine
+    BasicFW (LeftSF (DeferredEE (BarrierF (DeferredEE (ManyLefts n x))))) -> deferredEE . BarrierF . deferredEE $ ManyLefts (n + 1) x
+    BasicFW (RightSF (DeferredEE (BarrierF (DeferredEE (ManyRights n x))))) -> deferredEE . BarrierF . deferredEE $ ManyRights (n + 1) x
+    BasicFW (LeftSF (DeferredEE (BarrierF x))) -> deferredEE . BarrierF . deferredEE $ ManyLefts 1 x
+    BasicFW (RightSF (DeferredEE (BarrierF x))) -> deferredEE . BarrierF . deferredEE $ ManyRights 1 x
+    BasicFW (SetEnvSF (DeferredEE (BarrierF x))) -> deferredEE . BarrierF . basicEE $ SetEnvSF x
+    FillFunction (DeferredEE (BarrierF c)) e -> deferredEE . BarrierF $ fillFunction c e
+    GateSwitch l r (DeferredEE (BarrierF s)) -> deferredEE . BarrierF $ gateSwitch l r s
+    -- stuck values
+    d@(DeferredFW _) -> embed d
+
+    x -> handleOther x
+
+deferredEvalStep' :: (Base a ~ f, Traversable f, BasicBase f, DeferredEvalBase f, Recursive a, Corecursive a, PrettyPrintable a)
+  => (f a -> a) -> f a -> a
+deferredEvalStep' handleOther = \case
+    BasicFW (LeftSF (DeferredEE (BarrierF x))) -> deferredEE . BarrierF . basicEE $ LeftSF x
+    BasicFW (RightSF (DeferredEE (BarrierF x))) -> deferredEE . BarrierF . basicEE $ RightSF x
+    BasicFW (SetEnvSF (DeferredEE (BarrierF x))) -> deferredEE . BarrierF . basicEE $ SetEnvSF x
+    FillFunction (DeferredEE (BarrierF c)) e -> deferredEE . BarrierF $ fillFunction c e
+    GateSwitch l r (DeferredEE (BarrierF s)) -> deferredEE . BarrierF $ gateSwitch l r s
+    -- stuck values
+    d@(DeferredFW _) -> embed d
+    x -> handleOther x
+
+abortDeferredStep :: (Base a ~ f, BasicBase f, AbortBase f, DeferredEvalBase f, Recursive a, Corecursive a)
+  => (f a -> a) -> f a -> a
+abortDeferredStep handleOther = \case
+  FillFunction a@(AbortEE AbortF) (DeferredEE (BarrierF e)) -> deferredEE . BarrierF $ fillFunction a e
+  x -> handleOther x
 
 data VoidF f
   deriving (Functor, Foldable, Traversable)
@@ -609,6 +656,31 @@ instance PrettyPrintable1 UnsizedRecursionF where
 instance PrettyPrintable1 VoidF where
   showP1 _ = error "VoidF should never be inhabited, so should not be PrettyPrintable1"
 
+data DeferredEvalF f
+  = BarrierF f
+  | ManyLefts Integer f
+  | ManyRights Integer f
+  deriving (Eq, Ord, Show, Functor, Foldable, Traversable)
+
+instance Eq1 DeferredEvalF where
+  liftEq test a b = case (a, b) of
+    (BarrierF x, BarrierF y) -> test x y
+    (ManyLefts na va, ManyLefts nb vb) -> na == nb && test va vb
+    (ManyRights na va, ManyRights nb vb) -> na == nb && test va vb
+    _ -> False
+
+instance Show1 DeferredEvalF where
+  liftShowsPrec showsPrec showList prec x = case x of
+    BarrierF x -> shows "BarrierF (" . showsPrec 0 x . shows ")"
+    ManyLefts n x -> shows ("ManyLefts " <> show n) . shows " (" . showsPrec 0 x . shows ")"
+    ManyRights n x -> shows ("ManyRights " <> show n) . shows " (" . showsPrec 0 x . shows ")"
+
+instance PrettyPrintable1 DeferredEvalF where
+  showP1 = \case
+    BarrierF x -> indentWithOneChild' "|" $ showP x
+    ManyLefts n x -> indentWithOneChild' ("L" <> show n) $ showP x
+    ManyRights n x -> indentWithOneChild' ("R" <> show n) $ showP x
+
 {-
 instance PrettyPrintable1 BitsExprF where
   showP1 = \case
@@ -660,6 +732,36 @@ instance PrettyPrintable1 StuckExprF where
 
 type StuckExpr = Fix StuckExprF
 instance PrettyPrintable StuckExpr where
+  showP = showP1 . project
+
+data DeferredExprF f
+  = DeferredExprB (PartExprF f)
+  | DeferredExprS (StuckF f)
+  | DeferredExprD (DeferredEvalF f)
+  deriving (Functor, Foldable, Traversable)
+instance BasicBase DeferredExprF where
+  embedB = DeferredExprB
+  extractB = \case
+    DeferredExprB x -> Just x
+    _ -> Nothing
+instance StuckBase DeferredExprF where
+  embedS = DeferredExprS
+  extractS = \case
+    DeferredExprS x -> Just x
+    _ -> Nothing
+instance DeferredEvalBase DeferredExprF where
+  embedD = DeferredExprD
+  extractD = \case
+    DeferredExprD x -> Just x
+    _ -> Nothing
+instance PrettyPrintable1 DeferredExprF where
+  showP1 = \case
+    DeferredExprB x -> showP1 x
+    DeferredExprS x -> showP1 x
+    DeferredExprD x -> showP1 x
+
+type DeferredExpr = Fix DeferredExprF
+instance PrettyPrintable DeferredExpr where
   showP = showP1 . project
 
 data UnsizedExprF f
@@ -803,6 +905,11 @@ instance PrettyPrintable AbortExpr where
 instance PrettyPrintable Char where
   showP = pure . (:[])
 
+convertDeferred :: (DeferredEvalBase g, DeferredEvalBase h, Base x ~ h, Corecursive x) => (g x -> x) -> g x -> x
+convertDeferred convertOther = \case
+  DeferredFW x -> deferredEE x
+  x -> convertOther x
+
 unsized2abortExpr :: UnsizedExpr -> AbortExpr
 unsized2abortExpr = hoist f where
   f :: UnsizedExprF a -> AbortExprF a
@@ -938,6 +1045,10 @@ instance TelomareLike UnsizedExpr where
   fromTelomare = convertToF
   toTelomare = convertFromF
 
+instance TelomareLike DeferredExpr where
+  fromTelomare = convertToF
+  toTelomare = convertFromF
+
 evalBU :: IExpr -> Maybe IExpr
 evalBU = toIExpr . ebu . fromTelomare where
   toIExpr = toTelomare
@@ -1005,3 +1116,37 @@ evalA combine base t =
         SuperFW (EitherPF a b) -> combine a b
         x                      -> foldr (<|>) Nothing x
   in flip combine base . cata getAborted $ runResult
+
+evalPartial :: IExpr -> IExpr
+evalPartial x = toI . transformNoDefer step $ fromI x where
+  fromI = fromTelomare
+  toI :: DeferredExpr -> IExpr
+  toI x = case toTelomare x of
+    Just x -> x
+    _ -> error "evalPartial could not convert back"
+  deferStep handleOther = \case
+    StuckFW (DeferSF id x) -> deferB (fromEnum id) . cata removeBarriers $ transformNoDefer (step . addBarrier) x
+    x -> handleOther x
+  step = deferStep (basicStep (stuckStep (deferredEvalStep' unhandled)))
+  unhandled x = error $ "evalPartial unhandled " <> prettyPrint x
+  addBarrier = \case
+    BasicFW EnvSF -> embedD $ BarrierF envB
+    x -> x
+  removeBarriers = \case
+    DeferredFW (BarrierF x) -> x
+    x -> embed x
+
+evalPartial' :: (Base g ~ f, Traversable f, BasicBase f, StuckBase f, DeferredEvalBase f, Recursive g, Corecursive g, PrettyPrintable g)
+  => g -> g
+evalPartial' = cata removeBarriers . transformNoDefer step where
+  step = deferStep (basicStep (stuckStep (deferredEvalStep' wrapUnknownStep)))
+  deferStep handleOther = \case
+    StuckFW (DeferSF id x) -> deferB (fromEnum id) . cata removeBarriers $ transformNoDefer (step . addBarrier) x
+    x -> handleOther x
+  addBarrier = \case
+    BasicFW EnvSF -> embedD $ BarrierF envB
+    x -> x
+  removeBarriers = \case
+    DeferredFW (BarrierF x) -> x
+    x -> seq x $ embed x -- does seq have any performance consequence here?
+  wrapUnknownStep = deferredEE . BarrierF . embed
