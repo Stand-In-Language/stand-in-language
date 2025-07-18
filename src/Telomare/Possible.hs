@@ -664,10 +664,10 @@ data DeferredEvalF f
 
 instance Eq1 DeferredEvalF where
   liftEq test a b = case (a, b) of
-    (BarrierF x, BarrierF y) -> test x y
-    (ManyLefts na va, ManyLefts nb vb) -> na == nb && test va vb
+    (BarrierF x, BarrierF y)             -> test x y
+    (ManyLefts na va, ManyLefts nb vb)   -> na == nb && test va vb
     (ManyRights na va, ManyRights nb vb) -> na == nb && test va vb
-    _ -> False
+    _                                    -> False
 
 instance Show1 DeferredEvalF where
   liftShowsPrec showsPrec showList prec x = case x of
@@ -1123,7 +1123,7 @@ evalPartial x = toI . transformNoDefer step $ fromI x where
   toI :: DeferredExpr -> IExpr
   toI x = case toTelomare x of
     Just x -> x
-    _ -> error "evalPartial could not convert back"
+    _      -> error "evalPartial could not convert back"
   deferStep handleOther = \case
     StuckFW (DeferSF id x) -> deferB (fromEnum id) . cata removeBarriers $ transformNoDefer (step . addBarrier) x
     x -> handleOther x
