@@ -14,7 +14,7 @@ import Control.Monad.Except (ExceptT, MonadError, catchError, runExceptT,
                              throwError)
 import Data.Algorithm.Diff (getGroupedDiff)
 import Data.Algorithm.DiffOutput (ppDiff)
-import Data.List (sortOn)
+import Data.List (isInfixOf, sortOn)
 import Debug.Trace (trace, traceShow, traceShowId)
 import System.IO
 import qualified System.IO.Strict as Strict
@@ -44,7 +44,6 @@ tests = testGroup "Tests" [unitTests, qcProps, unitTestsCase, qcPropsCase]
 ---------------------
 ------ Property Tests
 ---------------------
-
 qcProps = testGroup "Property tests (QuickCheck)"
   [ QC.testProperty "Check recursive let work backward" $
       \() -> withMaxSuccess 16 . QC.idempotentIOProperty $ do
@@ -68,6 +67,34 @@ qcProps = testGroup "Property tests (QuickCheck)"
             expectedValue = recursiveLetResult assignments <> "\ndone"
         result <- testUserDefAdHocTypes dummymodule
         pure $ result === expectedValue
+  , QC.testProperty "Cyclic let backward are stopped to avoid loops" $
+      \() -> withMaxSuccess 16 . QC.idempotentIOProperty $ do
+        assignments <- generate genRecursiveLetWithCycle
+        let dummymodule   = wrapRecursiveBackwardLet assignments
+            expectedError = "failed to parse DummyModule Recursion not allowed: circular dependency "
+        result <- try (testUserDefAdHocTypes dummymodule) :: IO (Either SomeException String)
+        pure $ case result of
+          Left err  -> expectedError `isInfixOf` show err
+          Right res -> expectedError `isInfixOf` show res
+  , QC.testProperty "Cyclic let forward are stopped to avoid loops" $
+      \() -> withMaxSuccess 16 . QC.idempotentIOProperty $ do
+        assignments <- generate genRecursiveLetWithCycle
+        let dummymodule = wrapRecursiveForwardLet assignments
+            expectedError = "failed to parse DummyModule Recursion not allowed: circular dependency "
+        result <- try (testUserDefAdHocTypes dummymodule) :: IO (Either SomeException String)
+        pure $ case result of
+          Left err  -> expectedError `isInfixOf` show err
+          Right res -> expectedError `isInfixOf` show res
+  , QC.testProperty "Cyclic let are stopped to avoid loops" $
+      \() -> withMaxSuccess 16 . QC.idempotentIOProperty $ do
+        assignments <- generate genRecursiveLetWithCycle
+        shuffleInt  <- generate genInt
+        let dummymodule = wrapRecursiveRandomLet assignments shuffleInt
+            expectedError = "failed to parse DummyModule Recursion not allowed: circular dependency "
+        result <- try (testUserDefAdHocTypes dummymodule) :: IO (Either SomeException String)
+        pure $ case result of
+          Left err  -> expectedError `isInfixOf` show err
+          Right res -> expectedError `isInfixOf` show res
   , QC.testProperty "Arbitrary UnprocessedParsedTerm to test hash uniqueness of HashUP's" $
       \x' -> withMaxSuccess 16 $
         let x = forget x'
@@ -140,6 +167,19 @@ recursiveLetResult = recursiveResult . last
 
 removeDuplicates :: Eq a => [a] -> [a]
 removeDuplicates = foldr (\x acc -> if x `elem` acc then acc else x : acc) []
+
+genRecursiveLetWithCycle :: Gen [String]
+genRecursiveLetWithCycle = do
+  assignments <- genRecursiveLet
+  cycleLetIndex <- choose (1, length assignments - 1)
+  let (before, assignment : after) = splitAt cycleLetIndex assignments
+      assignment' = takeWhile (/= '=') assignment
+                 <> "= concat ["
+                 <> (drop 2 . dropWhile (/= '=')) assignment
+                 <> " , "
+                 <> ( takeWhile (/= ' ' ) . head) assignments
+                 <> "]"
+  pure $ before <> [assignment'] <> after
 
 
 -- Variable and Import str generator
