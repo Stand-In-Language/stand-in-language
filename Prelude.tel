@@ -115,3 +115,20 @@ max = \a b -> { \p -> and (left p) (right p)
               } (a,b)
 
 fakeRecur = \n t r b -> n (\rec i -> if t i then r rec i else b i) b
+
+Rational = \n d ->
+  if dEqual d 0 then ("E", "Denominator cannot be zero")
+  else if dEqual n d then ("R", (1,1))
+  else ("R", (n,d))
+
+-- TODO: implement decimal arithmetic instead of Church arithmetic
+rPlus = \a b ->
+  if not (dEqual (left a) "R") then a
+  else if not (dEqual (left b) "R") then b
+  else let n1 = d2c (left (right a))
+           d1 = d2c (right (right a))
+           n2 = d2c (left (right b))
+           d2 = d2c (right (right b))
+           num = plus (times n1 d2) (times n2 d1)
+           den = times d1 d2
+       in ("R", (c2d num, c2d den))
