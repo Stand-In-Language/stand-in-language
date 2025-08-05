@@ -15,9 +15,15 @@ d2c = \n f b -> { id
 
 c2d = \c -> c succ 0
 
+dPlus = \a b -> d2c b succ a
+
 plus = \m n f x -> m f (n f x)
 
+dTimes = \a b -> d2c b (\x -> dPlus a x) 0
+
 times = \m n f -> m (n f)
+
+dPow = \a b -> d2c b (dTimes a) (succ 0)
 
 pow = \m n -> n m
 
@@ -61,6 +67,11 @@ dEqual = \a b -> let equalsOne = \x -> if x then (not (left x)) else 0
                  in if a then equalsOne (d2c (left a) (\x -> left x) b)
                          else not b
 
+dDiv = \a b -> { \p       -> dMinus (left p) (right p)
+               , \recur p -> succ (recur (dMinus (left p) (right p), right p))
+               , \p       -> if (dEqual (left p) (right p)) then succ 0 else 0
+               } (a, b)
+
 listLength = foldr (\a b -> succ b) 0
 
 listEqual = \a b -> let pairsEqual = zipWith dEqual a b
@@ -82,6 +93,8 @@ take = \n l -> let lengthed = n (\x -> (0,x)) 0
                in zipWith (\a b -> a) l lengthed
 
 factorial = \n -> foldr (\a b -> times (d2c a) b) $1 (range 1 (n,0))
+
+dFactorial = \n -> factorial n succ 0
 
 quicksort = { \l -> right l
             , \recur l -> let t = left l
@@ -116,19 +129,45 @@ max = \a b -> { \p -> and (left p) (right p)
 
 fakeRecur = \n t r b -> n (\rec i -> if t i then r rec i else b i) b
 
+dMod = \a b ->
+  { \p       -> dMinus (left p) (right p)
+  , \recur p -> recur (dMinus (left p) (right p), right p)
+  , \p       -> left p
+  } (a, b)
+
+gcd = \a b ->
+  { \p -> not (dEqual (right p) 0)
+  , \recur p -> recur (right p, dMod (left p) (right p))
+  , \p -> left p
+  } (a,b)
+
+lcm = \a b -> dDiv (dTimes a b) (gcd a b)
+
 Rational = \n d ->
   if dEqual d 0 then ("E", "Denominator cannot be zero")
-  else if dEqual n d then ("R", (1,1))
-  else ("R", (n,d))
+  else
+    let g   = gcd n d
+        num = dDiv n g
+        den = dDiv d g
+    in ("R", (num,den))
 
--- TODO: implement decimal arithmetic instead of Church arithmetic
 rPlus = \a b ->
-  if not (dEqual (left a) "R") then a
+  let n1 = left (right a)
+      d1 = right (right a)
+      n2 = left (right b)
+      d2 = right (right b)
+      num = dPlus (dTimes n1 d2) (dTimes n2 d1)
+      den = dTimes d1 d2
+  in Rational num den
+
+rTimes = \a b ->
+  if not (dEqual (left  a) "R") then a
   else if not (dEqual (left b) "R") then b
-  else let n1 = d2c (left (right a))
-           d1 = d2c (right (right a))
-           n2 = d2c (left (right b))
-           d2 = d2c (right (right b))
-           num = plus (times n1 d2) (times n2 d1)
-           den = times d1 d2
-       in ("R", (c2d num, c2d den))
+  else let n1 = left (right a)
+           d1 = right (right a)
+           n2 = left (right b)
+           d2 = right (right b)
+           num = dTimes n1 n2
+           den = dTimes d1 d2
+       in Rational num den
+
