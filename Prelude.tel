@@ -159,3 +159,22 @@ rTimes = \a b ->
            den = dTimes d1 d2
        in Rational num den
 
+rMinus = \a b ->
+  let n1 = left (right a)
+      d1 = right (right a)
+      n2 = left (right b)
+      d2 = right (right b)
+      num = dMinus (dTimes n1 d2) (dTimes n2 d1)
+      den = dTimes d1 d2
+  in Rational num den
+
+rDiv = \a b ->
+  if not (dEqual (left a) "R") then a
+  else if not (dEqual (left b) "R") then b
+  else let n1 = left (right a)
+           d1 = right (right a)
+           n2 = left (right b)
+           d2 = right (right b)
+           num = dTimes n1 d2
+           den = dTimes d1 n2
+       in Rational num den
