@@ -131,50 +131,65 @@ gcd = \a b ->
 
 lcm = \a b -> dDiv (dTimes a b) (gcd a b)
 
-Rational = \n d ->
-  if dEqual d 0 then ("E", "Denominator cannot be zero")
-  else
-    let g   = gcd n d
-        num = dDiv n g
-        den = dDiv d g
-    in ("R", (num,den))
+Rational =
+  let wrapper = \h -> (
+        \n d -> if dEqual d 0
+                then abort "Denominator cannot be zero"
+                else
+                  let g   = gcd n d
+                      num = dDiv n g
+                      den = dDiv d g
+                  in (h, (num, den))
+      , \i -> if dEqual (left i) h
+              then right i
+              else abort "Not a Rational"
+      )
+  in wrapper (# wrapper)
 
-rPlus = \a b ->
-  let n1 = left (right a)
-      d1 = right (right a)
-      n2 = left (right b)
-      d2 = right (right b)
-      num = dPlus (dTimes n1 d2) (dTimes n2 d1)
-      den = dTimes d1 d2
-  in Rational num den
+-- Rational = \n d ->
+--   if dEqual d 0 then ("E", "Denominator cannot be zero")
+--   else
+--     let g   = gcd n d
+--         num = dDiv n g
+--         den = dDiv d g
+--     in ("R", (num,den))
 
-rTimes = \a b ->
-  if not (dEqual (left  a) "R") then a
-  else if not (dEqual (left b) "R") then b
-  else let n1 = left (right a)
-           d1 = right (right a)
-           n2 = left (right b)
-           d2 = right (right b)
-           num = dTimes n1 n2
-           den = dTimes d1 d2
-       in Rational num den
+-- rPlus = \a b ->
+--   let n1 = left (right a)
+--       d1 = right (right a)
+--       n2 = left (right b)
+--       d2 = right (right b)
+--       num = dPlus (dTimes n1 d2) (dTimes n2 d1)
+--       den = dTimes d1 d2
+--   in Rational num den
 
-rMinus = \a b ->
-  let n1 = left (right a)
-      d1 = right (right a)
-      n2 = left (right b)
-      d2 = right (right b)
-      num = dMinus (dTimes n1 d2) (dTimes n2 d1)
-      den = dTimes d1 d2
-  in Rational num den
+-- rTimes = \a b ->
+--   if not (dEqual (left  a) "R") then a
+--   else if not (dEqual (left b) "R") then b
+--   else let n1 = left (right a)
+--            d1 = right (right a)
+--            n2 = left (right b)
+--            d2 = right (right b)
+--            num = dTimes n1 n2
+--            den = dTimes d1 d2
+--        in Rational num den
 
-rDiv = \a b ->
-  if not (dEqual (left a) "R") then a
-  else if not (dEqual (left b) "R") then b
-  else let n1 = left (right a)
-           d1 = right (right a)
-           n2 = left (right b)
-           d2 = right (right b)
-           num = dTimes n1 d2
-           den = dTimes d1 n2
-       in Rational num den
+-- rMinus = \a b ->
+--   let n1 = left (right a)
+--       d1 = right (right a)
+--       n2 = left (right b)
+--       d2 = right (right b)
+--       num = dMinus (dTimes n1 d2) (dTimes n2 d1)
+--       den = dTimes d1 d2
+--   in Rational num den
+
+-- rDiv = \a b ->
+--   if not (dEqual (left a) "R") then a
+--   else if not (dEqual (left b) "R") then b
+--   else let n1 = left (right a)
+--            d1 = right (right a)
+--            n2 = left (right b)
+--            d2 = right (right b)
+--            num = dTimes n1 d2
+--            den = dTimes d1 n2
+--        in Rational num den
