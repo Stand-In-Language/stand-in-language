@@ -21,6 +21,7 @@ import Test.Tasty
 import Test.Tasty.HUnit
 import Test.Tasty.QuickCheck as QC
 import Text.Megaparsec (runParser, errorBundlePretty, eof)
+import Data.Ratio
 
 main :: IO ()
 main = defaultMain tests
@@ -77,18 +78,42 @@ assertExpr input expected = do
     Left err -> assertFailure $ "Evaluation failed: " <> err
     Right val -> val @?= expected
 
+rationalToString :: Ratio Integer -> String
+rationalToString r = "(" <> show (numerator r) <> "," <> show (denominator r) <> ")"
+
 -----------------
 ------ Unit Tests
 -----------------
 
 unitTestsNatArithmetic :: TestTree
 unitTestsNatArithmetic = testGroup "Unit tests on natural arithmetic expresions"
-  [ testCase "test addition" $ assertExpr "dPlus 1 2" "3"
+  [ testCase "test addition" $ assertExpr "dPlus 1 2" (show (1 + 2))
+  , testCase "test subtraction" $ assertExpr "dMinus 5 3" (show (5 - 3))
+  , testCase "test multiplication" $ assertExpr "dTimes 3 4" (show (3 * 4))
+  , testCase "test division" $ assertExpr "dDiv 8 2" (show (8 `div` 2))
+  , testCase "test modulo" $ assertExpr "dMod 10 3" (show (10 `mod` 3))
+  , testCase "test gcd" $ assertExpr "gcd 48 18" (show (gcd 48 18))
+  , testCase "test lcm" $ assertExpr "lcm 12 15" (show (lcm 12 15))
+  , testCase "test exponentiation" $ assertExpr "dPow 2 3" (show (2 ^ 3))
+  , testCase "test factorial" $ assertExpr "dFactorial 5" (show (product [1..5]))
+  , testCase "test equality" $ assertExpr "dEqual 3 3" (show 1)
+  , testCase "test inequality" $ assertExpr "dEqual 3 4" (show 0)
   ]
 
 unitTestsRatArithmetic :: TestTree
 unitTestsRatArithmetic = testGroup "Unit tests on natural arithmetic expresions"
-  [ 
+  [ testCase "test addition" $ do
+      let exp = rationalToString (1 % 2 + 1 % 2)
+      assertExpr "right (rPlus (fromRational 1 2) (fromRational 1 2))" exp
+  , testCase "test subtraction" $ do
+      let exp = rationalToString (1 % 2 - 1 % 2)
+      assertExpr "right (rMinus (fromRational 1 2) (fromRational 1 2))" exp
+  , testCase "test multiplication" $ do
+      let exp = rationalToString ((1 % 2) * (1 % 2))
+      assertExpr "right (rTimes (fromRational 1 2) (fromRational 1 2))" exp
+  , testCase "test division" $ do
+      let exp = rationalToString ((1 % 2) / (1 % 2))
+      assertExpr "right (rDiv (fromRational 1 2) (fromRational 1 2))" exp
   ]
 
 ---------------------
