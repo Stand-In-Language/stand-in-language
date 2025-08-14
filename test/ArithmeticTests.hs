@@ -1,8 +1,6 @@
-{-# LANGUAGE DeriveFunctor         #-}
 {-# LANGUAGE FlexibleInstances     #-}
-{-# LANGUAGE PartialTypeSignatures #-}
-{-# LANGUAGE LambdaCase            #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE PartialTypeSignatures #-}
 {-# LANGUAGE ScopedTypeVariables   #-}
 
 module Main where
@@ -10,18 +8,19 @@ module Main where
 import Common
 import Control.Comonad.Cofree (Cofree ((:<)))
 import Data.Bifunctor (second)
+import Data.Ratio
 import PrettyPrint
 import qualified System.IO.Strict as Strict
 import Telomare
-import Telomare.Eval (compileUnitTest, EvalError (CompileConversionError))
-import Telomare.RunTime (simpleEval)
+import Telomare.Eval (EvalError (CompileConversionError), compileUnitTest)
+import Telomare.Parser (AnnotatedUPT, TelomareParser, parseLongExpr,
+                        parsePrelude)
 import Telomare.Resolver (process)
-import Telomare.Parser (parseLongExpr, TelomareParser, parsePrelude, AnnotatedUPT)
+import Telomare.RunTime (simpleEval)
 import Test.Tasty
 import Test.Tasty.HUnit
 import Test.Tasty.QuickCheck as QC
-import Text.Megaparsec (runParser, errorBundlePretty, eof)
-import Data.Ratio
+import Text.Megaparsec (eof, errorBundlePretty, runParser)
 
 main :: IO ()
 main = defaultMain tests
@@ -49,7 +48,7 @@ loadPreludeBindings :: IO [(String, UnprocessedParsedTerm)]
 loadPreludeBindings = do
   preludeResult <- Strict.readFile "Prelude.tel"
   case parsePrelude preludeResult of
-    Left _ -> pure []
+    Left _   -> pure []
     Right bs -> pure $ fmap (second forget) bs
 
 evalExprString :: String -> IO (Either String String)
@@ -59,11 +58,11 @@ evalExprString input = do
   case parseResult of
     Left err -> pure $ Left (errorBundlePretty err)
     Right exprBindings -> do
-      let allBindingsUPT = preludeBindings ++ exprBindings
+      let allBindingsUPT = preludeBindings <> exprBindings
           allBindings :: [(String, Cofree UnprocessedParsedTermF LocTag)]
           allBindings = fmap (second (tag DummyLoc)) allBindingsUPT
           uptMaybe = lookup "_tmp_" allBindings
-          termMaybe = fmap (DummyLoc :<) . fmap (LetUPF allBindings) $ uptMaybe
+          termMaybe = fmap ((DummyLoc :<) . LetUPF allBindings) uptMaybe
           compiled = compileUnitTest =<< maybeToRight (termMaybe >>= rightToMaybe . process)
       case compiled of
         Left err -> pure $ Left (show err)
@@ -75,7 +74,7 @@ assertExpr :: String -> String -> Assertion
 assertExpr input expected = do
   res <- evalExprString input
   case res of
-    Left err -> assertFailure $ "Evaluation failed: " <> err
+    Left err  -> assertFailure $ "Evaluation failed: " <> err
     Right val -> val @?= expected
 
 rationalToString :: Ratio Integer -> String
@@ -121,9 +120,9 @@ unitTestsRatArithmetic = testGroup "Unit tests on natural arithmetic expresions"
 ---------------------
 
 qcPropsNatArithmetic = testGroup "Property tests on natural arithmetic expressions (QuickCheck)"
-  [ 
+  [
   ]
 
 qcPropsRatArithmetic = testGroup "Property tests on rational arithmetic expressions (QuickCheck)"
-  [ 
+  [
   ]
