@@ -67,10 +67,13 @@ dEqual = \a b -> let equalsOne = \x -> if x then (not (left x)) else 0
                  in if a then equalsOne (d2c (left a) (\x -> left x) b)
                          else not b
 
-dDiv = \a b -> { \p       -> dMinus (left p) (right p)
-               , \recur p -> succ (recur (dMinus (left p) (right p), right p))
-               , \p       -> if (dEqual (left p) (right p)) then succ 0 else 0
-               } (a, b)
+dDiv = \a b -> if (dEqual b 0)
+               then abort "Undefined"
+               else
+                 { \p       -> dMinus (left p) (right p)
+                 , \recur p -> succ (recur (dMinus (left p) (right p), right p))
+                 , \p       -> if (dEqual (left p) (right p)) then succ 0 else 0
+                 } (a, b)
 
 listLength = foldr (\a b -> succ b) 0
 
