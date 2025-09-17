@@ -1,6 +1,7 @@
 {-# LANGUAGE LambdaCase          #-}
 {-# LANGUAGE PatternSynonyms     #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# OPTIONS_GHC -Wno-deferred-out-of-scope-variables #-}
 
 module Telomare.Eval where
 
@@ -12,8 +13,12 @@ import Control.Monad.State (StateT)
 import qualified Control.Monad.State as State
 import Control.Monad.Trans.Accum (AccumT)
 import qualified Control.Monad.Trans.Accum as Accum
+import Data.Bifunctor (first, second)
 import Data.DList (DList)
+import Data.Foldable (fold)
 import Data.Functor.Foldable (cata, embed, project)
+import Data.List (partition)
+import Data.Semigroup (Min(..), Max(..))
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Set (Set)
@@ -31,14 +36,15 @@ import Telomare (BreakState, BreakState', ExprA (..), FragExpr (..),
                  TelomareLike (..), Term3 (Term3), Term4 (Term4),
                  UnsizedRecursionToken (..), app, appF, eval, convertAbortMessage, deferF, forget, g2s,
                  innerChurchF, insertAndGetKey, pairF, pattern AbortAny, pattern AbortRecursion,
-                 pattern AbortUser, rootFrag, s2g, setEnvF, tag, unFragExprUR)
+                 pattern AbortUser, rootFrag, s2g, setEnvF, tag, unFragExprUR, cataFragExprUR)
 import Telomare.Optimizer (optimize)
 import Telomare.Parser (AnnotatedUPT, UnprocessedParsedTerm (..), parsePrelude)
-import Telomare.Possible (abortExprToTerm4, evalA, sizeTerm, sizeTermM, term3ToUnsizedExpr)
-import Telomare.PossibleData (AbortExpr, VoidF)
+import Telomare.Possible (abortExprToTerm4, buildUnsizedLocMap, evalA, getSizesM, sizeTerm, sizeTermM, term3ToUnsizedExpr, abortPossibilities)
+import Telomare.PossibleData (AbortExpr, VoidF, SizedRecursion(..))
 import Telomare.Resolver (parseMain)
 import Telomare.RunTime (hvmEval, optimizedEval, pureEval, simpleEval)
 import Telomare.TypeChecker (TypeCheckError (..), typeCheck)
+import qualified Control.Comonad.Trans.Cofree as CofreeT
 
 debug :: Bool
 debug = False
@@ -134,7 +140,7 @@ convertPT ll (Term3 termMap) =
                       (Cofree (FragExprF RecursionPieceFrag) LocTag)
       changeFrag = \case
         anno :< AuxFragF (NestedSetEnvs n) -> innerChurchF anno $ ll n
-        _ :< AuxFragF (SizingWrapper _ x) -> transformM changeFrag $ unFragExprUR x
+        _ :< AuxFragF (SizingWrapper _ _ x) -> transformM changeFrag $ unFragExprUR x
         _ :< AuxFragF (CheckingWrapper anno tc c) ->
           let performTC = deferF ((\ia -> setEnvF (pairF (setEnvF (pairF (pure $ tag anno AbortFrag) ia))
                                                         (pure . tag anno $ RightFrag EnvFrag))) $ appF (pure . tag anno $ LeftFrag EnvFrag)
@@ -169,8 +175,7 @@ findChurchSizeD useSizing t3 =
     else pure (convertPT (const 255) t3)  -- Use fixed size of 255
 
 findChurchSize :: Term3 -> Either EvalError Term4
--- findChurchSize = pure . convertPT (const 255)
-findChurchSize = calculateRecursionLimits -- works fine for unit tests, but uses too much memory for tictactoe
+findChurchSize = findChurchSizeD True
 
 -- we should probably redo the types so that this is also a type conversion
 removeChecks :: Term4 -> Term4
@@ -199,6 +204,10 @@ compileMain :: Term3 -> Either EvalError IExpr
 compileMain term = case typeCheck (PairTypeP (ArrTypeP ZeroTypeP ZeroTypeP) AnyType) term of
   Just e -> Left $ TCE e
   _      -> compile pure term -- TODO add runStaticChecks back in
+
+-- for testing
+compileMain' :: Term3 -> Either EvalError IExpr
+compileMain' = compile pure
 
 compileUnitTest :: Term3 -> Either EvalError IExpr
 compileUnitTest = compile runStaticChecks
@@ -289,8 +298,76 @@ calculateRecursionLimits t3 =
   let abortExprToTerm4' :: AbortExpr -> Either IExpr Term4
       abortExprToTerm4' = abortExprToTerm4
       limitSize = 256
-  in case fmap abortExprToTerm4' . sizeTerm limitSize $ term3ToUnsizedExpr limitSize t3 of
+  in case fmap abortExprToTerm4' . sizeTermM limitSize $ term3ToUnsizedExpr limitSize t3 of
     Left urt -> Left $ RecursionLimitError urt
     Right t  -> case t of
       Left a  -> Left . StaticCheckError . convertAbortMessage $ a
       Right t -> pure t
+
+-- takes a main function and sizes the unsized recursion and then displays the results as comments in the original source
+showSizingInSource :: String -> String -> String
+showSizingInSource prelude s
+  = let asLines = zip [0..] $ lines s
+        parsed = parsePrelude prelude >>= (\p ->parseMain p s)
+        unsizedExpr = term3ToUnsizedExpr 256 <$> parsed
+        sizedRecursion = unsizedExpr >>= (first (("Could not size token: " <>) . show) . getSizesM 256)
+        sizeLocs = Map.toAscList . buildUnsizedLocMap <$> unsizedExpr
+        -- (orphanLocs, lineLocs) = partition ((== DummyLoc) . snd) sizeLocs
+        (orphanLocs, lineLocs) = case sizeLocs of
+          Left e -> error ("Could not size: " <> show e)
+          Right sl -> partition ((== DummyLoc) . snd) sl
+        -- orphanList = map ((<> " ") . show . fst) orphanLocs
+        orphans = "unsized with no location: " <> fold (map ((<> " ") . show . fst) orphanLocs)
+        fromEnum' = \case
+          Loc x _ -> x
+          _ -> error "unexpected DummyLoc"
+        lookupSize x = case sizedRecursion of
+          Right (SizedRecursion sm) -> case Map.lookup x sm of
+            Just (Just v) -> show v
+            _ -> "?"
+          _ -> "?"
+        -- getSizeMatchingLine x = foldMap ((<> " ") . show) $ filter ((== x) . fromEnum' . snd) lineLocs
+        getSizeMatchingLine x = case filter ((== x) . fromEnum' . snd) lineLocs of
+          [] -> ""
+          l -> ("   # " <>) $ foldMap ((\s -> show (fromEnum s) <> ":" <> lookupSize s <> " ") . fst) l
+    in "showSizingInSource\n" <> orphans <> "\n" <> foldMap (\(l, s) -> s <> getSizeMatchingLine l <> "\n") asLines
+
+showFunctionIndexesInSource :: String -> String -> String
+showFunctionIndexesInSource prelude s
+  = let asLines = zip [1..] $ lines s
+        -- parsed = parsePrelude prelude >>= (\p -> parseMain p s)
+        funMap = case parsePrelude prelude >>= (\p -> parseMain p s) of
+          Right (Term3 f) -> f
+          e -> error ("could not parse " <> show e)
+        unAss (a :< _) = a
+        -- sizeLocs = (\(fi, t) -> (fi))
+        reduceL (a CofreeT.:< x) = let l = fromEnum' a in (Min l, Max l) <> fold x
+        bodyLocs = second (cataFragExprUR reduceL) <$> Map.toAscList funMap
+        sizeLocs = second (unAss . unFragExprUR) <$> Map.toAscList funMap
+        (orphanLocs, lineLocs) = partition ((== DummyLoc) . snd) sizeLocs
+        orphans = "functions with no location: " <> fold (map ((<> " ") . show . fst) orphanLocs)
+        fromEnum' = \case
+          Loc x _ -> x
+          _ -> 0 -- error "unexpected DummyLoc"
+        getFunMatchingLine x = case filter ((== x) . fromEnum' . snd) lineLocs of
+          [] -> ""
+          -- l -> ("   # " <>) $ foldMap ((\s -> show (fromEnum s) <> ":" <> lookupSize s <> " ") . fst) l
+          l -> ("   # " <>) $ foldMap ((<> " ") . show . fromEnum . fst) l
+    -- in "showFunInSource\n" <> orphans <> "\nBodyLocs\n" <> show bodyLocs <> "\n" <> foldMap (\(l, s) -> s <> getFunMatchingLine l <> "\n") asLines
+    in "showFunInSource\n" <> orphans <> "\n" <> foldMap (\(l, s) -> s <> getFunMatchingLine l <> "\n") asLines
+
+getAbortPossibilities :: String -> String -> Set IExpr
+getAbortPossibilities prelude s
+  = let parsed = parsePrelude prelude >>= (\p ->parseMain p s)
+        unsizedExpr = term3ToUnsizedExpr 256 <$> parsed
+    in case unsizedExpr of
+         Left e -> error $ "getAbortPossibilities: " <> show e
+         Right ue -> abortPossibilities 256 ue
+
+getAbortPossibilities' :: String -> String -> Set String
+getAbortPossibilities' prelude s
+  = let parsed = parsePrelude prelude >>= (\p ->parseMain p s)
+        unsizedExpr = term3ToUnsizedExpr 256 <$> parsed
+    in case unsizedExpr of
+         Left e -> error $ "getAbortPossibilities: " <> show e
+         Right ue -> Set.map convertAbortMessage $ abortPossibilities 256 ue

@@ -187,7 +187,14 @@ data GateResult a
   { leftBranch :: Bool
   , rightBranch :: Bool
   , noBranch :: Maybe a
-  }
+  } deriving (Eq, Ord)
+
+instance PrettyPrintable a => Show (GateResult a) where
+  -- show (GateResult lb rb nb) = "GateResult " <> show lb <> " " <> show rb <> " " <> prettyPrint nb
+  show (GateResult lb rb nb) = "GateResult " <> show lb <> " " <> show rb <> " " <> pnb where
+    pnb = case nb of
+      Just nb' -> prettyPrint nb'
+      _ -> "Nothing"
 
 data StuckF f
   = DeferSF FunctionIndex f
@@ -315,10 +322,11 @@ instance ShallowEq1 AbortableF where
 data UnsizedRecursionF f
   = RecursionTestF UnsizedRecursionToken f
   | UnsizedStubF UnsizedRecursionToken f
-  | SizingWrapperF UnsizedRecursionToken f
+  | SizingWrapperF LocTag UnsizedRecursionToken f
   | SizeStageF SizedRecursion f
   | RefinementWrapperF LocTag f f
   | SizeStepStubF UnsizedRecursionToken Int f
+  | TraceF String f
   deriving (Eq, Ord, Show, Functor, Foldable, Traversable, Generic)
 
 instance Eq1 UnsizedRecursionF where
@@ -361,11 +369,12 @@ instance PrettyPrintable1 AbortableF where
 instance PrettyPrintable1 UnsizedRecursionF where
   showP1 = \case
     RecursionTestF (UnsizedRecursionToken ind) x -> indentWithOneChild' ("T(" <> show ind <> ")") $ showP x
-    SizingWrapperF (UnsizedRecursionToken ind) x -> indentWithOneChild' ("&(" <> show ind <> ")") $ showP x
+    SizingWrapperF loc (UnsizedRecursionToken ind) x -> indentWithOneChild' ("&(" <> show loc <> " " <> show ind <> ")") $ showP x
     UnsizedStubF (UnsizedRecursionToken ind) x -> indentWithOneChild' ("#" <> show ind) $ showP x
     SizeStageF _ x -> indentWithOneChild' "^" $ showP x
     RefinementWrapperF l tc x -> indentWithTwoChildren' (":" <> show l) (showP tc) (showP x)
     SizeStepStubF _ _ x -> indentWithOneChild' "@" $ showP x
+    TraceF _ x -> indentWithOneChild' "_" $ showP x
 
 instance PrettyPrintable1 VoidF where
   showP1 _ = error "VoidF should never be inhabited, so should not be PrettyPrintable1"
@@ -564,6 +573,15 @@ instance PrettyPrintable1 UnsizedExprF where
     UnsizedExprI x -> showP1 x
 
 type UnsizedExpr = Fix UnsizedExprF
+
+data AllExprF f
+  = AllExprB (PartExprF f)
+  | AllExprS (StuckF f)
+  | AllExprA (AbortableF f)
+  | AllExprP (SuperPositionF f)
+  | AllExprI (IndexedInputF f)
+  | AllExprZ (FuzzyInputF f)
+  | AllExprU (UnsizedRecursionF f)
 
 data SuperExprF f
   = SuperExprB (PartExprF f)
@@ -932,7 +950,7 @@ instance Annotatable1 UnsizedRecursionF where
       xt <- anno x
       associateVar xt ZeroTypeP
       pure xt
-    SizingWrapperF _ x -> anno x -- not bothering on checking for pair structure for now
+    SizingWrapperF _ _ x -> anno x -- not bothering on checking for pair structure for now
     SizeStageF _ x -> anno x
     UnsizedStubF _ x -> anno x -- not bothering on checking internal structure (is it even possible?)
     RefinementWrapperF _ c x -> anno x -- not bothering on checking c

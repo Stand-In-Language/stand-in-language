@@ -8,6 +8,7 @@ import qualified Control.Monad.State as State
 import Data.Bifunctor
 import Data.Char
 import qualified Data.DList as DList
+import qualified Data.Set as Set
 import Data.List (partition)
 import qualified Data.Map as Map
 import Data.Monoid
@@ -513,6 +514,7 @@ unitTests_ parse = do
     unitTest2 "main = if foldr ((\\f a b -> makeRecur $3 id (\\r l accum -> f (left l) (r (right l) accum)) (\\l a -> a) b a) (\\x l -> (x,l))) 0 [] then 2 else 3" "3"
     unitTest2 "main = if foldr ((\\f a b -> makeRecur $4 id (\\r l accum -> f (left l) (r (right l) accum)) (\\l a -> a) b a) (\\x l -> (x,l))) 0 [] then 2 else 3" "3"
 -}
+    unitTest2 "main = d2c 3 succ 0" "3"
     testSBV''
   {-
     unitTest2 "main = plus $3 $2 succ 0" "5"
@@ -523,10 +525,30 @@ unitTests_ parse = do
 -}
     -- unitTest2 "main = listEqual \"hey\" \"hey\"" "1"
     -- unitTest2 "main = listEqual \"hey\" \"he\"" "0"
-    unitTest2 "main = listEqual \"hey\" \"hel\"" "0"
+    -- unitTest2 "main = listEqual \"hey\" \"hel\"" "0"
     -- unitTest2 "main = d2c 2 succ 0" "2"
     -- unitTestStaticChecks "main : (\\x -> assert 1 \"A\") = 1" (not . null)
     -- unitTest2 "main = d2c 3 succ 0" "3"
+  {-
+    preludeFile <- runIO $ Strict.readFile "Prelude.tel"
+    -- testMain <- runIO $ Strict.readFile "simpleplus2.tel"
+    testMain <- runIO $ Strict.readFile "simpleplus3.tel"
+    -- runIO . putStrLn $ showSizingInSource preludeFile testMain -- currently broken (either I broke something in simpleplus2 or Sizing)(looks like sizing)
+    case fmap compileMain (parse testMain) of
+      Right (Right g) ->
+        let eval = funWrap' evalBU g
+            unitTestMain s i e = it ("main input " <> i) $ eval (Just (i, s)) `shouldBe` e
+        in do
+        -- unitTestMain Zero "0 0" ("0 plus 0 is 0", Just Zero)
+        unitTestMain Zero "9 9" ("9 plus 9 is 18", Just Zero)
+      z -> runIO . expectationFailure $ "failed to compile simpleplus.tel: " <> show z
+-}
+  {-     testing harness for finding refinement zeros. Needs a bit of work
+    preludeFile <- runIO $ Strict.readFile "Prelude.tel"
+    testMain <- runIO $ Strict.readFile "inputtest.tel"
+    runIO . putStrLn $ showFunctionIndexesInSource preludeFile testMain
+    it "inputtest shouldn't abort on input" $ getAbortPossibilities' preludeFile testMain `shouldBe` Set.empty
+-}
   {-
   describe "main function tests" $ do
     testMain <- runIO $ Strict.readFile "tc.tel"

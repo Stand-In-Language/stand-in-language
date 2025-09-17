@@ -151,7 +151,7 @@ instance PrettyPrintable Term3 where
       RightFragF x -> indentWithOneChild' "R" x
       TraceFragF -> pure "T"
       AuxFragF x -> case x of
-        SizingWrapper ind x' -> indentWithOneChild' ("?" <> show (fromEnum ind)) . showFrag $ unFragExprUR x'
+        SizingWrapper _ ind x' -> indentWithOneChild' ("?" <> show (fromEnum ind)) . showFrag $ unFragExprUR x'
         CheckingWrapper l tc x' -> indentWithTwoChildren' (":" <> show l) (showFrag $ unFragExprUR tc) (showFrag $ unFragExprUR x')
         NestedSetEnvs _ -> pure "%"
 
@@ -196,7 +196,7 @@ showTypeDebugInfo (TypeDebugInfo (Term3 m) lookup rootType) =
           LeftFrag x                                 -> "L " <> recur x
           RightFrag x                                -> "R " <> recur x
           TraceFrag                                  -> "T"
-          AuxFrag (SizingWrapper _ (FragExprURSA x)) -> "?" <> recur x
+          AuxFrag (SizingWrapper _ _ (FragExprURSA x)) -> "?" <> recur x
           AuxFrag (NestedSetEnvs _)                  -> "%"
   in showFrag (FragIndex 0) rootType (unFragExprURSA $ rootFrag termMap) <> "\n"
      <> concatMap (\(k, v) -> showFrag k (lookup k) v <> "\n")

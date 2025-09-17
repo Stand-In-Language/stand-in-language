@@ -113,3 +113,5 @@ max = \a b -> { \p -> and (left p) (right p)
               , \recur p -> recur (left (left p), left (right p))
               , \p -> if (left p) then a else b
               } (a,b)
+
+fakeRecur = \n t r b -> n (\rec i -> if t i then r rec i else b i) b

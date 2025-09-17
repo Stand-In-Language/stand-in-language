@@ -202,7 +202,7 @@ instance Arbitrary URTestExpr where -- TODO needs to be tested since refactor
       , genTypedTree' Nothing ZeroType
       ]
       where wrapWithUR [t, r, b, i] =
-              appF (unsizedRecursionWrapper (toEnum 0) t r b) i
+              appF (unsizedRecursionWrapper DummyLoc (toEnum 0) t r b) i
 
 
 typeable x = case inferType (fromTelomare $ getIExpr x) of

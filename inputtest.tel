@@ -1,0 +1,17 @@
+not2 = \x -> if x then 0 else 1
+
+assert2 = \t s -> if not2 t then (1, s) else 0
+
+validDigit = \x -> if (left x)                               -- 3 L (7)
+                      then (if ($3 left x)                   -- 5 L (31)
+                                   then 0
+                                   else 1)
+                      else 0
+
+validInput = \x -> assert2 (validDigit (left x)) "!"         -- 2 L (3)
+
+main = \input -> let inString : validInput = left input      -- 1 L (1)
+                     dr = if left inString then "A" else "B"
+                 in if not input
+                    then ("?", 1)
+                    else (dr, 0)
