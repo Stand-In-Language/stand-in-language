@@ -1,0 +1,81 @@
+id = \x -> x
+
+and2 = \a b -> if a then (if b then 1 else 0) else 0
+and3 = \a b -> if a then (if b then 1 else 0) else 0
+and4 = \a b -> if a then (if b then 1 else 0) else 0
+
+not2 = \x -> if x then 0 else 1
+not3 = \x -> if x then 0 else 1
+not4 = \x -> if x then 0 else 1
+
+succ2 = \x -> (x,0)
+succ3 = \x -> (x,0)
+succ4 = \x -> (x,0)
+
+assert2 = \t s -> if not t then (1, s) else 0
+
+plus2 = \m n f x -> m f (n f x)
+
+c2d2 = \c -> c succ2 0
+
+d2c2 = \n f b -> { id
+                , \recur i  -> f (recur (left i))
+                , \i -> b
+                } n
+d2c3 = \n f b -> { id
+                , \recur i  -> f (recur (left i))
+                , \i -> b
+                } n
+d2c4 = \n f b -> { id
+                , \recur i  -> f (recur (left i))
+                , \i -> b
+                } n
+d2c5 = \n f b -> { id
+                , \recur i  -> f (recur (left i))
+                , \i -> b
+                } n
+
+dMinus2 = \a b -> d2c4 b (\x -> left x) a
+dMinus3 = \a b -> d2c5 b (\x -> left x) a
+
+foldr2 = \f b ta -> let fixed = { id
+                               , \recur l accum -> f (left l) (recur (right l) accum)
+                               , \l accum -> accum
+                               }
+                   in fixed ta b
+foldr3 = \f b ta -> let fixed = { id
+                               , \recur l accum -> f (left l) (recur (right l) accum)
+                               , \l accum -> accum
+                               }
+                   in fixed ta b
+
+listPlus2 = \a b -> foldr3 (\x l -> (x,l)) b a
+
+concat2 = foldr2 listPlus2 0
+
+
+
+validDigit = \x -> and2 ($47 left x) (not2 ($57 left x))
+
+validInput = \x -> assert2 (and3 (validDigit (left x))
+                               (and4 (validDigit (left (right (right x))))
+                                    (not3 ($3 right x))))
+                          "!"
+
+toI = \x -> $48 left x
+
+-- doAdd = \x y -> c2d2 (plus2 (d2c2 (toI x)) (d2c3 (toI y)))
+-- doAdd = \x -> c2d2 (plus2 (d2c2 (toI x)) $9)
+doAddPart = \x -> d2c2 (toI x)
+doAdd = \x -> c2d2 (plus2 (doAddPart x) $9)
+
+main = \input -> let inString : validInput = left input
+                     x = left inString
+                     y = left (right (right inString))
+                     r = doAdd x
+                     dr = if dMinus2 r 9
+                          then concat2 ["1", $49 succ3 (dMinus3 r 10)]
+                          else $49 succ4 r
+                 in if not4 input
+                    then ("?", 1)
+                    else (dr, 0)

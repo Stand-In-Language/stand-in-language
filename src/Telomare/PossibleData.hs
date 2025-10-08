@@ -22,12 +22,20 @@ import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Set (Set)
 import qualified Data.Set as Set
+import Debug.Trace
 import Data.Validity (Validity (..), trivialValidation, declare)
 import GHC.Generics (Generic)
 
 import PrettyPrint
 import Telomare (UnsizedRecursionToken(..), IExpr(..), PartialType(..), LocTag(..), TelomareLike(..)
                 , indentWithOneChild', indentWithTwoChildren', indentWithChildren', convertAbortMessage)
+import Data.Bifunctor (first)
+
+debug' :: Bool
+debug' = True
+
+debugTrace' :: String -> a -> a
+debugTrace' s x = if debug' then trace s x else x
 
 type TCallStack a = [(FunctionIndex, a)]
 
@@ -215,7 +223,10 @@ newtype SizedRecursion = SizedRecursion { unSizedRecursion :: Map UnsizedRecursi
   deriving (Eq, Ord, Show, Generic)
 
 instance Semigroup SizedRecursion where
-  (<>) (SizedRecursion a) (SizedRecursion b) = SizedRecursion $ Map.unionWith (liftM2 max) a b where
+  (<>) (SizedRecursion a) (SizedRecursion b) = SizedRecursion . tr $ Map.unionWith (liftM2 max) a b where
+    tr x = if null a || null b
+      then x
+      else debugTrace' ("sizedrecursion merge result: " <> show (first fromEnum <$> Map.toAscList x)) x
 
 instance Monoid SizedRecursion where
   mempty = SizedRecursion Map.empty
