@@ -9,7 +9,7 @@ import Control.Comonad.Cofree (Cofree (..))
 import Control.Comonad.Trans.Cofree (CofreeF)
 import qualified Control.Comonad.Trans.Cofree as C
 import Control.Lens.Combinators (transform)
-import Control.Monad ((<=<))
+import Control.Monad (forM, forM_, (<=<))
 import qualified Control.Monad.State as State
 import Crypto.Hash (Digest, SHA256, hash)
 import Data.Bifunctor (Bifunctor (first), bimap)
@@ -19,26 +19,15 @@ import qualified Data.ByteString as BS
 import Data.Char (ord)
 import qualified Data.Foldable as F
 import Data.Functor.Foldable (Base, Corecursive (ana, apo), Recursive (cata))
-import Data.List (delete, elem, elemIndex, zip4)
+import Data.List (delete, elem, elemIndex, find, intercalate, zip4)
 import qualified Data.Map as Map
 import Data.Map.Strict (Map, fromList, keys)
 import Data.Set (Set, (\\))
 import qualified Data.Set as Set
 import Debug.Trace (trace, traceShow, traceShowId)
-import PrettyPrint (TypeDebugInfo (..), showTypeDebugInfo, prettyPrint)
-import Telomare (BreakState', DataType (..), FragExpr (..), FragExprF (..),
-                 FragExprUR (..), FragIndex (..), IExpr (..), IExprF (..),
-                 LamType (..), LocTag (..), ParserTerm (..), ParserTermF (..),
-                 PartialType (..), RecursionPieceFrag,
-                 RecursionSimulationPieces (..), Term1 (..), Term2 (..),
-                 Term3 (..), UnsizedRecursionToken, appF, clamF, deferF, forget,
-                 forgetAnnotationFragExprUR, gateF, i2cF, lamF, nextBreakToken, pairF,
-                 setEnvF, showRunBreakState', tag, unsizedRecursionWrapper,
-                 varNF)
-import Telomare.Parser (AnnotatedUPT, Pattern (..), PatternF (..),
-                        PrettyUPT (..), TelomareParser (..),
-                        UnprocessedParsedTerm (..), UnprocessedParsedTermF (..),
-                        parseWithPrelude)
+import PrettyPrint (TypeDebugInfo (..), prettyPrint, showTypeDebugInfo)
+import Telomare
+import Telomare.Parser (AnnotatedUPT, TelomareParser)
 import Text.Megaparsec (errorBundlePretty, runParser)
 
 debug :: Bool
@@ -251,7 +240,7 @@ removeCaseUPs = transform go where
           dirs2LeavesOnUPT f = fmap (\y -> anno :< ListUPF y) $ (($ x) <$>) . f <$> patterns
           dirs2LeavesOnPattern :: (Pattern -> [AnnotatedUPT -> AnnotatedUPT])
                                -> [AnnotatedUPT]
-          dirs2LeavesOnPattern f = (\a -> anno :< ListUPF a) <$> (pairApplyList <$> (bimap f (pattern2UPT anno) . duplicate <$> patterns))
+          dirs2LeavesOnPattern f = ((\a -> anno :< ListUPF a) . pairApplyList . bimap f (pattern2UPT anno) . duplicate <$> patterns)
       in case2annidatedIfs x
                            patterns
                            (dirs2LeavesOnUPT (findInts anno))
@@ -325,44 +314,114 @@ splitExpr t = let (bf, (_,_,m)) = State.runState (splitExpr' t) (toEnum 0, FragI
 
 -- |`makeLambda ps vl t1` makes a `TLam` around `t1` with `vl` as arguments.
 -- Automatic recognition of Close or Open type of `TLam`.
-makeLambda :: [(String, AnnotatedUPT)] -- ^Bindings
-           -> String                            -- ^Variable name
+makeLambda :: String                            -- ^Variable name
            -> Term1                             -- ^Lambda body
            -> Term1
-makeLambda bindings str term1@(anno :< _) =
+makeLambda str term1@(anno :< _) =
   if unbound == Set.empty then anno :< TLamF (Closed str) term1 else anno :< TLamF (Open str) term1
-  where bindings' = Set.fromList $ fst <$> bindings
-        v = varsTerm1 term1
-        unbound = (v \\ bindings') \\ Set.singleton str
+  where v = varsTerm1 term1
+        unbound = v \\ Set.singleton str
+
 
 -- |Transformation from `AnnotatedUPT` to `Term1` validating and inlining `VarUP`s
-validateVariables :: [(String, AnnotatedUPT)] -- ^ Prelude
-                  -> AnnotatedUPT
+validateVariables :: AnnotatedUPT
                   -> Either String Term1
-validateVariables prelude term =
+validateVariables term =
   let validateWithEnvironment :: AnnotatedUPT
                               -> State.StateT (Map String Term1) (Either String) Term1
       validateWithEnvironment = \case
+        anno :< LetUPF preludeMap inner -> do
+          oldPrelude <- State.get
+
+          -- Build dependency graph
+          let dependencies :: Map String (Set String)
+              dependencies = Map.fromList
+                [(name, Set.fromList $ getDirectDeps def) | (name, def) <- preludeMap]
+
+              -- Get direct variable dependencies (only those defined in this let block)
+              getDirectDeps :: AnnotatedUPT -> [String]
+              getDirectDeps = cata alg where
+                alg :: CofreeF UnprocessedParsedTermF LocTag [String] -> [String]
+                alg = \case
+                    (_ C.:< VarUPF n) -> [n | any ((== n) . fst) preludeMap]
+                    (_ C.:< LamUPF _ body) -> body
+                    (_ C.:< ITEUPF i t e) -> i <> t <> e
+                    (_ C.:< PairUPF a b) -> a <> b
+                    (_ C.:< ListUPF l) -> concat l
+                    (_ C.:< AppUPF f x) -> f <> x
+                    (_ C.:< UnsizedRecursionUPF t r b) -> t <> r <> b
+                    (_ C.:< LeftUPF x) -> x
+                    (_ C.:< RightUPF x) -> x
+                    (_ C.:< TraceUPF x) -> x
+                    (_ C.:< CheckUPF cf x) -> cf <> x
+                    (_ C.:< HashUPF x) -> x
+                    _ -> []
+
+          -- Check if original order works (no forward references)
+          let originalOrder = fmap fst preludeMap
+              hasForwardRef = any (\(i, name) ->
+                let deps = Map.findWithDefault Set.empty name dependencies
+                    laterNames = Set.fromList $ drop (i + 1) originalOrder
+                in not . Set.null $ deps `Set.intersection` laterNames
+                ) (zip [0..] originalOrder)
+              -- Topological sort with cycle detection
+              topologicalSort :: [String] -> Map String (Set String) -> Either [String] [String]
+              topologicalSort names deps = go [] Set.empty names
+                where
+                  go :: [String] -> Set String -> [String] -> Either [String] [String]
+                  go result _ [] = Right (reverse result)
+                  go result inProgress remaining =
+                    case find (canProcess remaining inProgress) remaining of
+                      Nothing ->
+                        -- Must be a cycle - find it for error message
+                        let findCycleFrom start = go' start Set.empty
+                              where go' curr visited
+                                      | curr `Set.member` visited = [curr]
+                                      | otherwise =
+                                          case find (`elem` remaining) (Set.toList $ Map.findWithDefault Set.empty curr deps) of
+                                            Nothing -> []
+                                            Just next -> curr : go' next (Set.insert curr visited)
+                        in Left (findCycleFrom (head remaining))
+                      Just name ->
+                        let inProgress' = inProgress `Set.union`
+                                         Map.findWithDefault Set.empty name deps
+                        in go (name : result) inProgress' (delete name remaining)
+
+                  canProcess rn inProgress name =
+                    all (`notElem` rn) (Set.toList $ Map.findWithDefault Set.empty name deps)
+
+                  delete x = filter (/= x)
+
+          -- Only reorder if necessary
+          sortedBindings <- if hasForwardRef
+            then case topologicalSort originalOrder dependencies of
+              Left cycle -> State.lift . Left $ "Recursion not allowed: circular dependency "
+                                                  <> intercalate " -> " cycle
+              Right sortedNames ->
+                pure [(name, def) | name <- sortedNames,
+                      (name', def) <- preludeMap, name == name']
+            else pure preludeMap  -- Keep original order
+
+          -- Process bindings in order
+          forM_ sortedBindings $ \(name, def) -> do
+            validatedDef <- validateWithEnvironment def
+            State.modify (Map.insert name validatedDef)
+
+          result <- validateWithEnvironment inner
+          State.put oldPrelude
+          pure result
         anno :< LamUPF v x -> do
           oldState <- State.get
           State.modify (Map.insert v (anno :< TVarF v))
           result <- validateWithEnvironment x
           State.put oldState
-          pure $ makeLambda prelude v result
+          pure $ makeLambda v result
         anno :< VarUPF n -> do
           definitionsMap <- State.get
           case Map.lookup n definitionsMap of
             Just v -> pure v
             _      -> State.lift . Left  $ "No definition found for " <> n
-        anno :< LetUPF preludeMap inner -> do
-          oldPrelude <- State.get
-          let addBinding (k,v) = do
-                newTerm <- validateWithEnvironment v
-                State.modify (Map.insert k newTerm)
-          mapM_ addBinding preludeMap
-          result <- validateWithEnvironment inner
-          State.put oldPrelude
-          pure result
+
         anno :< ITEUPF i t e -> (\a b c -> anno :< TITEF a b c) <$> validateWithEnvironment i
                                                                 <*> validateWithEnvironment t
                                                                 <*> validateWithEnvironment e
@@ -444,29 +503,89 @@ addBuiltins aupt = DummyLoc :< LetUPF
   aupt
 
 -- |Process an `AnnotatedUPT` to a `Term3` with failing capability.
-process :: [(String, AnnotatedUPT)] -- ^Prelude
-        -> AnnotatedUPT
+process :: AnnotatedUPT
         -> Either String Term3
-process prelude upt = (\dt -> debugTrace ("Resolver process term:\n" <> prettyPrint dt) dt) . splitExpr <$> process2Term2 prelude upt
+process upt = (\dt -> debugTrace ("Resolver process term:\n" <> prettyPrint dt) dt) . splitExpr <$> process2Term2 upt
 
-process2Term2 :: [(String, AnnotatedUPT)] -- ^Prelude
-              -> AnnotatedUPT
+process2Term2 :: AnnotatedUPT
               -> Either String Term2
-process2Term2 prelude = fmap generateAllHashes
-                      . debruijinize [] <=< validateVariables prelude
-                      . removeCaseUPs
-                      . optimizeBuiltinFunctions
-                      . addBuiltins
+process2Term2 = fmap generateAllHashes
+              . debruijinize [] <=< validateVariables
+              . removeCaseUPs
+              . optimizeBuiltinFunctions
+              . addBuiltins
 
 -- |Helper function to compile to Term2
 runTelomareParser2Term2 :: TelomareParser AnnotatedUPT -- ^Parser to run
-                        -> [(String, AnnotatedUPT)]    -- ^Prelude
-                        -> String                               -- ^Raw string to be parsed
-                        -> Either String Term2                  -- ^Error on Left
-runTelomareParser2Term2 parser prelude str =
-  first errorBundlePretty (runParser parser "" str) >>= process2Term2 prelude
+                        -> String                      -- ^Raw string to be parsed
+                        -> Either String Term2         -- ^Error on Left
+runTelomareParser2Term2 parser str =
+  first errorBundlePretty (runParser parser "" str) >>= process2Term2
 
-parseMain :: [(String, AnnotatedUPT)] -- ^Prelude: [(VariableName, BindedUPT)]
-          -> String                            -- ^Raw string to be parserd.
-          -> Either String Term3               -- ^Error on Left.
-parseMain prelude s = parseWithPrelude prelude s >>= process prelude
+resolveImports' :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
+                -> [Either AnnotatedUPT (String, AnnotatedUPT)] -- ^Main module with both Import and Assignment
+                -> [Either AnnotatedUPT (String, AnnotatedUPT)]
+resolveImports' modules xs = lefts <> rights
+  where
+    lefts' = reverse . filter isLeft $ xs
+    lefts = case lefts' of
+      [] -> lefts'
+      (y:ys) -> case y of
+        (Left (_ :< (ImportUPF var))) ->
+          case lookup var modules of
+            Nothing -> error $ "Import error from " <> var
+            Just x  -> x
+        (Left (_ :< (ImportQualifiedUPF q v))) ->
+          case lookup v modules of
+            Nothing -> error $ "Import error from " <> v
+            Just x  -> (fmap . fmap . first) (\str -> q <> "." <> str) x
+        e -> error $ "Expected import statement. Got:\n" <> show e
+    rights = filter isRight xs
+    isLeft (Left _) = True
+    isLeft _        = False
+    isRight (Right _) = True
+    isRight _         = False
+
+resolveAllImports' :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
+                   -> [Either AnnotatedUPT (String, AnnotatedUPT)]
+                   -> [Either AnnotatedUPT (String, AnnotatedUPT)]
+resolveAllImports' modules x =
+  let resolved = resolveImports' modules x
+  in if resolved == x
+     then resolved
+     else resolveAllImports' modules resolved
+
+resolveAllImports :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
+                  -> [Either AnnotatedUPT (String, AnnotatedUPT)]
+                  -> [(String, AnnotatedUPT)]
+resolveAllImports x y = removeRights <$> resolveAllImports' x y
+  where
+    removeRights = \case
+      Left x -> error $ "resolveImports: Left when should be all Right: " <> show x
+      Right x -> x
+
+resolveImports :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
+               -> String
+               -> [(String, AnnotatedUPT)]
+resolveImports modules moduleName = resolveAllImports modules principal
+  where
+    principal = case lookup moduleName modules of
+      Nothing -> error $ "resolveImports: Module " <> moduleName <> " not found"
+      Just x  -> x
+
+resolveMain :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -- ^Modules: [(ModuleName, [Either Import (VariableName, BindedUPT)])]
+            -> String -- ^Module name with main
+            -> Either String AnnotatedUPT
+resolveMain allModules mainModule = case lookup mainModule allModules of
+  Nothing -> Left $ "Module " <> mainModule <> " not found"
+  Just lst -> let resolved :: [(String, AnnotatedUPT)]
+                  resolved = resolveImports allModules mainModule
+                  maybeMain = lookup "main" resolved
+              in case maybeMain of
+                   Nothing -> Left $ "No main function found in " <> mainModule
+                   Just x  -> Right $ DummyLoc :< LetUPF resolved x
+
+main2Term3 :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -- ^Modules: [(ModuleName, [Either Import (VariableName, BindedUPT)])]
+           -> String -- ^Module name with main
+           -> Either String Term3 -- ^Error on Left
+main2Term3 moduleBindings s = resolveMain moduleBindings s >>= process

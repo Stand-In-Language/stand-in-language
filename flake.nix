@@ -2,80 +2,72 @@
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs";
     flake-parts.url = "github:hercules-ci/flake-parts";
+    haskell-flake.url = "github:srid/haskell-flake";
     flake-compat = {
       url = "github:edolstra/flake-compat";
       flake = false;
     };
-    hvm.url = "github:hhefesto/HVM";
   };
 
-  outputs = inputs@{ self, nixpkgs, flake-utils, flake-compat, hvm, flake-parts, ... }:
+  outputs = inputs@{ self, nixpkgs, flake-compat, flake-parts, haskell-flake, ... }:
     flake-parts.lib.mkFlake { inherit inputs; } {
       systems = [ "x86_64-linux" "aarch64-linux" ];
-      imports = [];
-      perSystem = { self', system, ... }:
-      let pkgs = import nixpkgs { inherit system; };
-          t = pkgs.lib.trivial;
-          hl = pkgs.haskell.lib;
-          compiler = pkgs.haskell.packages."ghc92";
-          project = runTests: executable-name: devTools: # [1]
-            let addBuildTools = (t.flip hl.addBuildTools) devTools;
-                addBuildDepends = (t.flip hl.addBuildDepends)
-                  [ hvm.defaultPackage.${system} ];
-                doRunTests =
-                  if runTests then hl.doCheck else hl.dontCheck;
-            in compiler.developPackage {
-              root = pkgs.lib.sourceFilesBySuffices ./.
-                       [ ".cabal"
-                         ".hs"
-                         ".tel"
-                         "cases"
-                         "LICENSE"
-                       ];
-              name = executable-name;
-              returnShellEnv = !(devTools == [ ]); # [2]
+      imports = [ inputs.haskell-flake.flakeModule ];
+      perSystem = { self', system, pkgs, ... }: {
+        haskellProjects.default = {
+          basePackages = pkgs.haskell.packages.ghc96;
+          # To get access to non-Haskell dependencies one most add them to `extraBuildDepends`
+          # and then use the haskell package `which` to locate the Filepath of the executable
+          # that's being added. In this toy example we'll be using the non-Haskell dependency
+          # `cowsay` findable in nixpkgs like so:
+          #
+          # telomare = {
+          #   extraBuildDepends = [ pkgs.cowsay
+          #                       ];
+          # };
+          #
+          # An example of Haskell code using `cowsay` would be:
+          # ```haskell
+          # cowsayBin :: FilePath
+          # cowsayBin = $(staticWhich "cowsay")
 
-              modifier = (t.flip t.pipe) [
-                addBuildDepends
-                addBuildTools
-                doRunTests
-                # hl.dontHaddock
-              ];
-
-              overrides = self: super: {
-                  sbv = pkgs.haskell.lib.compose.markUnbroken (pkgs.haskell.lib.dontCheck super.sbv);
-              };
-
-              # uncomment for profiling:
-              # cabal2nixOptions = "--enable-profiling --benchmark";
+          # cowsay :: IO String
+          # cowsay = do
+          #   (_, mhout, _, _) <- createProcess (shell $ show cowsayBin <> " hola") { std_out = CreatePipe }
+          #   case mhout of
+          #     Just hout -> hGetContents hout
+          #     Nothing -> pure "mhout failed"
+          # ```
+          # settings = {
+          #   semaphore-compat = {
+          #     check = false;
+          #     jailbreak = true;
+          #   };
+          # };
+          devShell = {
+            enable = true;
+            tools = hp: {
+              inherit (hp) cabal-install haskell-language-server;
             };
-
-      in {
-        packages.telomare = project false "telomare" [ ]; # [3]
-        packages.default = self.packages.${system}.telomare;
-
-        apps.default = {
-          type = "app";
-          program = self.packages.${system}.telomare + "/bin/telomare";
-        };
-
-        apps.repl = {
-          type = "app";
-          program = self.packages.${system}.telomare + "/bin/telomare-repl";
-        };
-
-        devShells.default = project true "telomare-with-tools" (with compiler; [ # [4]
-          cabal-install
-          haskell-language-server
-          hlint
-          ghcid
-          stylish-haskell
-          hvm.defaultPackage.${system}
-        ]);
-
-        checks = {
-          build-and-tests = project true "telomare-with-tests" [ ];
-        };
+          };
       };
+
+      packages.default = self'.packages.telomare;
+
+      apps.default = {
+        type = "app";
+        program = self.packages.${system}.telomare + "/bin/telomare";
+      };
+      apps.repl = {
+        type = "app";
+        program = self.packages.${system}.telomare + "/bin/telomare-repl";
+      };
+      apps.evaluare = {
+        type = "app";
+        program = self.packages.${system}.telomare + "/bin/telomare-evaluare";
+      };
+
+      checks = self'.packages;
     };
+  };
 }

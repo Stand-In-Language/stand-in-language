@@ -1,29 +1,23 @@
-{-# LANGUAGE DeriveTraversable   #-}
 {-# LANGUAGE LambdaCase          #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TemplateHaskell     #-}
 {-# LANGUAGE TypeFamilies        #-}
 
 module Telomare.Parser where
 
 import Control.Comonad.Cofree (Cofree (..), unwrap)
-import Control.Lens.Combinators (Plated (..), makePrisms)
 import Control.Lens.Plated (Plated (..))
 import Control.Monad (void)
 import Control.Monad.State (State)
-import Data.Bifunctor (Bifunctor (first, second))
+import Data.Bifunctor (Bifunctor (first, second), bimap)
 import Data.Functor (($>))
-import Data.Functor.Foldable (Base, Recursive (cata), para)
+import Data.Functor.Foldable (Base, cata, para)
 import Data.Functor.Foldable.TH (MakeBaseFunctor (makeBaseFunctor))
 import Data.Maybe (fromJust)
 import Data.Void (Void)
 import Data.Word (Word8)
+import PrettyPrint (indentSansFirstLine)
 import qualified System.IO.Strict as Strict
-import Telomare (LocTag (..), ParserTerm (..), ParserTermF (..),
-                 RecursionPieceFrag, RecursionSimulationPieces (..), Term1 (..),
-                 Term2 (..), Term3 (..), UnsizedRecursionToken, appF, clamF,
-                 deferF, forget, lamF, nextBreakToken, unsizedRecursionWrapper,
-                 varNF)
+import Telomare
 import Telomare.TypeChecker (typeCheck)
 import Text.Megaparsec (MonadParsec (eof, notFollowedBy, try), Parsec, Pos,
                         PosState (pstateSourcePos),
@@ -37,119 +31,14 @@ import Text.Megaparsec.Debug (dbg)
 import Text.Megaparsec.Pos (Pos)
 import Text.Read (readMaybe)
 import Text.Show.Deriving (deriveShow1)
--- import Data.Fix hiding (cata)
--- import Control.Comonad (Comonad(..))
-
--- |AST for patterns in `case` expressions
-data Pattern
-  = PatternVar String
-  | PatternInt Int
-  | PatternString String
-  | PatternIgnore
-  | PatternPair Pattern Pattern
-  deriving (Show, Eq, Ord)
-makeBaseFunctor ''Pattern
-
-data UnprocessedParsedTerm
-  = VarUP String
-  | ITEUP UnprocessedParsedTerm UnprocessedParsedTerm UnprocessedParsedTerm
-  | LetUP [(String, UnprocessedParsedTerm)] UnprocessedParsedTerm
-  | ListUP [UnprocessedParsedTerm]
-  | IntUP Int
-  | StringUP String
-  | PairUP UnprocessedParsedTerm UnprocessedParsedTerm
-  | AppUP UnprocessedParsedTerm UnprocessedParsedTerm
-  | LamUP String UnprocessedParsedTerm
-  | ChurchUP Int
-  | UnsizedRecursionUP UnprocessedParsedTerm UnprocessedParsedTerm UnprocessedParsedTerm
-  | LeftUP UnprocessedParsedTerm
-  | RightUP UnprocessedParsedTerm
-  | TraceUP UnprocessedParsedTerm
-  | CheckUP UnprocessedParsedTerm UnprocessedParsedTerm
-  | HashUP UnprocessedParsedTerm -- ^ On ad hoc user defined types, this term will be substitued to a unique Int.
-  | CaseUP UnprocessedParsedTerm [(Pattern, UnprocessedParsedTerm)]
-  deriving (Eq, Ord, Show)
-makeBaseFunctor ''UnprocessedParsedTerm -- Functorial version UnprocessedParsedTerm
-makePrisms ''UnprocessedParsedTerm
-deriveShow1 ''UnprocessedParsedTermF
 
 type AnnotatedUPT = Cofree UnprocessedParsedTermF LocTag
-
-newtype PrettyPattern = PrettyPattern Pattern
-
-instance Show PrettyPattern where
-  show = \case
-    (PrettyPattern (PatternInt x)) -> show x
-    (PrettyPattern (PatternVar x)) -> x
-    (PrettyPattern (PatternString x)) ->  show x
-    (PrettyPattern (PatternPair x y)) -> "(" <> (show . PrettyPattern $ x) <> ", " <> (show . PrettyPattern $ y) <> ")"
-    (PrettyPattern PatternIgnore) -> "_"
-
-newtype PrettyUPT = PrettyUPT UnprocessedParsedTerm
-
-instance Show PrettyUPT where
-  show (PrettyUPT upt) = cata alg upt where
-    indentSansFirstLine :: Int -> String -> String
-    indentSansFirstLine i x = removeLastNewLine res where
-      res = unlines ((\(s:ns) -> s:((indent i <>) <$> ns)) (lines x))
-      indent 0 = []
-      indent n = ' ' : indent (n - 1)
-      removeLastNewLine str =
-        case reverse str of
-          '\n' : rest -> reverse rest
-          x           -> str
-    alg :: Base UnprocessedParsedTerm String -> String
-    alg = \case
-      IntUPF i -> show i
-      VarUPF str -> str
-      StringUPF str -> show str
-      PairUPF x y -> if length (lines (x <> y)) > 1
-                       then "( " <> indentSansFirstLine 2 x <> "\n" <>
-                            ", " <> indentSansFirstLine 2 y <> "\n" <>
-                            ")"
-                       else "(" <> x <> ", " <> y <>")"
-      (ITEUPF x y z) -> "if " <> indentSansFirstLine 3 x <> "\n" <>
-                          "  then " <> indentSansFirstLine 7 y <> "\n" <>
-                          "  else " <> indentSansFirstLine 7 z
-      (LetUPF ls x) ->
-        "let " <> indentSansFirstLine 4 (unlines (assignList <$> ls)) <> "\n" <>
-        "in " <> indentSansFirstLine 3 x
-          where
-            assignList :: (String, String) -> String
-            assignList (str, upt) = str <> " = " <> indentSansFirstLine (3 + length str) upt
-      (ListUPF []) -> "[]"
-      (ListUPF [x]) -> "[" <> x <> "]"
-      (ListUPF ls) ->
-        "[" <> removeFirstComma (unlines (indentSansFirstLine 2 . (", " <>) <$> ls)) <>
-        "]"
-          where
-            removeFirstComma = \case
-              (',':str) -> str
-              _         -> error "removeFirstComma: input does not start with a comma"
-      (AppUPF x y) -> (if (length . words $ x) == 1 then x else "(" <> x <> ")") <> " " <>
-                      if (length . words $ y) == 1 then y else "(" <> y <> ")"
-      (LamUPF str y) -> "\\ " <> str <> " -> " <> indentSansFirstLine (6 + length str) y
-      (ChurchUPF x) -> "$" <> show x
-      (LeftUPF x) -> "left (" <> indentSansFirstLine 6 x <> ")"
-      (RightUPF x) -> "right (" <> indentSansFirstLine 7 x <> ")"
-      (TraceUPF x) -> "trace (" <> indentSansFirstLine 7 x <> ")"
-      (UnsizedRecursionUPF x y z) -> "{ " <> indentSansFirstLine 2 x <>
-                                     ", " <> indentSansFirstLine 2 y <>
-                                     ", " <> indentSansFirstLine 2 z <>
-                                     "}"
-      (HashUPF x) -> "# " <> indentSansFirstLine 2 x
-      (CaseUPF x ls) -> "case " <> x <> " of\n" <>
-                        "  " <> indentSansFirstLine 2 (unlines ((\(p, r) -> indentSansFirstLine 2 (show (PrettyPattern p) <> " -> " <> r)) <$> ls))
-      (CheckUPF x y) -> if length (lines (x <> y)) > 1
-                          then "(" <> indentSansFirstLine 2 y <> " : " <> "\n" <>
-                               "    " <> indentSansFirstLine 4 y <> ")"
-                          else "(" <> y <> " : " <> x <> ")"
 
 instance Plated UnprocessedParsedTerm where
   plate f = \case
     ITEUP i t e -> ITEUP <$> f i <*> f t <*> f e
-    LetUP l x   -> LetUP <$> traverse sequenceA (second f <$> l) <*> f x
-    CaseUP x l  -> CaseUP <$> f x <*> traverse sequenceA (second f <$> l)
+    LetUP l x   -> LetUP <$> traverse (sequenceA . second f) l <*> f x
+    CaseUP x l  -> CaseUP <$> f x <*> traverse (sequenceA . second f) l
     ListUP l    -> ListUP <$> traverse f l
     PairUP a b  -> PairUP <$> f a <*> f b
     AppUP u x   -> AppUP <$> f u <*> f x
@@ -165,9 +54,6 @@ instance Plated UnprocessedParsedTerm where
 -- |TelomareParser :: * -> *
 type TelomareParser = Parsec Void String
 
-
--- parseVariable :: TelomareParser UnprocessedParsedTerm
--- parseVariable = VarUP <$> identifier
 -- |Parse a variable.
 parseVariable :: TelomareParser AnnotatedUPT
 parseVariable = do
@@ -175,7 +61,6 @@ parseVariable = do
   let line = unPos . sourceLine . pstateSourcePos . statePosState $ s
       column = unPos . sourceColumn . pstateSourcePos . statePosState $ s
   (\str -> Loc line column :< VarUPF str) <$> identifier
-
 
 -- |Line comments start with "--".
 lineComment :: TelomareParser ()
@@ -213,14 +98,14 @@ reserved w = (lexeme . try) (string w *> notFollowedBy alphaNumChar)
 
 -- |List of reserved words
 rws :: [String]
-rws = ["let", "in", "if", "then", "else", "case", "of" ]
+rws = ["let", "in", "if", "then", "else", "case", "of", "import"]
 
 -- |Variable identifiers can consist of alphanumeric characters, underscore,
 -- and must start with an English alphabet letter
 identifier :: TelomareParser String
 identifier = lexeme . try $ p >>= check
   where
-    p = (:) <$> letterChar <*> many (alphaNumChar <|> char '_' <?> "variable")
+    p = (:) <$> letterChar <*> many (alphaNumChar <|> char '_' <|> char '.' <?> "variable")
     check x = if x `elem` rws
               then fail ("keyword " <> (show x <> " cannot be an identifier"))
               else pure x
@@ -250,8 +135,6 @@ getLineColumn = do
   let line = unPos . sourceLine . pstateSourcePos . statePosState $ s
       column = unPos . sourceColumn . pstateSourcePos . statePosState $ s
   pure $ Loc line column
-
-  -- (\str -> (line, column) :< VarUPF str) <$> identifier
 
 -- |Parse string literal.
 parseString :: TelomareParser AnnotatedUPT
@@ -441,12 +324,29 @@ parseAssignment = do
 
 -- |Parse top level expressions.
 parseTopLevel :: TelomareParser AnnotatedUPT
-parseTopLevel = parseTopLevelWithPrelude []
+parseTopLevel = parseTopLevelWithExtraModuleBindings []
+
+parseImport :: TelomareParser AnnotatedUPT
+parseImport = do
+  x <- getLineColumn
+  reserved "import" <* scn
+  var <- identifier <* scn
+  pure $ x :< ImportUPF var
+
+parseImportQualified :: TelomareParser AnnotatedUPT
+parseImportQualified = do
+  x <- getLineColumn
+  reserved "import" <* scn
+  reserved "qualified" <* scn
+  m <- identifier <* scn
+  reserved "as" <* scn
+  qualifier <- identifier <* scn
+  pure $ x :< ImportQualifiedUPF qualifier m
 
 -- |Parse top level expressions.
-parseTopLevelWithPrelude :: [(String, AnnotatedUPT)]    -- ^Prelude
-                         -> TelomareParser AnnotatedUPT
-parseTopLevelWithPrelude lst = do
+parseTopLevelWithExtraModuleBindings :: [(String, AnnotatedUPT)]
+                                     -> TelomareParser AnnotatedUPT
+parseTopLevelWithExtraModuleBindings lst = do
   x <- getLineColumn
   bindingList <- scn *> many parseAssignment <* eof
   pure $ x :< LetUPF (lst <> bindingList) (fromJust $ lookup "main" bindingList)
@@ -479,12 +379,41 @@ parseSuccessful parser str =
     Right _ -> pure True
     Left _  -> pure False
 
+runParseLongExpr :: String -> Either String UnprocessedParsedTerm
+runParseLongExpr str = bimap errorBundlePretty forget' $ runParser parseLongExpr "" str
+  where
+    forget' :: Cofree UnprocessedParsedTermF LocTag -> UnprocessedParsedTerm
+    forget' = forget
+
 parsePrelude :: String -> Either String [(String, AnnotatedUPT)]
 parsePrelude str = let result = runParser (scn *> many parseAssignment <* eof) "" str
                     in first errorBundlePretty result
 
--- |Parse with specified prelude
+parseImportOrAssignment :: TelomareParser (Either AnnotatedUPT (String, AnnotatedUPT))
+parseImportOrAssignment = do
+  x <- getLineColumn
+  maybeImport <- optional $ scn *> (try parseImportQualified <|> try parseImport) <* scn
+  case maybeImport of
+    Nothing -> do
+      maybeAssignment <- optional $ scn *> try parseAssignment <* scn
+      case maybeAssignment of
+        Nothing -> fail "Expected either an import statement or an assignment"
+        Just a  -> pure $ Right a
+    Just imp -> pure $ Left imp
+
 parseWithPrelude :: [(String, AnnotatedUPT)]   -- ^Prelude
-                 -> String                              -- ^Raw string to be parsed
+                 -> String                     -- ^Raw string to be parsed
                  -> Either String AnnotatedUPT -- ^Error on Left
-parseWithPrelude prelude str = first errorBundlePretty $ runParser (parseTopLevelWithPrelude prelude) "" str
+parseWithPrelude prelude str = first errorBundlePretty $ runParser (parseTopLevelWithExtraModuleBindings prelude) "" str
+
+parseModule :: String -> Either String [Either AnnotatedUPT (String, AnnotatedUPT)]
+parseModule str = let result = runParser (scn *> many parseImportOrAssignment <* eof) "" str
+                  in first errorBundlePretty result
+
+-- |Parse either a single expression or top level definitions defaulting to the `main` definition.
+--  This function was made for telomare-evaluare
+parseOneExprOrTopLevelDefs :: [(String, AnnotatedUPT)] -> TelomareParser AnnotatedUPT
+parseOneExprOrTopLevelDefs extraModuleBindings =
+  choice $ try <$> [ parseTopLevelWithExtraModuleBindings extraModuleBindings
+                   , parseLongExpr
+                   ]

@@ -2,29 +2,29 @@
 
 module Main where
 
-import Data.Char
 import qualified Options.Applicative as O
+import System.Directory (listDirectory)
+import System.FilePath (takeBaseName, takeExtension)
 import qualified System.IO.Strict as Strict
-import Telomare.Eval (compileMain, evalLoop, runMain, schemeEval)
-import Telomare.Parser (UnprocessedParsedTerm (..), parsePrelude)
-import Telomare.Resolver (parseMain)
-import Telomare.TypeChecker (inferType, typeCheck)
+import Telomare.Eval (runMain)
 
-data TelomareOpts = TelomareOpts
-  { telomareFile :: String
-  , preludeFile  :: String
-  } deriving Show
+newtype TelomareOpts
+  = TelomareOpts {telomareFile :: String}
+  deriving Show
 
 telomareOpts :: O.Parser TelomareOpts
 telomareOpts = TelomareOpts
   <$> O.argument O.str (O.metavar "TELOMARE-FILE")
-  <*> O.strOption
-      ( O.long "prelude"
-        <> O.metavar "PRELUDE-FILE"
-        <> O.showDefault
-        <> O.value "./Prelude.tel"
-        <> O.short 'p'
-        <> O.help "Telomare prelude file" )
+
+getAllModules :: IO [(String, String)]
+getAllModules = do
+  allEntries <- listDirectory "."
+  let telFiles = filter (\f -> takeExtension f == ".tel") allEntries
+      readTelFile :: FilePath -> IO (String, String)
+      readTelFile file = do
+          content <- readFile file
+          return (takeBaseName file, content)
+  mapM readTelFile telFiles
 
 main :: IO ()
 main = do
@@ -32,5 +32,5 @@ main = do
         ( O.fullDesc
           <> O.progDesc "A simple but robust virtual machine" )
   topts <- O.execParser opts
-  preludeString <- Strict.readFile $ preludeFile topts
-  Strict.readFile (telomareFile topts) >>= runMain preludeString
+  allModules :: [(String, String)] <- getAllModules
+  runMain allModules . takeBaseName . telomareFile $ topts

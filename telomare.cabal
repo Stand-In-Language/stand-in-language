@@ -13,7 +13,7 @@ build-type:          Simple
 extra-source-files:  CHANGELOG.md, README.md
 cabal-version:       >=1.10
 extra-libraries:     chez
-                     
+
 data-files:          bench/MemoryBench/cases
                    , Prelude.tel
                    , tictactoe.tel
@@ -59,7 +59,7 @@ library
                      , transformers
                      , megaparsec
                      , memory
-                     , sbv
+                     -- , sbv
                      , strict
                      , tasty
                      , tasty-hunit
@@ -92,7 +92,8 @@ executable telomare
                      , telomare
                      , strict
                      , optparse-applicative
-
+                     , directory
+                     , filepath
   default-language:    Haskell2010
 
 executable telomare-repl
@@ -109,6 +110,54 @@ executable telomare-repl
                      , mtl
                      , free
   default-language:    Haskell2010
+
+executable telomare-evaluare
+  hs-source-dirs: app
+  main-is: Evaluare.hs
+  ghc-options: -threaded -Wall
+  build-depends:
+    base,
+    containers,
+    reflex,
+    reflex-vty,
+    text,
+    time,
+    transformers,
+    vty,
+    telomare,
+    mtl,
+    free,
+    strict
+  default-language: Haskell2010
+  default-extensions:
+    BangPatterns
+    ConstraintKinds
+    CPP
+    DataKinds
+    DefaultSignatures
+    DeriveFunctor
+    DeriveGeneric
+    FlexibleContexts
+    FlexibleInstances
+    FunctionalDependencies
+    GADTs
+    GeneralizedNewtypeDeriving
+    KindSignatures
+    LambdaCase
+    MultiParamTypeClasses
+    MultiWayIf
+    OverloadedStrings
+    PatternGuards
+    PolyKinds
+    QuasiQuotes
+    RankNTypes
+    RecursiveDo
+    ScopedTypeVariables
+    StandaloneDeriving
+    TemplateHaskell
+    TupleSections
+    TypeApplications
+    TypeFamilies
 
 test-suite telomare-test
   type:                exitcode-stdio-1.0

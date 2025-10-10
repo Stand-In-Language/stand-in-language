@@ -2,28 +2,31 @@
 {-# LANGUAGE DeriveAnyClass             #-}
 {-# LANGUAGE DeriveGeneric              #-}
 {-# LANGUAGE DeriveTraversable          #-}
+{-# LANGUAGE FlexibleInstances          #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE InstanceSigs               #-}
 {-# LANGUAGE LambdaCase                 #-}
 {-# LANGUAGE PatternSynonyms            #-}
 {-# LANGUAGE ScopedTypeVariables        #-}
+{-# LANGUAGE StandaloneDeriving         #-}
 {-# LANGUAGE TemplateHaskell            #-}
 {-# LANGUAGE TypeFamilies               #-}
 {-# LANGUAGE ViewPatterns               #-}
 
-module Telomare where --(IExpr(..), ParserTerm(..), LamType(..), Term1(..), Term2(..), Term3(..), Term4(..)
-               --, FragExpr(..), FragIndex, TelomareLike, fromTelomare, toTelomare, rootFrag) where
+module Telomare where
 
 import Control.Applicative (Applicative (liftA2), liftA, liftA3)
 import Control.Comonad.Cofree (Cofree ((:<)))
 import qualified Control.Comonad.Trans.Cofree as CofreeT (CofreeF (..))
 import Control.DeepSeq (NFData (..))
-import Control.Lens.Combinators (Plated (..), transform)
+import Control.Lens.Combinators (Plated (..), makePrisms, transform)
 import Control.Monad.Except (ExceptT)
 import Control.Monad.State (State)
 import qualified Control.Monad.State as State
+import Data.Bool (bool)
 import Data.Char (chr, ord)
 import Data.Eq.Deriving (deriveEq1)
+import Data.Functor.Classes (Eq1 (..), Eq2 (..), Show1 (..), Show2 (..), eq1)
 import Data.Functor.Foldable (Base, Corecursive (embed),
                               Recursive (cata, project))
 import Data.Functor.Foldable.TH (MakeBaseFunctor (makeBaseFunctor))
@@ -37,7 +40,6 @@ import GHC.Generics (Generic)
 import Text.Show.Deriving (deriveShow1)
 import Data.Validity (Validity)
 import Data.GenValidity (GenValid)
-
 
 {- top level TODO list
  - change AbortFrag form to something more convenient
@@ -141,9 +143,28 @@ data ParserTerm l v
   | TLimitedRecursion (ParserTerm l v) (ParserTerm l v) (ParserTerm l v)
   deriving (Eq, Ord, Functor, Foldable, Traversable)
 makeBaseFunctor ''ParserTerm -- Functorial version ParserTermF
-deriveShow1 ''ParserTermF
-deriveEq1 ''ParserTermF
-deriveOrd1 ''ParserTermF
+deriving instance (Show l, Show v, Show a) => Show (ParserTermF l v a)
+deriving instance (Show l, Show v) => Show1 (ParserTermF l v)
+deriving instance (Show l) => Show2 (ParserTermF l)
+deriving instance (Eq l, Eq v, Eq a) => Eq (ParserTermF l v a)
+instance Eq l => Eq2 (ParserTermF l) where
+  liftEq2 eqv eqa TZeroF TZeroF = True
+  liftEq2 eqv eqa (TPairF x1 y1) (TPairF x2 y2) = eqa x1 x2 && eqa y1 y2
+  liftEq2 eqv eqa (TVarF v1) (TVarF v2) = eqv v1 v2
+  liftEq2 eqv eqa (TAppF x1 y1) (TAppF x2 y2) = eqa x1 x2 && eqa y1 y2
+  liftEq2 eqv eqa (TCheckF x1 y1) (TCheckF x2 y2) = eqa x1 x2 && eqa y1 y2
+  liftEq2 eqv eqa (TITEF c1 t1 e1) (TITEF c2 t2 e2) = eqa c1 c2 && eqa t1 t2 && eqa e1 e2
+  liftEq2 eqv eqa (TLeftF x1) (TLeftF x2) = eqa x1 x2
+  liftEq2 eqv eqa (TRightF x1) (TRightF x2) = eqa x1 x2
+  liftEq2 eqv eqa (TTraceF x1) (TTraceF x2) = eqa x1 x2
+  liftEq2 eqv eqa (THashF x1) (THashF x2) = eqa x1 x2
+  liftEq2 eqv eqa (TChurchF n1) (TChurchF n2) = n1 == n2
+  liftEq2 eqv eqa (TLamF l1 x1) (TLamF l2 x2) = l1 == l2 && eqa x1 x2
+  liftEq2 eqv eqa (TLimitedRecursionF a1 b1 c1) (TLimitedRecursionF a2 b2 c2) =
+    eqa a1 a2 && eqa b1 b2 && eqa c1 c2
+  liftEq2 _ _ _ _ = False
+deriving instance (Eq l, Eq v) => Eq1 (ParserTermF l v)
+deriving instance (Ord l, Ord v, Ord a) => Ord (ParserTermF l v a)
 
 instance Plated (ParserTerm l v) where
   plate f = \case
@@ -157,7 +178,6 @@ instance Plated (ParserTerm l v) where
     THash x    -> THash <$> f x
     TCheck c x -> TCheck <$> f c <*> f x
     x          -> pure x
-
 
 instance (Show l, Show v) => Show (ParserTerm l v) where
   show x = State.evalState (cata alg x) 0 where
@@ -270,8 +290,6 @@ data FragExpr a
   | AuxFrag a
   deriving (Eq, Ord, Generic, NFData)
 makeBaseFunctor ''FragExpr -- Functorial version FragExprF.
-deriveShow1 ''FragExprF
-deriveEq1 ''FragExprF
 
 instance Plated (FragExpr a) where
   plate f = \case
@@ -298,6 +316,67 @@ showFragAlg = \case
 
 instance Show a => Show (FragExpr a) where
   show fexp = State.evalState (cata showFragAlg fexp) 0
+
+instance (Eq a, Eq r) => Eq (FragExprF a r) where
+  ZeroFragF == ZeroFragF             = True
+  PairFragF x1 y1 == PairFragF x2 y2 = x1 == x2 && y1 == y2
+  EnvFragF == EnvFragF               = True
+  SetEnvFragF x1 == SetEnvFragF x2   = x1 == x2
+  DeferFragF i1 == DeferFragF i2     = i1 == i2
+  AbortFragF == AbortFragF           = True
+  GateFragF x1 y1 == GateFragF x2 y2 = x1 == x2 && y1 == y2
+  LeftFragF x1 == LeftFragF x2       = x1 == x2
+  RightFragF x1 == RightFragF x2     = x1 == x2
+  TraceFragF == TraceFragF           = True
+  AuxFragF x1 == AuxFragF x2         = x1 == x2
+  _ == _                             = False
+
+instance Eq a => Eq1 (FragExprF a) where
+  liftEq eq ZeroFragF ZeroFragF                 = True
+  liftEq eq (PairFragF x1 y1) (PairFragF x2 y2) = eq x1 x2 && eq y1 y2
+  liftEq eq EnvFragF EnvFragF                   = True
+  liftEq eq (SetEnvFragF x1) (SetEnvFragF x2)   = eq x1 x2
+  liftEq eq (DeferFragF i1) (DeferFragF i2)     = i1 == i2
+  liftEq eq AbortFragF AbortFragF               = True
+  liftEq eq (GateFragF x1 y1) (GateFragF x2 y2) = eq x1 x2 && eq y1 y2
+  liftEq eq (LeftFragF x1) (LeftFragF x2)       = eq x1 x2
+  liftEq eq (RightFragF x1) (RightFragF x2)     = eq x1 x2
+  liftEq eq TraceFragF TraceFragF               = True
+  liftEq eq (AuxFragF x1) (AuxFragF x2)         = x1 == x2
+  liftEq _ _ _                                  = False
+
+instance (Show a, Show r) => Show (FragExprF a r) where
+  show ZeroFragF       = "ZeroFragF"
+  show (PairFragF x y) = "PairFragF " <> show x <> " " <> show y
+  show EnvFragF        = "EnvFragF"
+  show (SetEnvFragF x) = "SetEnvFragF " <> show x
+  show (DeferFragF i)  = "DeferFragF " <> show i
+  show AbortFragF      = "AbortFragF"
+  show (GateFragF x y) = "GateFragF " <> show x <> " " <> show y
+  show (LeftFragF x)   = "LeftFragF " <> show x
+  show (RightFragF x)  = "RightFragF " <> show x
+  show TraceFragF      = "TraceFragF"
+  show (AuxFragF x)    = "AuxFragF " <> show x
+
+instance Show a => Show1 (FragExprF a) where
+  liftShowsPrec showsPrecf _ d ZeroFragF = showString "ZeroFragF"
+  liftShowsPrec showsPrecf _ d (PairFragF x y) =
+    showString "PairFragF " . showsPrecf d x . showChar ' ' . showsPrecf d y
+  liftShowsPrec _ _ _ EnvFragF = showString "EnvFragF"
+  liftShowsPrec showsPrecf _ d (SetEnvFragF x) =
+    showString "SetEnvFragF " . showsPrecf d x
+  liftShowsPrec _ _ d (DeferFragF i) =
+    showString "DeferFragF " . shows i
+  liftShowsPrec _ _ _ AbortFragF = showString "AbortFragF"
+  liftShowsPrec showsPrecf _ d (GateFragF x y) =
+    showString "GateFragF " . showsPrecf d x . showChar ' ' . showsPrecf d y
+  liftShowsPrec showsPrecf _ d (LeftFragF x) =
+    showString "LeftFragF " . showsPrecf d x
+  liftShowsPrec showsPrecf _ d (RightFragF x) =
+    showString "RightFragF " . showsPrecf d x
+  liftShowsPrec _ _ _ TraceFragF = showString "TraceFragF"
+  liftShowsPrec _ _ d (AuxFragF x) =
+    showString "AuxFragF " . shows x
 
 newtype EIndex = EIndex { unIndex :: Int } deriving (Eq, Show, Ord)
 
@@ -343,9 +422,6 @@ type BreakState' a b = BreakState a b (Cofree (FragExprF a) LocTag)
 
 type IndExpr = ExprA EIndex
 
--- instance Show Term3 where
---   show = ppShow
-
 instance MonoidEndoFolder IExpr where
   monoidFold f Zero = f Zero
   monoidFold f (Pair a b) = mconcat [f (Pair a b), monoidFold f a, monoidFold f b]
@@ -381,15 +457,14 @@ instance Show RunTimeError where
   show (GenericRunTimeError s i) = "Generic Runtime Error: " <> s <> " -- " <> show i
   show (ResultConversionError s) = "Couldn't convert runtime result to IExpr: " <> s
 
--- TODO ExceptT is slow, get rid of it
-type RunResult = ExceptT RunTimeError IO
+-- type RunResult = ExceptT RunTimeError IO
 
 class TelomareLike a where
   fromTelomare :: IExpr -> a
   toTelomare :: a -> Maybe IExpr
 
 class TelomareLike a => AbstractRunTime a where
-  eval :: a -> RunResult a
+  eval :: a -> a
 
 rootFrag :: Map FragIndex a -> a
 rootFrag = (Map.! FragIndex 0)
@@ -658,19 +733,6 @@ instance Plated DataType where
     PairType a b -> PairType <$> f a <*> f b
     x            -> pure x
 
-newtype PrettyDataType = PrettyDataType DataType
-
-showInternal :: DataType -> String
-showInternal at@(ArrType _ _) = concat ["(", show $ PrettyDataType at, ")"]
-showInternal t                = show . PrettyDataType $ t
-
-instance Show PrettyDataType where
-  show (PrettyDataType dt) = case dt of
-    ZeroType -> "D"
-    (ArrType a b) -> concat [showInternal a, " -> ", showInternal b]
-    (PairType a b) ->
-      concat ["(", show $ PrettyDataType a, ",", show $ PrettyDataType b, ")"]
-
 data PartialType
   = ZeroTypeP
   | AnyType
@@ -694,22 +756,6 @@ toPartialType = \case
   ArrType i o -> ArrTypeP (toPartialType i) (toPartialType o)
   PairType a b -> PairTypeP (toPartialType a) (toPartialType b)
 
-newtype PrettyPartialType = PrettyPartialType PartialType
-
-showInternalP :: PartialType -> String
-showInternalP at@(ArrTypeP _ _) = concat ["(", show $ PrettyPartialType at, ")"]
-showInternalP t                 = show . PrettyPartialType $ t
-
-instance Show PrettyPartialType where
-  show (PrettyPartialType dt) = case dt of
-    ZeroTypeP -> "Z"
-    AnyType -> "A"
-    (ArrTypeP a b) -> concat [showInternalP a, " -> ", showInternalP b]
-    (PairTypeP a b) ->
-      concat ["(", show $ PrettyPartialType a, ",", show $ PrettyPartialType b, ")"]
-    (TypeVariable _ (-1)) -> "badType"
-    (TypeVariable _ x) -> 'v' : show x
-
 mergePairType :: DataType -> DataType
 mergePairType = transform f where
   f (PairType ZeroType ZeroType) = ZeroType
@@ -731,16 +777,6 @@ cleanType = \case
   ZeroTypeP     -> True
   PairTypeP a b -> cleanType a && cleanType b
   _             -> False
-
-newtype PrettyIExpr = PrettyIExpr IExpr
-
-instance Show PrettyIExpr where
-  show (PrettyIExpr iexpr) = case iexpr of
-    p@(Pair a b) -> if isNum p
-      then show $ g2i p
-      else concat ["(", show (PrettyIExpr a), ",", show (PrettyIExpr b), ")"]
-    Zero -> "0"
-    x -> show x
 
 g2i :: IExpr -> Int
 g2i Zero       = 0
@@ -949,3 +985,148 @@ convertAbortMessage = \case
   AbortUser s -> "user abort: " <> g2s s
   AbortAny -> "user abort of all possible abort reasons (non-deterministic input)"
   x -> "unexpected abort: " <> show x
+
+-- |AST for patterns in `case` expressions
+data Pattern
+  = PatternVar String
+  | PatternInt Int
+  | PatternString String
+  | PatternIgnore
+  | PatternPair Pattern Pattern
+  deriving (Show, Eq, Ord)
+makeBaseFunctor ''Pattern
+
+-- |Firstly parsed AST sans location annotations
+data UnprocessedParsedTerm
+  = VarUP String
+  | ITEUP UnprocessedParsedTerm UnprocessedParsedTerm UnprocessedParsedTerm
+  | LetUP [(String, UnprocessedParsedTerm)] UnprocessedParsedTerm
+  | ListUP [UnprocessedParsedTerm]
+  | IntUP Int
+  | StringUP String
+  | PairUP UnprocessedParsedTerm UnprocessedParsedTerm
+  | AppUP UnprocessedParsedTerm UnprocessedParsedTerm
+  | LamUP String UnprocessedParsedTerm
+  | ChurchUP Int
+  | UnsizedRecursionUP UnprocessedParsedTerm UnprocessedParsedTerm UnprocessedParsedTerm
+  | LeftUP UnprocessedParsedTerm
+  | RightUP UnprocessedParsedTerm
+  | TraceUP UnprocessedParsedTerm
+  | CheckUP UnprocessedParsedTerm UnprocessedParsedTerm
+  | HashUP UnprocessedParsedTerm -- ^ On ad hoc user defined types, this term will be substitued to a unique Int.
+  | CaseUP UnprocessedParsedTerm [(Pattern, UnprocessedParsedTerm)]
+  -- TODO: check if adding this doesn't create partial functions
+  | ImportQualifiedUP String String
+  | ImportUP String
+  deriving (Eq, Ord, Show)
+makeBaseFunctor ''UnprocessedParsedTerm -- Functorial version UnprocessedParsedTerm
+makePrisms ''UnprocessedParsedTerm
+
+instance Eq a => Eq (UnprocessedParsedTermF a) where
+  (==) = eq1
+
+instance Eq1 UnprocessedParsedTermF where
+  liftEq eq (VarUPF s1) (VarUPF s2) = s1 == s2
+  liftEq eq (ITEUPF c1 t1 e1) (ITEUPF c2 t2 e2) =
+    eq c1 c2 && eq t1 t2 && eq e1 e2
+  liftEq eq (LetUPF binds1 body1) (LetUPF binds2 body2) =
+    liftEq (\(s1, t1) (s2, t2) -> s1 == s2 && eq t1 t2) binds1 binds2 && eq body1 body2
+  liftEq eq (ListUPF items1) (ListUPF items2) =
+    liftEq eq items1 items2
+  liftEq eq (IntUPF n1) (IntUPF n2) =
+    n1 == n2
+  liftEq eq (StringUPF s1) (StringUPF s2) =
+    s1 == s2
+  liftEq eq (PairUPF a1 b1) (PairUPF a2 b2) =
+    eq a1 a2 && eq b1 b2
+  liftEq eq (AppUPF f1 x1) (AppUPF f2 x2) =
+    eq f1 f2 && eq x1 x2
+  liftEq eq (LamUPF var1 body1) (LamUPF var2 body2) =
+    var1 == var2 && eq body1 body2
+  liftEq eq (ChurchUPF n1) (ChurchUPF n2) =
+    n1 == n2
+  liftEq eq (UnsizedRecursionUPF a1 b1 c1) (UnsizedRecursionUPF a2 b2 c2) =
+    eq a1 a2 && eq b1 b2 && eq c1 c2
+  liftEq eq (LeftUPF x1) (LeftUPF x2) =
+    eq x1 x2
+  liftEq eq (RightUPF x1) (RightUPF x2) =
+    eq x1 x2
+  liftEq eq (TraceUPF x1) (TraceUPF x2) =
+    eq x1 x2
+  liftEq eq (CheckUPF a1 b1) (CheckUPF a2 b2) =
+    eq a1 a2 && eq b1 b2
+  liftEq eq (HashUPF x1) (HashUPF x2) =
+    eq x1 x2
+  liftEq eq (CaseUPF scrutinee1 patterns1) (CaseUPF scrutinee2 patterns2) =
+    eq scrutinee1 scrutinee2 &&
+    liftEq (\(pat1, expr1) (pat2, expr2) -> pat1 == pat2 && eq expr1 expr2) patterns1 patterns2
+  liftEq eq (ImportQualifiedUPF mod1 alias1) (ImportQualifiedUPF mod2 alias2) =
+    mod1 == mod2 && alias1 == alias2
+  liftEq eq (ImportUPF mod1) (ImportUPF mod2) =
+    mod1 == mod2
+  liftEq _ _ _ = False
+
+
+instance (Show a) => Show (UnprocessedParsedTermF a) where
+  show (VarUPF s) = "VarUPF " <> show s
+  show (ITEUPF c t e) = "ITEUPF " <> show c <> " " <> show t <> " " <> show e
+  show (LetUPF bindings body) = "LetUPF " <> show bindings <> " " <> show body
+  show (ListUPF terms) = "ListUPF " <> show terms
+  show (IntUPF n) = "IntUPF " <> show n
+  show (StringUPF s) = "StringUPF " <> show s
+  show (PairUPF a b) = "PairUPF " <> show a <> " " <> show b
+  show (AppUPF f x) = "AppUPF " <> show f <> " " <> show x
+  show (LamUPF var body) = "LamUPF " <> show var <> " " <> show body
+  show (ChurchUPF n) = "ChurchUPF " <> show n
+  show (UnsizedRecursionUPF a b c) = "UnsizedRecursionUPF " <> show a <> " " <> show b <> " " <> show c
+  show (LeftUPF x) = "LeftUPF " <> show x
+  show (RightUPF x) = "RightUPF " <> show x
+  show (TraceUPF x) = "TraceUPF " <> show x
+  show (CheckUPF a b) = "CheckUPF " <> show a <> " " <> show b
+  show (HashUPF x) = "HashUPF " <> show x
+  show (CaseUPF scrutinee patterns) = "CaseUPF " <> show scrutinee <> " " <> show patterns
+
+instance Show1 UnprocessedParsedTermF where
+  liftShowsPrec showsPrecFunc showList d term = case term of
+    ImportQualifiedUPF s1 s2 -> showString "ImportQualifedUPF " . shows s1 . showString " " . shows s2
+    ImportUPF s -> showString "ImportUPF " . shows s
+    VarUPF s -> showString "VarUPF " . shows s
+    ITEUPF c t e -> showString "ITEUPF " . showsPrecFunc 11 c . showChar ' '
+                    . showsPrecFunc 11 t . showChar ' ' . showsPrecFunc 11 e
+    LetUPF bindings body ->
+      let showBinding (str, x) = showChar '(' . shows str . showString ", "
+                                . showsPrecFunc 11 x . showChar ')'
+          showBindings bs = showChar '[' . foldr1 (\a b -> a . showString ", " . b)
+                           (fmap showBinding bs) . showChar ']'
+      in showString "LetUPF " . showBindings bindings . showChar ' ' . showsPrecFunc 11 body
+    ListUPF terms -> showString "ListUPF [" .
+                     foldr1 (\a b -> a . showString ", " . b)
+                           (fmap (showsPrecFunc 11) terms) .
+                     showChar ']'
+    IntUPF n -> showString "IntUPF " . shows n
+    StringUPF s -> showString "StringUPF " . shows s
+    PairUPF a b -> showString "PairUPF " . showsPrecFunc 11 a . showChar ' '
+                   . showsPrecFunc 11 b
+    AppUPF f x -> showString "AppUPF " . showsPrecFunc 11 f . showChar ' '
+                  . showsPrecFunc 11 x
+    LamUPF var body -> showString "LamUPF " . shows var . showChar ' '
+                       . showsPrecFunc 11 body
+    ChurchUPF n -> showString "ChurchUPF " . shows n
+    UnsizedRecursionUPF a b c -> showString "UnsizedRecursionUPF "
+                                 . showsPrecFunc 11 a . showChar ' '
+                                 . showsPrecFunc 11 b . showChar ' '
+                                 . showsPrecFunc 11 c
+    LeftUPF x -> showString "LeftUPF " . showsPrecFunc 11 x
+    RightUPF x -> showString "RightUPF " . showsPrecFunc 11 x
+    TraceUPF x -> showString "TraceUPF " . showsPrecFunc 11 x
+    CheckUPF a b -> showString "CheckUPF " . showsPrecFunc 11 a . showChar ' '
+                    . showsPrecFunc 11 b
+    HashUPF x -> showString "HashUPF " . showsPrecFunc 11 x
+    CaseUPF scrutinee patterns ->
+      let showPattern (pat, x) = showChar '(' . shows pat . showString ", "
+                                . showsPrecFunc 11 x . showChar ')'
+          showPatterns ps = showChar '[' . foldr1 (\a b -> a . showString ", " . b)
+                           (fmap showPattern patterns) . showChar ']'
+      in showString "CaseUPF " . showsPrecFunc 11 scrutinee . showChar ' '
+         . showPatterns patterns
+

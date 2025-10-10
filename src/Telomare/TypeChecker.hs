@@ -17,9 +17,8 @@ import qualified Data.Set as Set
 import Debug.Trace
 import PrettyPrint
 import Telomare (FragExpr (..), FragExprF (..), FragExprUR (..), FragIndex (..),
-                 LocTag (..), PartialType (..),
-                 PrettyPartialType (PrettyPartialType),
-                 RecursionSimulationPieces (..), Term3 (..), rootFrag)
+                 LocTag (..), PartialType (..), RecursionSimulationPieces (..),
+                 Term3 (..), rootFrag)
 
 debug :: Bool
 debug = False

@@ -25,14 +25,12 @@ import PrettyPrint
 import System.Console.Haskeline
 import System.Exit (exitSuccess)
 import qualified System.IO.Strict as Strict
-import Telomare (IExpr (..), LocTag (..), PrettyIExpr (PrettyIExpr),
-                 PrettyPartialType (PrettyPartialType),
-                 TelomareLike (fromTelomare, toTelomare), Term3, forget, tag)
+import Telomare
 import Telomare.Eval (EvalError (..), compileUnitTest)
-import Telomare.Parser (TelomareParser, UnprocessedParsedTerm (..),
-                        UnprocessedParsedTermF (..), parseAssignment,
+import Telomare.Parser (TelomareParser,
+                        parseAssignment,
                         parseLongExpr, parsePrelude)
-import Telomare.Possible (evalPartial)
+import Telomare.Possible (evalPartial')
 import Telomare.Resolver (process)
 import Telomare.RunTime (fastInterpretEval, simpleEval)
 import Telomare.TypeChecker (inferType)
@@ -89,7 +87,7 @@ maybeToRight Nothing  = Left CompileConversionError
 resolveBinding' :: String
                 -> [(String, UnprocessedParsedTerm)]
                 -> Maybe Term3
-resolveBinding' name bindings = lookup name taggedBindings >>= (rightToMaybe . process taggedBindings)
+resolveBinding' name bindings = lookup name taggedBindings >>= (rightToMaybe . process)
   where
     taggedBindings = (fmap . fmap) (tag DummyLoc) bindings
 
@@ -111,7 +109,7 @@ printLastExpr eval bindings = do
         let compile' x = case compileUnitTest x of
                            Left err -> Left . show $ err
                            Right r  -> Right r
-        case compile' =<< process bindings' (DummyLoc :< LetUPF bindings' upt) of
+        case compile' =<< process (DummyLoc :< LetUPF bindings' upt) of
           Left err -> putStrLn err
           Right iexpr' -> do
             iexpr <- eval (SetEnv (Pair (Defer iexpr') Zero))
@@ -184,7 +182,7 @@ replLoop (ReplState bs eval sf) = do
     Just s | ":p" `isPrefixOf` s -> do
       liftIO $ case runReplParser bs . dropWhile (== ' ') <$> stripPrefix ":p" s of
         Just (Right (ReplExpr new_bindings)) -> case resolveBinding "_tmp_" new_bindings of
-          Just iexpr -> putStrLn . showPIE $ evalPartial iexpr
+          Just iexpr -> putStrLn . showPIE $ evalPartial' iexpr
           _          -> putStrLn "some sort of error?"
         _ -> putStrLn "parse error"
       replLoop $ ReplState bs eval sf

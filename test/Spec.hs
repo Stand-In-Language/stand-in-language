@@ -15,6 +15,7 @@ import Data.Monoid
 import Data.Void
 import Debug.Trace
 import Naturals
+import PrettyPrint
 import System.Exit
 import System.IO
 import qualified System.IO.Strict as Strict
@@ -23,7 +24,7 @@ import Telomare.Decompiler
 import Telomare.Eval
 import Telomare.Optimizer
 import Telomare.Parser
-import Telomare.Possible (evalBU, evalBU', testSBV')
+import Telomare.Possible (evalBU, evalBU')
 import Telomare.Resolver
 import Telomare.RunTime
 import Telomare.TypeChecker
@@ -321,9 +322,8 @@ unitTest name expected iexpr = it name $ if allowedTypeCheck (typeCheck ZeroType
 unitTestRefinement :: String -> Bool -> IExpr -> Spec
 unitTestRefinement name shouldSucceed iexpr = it name $ case inferType (fromTelomare iexpr) of
   Right t -> case (pureEval iexpr, shouldSucceed) of
-    (Left err, True) -> expectationFailure $ concat [name, ": failed refinement type -- ", show err]
-    (Right _, False) -> expectationFailure $ name <> ": expected refinement failure, but passed"
-    _ -> pure ()
+    (err, True) -> expectationFailure $ concat [name, ": failed refinement type -- ", show err]
+    (_, False) -> expectationFailure $ name <> ": expected refinement failure, but passed"
   Left err -> expectationFailure $ concat ["refinement test failed typecheck: ", name, " ", show err]
 
 unitTestQC :: Testable p => String -> Int -> p -> Spec
@@ -363,7 +363,7 @@ qcDecompileIExprAndBackEvalsSame (IExprWrapper x) = pure (showResult $ eval' x)
         debruijinize' x = case debruijinize [] x of
           Just r -> r
           _      -> error "debruijinize error"
-        validateVariables' x = case validateVariables [] x of
+        validateVariables' x = case validateVariables x of
           Right r -> r
           Left e  -> error ("validateVariables " <> e)
         parseLongExpr' x = case runTelomareParser (scn *> parseLongExpr <* scn) x of
@@ -434,12 +434,12 @@ testRecur = concat
   , "       in $3 layer (\\x -> x) 0"
   ]
 
-testSBV'' = do
-  r <- runIO testSBV'
-  runIO $ if r == 4
-    then pure ()
-    else expectationFailure $ "testSBV failed, got result " <> show r
-  -- assertEqual "testing SBV" r 3
+-- testSBV'' = do
+--   r <- runIO testSBV'
+--   runIO $ if r == 4
+--     then pure ()
+--     else expectationFailure $ "testSBV failed, got result " <> show r
+--   -- assertEqual "testing SBV" r 3
 
 -- unitTests_ :: (String -> String -> Spec) -> (String -> PartialType -> (Maybe TypeCheckError -> Bool) -> Spec) -> Spec
 unitTests_ parse = do
@@ -920,10 +920,18 @@ main = do
   preludeFile <- Strict.readFile "Prelude.tel"
 
   let
-    prelude = case parsePrelude preludeFile of
+    prelude' = case parsePrelude preludeFile of
       Right p -> p
       Left pe -> error $ show pe
-    parse = parseMain prelude
+    prelude :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
+    prelude = [("Prelude", Right <$> prelude')]
+    parseAuxModule :: String -> (String, [Either AnnotatedUPT (String, AnnotatedUPT)])
+    parseAuxModule str =
+      case sequence ("AuxModule", parseModule ("import Prelude\n" <> str)) of
+        Left e    -> error $ show e
+        Right pam -> pam
+    parse :: String -> Either String Term3
+    parse str = main2Term3 (parseAuxModule str:prelude) "AuxModule"
 
   hspec $ unitTests parse
     --nexprTests

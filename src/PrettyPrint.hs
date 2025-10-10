@@ -9,9 +9,12 @@ import Naturals (NExpr (..), NExprs (..), NResult)
 import Telomare (FragExpr (..), FragExprF (..), FragExprUR (..),
                  FragExprURSansAnnotation (FragExprURSA, unFragExprURSA),
                  FragIndex (..), IExpr (..), LocTag, PartialType (..),
-                 PrettyPartialType (..), RecursionSimulationPieces (..),
+                 RecursionSimulationPieces (..), IExprF (..), DataType (..),
                  Term3 (..), Term4 (..), forget, forgetAnnotationFragExprUR,
-                 indentWithOneChild', indentWithTwoChildren', rootFrag)
+                 indentWithOneChild', indentWithTwoChildren', rootFrag,
+                 Pattern (..), UnprocessedParsedTerm (..),
+                 UnprocessedParsedTermF (..), isNum, g2i
+                )
 
 import qualified Control.Comonad.Trans.Cofree as CofreeT (CofreeF (..))
 import qualified Control.Monad.State as State
@@ -19,7 +22,9 @@ import qualified Data.Map as Map
 
 import Control.Comonad.Cofree
 import Data.Functor.Foldable
-import Data.SBV (sFPHalf)
+import Data.List (elemIndex)
+import Text.Read (readMaybe)
+-- import Data.SBV (sFPHalf)
 
 
 class PrettyPrintable p where
@@ -36,17 +41,17 @@ instance (PrettyPrintable1 f, PrettyPrintable x) => PrettyPrintable (f x) where
 prettyPrint :: PrettyPrintable p => p -> String
 prettyPrint x = State.evalState (showP x) 0
 
-indent :: Int -> String
-indent 0 = []
-indent n = ' ' : ' ' : indent (n - 1)
+indentation :: Int -> String
+indentation 0 = []
+indentation n = ' ' : ' ' : indentation (n - 1)
 
 showPIExpr :: Int -> Int -> IExpr -> String
 showPIExpr _ _ Zero = "Z"
 showPIExpr _ _ Env = "E"
 showPIExpr l i (Pair a b) =
-  concat ["P\n", indent i, showPIExpr l (i + 1) a, "\n", indent i, showPIExpr l (i + 1) b]
+  concat ["P\n", indentation i, showPIExpr l (i + 1) a, "\n", indentation i, showPIExpr l (i + 1) b]
 showPIExpr l i (Gate a b) = -- "G"
-  "G\n" <> indent i <> showPIExpr l (i + 1) a <> "\n" <> indent i <> showPIExpr l (i + 1) b
+  "G\n" <> indentation i <> showPIExpr l (i + 1) a <> "\n" <> indentation i <> showPIExpr l (i + 1) b
 showPIExpr _ _ Trace = "T"
 showPIExpr l i (Defer x) = "D " <> showPIExpr l i x
 showPIExpr l i (PLeft x) = "L " <> showPIExpr l i x
@@ -58,7 +63,7 @@ showPIE = showPIExpr 80 1
 showTPIExpr :: Map Int PartialType -> Int -> Int -> IExpr -> String
 showTPIExpr typeMap l i expr =
   let recur = showTPIExpr typeMap l i
-      indented x = (indent i <> showTPIExpr typeMap l (i + 1) x)
+      indented x = (indentation i <> showTPIExpr typeMap l (i + 1) x)
   in case expr of
     Zero       -> "Z"
     Env        -> "E"
@@ -70,7 +75,7 @@ showNExpr :: Map FragIndex NResult -> Int -> Int -> NExpr -> String
 showNExpr nMap l i expr =
   let recur = showNExpr nMap l i
       showTwo c a b =
-        concat [c, "\n", indent i, showNExpr nMap l (i + 1) a, "\n", indent i, showNExpr nMap l (i + 1) b]
+        concat [c, "\n", indentation i, showNExpr nMap l (i + 1) a, "\n", indentation i, showNExpr nMap l (i + 1) b]
   in case expr of
   NZero -> "Z"
   NEnv -> "E"
@@ -102,7 +107,7 @@ showOneNExpr :: Int -> Int -> NExpr -> String
 showOneNExpr l i expr =
   let recur = showOneNExpr l i
       showTwo c a b =
-        concat [c, "\n", indent i, showOneNExpr l (i + 1) a, "\n", indent i, showOneNExpr l (i + 1) b]
+        concat [c, "\n", indentation i, showOneNExpr l (i + 1) a, "\n", indentation i, showOneNExpr l (i + 1) b]
   in case expr of
       NZero                    -> "Z"
       NEnv                     -> "E"
@@ -182,9 +187,9 @@ showTypeDebugInfo (TypeDebugInfo (Term3 m) lookup rootType) =
       showExpr l i =
         let recur = showExpr l i
             showTwo c a b =
-              concat [c, "\n", indent i, showExpr l (i + 1) a, "\n", indent i, showExpr l (i + 1) b]
+              concat [c, "\n", indentation i, showExpr l (i + 1) a, "\n", indentation i, showExpr l (i + 1) b]
             showThree x a b c =
-              concat [x, "\n", indent i, showExpr l (i + 1) a, "\n", indent i, showExpr l (i + 1) b, "\n", indent i, showExpr l (i + 1) c]
+              concat [x, "\n", indentation i, showExpr l (i + 1) a, "\n", indentation i, showExpr l (i + 1) b, "\n", indentation i, showExpr l (i + 1) c]
         in \case
           ZeroFrag                                   -> "Z"
           PairFrag a b                               -> showTwo "P" a b
@@ -201,3 +206,213 @@ showTypeDebugInfo (TypeDebugInfo (Term3 m) lookup rootType) =
   in showFrag (FragIndex 0) rootType (unFragExprURSA $ rootFrag termMap) <> "\n"
      <> concatMap (\(k, v) -> showFrag k (lookup k) v <> "\n")
                   (tail . Map.toAscList . Map.map unFragExprURSA $ termMap)
+
+newtype PrettyIExpr = PrettyIExpr IExpr
+
+instance Show PrettyIExpr where
+  show (PrettyIExpr iexpr) = case iexpr of
+    p@(Pair a b) -> if isNum p
+      then show $ g2i p
+      else concat ["(", show (PrettyIExpr a), ",", show (PrettyIExpr b), ")"]
+    Zero -> "0"
+    x -> show x
+
+indentSansFirstLine :: Int -> String -> String
+indentSansFirstLine i x = removeLastNewLine res where
+  res = unlines $ (\(s:ns) -> s:((indentation i <>) <$> ns)) (lines x)
+  removeLastNewLine str =
+    case reverse str of
+      '\n' : rest -> reverse rest
+      x           -> str
+
+newtype PrettierIExpr = PrettierIExpr IExpr
+
+instance Show PrettierIExpr where
+  show (PrettierIExpr iexpr) = removeRedundantParens $ cata alg iexpr where
+    removeRedundantParens :: String -> String
+    removeRedundantParens str = unlines $ removeRedundantParensOneLine <$> lines str
+    filterOnce :: Eq a => a -> [a] -> [a]
+    filterOnce y = \case
+      []     -> []
+      (x:xs) -> if x == y then xs else x : filterOnce y xs
+    removeRedundantParensOneLine :: String -> String
+    removeRedundantParensOneLine str =
+      case (elemIndex '(' str, elemIndex ')' str) of
+        (Just x, Just y) -> filterOnce ')' . filterOnce '(' $ str
+        _                -> str
+    alg :: Base IExpr String -> String
+    alg = \case
+      PairF x y -> case (y, readMaybe x :: Maybe Int) of
+                     ("0", Just x) -> show $ x + 1
+                     _ -> "P\n" <>
+                          "  (" <> indentSansFirstLine 3 x <> ")\n" <>
+                          "  (" <> indentSansFirstLine 3 y <> ")"
+                     -- _ -> if (length . lines $ x) == 1 && (length . lines $ y) == 1
+                     --        then "(" <> x <> ", " <> y  <> ")"
+                     --        else "( " <> indentSansFirstLine 2 x <> "\n" <>
+                     --             ", " <> indentSansFirstLine 2 y <> "\n" <>
+                     --             ")"
+      ZeroF -> "0"
+      EnvF -> "E"
+      TraceF -> "T"
+      SetEnvF x -> "S\n" <>
+                   "  (" <> indentSansFirstLine 3 x <> ")"
+      DeferF x -> "D\n" <>
+                   "  (" <> indentSansFirstLine 3 x <> ")"
+      GateF x y -> "G\n" <>
+                   "  (" <> indentSansFirstLine 3 x <> ")\n" <>
+                   "  (" <> indentSansFirstLine 3 y <> ")"
+      PLeftF x -> "L\n" <>
+                  "  (" <> indentSansFirstLine 3 x <> ")"
+      PRightF x -> "R\n" <>
+                   "  (" <> indentSansFirstLine 3 x <> ")"
+
+newtype PrettyDataType = PrettyDataType DataType
+
+showInternal :: DataType -> String
+showInternal at@(ArrType _ _) = concat ["(", show $ PrettyDataType at, ")"]
+showInternal t                = show . PrettyDataType $ t
+
+instance Show PrettyDataType where
+  show (PrettyDataType dt) = case dt of
+    ZeroType -> "D"
+    (ArrType a b) -> concat [showInternal a, " -> ", showInternal b]
+    (PairType a b) ->
+      concat ["(", show $ PrettyDataType a, ",", show $ PrettyDataType b, ")"]
+
+newtype PrettyPartialType = PrettyPartialType PartialType
+
+showInternalP :: PartialType -> String
+showInternalP at@(ArrTypeP _ _) = concat ["(", show $ PrettyPartialType at, ")"]
+showInternalP t                 = show . PrettyPartialType $ t
+
+instance Show PrettyPartialType where
+  show (PrettyPartialType dt) = case dt of
+    ZeroTypeP -> "Z"
+    AnyType -> "A"
+    (ArrTypeP a b) -> concat [showInternalP a, " -> ", showInternalP b]
+    (PairTypeP a b) ->
+      concat ["(", show $ PrettyPartialType a, ",", show $ PrettyPartialType b, ")"]
+    (TypeVariable _ (-1)) -> "badType"
+    (TypeVariable _ x) -> 'v' : show x
+
+newtype PrettyPattern = PrettyPattern Pattern
+
+instance Show PrettyPattern where
+  show = \case
+    (PrettyPattern (PatternInt x)) -> show x
+    (PrettyPattern (PatternVar x)) -> x
+    (PrettyPattern (PatternString x)) ->  show x
+    (PrettyPattern (PatternPair x y)) -> "(" <> (show . PrettyPattern $ x) <> ", " <> (show . PrettyPattern $ y) <> ")"
+    (PrettyPattern PatternIgnore) -> "_"
+
+newtype MultiLineShowUPT = MultiLineShowUPT UnprocessedParsedTerm
+instance Show MultiLineShowUPT where
+  show (MultiLineShowUPT upt) = cata alg upt where
+    alg :: Base UnprocessedParsedTerm String -> String
+    alg = \case
+      IntUPF i -> "IntUP " <> show i
+      VarUPF str -> "VarUP " <> str
+      StringUPF str -> "StringUP" <> str
+      PairUPF x y -> "PairUP" <> "\n" <>
+                        "  (" <> indentSansFirstLine 3 x <> ")\n" <>
+                        "  (" <> indentSansFirstLine 3 y <> ")"
+      (ITEUPF x y z) -> "ITEUP" <> "\n" <>
+                        "  (" <> indentSansFirstLine 3 x <> ")\n" <>
+                        "  (" <> indentSansFirstLine 3 x <> ")\n" <>
+                        "  (" <> indentSansFirstLine 3 z <> ")"
+      (AppUPF x y) -> "AppUP" <> "\n" <>
+                        "  (" <> indentSansFirstLine 3 x <> ")\n" <>
+                        "  (" <> indentSansFirstLine 3 y <> ")"
+      (LamUPF str y) -> "LamUP " <> str <> "\n" <>
+                        "  (" <> indentSansFirstLine 3 y <> ")"
+      (ChurchUPF x) -> "ChurchUP " <> show x
+      (LeftUPF x) -> "LeftUP \n" <>
+                       "  (" <> indentSansFirstLine 3 x <> ")"
+      (RightUPF x) -> "RightUP \n" <>
+                        "  (" <> indentSansFirstLine 3 x <> ")"
+      (TraceUPF x) -> "TraceUP \n" <>
+                        "  (" <> indentSansFirstLine 3 x <> ")"
+      (UnsizedRecursionUPF x y z) -> "UnsizedRecursionUP" <> "\n" <>
+                        "  (" <> indentSansFirstLine 3 x <> ")\n" <>
+                        "  (" <> indentSansFirstLine 3 x <> ")\n" <>
+                        "  (" <> indentSansFirstLine 3 z <> ")"
+      (HashUPF x) -> "HashUP \n" <>
+                       "  (" <> indentSansFirstLine 3 x <> ")"
+      (CheckUPF x y) -> "CheckUP" <> "\n" <>
+                        "  (" <> indentSansFirstLine 3 x <> ")\n" <>
+                        "  (" <> indentSansFirstLine 3 y <> ")"
+      (ListUPF []) -> "ListUP []"
+      (ListUPF [x]) -> "ListUP [" <> x <> "]"
+      (ListUPF ls) -> "ListUP\n" <>
+                        "  [" <> drop 3 (unlines (("  " <>) . indentSansFirstLine 4 . (", " <>) <$> ls)) <>
+                        "  ]"
+      (LetUPF ls x) -> "LetUP\n" <>
+                         "  [ " <> drop 4 (unlines ( ("  " <>)
+                                                   . indentSansFirstLine 3
+                                                   . (", " <>)
+                                                   . (\(x,y) -> "(" <> x <> ", " <> indentSansFirstLine (length x + 4) y <> ")")
+                                                   <$> ls
+                                                   )) <>
+                         "  ]\n" <>
+                         "  (" <> indentSansFirstLine 3 x <> ")"
+      (CaseUPF x ls) -> "CaseUP\n" <>
+                          "  (" <> indentSansFirstLine 3 x <> ")\n" <>
+                          "  [" <> drop 3 (unlines ( ("  " <>)
+                                                   . indentSansFirstLine 3
+                                                   . (", " <>)
+                                                   . (\(x,y) -> "(" <> show x <> ", " <> indentSansFirstLine ((length . show $ x) + 4) y <> ")")
+                                                   <$> ls
+                                                   )) <>
+                          "  ]\n"
+
+newtype PrettyUPT = PrettyUPT UnprocessedParsedTerm
+
+instance Show PrettyUPT where
+  show (PrettyUPT upt) = cata alg upt where
+    alg :: Base UnprocessedParsedTerm String -> String
+    alg = \case
+      IntUPF i -> show i
+      VarUPF str -> str
+      StringUPF str -> show str
+      PairUPF x y -> if length (lines (x <> y)) > 1
+                       then "( " <> indentSansFirstLine 2 x <> "\n" <>
+                            ", " <> indentSansFirstLine 2 y <> "\n" <>
+                            ")"
+                       else "(" <> x <> ", " <> y <>")"
+      (ITEUPF x y z) -> "if " <> indentSansFirstLine 3 x <> "\n" <>
+                          "  then " <> indentSansFirstLine 7 y <> "\n" <>
+                          "  else " <> indentSansFirstLine 7 z
+      (LetUPF ls x) ->
+        "let " <> indentSansFirstLine 4 (unlines (assignList <$> ls)) <> "\n" <>
+        "in " <> indentSansFirstLine 3 x
+          where
+            assignList :: (String, String) -> String
+            assignList (str, upt) = str <> " = " <> indentSansFirstLine (3 + length str) upt
+      (ListUPF []) -> "[]"
+      (ListUPF [x]) -> "[" <> x <> "]"
+      (ListUPF ls) ->
+        "[" <> removeFirstComma (unlines (indentSansFirstLine 2 . (", " <>) <$> ls)) <>
+        "]"
+          where
+            removeFirstComma = \case
+              (',':str) -> str
+              _         -> error "removeFirstComma: input does not start with a comma"
+      (AppUPF x y) -> (if (length . words $ x) == 1 then x else "(" <> x <> ")") <> " " <>
+                      if (length . words $ y) == 1 then y else "(" <> y <> ")"
+      (LamUPF str y) -> "\\ " <> str <> " -> " <> indentSansFirstLine (6 + length str) y
+      (ChurchUPF x) -> "$" <> show x
+      (LeftUPF x) -> "left (" <> indentSansFirstLine 6 x <> ")"
+      (RightUPF x) -> "right (" <> indentSansFirstLine 7 x <> ")"
+      (TraceUPF x) -> "trace (" <> indentSansFirstLine 7 x <> ")"
+      (UnsizedRecursionUPF x y z) -> "{ " <> indentSansFirstLine 2 x <>
+                                     ", " <> indentSansFirstLine 2 y <>
+                                     ", " <> indentSansFirstLine 2 z <>
+                                     "}"
+      (HashUPF x) -> "# " <> indentSansFirstLine 2 x
+      (CaseUPF x ls) -> "case " <> x <> " of\n" <>
+                        "  " <> indentSansFirstLine 2 (unlines ((\(p, r) -> indentSansFirstLine 2 (show (PrettyPattern p) <> " -> " <> r)) <$> ls))
+      (CheckUPF x y) -> if length (lines (x <> y)) > 1
+                          then "(" <> indentSansFirstLine 2 y <> " : " <> "\n" <>
+                               "    " <> indentSansFirstLine 4 y <> ")"
+                          else "(" <> y <> " : " <> x <> ")"

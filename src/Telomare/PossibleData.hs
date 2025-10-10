@@ -11,7 +11,7 @@ module Telomare.PossibleData where
 
 import Control.Applicative
 import Control.Comonad.Cofree (Cofree ((:<)))
-import Control.Monad ( liftM2 )
+import Control.Monad ( liftM2, (<=<) )
 import Control.Monad.Except
 import Control.Monad.State.Strict (State, StateT)
 import qualified Control.Monad.State.Strict as State
@@ -257,11 +257,11 @@ instance PrettyPrintable1 (StrictAccum SizedRecursion) where
 data VoidF f
   deriving (Functor, Foldable, Traversable)
 
-instance Eq1 VoidF where
-  liftEq test a b = undefined
+instance Show (VoidF a) where
+  show = undefined
 
-instance Show1 VoidF where
-  liftShowsPrec showsPrec showList prec x = undefined
+instance Eq (VoidF a) where
+  (==) = undefined
 
 data SuperPositionF f
   = EitherPF (Maybe Integer) !f !f
@@ -510,7 +510,7 @@ data UnsizedExprF f
   | UnsizedExprA (AbortableF f)
   | UnsizedExprU (UnsizedRecursionF f)
   | UnsizedExprI (IndexedInputF f)
-  deriving (Functor, Foldable, Traversable, Generic)
+  deriving (Eq, Show, Functor, Foldable, Traversable, Generic)
 instance BasicBase UnsizedExprF where
   embedB = UnsizedExprB
   extractB = \case
@@ -601,7 +601,7 @@ data SuperExprF f
   | SuperExprP (SuperPositionF f)
   | SuperExprI (IndexedInputF f)
 --  | SuperExprZ (FuzzyInputF f)
-  deriving (Functor, Foldable, Traversable)
+  deriving (Eq, Functor, Foldable, Traversable)
 instance BasicBase SuperExprF where
   embedB = SuperExprB
   extractB = \case
@@ -664,7 +664,7 @@ data AbortExprF f
   = AbortExprB (PartExprF f)
   | AbortExprS (StuckF f)
   | AbortExprA (AbortableF f)
-  deriving (Functor, Foldable, Traversable)
+  deriving (Eq, Functor, Foldable, Traversable)
 instance BasicBase AbortExprF where
   embedB = AbortExprB
   extractB = \case
@@ -701,7 +701,7 @@ data InputSizingExprF f
   | InputSizingU (UnsizedRecursionF f)
   | InputSizingD (DeferredEvalF f)
   | InputSizingI (IndexedInputF f)
-  deriving (Functor, Foldable, Traversable)
+  deriving (Eq, Functor, Foldable, Traversable)
 instance BasicBase InputSizingExprF where
   embedB = InputSizingB
   extractB = \case
@@ -741,14 +741,6 @@ instance Eq1 InputSizingExprF where
     (InputSizingD x, InputSizingD y) -> liftEq test x y
     (InputSizingI x, InputSizingI y) -> liftEq test x y
     _ -> False
-instance Show1 InputSizingExprF where
-  liftShowsPrec showsPrec showList prec = \case
-    InputSizingB x -> liftShowsPrec showsPrec showList prec x
-    InputSizingS x -> liftShowsPrec showsPrec showList prec x
-    InputSizingA x -> liftShowsPrec showsPrec showList prec x
-    InputSizingU x -> liftShowsPrec showsPrec showList prec x
-    InputSizingD x -> liftShowsPrec showsPrec showList prec x
-    InputSizingI x -> liftShowsPrec showsPrec showList prec x
 instance PrettyPrintable1 InputSizingExprF where
   showP1 = \case
     InputSizingB x -> showP1 x

@@ -1,3 +1,4 @@
+import Prelude
 
 drawPiece = \piece alt -> if piece
                              then if left piece

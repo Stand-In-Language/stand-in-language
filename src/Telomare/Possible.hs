@@ -1,12 +1,16 @@
 {-# LANGUAGE DeriveGeneric              #-}
 {-# LANGUAGE DeriveTraversable          #-}
 {-# LANGUAGE DerivingVia                #-}
+{-# LANGUAGE EmptyCase                  #-}
+{-# LANGUAGE FlexibleContexts           #-}
 {-# LANGUAGE FlexibleInstances          #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase                 #-}
 {-# LANGUAGE PatternSynonyms            #-}
 {-# LANGUAGE ScopedTypeVariables        #-}
 {-# LANGUAGE TypeFamilies               #-}
+{-# LANGUAGE UndecidableInstances       #-}
+{-# LANGUAGE ViewPatterns               #-}
 
 module Telomare.Possible where
 
@@ -34,9 +38,9 @@ import Data.List (nubBy, partition, sortBy, nub)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Monoid
-import Data.SBV ((.<), (.>))
-import qualified Data.SBV as SBV
-import qualified Data.SBV.Control as SBVC
+-- import Data.SBV ((.<), (.>))
+-- import qualified Data.SBV as SBV
+-- import qualified Data.SBV.Control as SBVC
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Void
@@ -64,8 +68,10 @@ import Test.QuickCheck.Gen (sized)
 import Test.QuickCheck (Gen, oneof, Arbitrary (..))
 import Control.Comonad.Trans.Cofree (CofreeF, headF)
 import Control.Monad.Reader.Class
-
 -- import           Telomare.TypeChecker
+-- import Data.SBV.RegExp (everything)
+import Telomare.RunTime (hvmEval)
+
 debug :: Bool
 debug = False
 
@@ -73,6 +79,7 @@ debugTrace :: String -> a -> a
 -- debugTrace s x = if debug then debugTrace' s x else x
 debugTrace s x = if debug then trace s x else x
 
+{-
 testSBV :: SBV.Symbolic SBV.Word8
 testSBV = do
   b <- SBV.sBool "b"
@@ -84,9 +91,13 @@ testSBV = do
       SBVC.Unk   -> undefined -- error "Solver returned unknown!"
       SBVC.Unsat -> undefined -- error "Solver couldn't solve constraints"
       SBVC.Sat   -> SBVC.getValue a
+-}
 
-testSBV' :: IO Int
-testSBV' = fromIntegral <$> SBV.runSMT testSBV
+-- testSBV' :: IO Int
+-- testSBV' = fromIntegral <$> SBV.runSMT testSBV
+
+anaM' :: (Monad m, Corecursive t, x ~ Base t, Traversable x) => (a -> m (Base t a)) -> a -> m t
+anaM' f = c where c = (fmap embed . mapM c) <=< f
 
 basicStep :: (Base g ~ f, BasicBase f, Corecursive g, Recursive g) => (f g -> g) -> f g -> g
 basicStep handleOther = \case
@@ -1402,6 +1413,15 @@ evalPartial = cata removeBarriers . transformNoDefer step where
     DeferredFW (BarrierF x) -> x
     x -> seq x $ embed x -- does seq have any performance consequence here?
   wrapUnknownStep = deferredEE . BarrierF . embed
+
+evalPartial' :: IExpr -> IExpr
+evalPartial' = toIExpr . ep . fromTelomare where
+  toIExpr = unwrapMaybe . toTelomare
+  unwrapMaybe = \case
+    Just x -> x
+    Nothing -> error "evalPartial': could not convert back to IExpr"
+  ep :: DeferredExpr -> DeferredExpr
+  ep = evalPartial
 
 evalPartialUnsized :: Set Integer -> InputSizingExpr -> SizedRecursion
 evalPartialUnsized zeroes = cata gatherLimits . transformNoDefer step where
