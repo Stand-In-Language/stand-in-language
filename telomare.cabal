@@ -161,6 +161,27 @@ executable telomare-evaluare
     TypeApplications
     TypeFamilies
 
+executable telomare-lsp
+  main-is:             TelomareLSP.hs
+  hs-source-dirs:      app
+
+  build-depends:       base
+                     , telomare
+                     , lsp
+                     , lsp-types
+                     , text
+                     , containers
+                     , stm
+                     , lens
+                     , mtl
+
+  default-language:    Haskell2010
+  ghc-options:         -Wall
+                       -threaded
+                       -rtsopts
+                       -with-rtsopts=-N
+                       -Wunused-packages
+
 test-suite telomare-test
   type:                exitcode-stdio-1.0
   hs-source-dirs:      test
