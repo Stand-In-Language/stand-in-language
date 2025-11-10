@@ -202,13 +202,13 @@ instance AbstractRunTime NExprs where
 evalAndConvert :: (Show a, AbstractRunTime a) => a -> IExpr
 evalAndConvert x = case toTelomare <$> ar of
   Right (Just ir) -> ir
-  _ -> error . show . ResultConversionError $ show ar
+  _               -> error . show . ResultConversionError $ show ar
  where ar = eval x
 
 evalAndConvert' :: (Show a, AbstractRunTime a) => a -> Either RunTimeError IExpr
 evalAndConvert' x = case toTelomare <$> ar of
   Right (Just ir) -> pure ir
-  _ -> Left . ResultConversionError $ show ar
+  _               -> Left . ResultConversionError $ show ar
  where ar = eval x
 
 -- |Evaluation with hvm backend

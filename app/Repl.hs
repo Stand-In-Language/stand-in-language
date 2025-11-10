@@ -28,11 +28,10 @@ import System.Exit (exitSuccess)
 import qualified System.IO.Strict as Strict
 import Telomare
 import Telomare.Eval (EvalError (..), compileUnitTestNoAbort)
-import Telomare.Parser (TelomareParser,
-                        parseAssignment,
-                        parseLongExpr, parsePrelude)
-import Telomare.Possible (evalPartial', deferB)
-import Telomare.PossibleData (CompiledExpr, setEnvB, pairB, zeroB)
+import Telomare.Parser (TelomareParser, parseAssignment, parseLongExpr,
+                        parsePrelude)
+import Telomare.Possible (deferB, evalPartial')
+import Telomare.PossibleData (CompiledExpr, pairB, setEnvB, zeroB)
 import Telomare.Resolver (process)
 import Telomare.RunTime (fastInterpretEval, simpleEval)
 import Telomare.TypeChecker (inferType)
@@ -119,7 +118,7 @@ printLastExpr eval bindings = do
         case compile' =<< process (DummyLoc :< LetUPF bindings' upt) of
           Left err -> putStrLn err
           Right iexpr' -> case eval iexpr' of
-              Left e -> putStrLn $ "error: " <> show e
+              Left e      -> putStrLn $ "error: " <> show e
               Right expr' -> print . PrettyIExpr $ expr'
   case res of
     Left err -> print err

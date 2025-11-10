@@ -16,7 +16,7 @@ hPutStrLn file "test"
 -- hFlush file
 hClose file
 -}
-data DebugState = DebugState Int
+newtype DebugState = DebugState Int
 
 debugState :: IORef DebugState
 {-# NOINLINE debugState #-}

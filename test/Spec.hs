@@ -8,10 +8,10 @@ import qualified Control.Monad.State as State
 import Data.Bifunctor
 import Data.Char
 import qualified Data.DList as DList
-import qualified Data.Set as Set
 import Data.List (partition)
 import qualified Data.Map as Map
 import Data.Monoid
+import qualified Data.Set as Set
 import Data.Void
 import Debug.Trace
 import Naturals
@@ -24,8 +24,8 @@ import Telomare.Decompiler
 import Telomare.Eval
 import Telomare.Optimizer
 import Telomare.Parser
-import Telomare.Possible (evalBU, evalBU', appB, deferB)
-import Telomare.PossibleData (zeroB, CompiledExpr (..), setEnvB, pairB, zeroB)
+import Telomare.Possible (appB, deferB, evalBU, evalBU')
+import Telomare.PossibleData (CompiledExpr (..), pairB, setEnvB, zeroB)
 import Telomare.Resolver
 import Telomare.RunTime
 import Telomare.TypeChecker
@@ -312,7 +312,7 @@ testEval :: CompiledExpr -> IO IExpr
 testEval expr = case eval (setEnvB (pairB (deferB (toEnum 0) expr) zeroB)) of
   Right x -> case toTelomare x of
     Just x' -> pure x'
-    _ -> error $ "testEval failed to convert:\n" <> prettyPrint x
+    _       -> error $ "testEval failed to convert:\n" <> prettyPrint x
   Left z -> error $ "testEval unexpected: " <> show z
 -- testEval iexpr = evalB'' (SetEnv (Pair (Defer iexpr) Zero))
 
@@ -450,10 +450,10 @@ testRecur = concat
 
 -- unitTests_ :: (String -> String -> Spec) -> (String -> PartialType -> (Maybe TypeCheckError -> Bool) -> Spec) -> Spec
 unitTests_ parse = do
-  let unitTestType = unitTestType' parse
-      unitTest2 = unitTest2' parse
-      unitTestStaticChecks = unitTestStaticChecks' parse
-      unitTestPossible = unitTestPossible' parse
+  let unitTestType = unitTestType' (parse False)
+      unitTest2 = unitTest2' (parse True)
+      unitTestStaticChecks = unitTestStaticChecks' (parse True)
+      unitTestPossible = unitTestPossible' (parse True)
       -- decompileExample = IExprWrapper (SetEnv (SetEnv (Pair (Defer (Pair (Gate Env Env) (Pair Zero Zero))) (SetEnv (SetEnv (SetEnv (PLeft (Pair (Pair (Defer (Pair (Defer (Pair (Defer Zero) Env)) Env)) Zero) Zero))))))))
       -- decompileExample = IExprWrapper (SetEnv (SetEnv (Pair (Defer (Pair (Gate Env Env) (Pair Zero Zero))) Zero)))
       decompileExample = IExprWrapper (SetEnv (SetEnv (Pair (Defer (Pair (Gate Env Env) (Pair Zero (Pair Zero Zero)))) Zero)))
@@ -642,14 +642,13 @@ debugMark s = hPutStrLn stderr s >> pure True
 
 --unitTests :: (String -> String -> Spec) -> (String -> PartialType -> (Maybe TypeCheckError -> Bool) -> Spec) -> Spec
 unitTests parse = do
-  let unitTestType = unitTestType' parse
-      unitTest2 = unitTest2' parse
-      unitTestStaticChecks = unitTestStaticChecks' parse
-      buildMainTest s = case fmap compileMain (parse s) of
+  let unitTestType = unitTestType' (parse False)
+      unitTest2 = unitTest2' (parse True)
+      unitTestStaticChecks = unitTestStaticChecks' (parse True)
+      buildMainTest s = case fmap compileMain (parse True s) of
         Right (Right g) -> let eval = funWrap g appB
                            in pure $ \s i e -> it ("main input " <> i) $ eval (Just (i, s)) `shouldBe` e
         z -> pure $ \s i e -> runIO . expectationFailure $ "failed to compile main:\n" <> show s <> "\nbecause:\n" <> show z
-
   describe "type checker" $ do
     unitTestType "main = \\x -> (x,0)" (PairTypeP (ArrTypeP ZeroTypeP ZeroTypeP) ZeroTypeP) (== Nothing)
     unitTestType "main = \\x -> (x,0)" ZeroTypeP isInconsistentType
@@ -941,8 +940,10 @@ main = do
       case sequence ("AuxModule", parseModule ("import Prelude\n" <> str)) of
         Left e    -> error $ show e
         Right pam -> pam
-    parse :: String -> Either String Term3
-    parse str = main2Term3 (parseAuxModule str:prelude) "AuxModule"
+    parse :: Bool -> String -> Either String Term3
+    parse appLet str = if appLet
+      then main2Term3let (parseAuxModule str:prelude) "AuxModule"
+      else main2Term3 (parseAuxModule str:prelude) "AuxModule"
 
   hspec $ unitTests parse
     --nexprTests

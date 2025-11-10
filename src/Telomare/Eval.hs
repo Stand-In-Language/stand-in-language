@@ -6,44 +6,48 @@
 
 module Telomare.Eval where
 
-import           Control.Comonad.Cofree (Cofree ((:<)), hoistCofree)
-import           Control.Lens.Plated (Plated (..), transformM)
-import           Control.Monad (void)
-import           Control.Monad.State (State, evalState)
+import Control.Comonad.Cofree (Cofree ((:<)), hoistCofree)
+import Control.Lens.Plated (Plated (..), transformM)
+import Control.Monad (void)
+import Control.Monad.State (State, evalState)
 import qualified Control.Monad.State as State
-import           Data.Bifunctor ( first, second, first )
-import           Data.Foldable (fold)
-import           Data.List (partition)
-import           Data.Map (Map)
+import Data.Bifunctor (first, second)
+import Data.Foldable (fold)
+import Data.List (partition)
+import Data.Map (Map)
 import qualified Data.Map as Map
-import           Data.Semigroup (Min(..), Max(..))
-import           Data.Set (Set)
+import Data.Semigroup (Max (..), Min (..))
+import Data.Set (Set)
 import qualified Data.Set as Set
-import           Debug.Trace
-import           System.IO
-import           System.Process
+import Debug.Trace
+import System.IO
+import System.Process
 
-import           PrettyPrint
-import Telomare (BreakState, BreakState', ExprA (..), FragExpr (..),
-                 FragExprF (..), FragIndex (FragIndex), IExpr (..), LocTag (..),
-                 PartialType (..), RecursionPieceFrag, AbstractRunTime,
-                 RecursionSimulationPieces (..), RunTimeError (..),
-                 TelomareLike (..), Term3 (Term3), Term4 (Term4),
-                 UnsizedRecursionToken (..), app, appF, eval, convertAbortMessage, deferF, forget, g2s,
-                 innerChurchF, insertAndGetKey, pairF,
-                 rootFrag, s2g, setEnvF, tag, unFragExprUR, cataFragExprUR)
-import Telomare.Possible (abortExprToTerm4, buildUnsizedLocMap, evalA, getSizesM, sizeTermM,
-                          term3ToUnsizedExpr, abortPossibilities, deferB, appB, term4toAbortExpr)
-import Telomare.PossibleData (AbortExpr, VoidF, SizedRecursion(..), CompiledExpr (..), pattern AbortFW,
-                              pairB, leftB, rightB, envB, setEnvB)
-import           Telomare.TypeChecker (TypeCheckError (..), typeCheck)
 import qualified Control.Comonad.Trans.Cofree as CofreeT
-import           Data.Functor.Foldable (Base, para, cata, embed)
-import           Telomare
-import           Telomare.Parser (AnnotatedUPT, parsePrelude, parseModule, parseOneExprOrTopLevelDefs)
-import           Telomare.Resolver (main2Term3, process, resolveAllImports)
-import           Telomare.RunTime (rEval)
-import           Text.Megaparsec (errorBundlePretty, runParser)
+import Data.Functor.Foldable (Base, cata, embed, para)
+import PrettyPrint
+import Telomare (AbstractRunTime, BreakState, BreakState', ExprA (..),
+                 FragExpr (..), FragExprF (..), FragIndex (FragIndex),
+                 IExpr (..), IExprF (..), LocTag (..), PartialType (..),
+                 Pattern, RecursionPieceFrag, RecursionSimulationPieces (..),
+                 RunTimeError (..), TelomareLike (..), Term3 (Term3),
+                 Term4 (Term4), UnprocessedParsedTerm (..),
+                 UnprocessedParsedTermF (..), UnsizedRecursionToken (..), app,
+                 appF, cataFragExprUR, convertAbortMessage, deferF, eval,
+                 forget, g2s, innerChurchF, insertAndGetKey, pairF, rootFrag,
+                 s2g, setEnvF, tag, unFragExprUR)
+import Telomare.Parser (AnnotatedUPT, parseModule, parseOneExprOrTopLevelDefs,
+                        parsePrelude)
+import Telomare.Possible (abortExprToTerm4, abortPossibilities, appB,
+                          buildUnsizedLocMap, deferB, evalA, getSizesM,
+                          sizeTermM, term3ToUnsizedExpr, term4toAbortExpr)
+import Telomare.PossibleData (AbortExpr, CompiledExpr (..), SizedRecursion (..),
+                              VoidF, envB, leftB, pairB, pattern AbortFW,
+                              rightB, setEnvB)
+import Telomare.Resolver (main2Term3, process, resolveAllImports)
+import Telomare.RunTime (rEval)
+import Telomare.TypeChecker (TypeCheckError (..), typeCheck)
+import Text.Megaparsec (errorBundlePretty, runParser)
 
 debug :: Bool
 debug = False
@@ -282,7 +286,7 @@ showSizingInSource prelude s
         sizeLocs = Map.toAscList . buildUnsizedLocMap <$> unsizedExpr
         -- (orphanLocs, lineLocs) = partition ((== DummyLoc) . snd) sizeLocs
         (orphanLocs, lineLocs) = case sizeLocs of
-          Left e -> error ("Could not size: " <> show e)
+          Left e   -> error ("Could not size: " <> show e)
           Right sl -> partition ((== DummyLoc) . snd) sl
         -- orphanList = map ((<> " ") . show . fst) orphanLocs
         orphans = "unsized with no location: " <> foldMap ((<> " ") . show . fst) orphanLocs
@@ -292,7 +296,7 @@ showSizingInSource prelude s
         lookupSize x = case sizedRecursion of
           Right (SizedRecursion sm) -> case Map.lookup x sm of
             Just (Just v) -> show v
-            _ -> "?"
+            _             -> "?"
           _ -> "?"
         -- getSizeMatchingLine x = foldMap ((<> " ") . show) $ filter ((== x) . fromEnum' . snd) lineLocs
         getSizeMatchingLine x = case filter ((== x) . fromEnum' . snd) lineLocs of
@@ -306,7 +310,7 @@ showFunctionIndexesInSource prelude s
         -- parsed = parsePrelude prelude >>= (\p -> parseMain p s)
         funMap = case parsePrelude prelude >>= (`parseMain` s) of
           Right (Term3 f) -> f
-          e -> error ("could not parse " <> show e)
+          e               -> error ("could not parse " <> show e)
         unAss (a :< _) = a
         -- sizeLocs = (\(fi, t) -> (fi))
         reduceL (a CofreeT.:< x) = let l = fromEnum' a in (Min l, Max l) <> fold x
@@ -320,7 +324,7 @@ showFunctionIndexesInSource prelude s
         getFunMatchingLine x = case filter ((== x) . fromEnum' . snd) lineLocs of
           [] -> ""
           -- l -> ("   # " <>) $ foldMap ((\s -> show (fromEnum s) <> ":" <> lookupSize s <> " ") . fst) l
-          l -> ("   # " <>) $ foldMap ((<> " ") . show . fromEnum . fst) l
+          l  -> ("   # " <>) $ foldMap ((<> " ") . show . fromEnum . fst) l
     -- in "showFunInSource\n" <> orphans <> "\nBodyLocs\n" <> show bodyLocs <> "\n" <> foldMap (\(l, s) -> s <> getFunMatchingLine l <> "\n") asLines
     in "showFunInSource\n" <> orphans <> "\n" <> foldMap (\(l, s) -> s <> getFunMatchingLine l <> "\n") asLines
 
@@ -342,7 +346,7 @@ getAbortPossibilities prelude s
   = let parsed = parsePrelude prelude >>= (`parseMain` s)
         unsizedExpr = term3ToUnsizedExpr 256 <$> parsed
     in case unsizedExpr of
-         Left e -> error $ "getAbortPossibilities: " <> show e
+         Left e   -> error $ "getAbortPossibilities: " <> show e
          Right ue -> abortPossibilities 256 ue
 
 getAbortPossibilities' :: String -> String -> Set String
@@ -350,7 +354,7 @@ getAbortPossibilities' prelude s
   = let parsed = parsePrelude prelude >>= (`parseMain` s)
         unsizedExpr = term3ToUnsizedExpr 256 <$> parsed
     in case unsizedExpr of
-         Left e -> error $ "getAbortPossibilities: " <> show e
+         Left e   -> error $ "getAbortPossibilities: " <> show e
          Right ue -> Set.map convertAbortMessage $ abortPossibilities 256 ue
 
 eval2IExpr :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -> String -> Either String IExpr

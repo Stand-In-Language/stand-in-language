@@ -1,9 +1,7 @@
-{-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE TypeApplications #-}
 module SizingTests where
 
 import Control.Applicative (liftA2)
-import Control.Exception (SomeException, try, evaluate)
+import Control.Exception (SomeException, evaluate, try)
 import Control.Monad.IO.Class
 import Control.Monad.Reader (Reader, runReader)
 import qualified Control.Monad.State as State
@@ -65,19 +63,19 @@ createMinimalSizingTest = do
 parsePreludeWithFile :: FilePath -> String -> IO Term3
 parsePreludeWithFile preludePath telFile = do
   preludeString <- Strict.readFile preludePath
-  case parsePrelude preludeString >>= (\p -> parseMain p telFile) of
+  case parsePrelude preludeString >>= (`parseMain` telFile) of
     Right p -> pure p
-    Left e -> error e
+    Left e  -> error e
 
 -- | Compile using our sizing toggle function
 compileWithSizing :: Bool -> Term3 -> Either EvalError IExpr
 compileWithSizing useSizing term = case typeCheck (PairTypeP (ArrTypeP ZeroTypeP ZeroTypeP) AnyType) term of
   Just e -> Left $ TCE e
-  _ -> compileWithSizing' useSizing term
+  _      -> compileWithSizing' useSizing term
 
 compileWithSizing' :: Bool -> Term3 -> Either EvalError IExpr
 compileWithSizing' useSizing t =
-  case toTelomare . removeChecks <$> (findChurchSizeD useSizing t) of
+  case toTelomare . removeChecks <$> findChurchSizeD useSizing t of
     Right (Just i) -> pure i
     Right Nothing  -> Left CompileConversionError
     Left e         -> Left e
@@ -87,9 +85,9 @@ compileWithSizing' useSizing t =
 sizingFunWrap :: (IExpr -> IExpr) -> IExpr -> Maybe (String, IExpr) -> (String, Maybe IExpr)
 sizingFunWrap eval fun inp =
   let iexpInp = case inp of
-        Nothing -> Zero
+        Nothing                  -> Zero
         Just (userInp, oldState) -> Pair (s2g userInp) oldState
   in case eval (app fun iexpInp) of
-    Zero -> ("aborted", Nothing)
+    Zero               -> ("aborted", Nothing)
     Pair disp newState -> (g2s disp, Just newState)
-    z -> ("runtime error, dumped:\n" <> show z, Nothing)
+    z                  -> ("runtime error, dumped:\n" <> show z, Nothing)

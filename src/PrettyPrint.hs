@@ -6,15 +6,14 @@ module PrettyPrint where
 import Control.Monad.State (State)
 import Data.Map (Map)
 import Naturals (NExpr (..), NExprs (..), NResult)
-import Telomare (FragExpr (..), FragExprF (..), FragExprUR (..),
+import Telomare (DataType (..), FragExpr (..), FragExprF (..), FragExprUR (..),
                  FragExprURSansAnnotation (FragExprURSA, unFragExprURSA),
-                 FragIndex (..), IExpr (..), LocTag, PartialType (..),
-                 RecursionSimulationPieces (..), IExprF (..), DataType (..),
-                 Term3 (..), Term4 (..), forget, forgetAnnotationFragExprUR,
-                 indentWithOneChild', indentWithTwoChildren', rootFrag,
-                 Pattern (..), UnprocessedParsedTerm (..),
-                 UnprocessedParsedTermF (..), isNum, g2i
-                )
+                 FragIndex (..), IExpr (..), IExprF (..), LamType (..), LocTag,
+                 ParserTermF (..), PartialType (..), Pattern (..),
+                 RecursionSimulationPieces (..), Term1, Term3 (..), Term4 (..),
+                 UnprocessedParsedTerm (..), UnprocessedParsedTermF (..),
+                 forget, forgetAnnotationFragExprUR, g2i, indentWithChildren',
+                 indentWithOneChild', indentWithTwoChildren', isNum, rootFrag)
 
 import qualified Control.Comonad.Trans.Cofree as CofreeT (CofreeF (..))
 import qualified Control.Monad.State as State
@@ -179,6 +178,24 @@ instance PrettyPrintable Term4 where
       RightFragF x -> indentWithOneChild' "R" x
       TraceFragF -> pure "T"
       AuxFragF _ -> error "prettyPrint term4 - should be no auxfrag here"
+
+instance {-# OVERLAPPING #-} PrettyPrintable Term1 where
+  showP = cata fa where
+    fa (_ CofreeT.:< x) = case x of
+      TZeroF                   -> pure "0"
+      TPairF a b               -> indentWithTwoChildren' "(" a b
+      TVarF v                  -> pure v
+      TAppF c i                -> indentWithTwoChildren' "($)" c i
+      TCheckF cf i             -> indentWithTwoChildren' ":" cf i
+      TITEF i t e              -> indentWithChildren' "ITE" [i,t,e]
+      TLeftF x                 -> indentWithOneChild' "L" x
+      TRightF x                -> indentWithOneChild' "R" x
+      TTraceF x                -> indentWithOneChild' "T" x
+      THashF x                 -> indentWithOneChild' "#" x
+      TChurchF n               -> pure $ "$" <> show n
+      TLamF (Open v) x         -> indentWithOneChild' ("\\" <> v) x
+      TLamF (Closed v) x       -> indentWithOneChild' ("[\\" <> v) x
+      TLimitedRecursionF t r b -> indentWithChildren' "TRB" [t,r,b]
 
 showTypeDebugInfo :: TypeDebugInfo -> String
 showTypeDebugInfo (TypeDebugInfo (Term3 m) lookup rootType) =

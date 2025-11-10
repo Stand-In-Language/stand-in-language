@@ -11,25 +11,27 @@ module Telomare.PossibleData where
 
 import Control.Applicative
 import Control.Comonad.Cofree (Cofree ((:<)))
-import Control.Monad ( liftM2, (<=<) )
+import Control.Monad (liftM2, (<=<))
 import Control.Monad.Except
 import Control.Monad.State.Strict (State, StateT)
 import qualified Control.Monad.State.Strict as State
-import Data.Fix (Fix(..))
-import Data.Functor.Classes ( Eq1(..), Show1(liftShowsPrec) )
+import Data.Fix (Fix (..))
+import Data.Functor.Classes (Eq1 (..), Show1 (liftShowsPrec))
 import Data.Functor.Foldable
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Set (Set)
 import qualified Data.Set as Set
+import Data.Validity (Validity (..), declare, trivialValidation)
 import Debug.Trace
-import Data.Validity (Validity (..), trivialValidation, declare)
 import GHC.Generics (Generic)
 
-import PrettyPrint
-import Telomare (UnsizedRecursionToken(..), IExpr(..), PartialType(..), LocTag(..), TelomareLike(..)
-                , indentWithOneChild', indentWithTwoChildren', indentWithChildren', convertAbortMessage)
 import Data.Bifunctor (first)
+import PrettyPrint
+import Telomare (IExpr (..), LocTag (..), PartialType (..), TelomareLike (..),
+                 UnsizedRecursionToken (..), convertAbortMessage,
+                 indentWithChildren', indentWithOneChild',
+                 indentWithTwoChildren')
 
 debug' :: Bool
 debug' = True
@@ -171,14 +173,14 @@ instance Eq1 PartExprF where
     _                        -> False
 
 instance Show1 PartExprF where
-  liftShowsPrec showsPrec showList prec = \case
+  liftShowsPrec showsPrec' showList prec = \case
     ZeroSF -> shows "ZeroSF"
-    PairSF a b -> shows "PairSF (" . showsPrec 0 a . shows ", " . showsPrec 0 b . shows ")"
+    PairSF a b -> shows "PairSF (" . showsPrec' 0 a . shows ", " . showsPrec' 0 b . shows ")"
     EnvSF -> shows "EnvSF"
-    SetEnvSF x -> shows "SetEnvSF (" . showsPrec 0 x . shows ")"
-    GateSF l r -> shows "GateSF (" . showsPrec 0 l . shows ", " . showsPrec 0 r . shows ")"
-    LeftSF x -> shows "LeftSF (" . showsPrec 0 x . shows ")"
-    RightSF x -> shows "RightSF (" . showsPrec 0 x . shows ")"
+    SetEnvSF x -> shows "SetEnvSF (" . showsPrec' 0 x . shows ")"
+    GateSF l r -> shows "GateSF (" . showsPrec' 0 l . shows ", " . showsPrec' 0 r . shows ")"
+    LeftSF x -> shows "LeftSF (" . showsPrec' 0 x . shows ")"
+    RightSF x -> shows "RightSF (" . showsPrec' 0 x . shows ")"
 
 newtype FunctionIndex = FunctionIndex { unFunctionIndex :: Int } deriving (Eq, Ord, Enum, Show, Generic)
 
@@ -192,9 +194,9 @@ showFI = ("F" <>) . show . fromEnum
 
 data GateResult a
   = GateResult
-  { leftBranch :: Bool
+  { leftBranch  :: Bool
   , rightBranch :: Bool
-  , noBranch :: Maybe a
+  , noBranch    :: Maybe a
   } deriving (Eq, Ord)
 
 instance PrettyPrintable a => Show (GateResult a) where
@@ -202,15 +204,15 @@ instance PrettyPrintable a => Show (GateResult a) where
   show (GateResult lb rb nb) = "GateResult " <> show lb <> " " <> show rb <> " " <> pnb where
     pnb = case nb of
       Just nb' -> prettyPrint nb'
-      _ -> "Nothing"
+      _        -> "Nothing"
 
 data StuckF f
   = DeferSF FunctionIndex f
   deriving (Eq, Ord, Show, Functor, Foldable, Traversable, Generic)
 
 instance Show1 StuckF where
-  liftShowsPrec showsPrec showList prec = \case
-    DeferSF fi x -> shows "DeferSF " . shows fi . shows " (" . showsPrec 0 x . shows ")"
+  liftShowsPrec showsPrec' showList prec = \case
+    DeferSF fi x -> shows "DeferSF " . shows fi . shows " (" . showsPrec' 0 x . shows ")"
 instance PrettyPrintable1 StuckF where
   showP1 = \case
     DeferSF ind x -> indentWithOneChild' (showFI ind) $ showP x
@@ -239,7 +241,7 @@ instance Validity SizedRecursion where
 
 data StrictAccum a x = StrictAccum
   { getAccum :: !a
-  , getX :: x
+  , getX     :: x
   }
   deriving Functor
 
@@ -270,11 +272,11 @@ data SuperPositionF f
 instance Eq1 SuperPositionF where
   liftEq test a b = case (a,b) of
     (EitherPF x a b, EitherPF y c d) -> x == y && test a c && test b d
-    _                            -> False
+    _                                -> False
 
 instance Show1 SuperPositionF where
-  liftShowsPrec showsPrec showList prec = \case
-    EitherPF x a b -> shows "EitherPF " . shows x . shows " (" . showsPrec 0 a . shows ", " . showsPrec 0 b . shows ")"
+  liftShowsPrec showsPrec' showList prec = \case
+    EitherPF x a b -> shows "EitherPF " . shows x . shows " (" . showsPrec' 0 a . shows ", " . showsPrec' 0 b . shows ")"
 
 data FuzzyInputF f
   = MaybePairF f f
@@ -290,9 +292,9 @@ instance Eq1 FuzzyInputF where
     _ -> False
 
 instance Show1 FuzzyInputF where
-  liftShowsPrec showsPrec showList prec = \case
+  liftShowsPrec showsPrec' showList prec = \case
     SomeInputF -> shows "SomeInputF"
-    MaybePairF a b -> shows "MaybePairF (" . showsPrec 0 a . shows ", " . showsPrec 0 b . shows ")"
+    MaybePairF a b -> shows "MaybePairF (" . showsPrec' 0 a . shows ", " . showsPrec' 0 b . shows ")"
     FunctionListF x -> shows "FunctionListF " . showList x
 
 -- TODO we can simplify abort semantics to (defer env), and then could do gate x (abort [message] x) for conditional abort
@@ -319,16 +321,16 @@ class ShallowEq1 f where
 instance ShallowEq1 PartExprF where
   shallowEq1 a b = case (a,b) of
     (ZeroSF, ZeroSF) -> True
-    _ -> False
+    _                -> False
 instance ShallowEq1 StuckF where
   shallowEq1 a b = case (a,b) of
     (DeferSF fida _, DeferSF fidb _) -> fida == fidb
-    _ -> False
+    _                                -> False
 instance ShallowEq1 AbortableF where
   shallowEq1 a b = case (a,b) of
     (AbortedF a', AbortedF b') -> a' == b'
-    (AbortF, AbortF) -> True
-    _ -> False
+    (AbortF, AbortF)           -> True
+    _                          -> False
 
 data UnsizedRecursionF f
   = RecursionTestF UnsizedRecursionToken f
@@ -346,11 +348,11 @@ instance Eq1 UnsizedRecursionF where
     _                                          -> False
 
 instance Show1 UnsizedRecursionF where
-  liftShowsPrec showsPrec showList prec x = case x of
-    RecursionTestF be x -> shows "RecursionTestF (" . shows be . shows " " . showsPrec 0 x . shows ")"
+  liftShowsPrec showsPrec' showList prec x = case x of
+    RecursionTestF be x -> shows "RecursionTestF (" . shows be . shows " " . showsPrec' 0 x . shows ")"
     SizeStageF sm x -> shows "SizeStageF " . shows sm
-      . shows " (" . showsPrec 0 x . shows ")"
-    SizeStepStubF _ _ x -> shows "SizeStepStubF (" . showsPrec 0 x . shows ")"
+      . shows " (" . showsPrec' 0 x . shows ")"
+    SizeStepStubF _ _ x -> shows "SizeStepStubF (" . showsPrec' 0 x . shows ")"
 
 instance PrettyPrintable1 PartExprF where
   showP1 = \case
@@ -398,13 +400,13 @@ data IndexedInputF f
 instance Eq1 IndexedInputF where
   liftEq test a b = case (a, b) of
     (IVarF x, IVarF y) -> x == y
-    (AnyF, AnyF) -> True
-    _ -> False
+    (AnyF, AnyF)       -> True
+    _                  -> False
 
 instance Show1 IndexedInputF where
   liftShowsPrec showsPrec showList prec x = case x of
     IVarF n -> shows $ "IVarF " <> show n
-    AnyF -> shows "IgnoreThis"
+    AnyF    -> shows "IgnoreThis"
 
 instance PrettyPrintable1 IndexedInputF where
   showP1 = \case
@@ -419,16 +421,16 @@ data DeferredEvalF f
 
 instance Eq1 DeferredEvalF where
   liftEq test a b = case (a, b) of
-    (BarrierF x, BarrierF y) -> test x y
-    (ManyLefts na va, ManyLefts nb vb) -> na == nb && test va vb
+    (BarrierF x, BarrierF y)             -> test x y
+    (ManyLefts na va, ManyLefts nb vb)   -> na == nb && test va vb
     (ManyRights na va, ManyRights nb vb) -> na == nb && test va vb
-    _ -> False
+    _                                    -> False
 
 instance Show1 DeferredEvalF where
-  liftShowsPrec showsPrec showList prec x = case x of
-    BarrierF x -> shows "BarrierF (" . showsPrec 0 x . shows ")"
-    ManyLefts n x -> shows ("ManyLefts " <> show n) . shows " (" . showsPrec 0 x . shows ")"
-    ManyRights n x -> shows ("ManyRights " <> show n) . shows " (" . showsPrec 0 x . shows ")"
+  liftShowsPrec showsPrec' showList prec x = case x of
+    BarrierF x -> shows "BarrierF (" . showsPrec' 0 x . shows ")"
+    ManyLefts n x -> shows ("ManyLefts " <> show n) . shows " (" . showsPrec' 0 x . shows ")"
+    ManyRights n x -> shows ("ManyRights " <> show n) . shows " (" . showsPrec' 0 x . shows ")"
 
 instance PrettyPrintable1 DeferredEvalF where
   showP1 = \case
@@ -444,7 +446,7 @@ instance PrettyPrintable PartialType where
       TypeVariable _ n -> "V" <> show (fromEnum n)
       ArrTypeP a b -> case a of
         ArrTypeP _ _ -> "(" <> f a <> ") -> " <> f b
-        _ -> f a <> " -> " <> f b
+        _            -> f a <> " -> " <> f b
       PairTypeP a b -> "(" <> f a <> "," <> f b <> ")"
 
 instance (Functor f, PrettyPrintable1 f) => PrettyPrintable (Fix f) where
@@ -562,7 +564,7 @@ instance Eq1 CompiledExprF where
     (CompiledExprB x, CompiledExprB y) -> liftEq test x y
     (CompiledExprS x, CompiledExprS y) -> liftEq test x y
     (CompiledExprA x, CompiledExprA y) -> liftEq test x y
-    _ -> False
+    _                                  -> False
 instance Show1 CompiledExprF where
   liftShowsPrec showsPrec showList prec = \case
     CompiledExprB x -> liftShowsPrec showsPrec showList prec x
@@ -687,7 +689,7 @@ instance ShallowEq1 UnsizedExprF where
     (UnsizedExprB x, UnsizedExprB y) -> shallowEq1 x y
     (UnsizedExprS x, UnsizedExprS y) -> shallowEq1 x y
     (UnsizedExprA x, UnsizedExprA y) -> shallowEq1 x y
-    _ -> False
+    _                                -> False
 
 instance PrettyPrintable1 UnsizedExprF where
   showP1 = \case
@@ -790,7 +792,7 @@ instance Eq1 InputSizingExprF where
     (InputSizingU x, InputSizingU y) -> liftEq test x y
     (InputSizingD x, InputSizingD y) -> liftEq test x y
     (InputSizingI x, InputSizingI y) -> liftEq test x y
-    _ -> False
+    _                                -> False
 instance PrettyPrintable1 InputSizingExprF where
   showP1 = \case
     InputSizingB x -> showP1 x

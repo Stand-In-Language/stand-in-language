@@ -5,21 +5,25 @@
 module Telomare.Resolver where
 
 import Codec.Binary.UTF8.String (encode)
-import Control.Comonad.Cofree (Cofree (..))
+import Control.Comonad.Cofree (Cofree (..), unwrap)
 import Control.Comonad.Trans.Cofree (CofreeF)
 import qualified Control.Comonad.Trans.Cofree as C
+import qualified Control.Comonad.Trans.Cofree as CofreeT
 import Control.Lens.Combinators (transform)
 import Control.Monad (forM, forM_, (<=<))
 import qualified Control.Monad.State as State
+import Control.Monad.Trans (lift)
+import Control.Monad.Trans.Writer.Strict (WriterT (..), writer)
 import Crypto.Hash (Digest, SHA256, hash)
-import Data.Bifunctor (Bifunctor (first), bimap)
+import Data.Bifunctor (Bifunctor (first, second), bimap)
 import qualified Data.ByteArray as BA
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
 import Data.Char (ord)
 import qualified Data.Foldable as F
 import Data.Functor.Foldable (Base, Corecursive (ana, apo), Recursive (cata))
-import Data.List (delete, elem, elemIndex, find, intercalate, zip4)
+import Data.List (delete, elem, elemIndex, find, foldl', intercalate, nubBy,
+                  zip4)
 import qualified Data.Map as Map
 import Data.Map.Strict (Map, fromList, keys)
 import Data.Set (Set, (\\))
@@ -281,13 +285,6 @@ splitExpr' = \case
   (anno :< TVarF n) -> pure . tag anno $ varNF n
   (anno :< TAppF c i) ->
     rewriteOuterTag anno <$> appF (splitExpr' c) (splitExpr' i)
-  {-
-  (anno :< TCheckF tc c) ->
-    let performTC = deferF ((\ia -> setEnvF (pairF (setEnvF (pairF (pure $ tag anno AbortFrag) ia))
-                                                   (pure . tag anno $ RightFrag EnvFrag))) $ appF (pure . tag anno $ LeftFrag EnvFrag)
-                                                                                                  (pure . tag anno $ RightFrag EnvFrag))
-    in rewriteOuterTag anno <$> setEnvF (pairF performTC (pairF (splitExpr' tc) (splitExpr' c)))
--}
   (anno :< TCheckF tc c) -> (\tc' c' -> anno :< AuxFragF (CheckingWrapper anno (FragExprUR tc') (FragExprUR c'))) <$> splitExpr' tc <*> splitExpr' c
   (anno :< TITEF i t e) -> rewriteOuterTag anno <$> setEnvF (pairF (gateF (splitExpr' e) (splitExpr' t)) (splitExpr' i))
   (anno :< TLeftF x) -> (anno :<) . LeftFragF <$> splitExpr' x
@@ -311,7 +308,6 @@ splitExpr :: Term2 -> Term3
 splitExpr t = let (bf, (_,_,m)) = State.runState (splitExpr' t) (toEnum 0, FragIndex 1, Map.empty)
               in Term3 . Map.map FragExprUR $ Map.insert (FragIndex 0) bf m
 
-
 -- |`makeLambda ps vl t1` makes a `TLam` around `t1` with `vl` as arguments.
 -- Automatic recognition of Close or Open type of `TLam`.
 makeLambda :: String                            -- ^Variable name
@@ -321,7 +317,6 @@ makeLambda str term1@(anno :< _) =
   if unbound == Set.empty then anno :< TLamF (Closed str) term1 else anno :< TLamF (Open str) term1
   where v = varsTerm1 term1
         unbound = v \\ Set.singleton str
-
 
 -- |Transformation from `AnnotatedUPT` to `Term1` validating and inlining `VarUP`s
 validateVariables :: AnnotatedUPT
@@ -445,6 +440,85 @@ validateVariables term =
         anno :< HashUPF x -> (\y -> anno :< THashF y) <$> validateWithEnvironment x
   in State.evalStateT (validateWithEnvironment term) Map.empty
 
+-- convert let bindings to nested lambda/app brackets
+letsToApps :: AnnotatedUPT -> Either String Term1
+letsToApps term =
+   -- Topological sort with cycle detection
+  let topologicalSort :: [String] -> Map String (Set String) -> Either [String] [String]
+      topologicalSort names deps = go [] Set.empty names
+        where
+          go :: [String] -> Set String -> [String] -> Either [String] [String]
+          go result _ [] = Right (reverse result)
+          go result inProgress remaining =
+            case find (canProcess remaining inProgress) remaining of
+              Nothing ->
+                -- Must be a cycle - find it for error message
+                let findCycleFrom start = go' start Set.empty
+                      where go' curr visited
+                              | curr `Set.member` visited = [curr]
+                              | otherwise =
+                                  case find (`elem` remaining) (Set.toList $ Map.findWithDefault Set.empty curr deps) of
+                                    Nothing -> []
+                                    Just next -> curr : go' next (Set.insert curr visited)
+                in Left (findCycleFrom (head remaining))
+              Just name ->
+                let inProgress' = inProgress `Set.union`
+                                  Map.findWithDefault Set.empty name deps
+                in go (name : result) inProgress' (delete name remaining)
+
+          canProcess rn inProgress name =
+            all (`notElem` rn) (Set.toList $ Map.findWithDefault Set.empty name deps)
+
+          delete x = filter (/= x)
+      makeBindingsAsoc (name, def) = case runWriterT def of
+        Left s           -> Left s
+        Right (nx, refs) -> pure (name, (nx,refs))
+      buildRefs :: CofreeF UnprocessedParsedTermF LocTag (WriterT (Set String) (Either String) Term1)
+                   -> WriterT (Set String) (Either String) Term1
+      buildRefs (anno CofreeT.:< upf) = case upf of
+        VarUPF n -> writer (anno :< TVarF n, Set.singleton n)
+        LamUPF v x -> f (runWriterT x) where
+          f (Right (nx, refs)) = writer (makeLambda v nx, Set.delete v refs)
+          f (Left s)           = lift $ Left s
+        LetUPF bindings inner -> case runWriterT inner of
+          Left s -> lift $ Left s
+          Right (nInner, refs) -> WriterT $ do
+            -- Build dependency graph
+            nBindings <- traverse makeBindingsAsoc bindings
+            let originalOrder = fmap fst bindings
+                dependencies = Map.fromList $ fmap (second snd) nBindings
+                sortedBindings :: Either String [(String, Term1)]
+                sortedBindings =
+                  case topologicalSort originalOrder dependencies of
+                    Left cycle -> Left $ "Recursion not allowed: circular dependency " <> intercalate " -> " cycle
+                    Right sortedNames ->
+                      pure [(name, def) | name <- sortedNames,
+                            (name', (def, _)) <- nBindings, name == name']
+                makeBinding (n,d) inner = anno :< TAppF (makeLambda n inner) d
+            sortedBindings >>= \sb ->
+                pure (foldr makeBinding nInner sb, Set.difference refs (Map.keysSet dependencies))
+        x -> WriterT . fmap (first ((anno :<) . brt)) . runWriterT $ sequence x where
+          brt = \case
+            ITEUPF i t e -> TITEF i t e
+            IntUPF n -> unwrap $ i2t anno n
+            StringUPF s -> unwrap $ s2t anno s
+            PairUPF a b -> TPairF a b
+            ListUPF l -> unwrap $ foldr (\x y -> anno :< TPairF x y) (anno :< TZeroF) l
+            AppUPF f x -> TAppF f x
+            UnsizedRecursionUPF t r b -> TLimitedRecursionF t r b
+            ChurchUPF n -> TChurchF n
+            LeftUPF x -> TLeftF x
+            RightUPF x -> TRightF x
+            TraceUPF x -> TTraceF x
+            CheckUPF cf x -> TCheckF cf x
+            HashUPF x -> THashF x
+      cleanup = \case
+        Left s -> Left s
+        Right (t, refs) -> if null refs
+          then pure t
+          else Left $ "letsToApps missing definitions: " <> show refs
+  in cleanup . runWriterT $ cata buildRefs term
+
 -- |Collect all free variable names in a `Term1` expresion
 varsTerm1 :: Term1 -> Set String
 varsTerm1 = cata alg where
@@ -507,6 +581,9 @@ process :: AnnotatedUPT
         -> Either String Term3
 process upt = (\dt -> debugTrace ("Resolver process term:\n" <> prettyPrint dt) dt) . splitExpr <$> process2Term2 upt
 
+processWlet :: AnnotatedUPT -> Either String Term3
+processWlet = fmap splitExpr . process2Term2let
+
 process2Term2 :: AnnotatedUPT
               -> Either String Term2
 process2Term2 = fmap generateAllHashes
@@ -514,6 +591,14 @@ process2Term2 = fmap generateAllHashes
               . removeCaseUPs
               . optimizeBuiltinFunctions
               . addBuiltins
+
+process2Term2let :: AnnotatedUPT -> Either String Term2
+process2Term2let = fmap generateAllHashes
+                 . debruijinize [] <=< fmap tf . letsToApps
+                 . removeCaseUPs
+                 . optimizeBuiltinFunctions
+                 . addBuiltins
+                 where tf x = debugTrace ("Term1:\n" <> prettyPrint x) x
 
 -- |Helper function to compile to Term2
 runTelomareParser2Term2 :: TelomareParser AnnotatedUPT -- ^Parser to run
@@ -589,3 +674,8 @@ main2Term3 :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -- ^Modul
            -> String -- ^Module name with main
            -> Either String Term3 -- ^Error on Left
 main2Term3 moduleBindings s = resolveMain moduleBindings s >>= process
+
+main2Term3let :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -- ^Modules: [(ModuleName, [Either Import (VariableName, BindedUPT)])]
+           -> String -- ^Module name with main
+           -> Either String Term3 -- ^Error on Left
+main2Term3let moduleBindings s = resolveMain moduleBindings s >>= processWlet
