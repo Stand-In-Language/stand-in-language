@@ -162,7 +162,7 @@ executable telomare-evaluare
     TypeFamilies
 
 executable telomare-lsp
-  main-is:             TelomareLSP.hs
+  main-is:             LSP.hs
   hs-source-dirs:      app
 
   build-depends:       base
