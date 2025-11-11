@@ -502,6 +502,76 @@ instance PrettyPrintable1 DeferredExprF where
 
 type DeferredExpr = Fix DeferredExprF
 
+data StaticCheckExprF f
+  = StaticCheckExprB (PartExprF f)
+  | StaticCheckExprS (StuckF f)
+  | StaticCheckExprA (AbortableF f)
+  | StaticCheckExprD (DeferredEvalF f)
+  deriving (Functor, Foldable, Traversable)
+instance BasicBase StaticCheckExprF where
+  embedB = StaticCheckExprB
+  extractB = \case
+    StaticCheckExprB x -> Just x
+    _ -> Nothing
+instance StuckBase StaticCheckExprF where
+  embedS = StaticCheckExprS
+  extractS = \case
+    StaticCheckExprS x -> Just x
+    _ -> Nothing
+instance AbortBase StaticCheckExprF where
+  embedA = StaticCheckExprA
+  extractA = \case
+    StaticCheckExprA x -> Just x
+    _ -> Nothing
+instance DeferredEvalBase StaticCheckExprF where
+  embedD = StaticCheckExprD
+  extractD = \case
+    StaticCheckExprD x -> Just x
+    _ -> Nothing
+instance PrettyPrintable1 StaticCheckExprF where
+  showP1 = \case
+    StaticCheckExprB x -> showP1 x
+    StaticCheckExprS x -> showP1 x
+    StaticCheckExprA x -> showP1 x
+    StaticCheckExprD x -> showP1 x
+
+type StaticCheckExpr = Fix StaticCheckExprF
+
+data CompiledExprF f
+  = CompiledExprB (PartExprF f)
+  | CompiledExprS (StuckF f)
+  | CompiledExprA (AbortableF f)
+  | CompiledExprI (IndexedInputF f)
+  deriving (Eq, Show, Functor, Foldable, Traversable, Generic)
+instance BasicBase CompiledExprF where
+  embedB = CompiledExprB
+  extractB = \case
+    CompiledExprB x -> Just x
+    _              -> Nothing
+instance StuckBase CompiledExprF where
+  embedS = CompiledExprS
+  extractS = \case
+    CompiledExprS x -> Just x
+    _ -> Nothing
+instance AbortBase CompiledExprF where
+  embedA = CompiledExprA
+  extractA = \case
+    CompiledExprA x -> Just x
+    _ -> Nothing
+instance IndexedInputBase CompiledExprF where
+  embedI = CompiledExprI
+  extractI = \case
+    CompiledExprI x -> Just x
+    _ -> Nothing
+instance PrettyPrintable1 CompiledExprF where
+  showP1 = \case
+    CompiledExprB x -> showP1 x
+    CompiledExprS x -> showP1 x
+    CompiledExprA x -> showP1 x
+    CompiledExprI x -> showP1 x
+
+type CompiledExpr = Fix CompiledExprF
+
 data UnsizedExprF f
   = UnsizedExprB (PartExprF f)
   | UnsizedExprS (StuckF f)
@@ -593,72 +663,6 @@ data AllExprF f
   | AllExprI (IndexedInputF f)
   | AllExprZ (FuzzyInputF f)
   | AllExprU (UnsizedRecursionF f)
-
-data SuperExprF f
-  = SuperExprB (PartExprF f)
-  | SuperExprS (StuckF f)
-  | SuperExprA (AbortableF f)
-  | SuperExprP (SuperPositionF f)
-  | SuperExprI (IndexedInputF f)
---  | SuperExprZ (FuzzyInputF f)
-  deriving (Eq, Functor, Foldable, Traversable)
-instance BasicBase SuperExprF where
-  embedB = SuperExprB
-  extractB = \case
-    SuperExprB x -> Just x
-    _            -> Nothing
-instance StuckBase SuperExprF where
-  embedS = SuperExprS
-  extractS = \case
-    SuperExprS x -> Just x
-    _            -> Nothing
-instance AbortBase SuperExprF where
-  embedA = SuperExprA
-  extractA = \case
-    SuperExprA x -> Just x
-    _            -> Nothing
-instance SuperBase SuperExprF where
-  embedP = SuperExprP
-  extractP = \case
-    SuperExprP x -> Just x
-    _            -> Nothing
-instance IndexedInputBase SuperExprF where
-  embedI = SuperExprI
-  extractI = \case
-    SuperExprI x -> Just x
-    _            -> Nothing
-{-
-instance FuzzyBase SuperExprF where
-  embedF = SuperExprZ
-  extractF = \case
-    SuperExprZ x -> Just x
-    _ -> Nothing
--}
-instance Eq1 SuperExprF where
-  liftEq test a b = case (a,b) of
-    (SuperExprB x, SuperExprB y) -> liftEq test x y
-    (SuperExprS x, SuperExprS y) -> liftEq test x y
-    (SuperExprA x, SuperExprA y) -> liftEq test x y
-    (SuperExprP x, SuperExprP y) -> liftEq test x y
-    (SuperExprI x, SuperExprI y) -> liftEq test x y
-    _                            -> False
-instance ShallowEq1 SuperExprF where
-  shallowEq1 a b = case (a,b) of
-    (SuperExprB x, SuperExprB y) -> shallowEq1 x y
-    (SuperExprS x, SuperExprS y) -> shallowEq1 x y
-    (SuperExprA x, SuperExprA y) -> shallowEq1 x y
-    _                            -> False
---    (SuperExprZ x, SuperExprZ y) -> liftEq test x y
-instance PrettyPrintable1 SuperExprF where
-  showP1 = \case
-    SuperExprB x -> showP1 x
-    SuperExprS x -> showP1 x
-    SuperExprA x -> showP1 x
-    SuperExprP x -> showP1 x
-    SuperExprI x -> showP1 x
---    SuperExprZ x -> showP1 x
-
-type SuperExpr = Fix SuperExprF
 
 data AbortExprF f
   = AbortExprB (PartExprF f)

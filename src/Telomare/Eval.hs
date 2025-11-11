@@ -46,7 +46,7 @@ import Telomare.TypeChecker (TypeCheckError (..), typeCheck)
 import qualified Control.Comonad.Trans.Cofree as CofreeT
 import Data.Bifunctor (bimap, first)
 import Data.Function (fix)
-import Data.Functor.Foldable (Base, para)
+import Data.Functor.Foldable (Base, para, cata)
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Debug.Trace (trace)
@@ -59,7 +59,8 @@ import Telomare
 import Telomare.Optimizer (optimize)
 import Telomare.Parser (AnnotatedUPT, parseModule, parseOneExprOrTopLevelDefs)
 import Telomare.Possible (abortExprToTerm4, evalA, sizeTerm,
-                          term3ToUnsizedExpr)
+                          term3ToUnsizedExpr, term4toAbortExpr)
+import Telomare.PossibleData (StaticCheckExpr, convertBasic, convertStuck, convertAbort)
 import Telomare.Resolver (main2Term3, process, resolveAllImports)
 import Telomare.RunTime (pureEval, rEval)
 import Telomare.TypeChecker (TypeCheckError (..), typeCheck)
@@ -210,11 +211,8 @@ removeChecks (Term4 m) =
 
 runStaticChecks :: Term4 -> Either EvalError Term4
 runStaticChecks t@(Term4 termMap) =
-  let result = evalA combine (Just Zero) t
-      combine a b = case (a,b) of
-        (Nothing, _) -> Nothing
-        (_, Nothing) -> Nothing
-        (a, _)       -> a
+  let result = evalA scTerm
+      scTerm = term4toAbortExpr t
   in case debugTrace ("running static checks for:\n" <> prettyPrint t) result of
     Nothing -> pure t
     Just e  -> Left . StaticCheckError $ convertAbortMessage e
@@ -295,17 +293,6 @@ schemeEval iexpr = do
   (_, Just mhout, _, _) <- createProcess (shell "chez-script runtime.so") { std_out = CreatePipe }
   scheme <- hGetContents mhout
   putStrLn scheme
-
--- converts between easily understood Haskell types and untyped IExprs around an iteration of a Telomare expression
-funWrap' :: (IExpr -> IExpr) -> IExpr -> Maybe (String, IExpr) -> (String, Maybe IExpr)
-funWrap' eval fun inp =
-  let iexpInp = case inp of
-        Nothing -> Zero
-        Just (userInp, oldState) -> Pair (s2g userInp) oldState
-  in case eval (app fun iexpInp) of
-    Zero -> ("aborted", Nothing)
-    Pair disp newState -> (g2s disp, Just newState)
-    z -> ("runtime error, dumped:\n" <> show z, Nothing)
 
 evalLoopCore :: IExpr
              -> (String -> String -> IO String)

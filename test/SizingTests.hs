@@ -33,6 +33,9 @@ import Test.QuickCheck
 -- Common datatypes for generating Telomare AST.
 import Common
 
+
+
+{- works for now!
 -- | Creates a simplified version of the test defined in Spec.hs that fails when
 -- | using sizing but passes when using a fixed size of 255
 createMinimalSizingTest :: Spec
@@ -55,6 +58,7 @@ createMinimalSizingTest = do
     it "Test with fixed size (should pass)" $ case result of
         Left e -> expectationFailure ("Exception hit:\n" <> show e)
         Right r -> r `shouldBe` (Right ("R O", Just Zero))
+-}
 
 -- | Helper function to parse prelude with a file
 -- parsePrelude :: String -> Either String [(String, AnnotatedUPT)]

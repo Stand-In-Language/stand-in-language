@@ -547,7 +547,7 @@ unitTests_ parse = do
     runIO . putStrLn $ showFunctionIndexesInSource preludeFile testMain
     case fmap compileMain (parse testMain) of
       Right (Right g) ->
-        let eval = funWrap' evalBU g
+        let eval = funWrap evalBU g
             unitTestMain s i e = it ("main input " <> i) $ eval (Just (i, s)) `shouldBe` e
         in do
         -- unitTestMain Zero "0 0" ("0 plus 0 is 0", Just Zero)
@@ -756,7 +756,7 @@ unitTests parse = do
     testMain <- runIO $ Strict.readFile "testchar.tel"
     case fmap compileMain (parse testMain) of
       Right (Right g) ->
-        let eval = funWrap' evalBU g
+        let eval = funWrap evalBU g
             unitTestMain s i e = it ("main input " <> i) $ eval (Just (i, s)) `shouldBe` e
         in do
         unitTestMain Zero "A" ("ascii value of first char is odd", Just Zero)
@@ -765,7 +765,7 @@ unitTests parse = do
     testMain <- runIO $ Strict.readFile "simpleplus.tel"
     case fmap compileMain (parse testMain) of
       Right (Right g) ->
-        let eval = funWrap' evalBU g
+        let eval = funWrap evalBU g
             unitTestMain s i e = it ("main input " <> i) $ eval (Just (i, s)) `shouldBe` e
         in do
         unitTestMain Zero "0 0" ("0 plus 0 is 0", Just Zero)

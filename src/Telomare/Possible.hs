@@ -1384,20 +1384,20 @@ abortExprToTerm4 x =
     Just e -> Left e
     _      -> pure . Term4 . buildFragMap . cata convert $ x
 
-evalA :: (Maybe IExpr -> Maybe IExpr -> Maybe IExpr) -> Maybe IExpr -> Term4 -> Maybe IExpr
-evalA combine base t =
+evalA :: StaticCheckExpr -> Maybe IExpr
+evalA t =
   let unhandledError x = error ("evalA unhandled case " <> prettyPrint x)
-      runResult = let aStep :: SuperExprF SuperExpr -> SuperExpr
-                      aStep = basicStep (stuckStep (indexedInputStep Set.empty (indexSwitchSuperSplitStep (superStep aGate aStep (abortStep unhandledError)))))
-                      aGate = gateBasicResult (gateAbortResult (gateSuperResult aGate unhandledError))
-                      eval' :: SuperExpr -> SuperExpr
+      runResult = let aStep :: StaticCheckExprF StaticCheckExpr -> StaticCheckExpr
+                      aStep = basicStep (stuckStep (abortStep (deferredEvalStep' unhandledError)))
+                      eval' :: StaticCheckExpr -> StaticCheckExpr
                       eval' = transformNoDefer aStep
-                  in eval' . capMain (indexedEE $ IVarF 0) $ term4toAbortExpr t
+                      inp = deferredEE $ BarrierF envB
+                  in eval' $ capMain inp t
       getAborted = \case
         AbortFW (AbortedF e) -> Just e
-        -- SuperFW (EitherPF a b) -> combine a b
+        DeferredFW (BarrierF _) -> Nothing
         x                    -> foldr (<|>) Nothing x
-  in flip combine base . cata getAborted $ runResult
+  in cata getAborted runResult
 
 evalPartial :: (Base g ~ f, Traversable f, BasicBase f, StuckBase f, DeferredEvalBase f, Recursive g, Corecursive g, PrettyPrintable g)
   => g -> g
