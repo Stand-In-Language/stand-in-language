@@ -551,7 +551,7 @@ unitTests_ parse = do
             unitTestMain s i e = it ("main input " <> i) $ eval (Just (i, s)) `shouldBe` e
         in do
         -- unitTestMain Zero "0 0" ("0 plus 0 is 0", Just Zero)
-        unitTestMain Zero "9 9" ("18", Just Zero)
+        unitTestMain Zero "9 9" ("18", Right Zero)
       z -> runIO . expectationFailure $ "failed to compile simpleplus.tel: " <> show z
   {-     testing harness for finding refinement zeros. Needs a bit of work
     preludeFile <- runIO $ Strict.readFile "Prelude.tel"
@@ -759,8 +759,8 @@ unitTests parse = do
         let eval = funWrap evalBU g
             unitTestMain s i e = it ("main input " <> i) $ eval (Just (i, s)) `shouldBe` e
         in do
-        unitTestMain Zero "A" ("ascii value of first char is odd", Just Zero)
-        unitTestMain Zero "B" ("ascii value of first char is even", Just Zero)
+        unitTestMain Zero "A" ("ascii value of first char is odd", Right Zero)
+        unitTestMain Zero "B" ("ascii value of first char is even", Right Zero)
       z -> runIO . expectationFailure $ "failed to compile testchar.tel: " <> show z
     testMain <- runIO $ Strict.readFile "simpleplus.tel"
     case fmap compileMain (parse testMain) of
@@ -768,8 +768,8 @@ unitTests parse = do
         let eval = funWrap evalBU g
             unitTestMain s i e = it ("main input " <> i) $ eval (Just (i, s)) `shouldBe` e
         in do
-        unitTestMain Zero "0 0" ("0 plus 0 is 0", Just Zero)
-        unitTestMain Zero "9 9" ("9 plus 9 is 18", Just Zero)
+        unitTestMain Zero "0 0" ("0 plus 0 is 0", Right Zero)
+        unitTestMain Zero "9 9" ("9 plus 9 is 18", Right Zero)
       z -> runIO . expectationFailure $ "failed to compile simpleplus.tel: " <> show z
   {-
   describe "unsizedEval tests" $ do

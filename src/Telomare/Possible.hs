@@ -50,7 +50,7 @@ import PrettyPrint
 import Telomare (BreakState' (..), FragExpr (..), FragExprF (..),
                  FragExprUR (..), FragIndex, IExpr (..), IExprF (SetEnvF),
                  LocTag (DummyLoc), PartialType (..), RecursionPieceFrag,
-                 RecursionSimulationPieces (..),
+                 RecursionSimulationPieces (..), RunTimeError (..),
                  TelomareLike (fromTelomare, toTelomare), Term3 (..),
                  Term4 (..), UnsizedRecursionToken (UnsizedRecursionToken),
                  buildFragMap, deferF, forget, g2i, i2g, indentWithChildren',
@@ -1331,8 +1331,8 @@ regularEval = transformNoDefer f . cata ss where
     x -> embed x
     -- z -> error ("regularEval unhandled case\n" <> prettyPrint (embed z))
 
-evalBU :: IExpr -> IExpr
-evalBU = toIExpr . ebu . fromTelomare where
+evalBU :: IExpr -> Either RunTimeError IExpr
+evalBU = pure . toIExpr . ebu . fromTelomare where
   toIExpr = unwrapMaybe . toTelomare
   unwrapMaybe = \case
     Just x -> x
@@ -1341,7 +1341,10 @@ evalBU = toIExpr . ebu . fromTelomare where
   ebu = transformNoDefer (basicStep (stuckStep undefined)) . (\x -> debugTrace ("evalBU starting expr:\n" <> prettyPrint x) x)
 
 evalBU' :: IExpr -> IO IExpr
-evalBU' = pure . evalBU
+evalBU' = rewrap . evalBU where
+  rewrap = \case
+    Left e -> putStrLn (show e) >> pure Zero
+    Right x -> pure x
 
 term4toAbortExpr :: (Base g ~ f, BasicBase f, StuckBase f, AbortBase f, Corecursive g) => Term4 -> g
 term4toAbortExpr (Term4 termMap') =

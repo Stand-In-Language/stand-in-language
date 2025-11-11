@@ -117,7 +117,7 @@ rEval e = para alg where
       Pair (Gate _ b) _    -> rEval e b
       -- The next case should never actually occur,
       -- because it should be caught by `typeCheck`.
-      z                    -> error $ "rEval: " <> show (SetEnvError z)
+      z                    -> error $ "rEval: " <> show (GenericRunTimeError "SetEnv unexpected arg" z)
 
 -- |The fix point combinator of this function (of type `IExpr -> IExpr -> m IExpr`) yields a function that
 -- evaluates an `IExpr` with a given enviroment (another `IExpr`).
@@ -137,8 +137,8 @@ iEval f env g = let f' = f env in case g of
       Gate a b -> case nenv of
         Zero -> f' a
         _    -> f' b
-      z -> throwError $ SetEnvError z -- This should never actually occur, because it should be caught by typecheck
-    bx -> throwError $ SetEnvError bx -- This should never actually occur, because it should be caught by typecheck
+      z -> throwError $ GenericRunTimeError "SetEnv unexpected fun arg" z -- should be caught by typecheck
+    bx -> throwError $ GenericRunTimeError "SetEnv unexpected non pair arg" bx -- should be caught by typecheck
   PLeft g -> f' g >>= \case
     (Pair a _) -> pure a
     _          -> pure Zero
@@ -177,7 +177,7 @@ instance TelomareLike IExpr where
 
 instance AbstractRunTime IExpr where
   -- eval = fix iEval Zero
-  eval = rEval Zero
+  eval = pure . rEval Zero
 
 resultIndex = FragIndex (-1)
 instance TelomareLike NExprs where
@@ -197,12 +197,12 @@ instance TelomareLike NExprs where
           _             -> Nothing
     in Map.lookup resultIndex m >>= fromNExpr
 instance AbstractRunTime NExprs where
-  eval x@(NExprs m) = NExprs $ Map.insert resultIndex (nEval x) m
+  eval x@(NExprs m) = pure . NExprs $ Map.insert resultIndex (nEval x) m
 
 evalAndConvert :: (Show a, AbstractRunTime a) => a -> IExpr
-evalAndConvert x = case toTelomare ar of
-  Nothing -> error . show . ResultConversionError $ show ar
-  Just ir -> ir
+evalAndConvert x = case toTelomare <$> ar of
+  Right (Just ir) -> ir
+  _ -> error . show . ResultConversionError $ show ar
  where ar = eval x
 
 -- |Evaluation with hvm backend
@@ -221,7 +221,12 @@ hvmEval x = do
     Nothing -> error $ "Error: hvm failed to produce output. \nIExpr fed to hvm:\n" <> show x
 
 simpleEval :: IExpr -> IO IExpr
-simpleEval = pure . eval
+simpleEval = fe . eval where
+  fe = \case
+    Right x -> pure x
+    Left e -> do
+      putStrLn $ "runtime error: " <> show e
+      pure Zero
 
 fastInterpretEval :: IExpr -> IO IExpr
 fastInterpretEval e = do

@@ -237,15 +237,16 @@ compile staticCheck t = debugTrace ("compiling term3:\n" <> prettyPrint t)
       Left e         -> Left e
 
 -- converts between easily understood Haskell types and untyped IExprs around an iteration of a Telomare expression
-funWrap :: (IExpr -> IExpr) -> IExpr -> Maybe (String, IExpr) -> (String, Maybe IExpr)
+funWrap :: (IExpr -> Either RunTimeError IExpr) -> IExpr -> Maybe (String, IExpr) -> (String, Either RunTimeError IExpr)
 funWrap eval fun inp =
   let iexpInp = case inp of
         Nothing                  -> Zero
         Just (userInp, oldState) -> Pair (s2g userInp) oldState
   in case eval (app fun iexpInp) of
-    Zero               -> ("aborted", Nothing)
-    Pair disp newState -> (g2s disp, Just newState)
-    z                  -> ("runtime error, dumped:\n" <> show z, Nothing)
+    Right Zero                 -> ("aborted", Left $ AbortRunTime Zero)
+    Right (Pair disp newState) -> (g2s disp, pure newState)
+    Right z                    -> ("unexpected runtime value, dumped:\n" <> show z, Left $ GenericRunTimeError "unexpected runtime value" z)
+    Left e                     -> ("runtime error:\n" <> show e, Left e)
 
 runMainCore :: [(String, String)] -> String -> (IExpr -> IO a) -> IO a
 runMainCore modulesStrings s e =
@@ -300,16 +301,16 @@ evalLoopCore :: IExpr
              -> [String]
              -> IO String
 evalLoopCore iexpr accumFn initAcc manualInput =
-  let wrappedEval :: Maybe (String, IExpr) -> (String, Maybe IExpr)
+  let wrappedEval :: Maybe (String, IExpr) -> (String, Either RunTimeError IExpr)
       wrappedEval = funWrap eval iexpr
       mainLoop :: String -> [String] -> Maybe (String, IExpr) -> IO String
       mainLoop acc strInput s = do
         let (out, nextState) = wrappedEval s
         newAcc <- accumFn acc out
         case nextState of
-          Nothing -> pure acc
-          Just Zero -> pure $ newAcc <> "\n" <> "done"
-          Just ns -> do
+          Left _ -> pure acc
+          Right Zero -> pure $ newAcc <> "\n" <> "done"
+          Right ns -> do
             (inp, rest) <-
               if null strInput
               then (, []) <$> getLine

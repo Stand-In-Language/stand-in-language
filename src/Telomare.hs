@@ -446,14 +446,12 @@ instance NFData IExpr where
 
 data RunTimeError
   = AbortRunTime IExpr
-  | SetEnvError IExpr
   | GenericRunTimeError String IExpr
   | ResultConversionError String
   deriving (Eq, Ord)
 
 instance Show RunTimeError where
-  show (AbortRunTime a) = "Abort: " <> show (g2s a)
-  show (SetEnvError e) = "Can't SetEnv: " <> show e
+  show (AbortRunTime a) = "Aborted, " <> convertAbortMessage a
   show (GenericRunTimeError s i) = "Generic Runtime Error: " <> s <> " -- " <> show i
   show (ResultConversionError s) = "Couldn't convert runtime result to IExpr: " <> s
 
@@ -464,7 +462,7 @@ class TelomareLike a where
   toTelomare :: a -> Maybe IExpr
 
 class TelomareLike a => AbstractRunTime a where
-  eval :: a -> a
+  eval :: a -> Either RunTimeError a
 
 rootFrag :: Map FragIndex a -> a
 rootFrag = (Map.! FragIndex 0)
