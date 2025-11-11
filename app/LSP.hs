@@ -79,22 +79,27 @@ serverOptions =
           Nothing                                   -- save
   in defaultOptions { optTextDocumentSync = Just syncOpts }
 
--- Token legend (not actively used by serverOptions here)
+-- The server should ideally use the client's token types
+-- but if you must define your own legend, it should be:
 tokenLegend :: LSPTypes.SemanticTokensLegend
 tokenLegend = LSPTypes.SemanticTokensLegend
-  [ "keyword", "string", "number", "operator", "variable", "comment", "function", "type" ]
+  [ "comment", "keyword", "string", "number", "regexp", "operator",
+    "namespace", "type", "struct", "class", "interface", "enum",
+    "typeParameter", "function", "method", "member", "property",
+    "event", "macro", "variable", "parameter", "label",
+    "enumConstant", "enumMember", "dependent", "concept" ]
   []
 
--- Token type indices
-tokKeyword, tokString, tokNumber, tokOperator, tokVariable, tokComment, tokFunction, tokType :: UInt
-tokKeyword  = 0
-tokString   = 1
-tokNumber   = 2
-tokOperator = 3
-tokVariable = 4
-tokComment  = 5
-tokFunction = 6
-tokType     = 7
+-- Token type indices (matching the server's reported legend)
+tokComment, tokKeyword, tokString, tokNumber, tokOperator, tokVariable, tokFunction, tokType :: UInt
+tokKeyword  = 15  -- "keyword" is at index 15 in server's response
+tokComment  = 17  -- "comment" is at index 17
+tokString   = 18  -- "string" is at index 18
+tokNumber   = 19  -- "number" is at index 19
+tokOperator = 21  -- "operator" is at index 21
+tokVariable = 8   -- "variable" is at index 8
+tokFunction = 12  -- "function" is at index 12
+tokType     = 1   -- "type" is at index 1
 
 --------------------------------------------------------------------------------
 -- Handlers
@@ -371,18 +376,20 @@ lexTelomare text = concat $ zipWith lexLine [0..] (T.lines text)
         -- Adjusted operator chars (removed some that have special meaning)
         isOperatorChar c = c `elem` ("!@%^&*+=:/|<>?-" :: String)
 
--- Encode tokens to LSP format (delta encoding)
+-- Encode tokens to LSP format (delta encoding, relative positions)
 tokensToLSP :: [Token] -> [UInt]
 tokensToLSP tokens = go 0 0 (sortOn (\t -> (tLine t, tStart t)) tokens)
   where
     go _ _ [] = []
     go prevLine prevStart (t:ts)
       | tLine t == prevLine =
-          let deltaStart = tStart t - prevStart
-          in  deltaStart : tLength t : tType t : 0 : 0 : go prevLine (tStart t) ts
+          -- SAME LINE: deltaLine must be 0
+          0 : (tStart t - prevStart) : tLength t : tType t : 0
+          : go prevLine (tStart t) ts
       | otherwise =
-          let deltaLine = tLine t - prevLine
-          in  deltaLine : tStart t : tLength t : tType t : 0 : go (tLine t) (tStart t) ts
+          -- NEW LINE: delta from previous line, start is absolute column
+          (tLine t - prevLine) : tStart t : tLength t : tType t : 0
+          : go (tLine t) (tStart t) ts
 
 -- Range filter for tokens
 withinRange :: Range -> Token -> Bool

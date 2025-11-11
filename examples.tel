@@ -8,18 +8,20 @@ main = \input -> ("Hello, World!", 0)
 
 -- Ad hoc user defined types example:
 
--- MyInt = let wrapper = \h -> ( \i -> if not i
---                                     then abort "MyInt cannot be 0"
---                                     else  i
---                             , \i -> if dEqual (left i) h
---                                     then 0
---                                     else abort "Not a MyInt"
---                             )
---         in wrapper (# wrapper)
--- aux = \x -> if dEqual x 8 then "Success" else "Failure"
--- main = \i -> (aux ((left MyInt) 8), 0)
+MyInt = let wrapper = \h -> ( \i -> if not i
+                                    then abort "MyInt cannot be 0"
+                                    else  i
+                            , \i -> if dEqual (left i) h
+                                    then 0
+                                    else abort "Not a MyInt"
+                            )
+        in wrapper (# wrapper)
+aux = \x -> if dEqual x 8 then "Success" else "Failure"
+main = \i -> (aux ((left MyInt) 8), 0)
 
--- Case example
+aux2 = [1,2,3]
+
+-- something
 -- main =
 --   let toCase = (("a string", 99),(8,"pattern-match"))
 --       caseTest =
