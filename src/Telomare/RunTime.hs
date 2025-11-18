@@ -205,6 +205,12 @@ evalAndConvert x = case toTelomare <$> ar of
   _ -> error . show . ResultConversionError $ show ar
  where ar = eval x
 
+evalAndConvert' :: (Show a, AbstractRunTime a) => a -> Either RunTimeError IExpr
+evalAndConvert' x = case toTelomare <$> ar of
+  Right (Just ir) -> pure ir
+  _ -> Left . ResultConversionError $ show ar
+ where ar = eval x
+
 -- |Evaluation with hvm backend
 hvmEval :: IExpr -> IO IExpr
 hvmEval x = do

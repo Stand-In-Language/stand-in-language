@@ -970,7 +970,7 @@ insertAndGetKey v = do
 
 pattern AbortRecursion :: IExpr
 pattern AbortRecursion = Pair Zero Zero
-pattern AbortUser :: IExpr -> IExpr
+pattern AbortUser :: IExpr -> IExpr -- convert to String -> IExpr ?
 pattern AbortUser m = Pair (Pair Zero Zero) m
 pattern AbortAny :: IExpr
 pattern AbortAny = Pair (Pair (Pair Zero Zero) Zero) Zero

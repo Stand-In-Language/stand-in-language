@@ -50,7 +50,7 @@ import PrettyPrint
 import Telomare (BreakState' (..), FragExpr (..), FragExprF (..),
                  FragExprUR (..), FragIndex, IExpr (..), IExprF (SetEnvF),
                  LocTag (DummyLoc), PartialType (..), RecursionPieceFrag,
-                 RecursionSimulationPieces (..), RunTimeError (..),
+                 RecursionSimulationPieces (..), RunTimeError (..), AbstractRunTime (..),
                  TelomareLike (fromTelomare, toTelomare), Term3 (..),
                  Term4 (..), UnsizedRecursionToken (UnsizedRecursionToken),
                  buildFragMap, deferF, forget, g2i, i2g, indentWithChildren',
@@ -1386,6 +1386,17 @@ abortExprToTerm4 x =
   in case findAborted x of
     Just e -> Left e
     _      -> pure . Term4 . buildFragMap . cata convert $ x
+
+instance AbstractRunTime CompiledExpr where
+  eval = checkError . transformNoDefer step where
+    step = basicStep (stuckStep (abortStep unhandledError))
+    unhandledError x = error $ "CompiledExpr eval unhandled case " <> prettyPrint x
+    findError = \case
+      AbortFW (AbortedF e) -> Just e
+      x -> asum x
+    checkError x = case cata findError x of
+      Just e -> Left $ AbortRunTime e
+      _ -> pure x --  $ CompiledExpr x
 
 evalA :: StaticCheckExpr -> Maybe IExpr
 evalA t =

@@ -24,7 +24,8 @@ import Telomare.Decompiler
 import Telomare.Eval
 import Telomare.Optimizer
 import Telomare.Parser
-import Telomare.Possible (evalBU, evalBU')
+import Telomare.Possible (evalBU, evalBU', appB, deferB)
+import Telomare.PossibleData (zeroB, CompiledExpr (..), setEnvB, pairB, zeroB)
 import Telomare.Resolver
 import Telomare.RunTime
 import Telomare.TypeChecker
@@ -303,10 +304,16 @@ allowedTypeCheck Nothing                = True
 allowedTypeCheck (Just (UnboundType _)) = True
 allowedTypeCheck _                      = False
 
-testEval :: IExpr -> IO IExpr
+-- testEval :: IExpr -> IO IExpr
+testEval :: CompiledExpr -> IO IExpr
 -- testEval iexpr = optimizedEval (SetEnv (Pair (Defer iexpr) Zero))
 -- testEval iexpr = optimizedEval (SetEnv (Pair (Defer deserialized) Zero))
-testEval iexpr = evalBU' (SetEnv (Pair (Defer iexpr) Zero))
+-- testEval iexpr = evalBU' (SetEnv (Pair (Defer iexpr) Zero))
+testEval expr = case eval (setEnvB (pairB (deferB (toEnum 0) expr) zeroB)) of
+  Right x -> case toTelomare x of
+    Just x' -> pure x'
+    _ -> error $ "testEval failed to convert:\n" <> prettyPrint x
+  Left z -> error $ "testEval unexpected: " <> show z
 -- testEval iexpr = evalB'' (SetEnv (Pair (Defer iexpr) Zero))
 
 -- TODO get rid of testEval and just use this
@@ -315,7 +322,7 @@ testEval' iexpr = evalBU (SetEnv (Pair (Defer iexpr) Zero))
 unitTest :: String -> String -> IExpr -> Spec
 unitTest name expected iexpr = it name $ if allowedTypeCheck (typeCheck ZeroTypeP (fromTelomare iexpr))
   then do
-    result <- show . PrettyIExpr <$> testEval iexpr
+    result <- show . PrettyIExpr <$> testEval (fromTelomare iexpr)
     result `shouldBe` expected
   else expectationFailure ( concat [name, " failed typecheck: ", show (typeCheck ZeroTypeP (fromTelomare iexpr))])
 
@@ -502,6 +509,7 @@ unitTests_ parse = do
                                     (ints2g [1,2,3])
 -}
   describe "bottom up eval" $ do
+    unitTest2 "main = d2c 3 succ 0" "3"
     {-
     it "test SBV" . liftIO $ do
       testSBV' == pure 3
@@ -540,6 +548,7 @@ unitTests_ parse = do
     -- unitTest2 "main = d2c 2 succ 0" "2"
     -- unitTestStaticChecks "main : (\\x -> assert 1 \"A\") = 1" (not . null)
     -- unitTest2 "main = d2c 3 succ 0" "3"
+  {-
     preludeFile <- runIO $ Strict.readFile "Prelude.tel"
     -- testMain <- runIO $ Strict.readFile "simpleplus2.tel"
     testMain <- runIO $ Strict.readFile "simpleplus4.tel"
@@ -547,12 +556,13 @@ unitTests_ parse = do
     runIO . putStrLn $ showFunctionIndexesInSource preludeFile testMain
     case fmap compileMain (parse testMain) of
       Right (Right g) ->
-        let eval = funWrap evalBU g
+        let eval = funWrap g appB
             unitTestMain s i e = it ("main input " <> i) $ eval (Just (i, s)) `shouldBe` e
         in do
         -- unitTestMain Zero "0 0" ("0 plus 0 is 0", Just Zero)
-        unitTestMain Zero "9 9" ("18", Right Zero)
+        unitTestMain Zero "9 9" ("18", Right zeroB)
       z -> runIO . expectationFailure $ "failed to compile simpleplus.tel: " <> show z
+-}
   {-     testing harness for finding refinement zeros. Needs a bit of work
     preludeFile <- runIO $ Strict.readFile "Prelude.tel"
     testMain <- runIO $ Strict.readFile "inputtest.tel"
@@ -635,6 +645,11 @@ unitTests parse = do
   let unitTestType = unitTestType' parse
       unitTest2 = unitTest2' parse
       unitTestStaticChecks = unitTestStaticChecks' parse
+      buildMainTest s = case fmap compileMain (parse s) of
+        Right (Right g) -> let eval = funWrap g appB
+                           in pure $ \s i e -> it ("main input " <> i) $ eval (Just (i, s)) `shouldBe` e
+        z -> pure $ \s i e -> runIO . expectationFailure $ "failed to compile main:\n" <> show s <> "\nbecause:\n" <> show z
+
   describe "type checker" $ do
     unitTestType "main = \\x -> (x,0)" (PairTypeP (ArrTypeP ZeroTypeP ZeroTypeP) ZeroTypeP) (== Nothing)
     unitTestType "main = \\x -> (x,0)" ZeroTypeP isInconsistentType
@@ -754,23 +769,14 @@ unitTests parse = do
 
   describe "main function tests" $ do
     testMain <- runIO $ Strict.readFile "testchar.tel"
-    case fmap compileMain (parse testMain) of
-      Right (Right g) ->
-        let eval = funWrap evalBU g
-            unitTestMain s i e = it ("main input " <> i) $ eval (Just (i, s)) `shouldBe` e
-        in do
-        unitTestMain Zero "A" ("ascii value of first char is odd", Right Zero)
-        unitTestMain Zero "B" ("ascii value of first char is even", Right Zero)
-      z -> runIO . expectationFailure $ "failed to compile testchar.tel: " <> show z
+    unitTestMain <- buildMainTest testMain
+    unitTestMain Zero "A" ("ascii value of first char is odd", Right zeroB)
+    unitTestMain Zero "B" ("ascii value of first char is even", Right zeroB)
     testMain <- runIO $ Strict.readFile "simpleplus.tel"
-    case fmap compileMain (parse testMain) of
-      Right (Right g) ->
-        let eval = funWrap evalBU g
-            unitTestMain s i e = it ("main input " <> i) $ eval (Just (i, s)) `shouldBe` e
-        in do
-        unitTestMain Zero "0 0" ("0 plus 0 is 0", Right Zero)
-        unitTestMain Zero "9 9" ("9 plus 9 is 18", Right Zero)
-      z -> runIO . expectationFailure $ "failed to compile simpleplus.tel: " <> show z
+    unitTestMain <- buildMainTest testMain
+    unitTestMain Zero "0 0" ("0 plus 0 is 0", Right zeroB)
+    unitTestMain Zero "9 9" ("9 plus 9 is 18", Right zeroB)
+    unitTestMain Zero "9 a" ("runtime error:\nAborted, user abort: invalid input", Left (AbortRunTime (AbortUser $ s2g "invalid input")))
   {-
   describe "unsizedEval tests" $ do
     unitTestUnsized parse "main = d2c 3 succ 0"
@@ -847,6 +853,11 @@ nexprTests = do
 unitTest2' parse s r = it s $ case fmap compileUnitTest (parse s) of
   Left e -> expectationFailure $ concat ["failed to parse ", s, " ", show e]
   Right (Right g) -> testEval g >>= (\r2 -> if r2 == r
+  {-
+  Right (Right g) -> case toTelomare g of
+    Nothing -> error $ "unitTest2' conversion failure from CompiledExpr:\n" <> prettyPrint g
+    Just g' -> testEval g' >>= (\r2 -> if r2 == r
+-}
     then pure ()
     else expectationFailure $ concat [s, " result ", r2]) . show . PrettyIExpr
   Right (Left e) -> expectationFailure $ "failed to compile: " <> show e

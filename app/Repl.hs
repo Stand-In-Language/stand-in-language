@@ -1,5 +1,6 @@
 {-# LANGUAGE CApiFFI               #-}
 {-# LANGUAGE DeriveFunctor         #-}
+{-# LANGUAGE LambdaCase            #-}
 {-# LANGUAGE PartialTypeSignatures #-}
 {-# LANGUAGE ScopedTypeVariables   #-}
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
@@ -26,11 +27,12 @@ import System.Console.Haskeline
 import System.Exit (exitSuccess)
 import qualified System.IO.Strict as Strict
 import Telomare
-import Telomare.Eval (EvalError (..), compileUnitTest)
+import Telomare.Eval (EvalError (..), compileUnitTestNoAbort)
 import Telomare.Parser (TelomareParser,
                         parseAssignment,
                         parseLongExpr, parsePrelude)
-import Telomare.Possible (evalPartial')
+import Telomare.Possible (evalPartial', deferB)
+import Telomare.PossibleData (CompiledExpr, setEnvB, pairB, zeroB)
 import Telomare.Resolver (process)
 import Telomare.RunTime (fastInterpretEval, simpleEval)
 import Telomare.TypeChecker (inferType)
@@ -92,12 +94,15 @@ resolveBinding' name bindings = lookup name taggedBindings >>= (rightToMaybe . p
     taggedBindings = (fmap . fmap) (tag DummyLoc) bindings
 
 -- |Obtain expression from the bindings and transform them maybe into a IExpr.
-resolveBinding :: String -> [(String, UnprocessedParsedTerm)] -> Maybe IExpr
-resolveBinding name bindings = rightToMaybe $ compileUnitTest =<< maybeToRight (resolveBinding' name bindings)
+resolveBinding :: String -> [(String, UnprocessedParsedTerm)] -> Maybe CompiledExpr
+resolveBinding name bindings = rightToMaybe $ compileUnitTestNoAbort =<< maybeToRight (resolveBinding' name bindings)
+
+resolveBindingI :: String -> [(String, UnprocessedParsedTerm)] -> Maybe IExpr
+resolveBindingI name bindings = resolveBinding name bindings >>= toTelomare
 
 -- |Print last expression bound to
 -- the _tmp_ variable in the bindings
-printLastExpr :: (IExpr -> IO IExpr) -- ^Telomare backend
+printLastExpr :: (IExpr -> Either RunTimeError IExpr) -- ^Telomare backend
               -> [(String, UnprocessedParsedTerm)]
               -> IO ()
 printLastExpr eval bindings = do
@@ -106,14 +111,16 @@ printLastExpr eval bindings = do
     case lookup "_tmp_" bindings' of
       Nothing -> putStrLn "Could not find _tmp_ in bindings"
       Just upt -> do
-        let compile' x = case compileUnitTest x of
+        let compile' x = case compileUnitTestNoAbort x of
                            Left err -> Left . show $ err
-                           Right r  -> Right r
+                           Right r  -> case toTelomare r of
+                             Just te -> pure $ fromTelomare te
+                             _ -> Left $ "conversion error from compiled expr:\n" <> prettyPrint r
         case compile' =<< process (DummyLoc :< LetUPF bindings' upt) of
           Left err -> putStrLn err
-          Right iexpr' -> do
-            iexpr <- eval (SetEnv (Pair (Defer iexpr') Zero))
-            print . PrettyIExpr $ iexpr
+          Right iexpr' -> case eval iexpr' of
+              Left e -> putStrLn $ "error: " <> show e
+              Right expr' -> print . PrettyIExpr $ expr'
   case res of
     Left err -> print err
     Right _  -> pure ()
@@ -123,13 +130,13 @@ printLastExpr eval bindings = do
 
 data ReplState = ReplState
   { replBindings :: [(String, UnprocessedParsedTerm)]
-  , replEval     :: IExpr -> IO IExpr
+  , replEval     :: IExpr -> Either RunTimeError IExpr
   , loadedFiles  :: Set FilePath
   -- ^ Backend function used to compile IExprs.
   }
 
 -- | Enter a single line assignment or expression.
-replStep :: (IExpr -> IO IExpr)
+replStep :: (IExpr -> Either RunTimeError IExpr)
          -> [(String, UnprocessedParsedTerm)]
          -> String
          -> InputT IO [(String, UnprocessedParsedTerm)]
@@ -165,23 +172,25 @@ replLoop (ReplState bs eval sf) = do
       replLoop $ ReplState new_bs eval sf
     Just s | ":dn" `isPrefixOf` s -> do
       liftIO $ case runReplParser bs . dropWhile (== ' ') <$> stripPrefix ":dn" s of
-        Just (Right (ReplExpr new_bindings)) -> case resolveBinding "_tmp_" new_bindings of
-          Just iexpr -> do
-            putStrLn . showNExprs $ fromTelomare iexpr
-            putStrLn . showNIE $ fromTelomare iexpr
+        Just (Right (ReplExpr new_bindings)) -> case resolveBindingI "_tmp_" new_bindings of
+          Just expr -> case toTelomare expr of
+            Just iexpr -> do
+              putStrLn . showNExprs $ fromTelomare iexpr
+              putStrLn . showNIE $ fromTelomare iexpr
+            _ -> putStrLn "conversion error from CompiledExpr"
           _ -> putStrLn "some sort of error?"
         _ -> putStrLn "parse error"
       replLoop $ ReplState bs eval sf
     Just s | ":d" `isPrefixOf` s -> do
       liftIO $ case runReplParser bs . dropWhile (== ' ') <$> stripPrefix ":d" s of
-        Just (Right (ReplExpr new_bindings)) -> case resolveBinding "_tmp_" new_bindings of
+        Just (Right (ReplExpr new_bindings)) -> case resolveBindingI "_tmp_" new_bindings of
           Just iexpr -> putStrLn $ showPIE iexpr
           _          -> putStrLn "some sort of error?"
         _ -> putStrLn "parse error"
       replLoop $ ReplState bs eval sf
     Just s | ":p" `isPrefixOf` s -> do
       liftIO $ case runReplParser bs . dropWhile (== ' ') <$> stripPrefix ":p" s of
-        Just (Right (ReplExpr new_bindings)) -> case resolveBinding "_tmp_" new_bindings of
+        Just (Right (ReplExpr new_bindings)) -> case resolveBindingI "_tmp_" new_bindings of
           Just iexpr -> putStrLn . showPIE $ evalPartial' iexpr
           _          -> putStrLn "some sort of error?"
         _ -> putStrLn "parse error"
@@ -267,7 +276,7 @@ startLoop :: ReplState -> IO ()
 startLoop state = runInputT defaultSettings $ replLoop state
 
 -- | Compile and output a Telomare expression.
-startExpr :: (IExpr -> IO IExpr)
+startExpr :: (IExpr -> Either RunTimeError IExpr)
           -> [(String, UnprocessedParsedTerm)]
           -> String
           -> IO ()
@@ -279,13 +288,22 @@ startExpr eval bindings s_expr = case runReplParser bindings s_expr of
 main = do
   e_prelude <- parsePrelude <$> Strict.readFile "Prelude.tel"
   settings  <- execParser opts
-  let eval = case _backend settings of
-               SimpleBackend   -> simpleEval
-               NaturalsBackend -> fastInterpretEval
+  let eval' = case _backend settings of
+               SimpleBackend   -> wrapEval simpleEval'
+               NaturalsBackend -> wrapEval natEval
+      simpleEval' :: IExpr -> Either RunTimeError IExpr
+      simpleEval' = eval
+      natEval :: NExprs -> Either RunTimeError NExprs
+      natEval = eval
+      wrapEval f = conv . fmap toTelomare . f . fromTelomare . (\x -> SetEnv (Pair (Defer x) Zero))
+      conv = \case
+        Right (Just x) -> Right x
+        Left e -> Left e
+        _ -> Left $ ResultConversionError "failed converting back to iexpr after eval"
       bindings = (fmap . fmap) forget $
         case e_prelude of
           Left  _   ->  []
           Right bds -> bds
   case _expr settings of
-    Just  s -> startExpr eval bindings s
+    Just  s -> startExpr eval' bindings s
     Nothing -> startLoop (ReplState bindings eval Set.empty)

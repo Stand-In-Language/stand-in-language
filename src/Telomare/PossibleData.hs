@@ -15,7 +15,7 @@ import Control.Monad ( liftM2, (<=<) )
 import Control.Monad.Except
 import Control.Monad.State.Strict (State, StateT)
 import qualified Control.Monad.State.Strict as State
-import Data.Fix
+import Data.Fix (Fix(..))
 import Data.Functor.Classes ( Eq1(..), Show1(liftShowsPrec) )
 import Data.Functor.Foldable
 import Data.Map (Map)
@@ -541,7 +541,6 @@ data CompiledExprF f
   = CompiledExprB (PartExprF f)
   | CompiledExprS (StuckF f)
   | CompiledExprA (AbortableF f)
-  | CompiledExprI (IndexedInputF f)
   deriving (Eq, Show, Functor, Foldable, Traversable, Generic)
 instance BasicBase CompiledExprF where
   embedB = CompiledExprB
@@ -558,19 +557,66 @@ instance AbortBase CompiledExprF where
   extractA = \case
     CompiledExprA x -> Just x
     _ -> Nothing
-instance IndexedInputBase CompiledExprF where
-  embedI = CompiledExprI
-  extractI = \case
-    CompiledExprI x -> Just x
-    _ -> Nothing
+instance Eq1 CompiledExprF where
+  liftEq test a b = case (a,b) of
+    (CompiledExprB x, CompiledExprB y) -> liftEq test x y
+    (CompiledExprS x, CompiledExprS y) -> liftEq test x y
+    (CompiledExprA x, CompiledExprA y) -> liftEq test x y
+    _ -> False
+instance Show1 CompiledExprF where
+  liftShowsPrec showsPrec showList prec = \case
+    CompiledExprB x -> liftShowsPrec showsPrec showList prec x
+    CompiledExprS x -> liftShowsPrec showsPrec showList prec x
+    CompiledExprA x -> liftShowsPrec showsPrec showList prec x
 instance PrettyPrintable1 CompiledExprF where
   showP1 = \case
     CompiledExprB x -> showP1 x
     CompiledExprS x -> showP1 x
     CompiledExprA x -> showP1 x
-    CompiledExprI x -> showP1 x
 
 type CompiledExpr = Fix CompiledExprF
+
+instance TelomareLike CompiledExpr where
+  fromTelomare = flip State.evalState (toEnum 0) . f where
+    f = \case
+      Zero -> pure zeroB
+      Pair a b -> pairB <$> f a <*> f b
+      Env -> pure envB
+      SetEnv x -> setEnvB <$> f x
+      Defer x -> do
+        fid <- State.get
+        State.put $ succ fid
+        stuckEE . DeferSF fid <$> f x
+      Gate l r -> basicEE <$> (GateSF <$> f l <*> f r)
+      PLeft x -> leftB <$> f x
+      PRight x -> rightB <$> f x
+      Trace -> do
+        fid <- State.get
+        State.put $ succ fid
+        pure . stuckEE $ DeferSF fid envB
+  {-
+  fromTelomare = flip State.evalState (toEnum 0) . ana f where
+    f = \case
+      Zero ->  embedB $ pure ZeroSF
+      Pair a b -> embedB $ PairSF (pure a) (pure b)
+      Env -> embedB $ pure EnvSF
+      SetEnv x -> embedB . SetEnvSF $ pure x
+      Defer x -> do
+        fid <- State.get
+        State.put $ succ fid
+        pure . embedS $ DeferSF fid x
+-}
+  toTelomare = cata f where
+    f = \case
+      BasicFW ZeroSF -> pure Zero
+      BasicFW (PairSF a b) -> Pair <$> a <*> b
+      BasicFW EnvSF -> pure Env
+      BasicFW (SetEnvSF x) -> SetEnv <$> x
+      StuckFW (DeferSF _ x) -> Defer <$> x
+      BasicFW (GateSF l r) -> Gate <$> l <*> r
+      BasicFW (LeftSF x) -> PLeft <$> x
+      BasicFW (RightSF x) -> PRight <$> x
+      AbortFW _ -> Nothing
 
 data UnsizedExprF f
   = UnsizedExprB (PartExprF f)
