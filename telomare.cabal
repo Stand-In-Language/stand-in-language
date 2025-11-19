@@ -18,6 +18,8 @@ data-files:          bench/MemoryBench/cases
                    , Prelude.tel
                    , tictactoe.tel
                    , examples.tel
+                   , simpleplus.tel
+                   , testchar.tel
 
 library
   hs-source-dirs:      src
