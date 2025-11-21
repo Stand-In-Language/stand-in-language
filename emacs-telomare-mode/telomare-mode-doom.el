@@ -1,41 +1,32 @@
-;;; telomare-mode-doom.el --- Telomare mode configuration for Doom Emacs -*- lexical-binding: t; -*-
+;; ;; telomare lsp:
 
-;; Author: Your Name
-;; Version: 0.1.0
-;; Package-Requires: ((emacs "26.1"))
+;; Define Telomare mode
+(define-derived-mode telomare-mode prog-mode "Telomare"
+  "Major mode for editing Telomare files."
+  (setq-local comment-start "-- ")
+  (setq-local comment-end ""))
 
-;;; Commentary:
+;; Associate .tel files with telomare-mode
+(add-to-list 'auto-mode-alist '("\\.tel\\'" . telomare-mode))
 
-;; Doom Emacs specific configuration for Telomare mode.
-;; Add (load! "path/to/telomare-mode-doom.el") to your Doom config.el
+;; Configure LSP for Telomare using nix run
+(with-eval-after-load 'lsp-mode
+  ;; (add-to-list 'lsp-language-id-configuration '(telomare-mode . "telomare"))
 
-;;; Code:
+  ;; Enable semantic tokens
+  (setq lsp-semantic-tokens-enable t)
 
-;; Load common functionality
-(require 'telomare-mode-common)
+  (lsp-register-client
+   (make-lsp-client
+    :new-connection (lsp-stdio-connection
+                     (lambda ()
+                       (list "nix" "run" "/home/hhefesto/src/telomare#lsp" "--")))
+    :activation-fn (lsp-activate-on "telomare")
+    :major-modes '(telomare-mode)
+    :server-id 'telomare-lsp
+    ))
+  )
 
-;; Doom-specific LSP setup
-(defun telomare-doom-setup ()
-  "Set up Telomare mode for Doom Emacs."
-  ;; Register LSP client after lsp-mode is loaded
-  (after! lsp-mode
-    (telomare-register-lsp-client))
-
-  ;; Use Doom's lsp! macro for better integration
-  (add-hook 'telomare-mode-hook #'lsp! 'append))
-
-;; Initialize on load
-(telomare-doom-setup)
-
-;; Optional: Doom keybindings for convenience
-(after! telomare-mode
-  (map! :map telomare-mode-map
-        :localleader
-        "g" #'lsp-find-definition
-        "G" #'lsp-find-references
-        "h" #'lsp-describe-thing-at-point
-        "r" #'lsp-rename
-        "a" #'lsp-execute-code-action))
-
-(provide 'telomare-mode-doom)
-;;; telomare-mode-doom.el ends here
+;; Auto-start LSP in telomare-mode
+;; (add-hook 'telomare-mode-hook #'lsp-deferred) ;; lazier/non-blocking
+(add-hook 'telomare-mode-hook #'lsp)
