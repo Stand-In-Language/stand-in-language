@@ -12,6 +12,8 @@
   ;; Enable semantic tokens
   (setq lsp-semantic-tokens-enable t)
 
+  (add-to-list 'lsp-language-id-configuration '(telomare-mode . "telomare"))
+
   (lsp-register-client
    (make-lsp-client
     :new-connection (lsp-stdio-connection
@@ -23,3 +25,6 @@
 
 ;; Auto-start LSP in telomare-mode
 (add-hook 'telomare-mode-hook #'lsp)
+
+(provide 'telomare-mode-spacemacs)
+;;; telomare-config.el ends here

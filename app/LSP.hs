@@ -8,11 +8,14 @@
 module Main where
 
 import Control.Concurrent.STM
-import Control.Monad (void)
+import Control.Exception (try, IOException)
+import Control.Monad (void, forM)
 import Control.Monad.IO.Class (MonadIO(liftIO))
 import Data.List (sortOn)
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
+import Data.Either (isRight)
+import System.FilePath ((</>))
 
 import Language.LSP.Server
 import qualified Language.LSP.Protocol.Types as LSPTypes
@@ -24,6 +27,8 @@ import qualified Language.LSP.Protocol.Lens as LSP
 import qualified Language.LSP.Protocol.Message as LSPMsg
 
 import Telomare.Parser (parseModule, AnnotatedUPT)
+import Telomare.Eval (eval2IExpr)
+import Telomare (IExpr)
 
 --------------------------------------------------------------------------------
 -- Document state tracking
@@ -32,6 +37,9 @@ import Telomare.Parser (parseModule, AnnotatedUPT)
 --   Either errorString or a list of either imports or (name, binding) pairs.
 type ParseResult = [Either AnnotatedUPT (String, AnnotatedUPT)]
 
+-- Store module bindings for evaluation context
+type ModuleBindings = [(String, ParseResult)]
+
 data DocState = DocState
   { docText   :: T.Text
   , docVersion :: Int
@@ -39,6 +47,12 @@ data DocState = DocState
   } deriving (Show)
 
 type DocStore = TVar (Map.Map NormalizedUri DocState)
+
+-- Global state for prelude and other module bindings
+data GlobalState = GlobalState
+  { docStore :: DocStore
+  , moduleBindings :: TVar ModuleBindings
+  }
 
 --------------------------------------------------------------------------------
 -- Lexer for syntax highlighting (kept as-is for now)
@@ -55,17 +69,47 @@ data Token = Token
 
 main :: IO ()
 main = do
-  docStore <- newTVarIO Map.empty
+  docStore' <- newTVarIO Map.empty
+  
+  -- Load Prelude.tel if available
+  preludeBindings <- loadPrelude
+  moduleBindings' <- newTVarIO preludeBindings
+  
+  let globalState = GlobalState docStore' moduleBindings'
+  
   void $ runServer $ ServerDefinition
     { parseConfig      = const $ const $ Right ()
     , onConfigChange   = const $ pure ()
     , defaultConfig    = ()
     , configSection    = "telomare"
     , doInitialize     = \env _req -> pure $ Right env
-    , staticHandlers   = \_caps -> handlers docStore
+    , staticHandlers   = \_caps -> handlers globalState
     , interpretHandler = \env -> Iso (runLspT env) liftIO
     , options          = serverOptions
     }
+
+-- Load Prelude.tel and parse it
+loadPrelude :: IO ModuleBindings
+loadPrelude = do
+  -- Try to load Prelude.tel from common locations
+  let preludePaths = ["~/src/telomare/Prelude.tel", "Prelude.tel", "lib/Prelude.tel", "../lib/Prelude.tel"]
+  preludeContents <- tryLoadFiles preludePaths
+  case preludeContents of
+    Nothing -> return []
+    Just content -> 
+      case parseModule content of
+        Left err -> do
+          putStrLn $ "Warning: Failed to parse Prelude.tel: " ++ err
+          return []
+        Right parsed -> return [("Prelude", parsed)]
+  where
+    tryLoadFiles :: [FilePath] -> IO (Maybe String)
+    tryLoadFiles [] = return Nothing
+    tryLoadFiles (path:paths) = do
+      result <- try (readFile path) :: IO (Either IOException String)
+      case result of
+        Right content -> return (Just content)
+        Left _ -> tryLoadFiles paths
 
 -- Server options (plain TextDocumentSyncOptions for lsp-types-2.3.x)
 serverOptions :: Options
@@ -79,40 +123,29 @@ serverOptions =
           Nothing                                   -- save
   in defaultOptions { optTextDocumentSync = Just syncOpts }
 
--- The server should ideally use the client's token types
--- but if you must define your own legend, it should be:
-tokenLegend :: LSPTypes.SemanticTokensLegend
-tokenLegend = LSPTypes.SemanticTokensLegend
-  [ "comment", "keyword", "string", "number", "regexp", "operator",
-    "namespace", "type", "struct", "class", "interface", "enum",
-    "typeParameter", "function", "method", "member", "property",
-    "event", "macro", "variable", "parameter", "label",
-    "enumConstant", "enumMember", "dependent", "concept" ]
-  []
-
 -- Token type indices (matching the server's reported legend)
 tokComment, tokKeyword, tokString, tokNumber, tokOperator, tokVariable, tokFunction, tokType :: UInt
-tokKeyword  = 15  -- "keyword" is at index 15 in server's response
-tokComment  = 17  -- "comment" is at index 17
-tokString   = 18  -- "string" is at index 18
-tokNumber   = 19  -- "number" is at index 19
-tokOperator = 21  -- "operator" is at index 21
-tokVariable = 8   -- "variable" is at index 8
-tokFunction = 12  -- "function" is at index 12
-tokType     = 1   -- "type" is at index 1
+tokKeyword  = 1   -- "keyword"
+tokComment  = 0   -- "comment"
+tokString   = 2   -- "string"
+tokNumber   = 3   -- "number"
+tokOperator = 5   -- "operator"
+tokVariable = 19  -- "variable"
+tokFunction = 13  -- "function"
+tokType     = 7    -- "type"
 
 --------------------------------------------------------------------------------
 -- Handlers
 
-handlers :: DocStore -> Handlers (LspM ())
-handlers docStore = mconcat
+handlers :: GlobalState -> Handlers (LspM ())
+handlers gState = mconcat
   [ notificationHandler SMethod_Initialized                   $ \_ -> pure ()
-  , notificationHandler SMethod_TextDocumentDidOpen           $ didOpenHandler docStore
-  , notificationHandler SMethod_TextDocumentDidChange         $ didChangeHandler docStore
-  , notificationHandler SMethod_TextDocumentDidClose          $ didCloseHandler docStore
-  , requestHandler     SMethod_TextDocumentSemanticTokensFull  $ semanticTokensFullHandler docStore
-  , requestHandler     SMethod_TextDocumentSemanticTokensRange $ semanticTokensRangeHandler docStore
-  , requestHandler     SMethod_TextDocumentHover               $ hoverHandler docStore
+  , notificationHandler SMethod_TextDocumentDidOpen           $ didOpenHandler (docStore gState)
+  , notificationHandler SMethod_TextDocumentDidChange         $ didChangeHandler (docStore gState)
+  , notificationHandler SMethod_TextDocumentDidClose          $ didCloseHandler (docStore gState)
+  , requestHandler     SMethod_TextDocumentSemanticTokensFull  $ semanticTokensFullHandler (docStore gState)
+  , requestHandler     SMethod_TextDocumentSemanticTokensRange $ semanticTokensRangeHandler (docStore gState)
+  , requestHandler     SMethod_TextDocumentHover               $ hoverHandler gState
   ]
 
 --------------------------------------------------------------------------------
@@ -127,10 +160,10 @@ storeParsedDoc
   -> Int
   -> T.Text
   -> LspM () ()
-storeParsedDoc docStore uri version text = do
+storeParsedDoc docStore' uri version text = do
   let parseRes = parseTelomareModule text
   liftIO . atomically $
-    modifyTVar' docStore $
+    modifyTVar' docStore' $
       Map.insert (toNormalizedUri uri) (DocState text version parseRes)
 
 --------------------------------------------------------------------------------
@@ -139,17 +172,17 @@ storeParsedDoc docStore uri version text = do
 didOpenHandler :: DocStore
                -> LSPMsg.TNotificationMessage 'LSPMsg.Method_TextDocumentDidOpen
                -> LspM () ()
-didOpenHandler docStore notification = do
+didOpenHandler docStore' notification = do
   let doc     = notification ^. LSP.params . LSP.textDocument
       uri     = doc ^. LSP.uri
       version = fromIntegral (doc ^. LSP.version)
       text    = doc ^. LSP.text
-  storeParsedDoc docStore uri version text
+  storeParsedDoc docStore' uri version text
 
 didChangeHandler :: DocStore
                  -> LSPMsg.TNotificationMessage 'LSPMsg.Method_TextDocumentDidChange
                  -> LspM () ()
-didChangeHandler docStore notification = do
+didChangeHandler docStore' notification = do
   let doc     = notification ^. LSP.params . LSP.textDocument
       uri     = doc ^. LSP.uri
       version = fromIntegral (doc ^. LSP.version)
@@ -161,21 +194,21 @@ didChangeHandler docStore notification = do
       let newText = case changeData of
                       LSPTypes.InL partial -> partial ^. LSP.text
                       LSPTypes.InR whole   -> whole   ^. LSP.text
-      storeParsedDoc docStore uri version newText
+      storeParsedDoc docStore' uri version newText
 
 didCloseHandler :: DocStore
                 -> LSPMsg.TNotificationMessage 'LSPMsg.Method_TextDocumentDidClose
                 -> LspM () ()
-didCloseHandler docStore notification = do
+didCloseHandler docStore' notification = do
   let uri = notification ^. LSP.params . LSP.textDocument . LSP.uri
-  liftIO $ atomically $ modifyTVar' docStore $ Map.delete (toNormalizedUri uri)
+  liftIO $ atomically $ modifyTVar' docStore' $ Map.delete (toNormalizedUri uri)
 
 --------------------------------------------------------------------------------
 -- Semantic tokens (kept using the simple lexer for now)
 
-semanticTokensFullHandler docStore req respond = do
+semanticTokensFullHandler docStore' req respond = do
   let uri = req ^. LSP.params . LSP.textDocument . LSP.uri
-  mDoc <- liftIO $ atomically $ Map.lookup (toNormalizedUri uri) <$> readTVar docStore
+  mDoc <- liftIO $ atomically $ Map.lookup (toNormalizedUri uri) <$> readTVar docStore'
   case mDoc of
     Nothing -> respond $ Right $ LSPTypes.InL $ LSPTypes.SemanticTokens Nothing []
     Just docState -> do
@@ -183,10 +216,10 @@ semanticTokensFullHandler docStore req respond = do
           encoded = tokensToLSP tokens
       respond $ Right $ LSPTypes.InL $ LSPTypes.SemanticTokens Nothing encoded
 
-semanticTokensRangeHandler docStore req respond = do
+semanticTokensRangeHandler docStore' req respond = do
   let uri   = req ^. LSP.params . LSP.textDocument . LSP.uri
       range = req ^. LSP.params . LSP.range
-  mDoc <- liftIO $ atomically $ Map.lookup (toNormalizedUri uri) <$> readTVar docStore
+  mDoc <- liftIO $ atomically $ Map.lookup (toNormalizedUri uri) <$> readTVar docStore'
   case mDoc of
     Nothing -> respond $ Right $ LSPTypes.InL $ LSPTypes.SemanticTokens Nothing []
     Just docState -> do
@@ -195,12 +228,12 @@ semanticTokensRangeHandler docStore req respond = do
       respond $ Right $ LSPTypes.InL $ LSPTypes.SemanticTokens Nothing encoded
 
 --------------------------------------------------------------------------------
--- Hover
+-- Hover with Partial Evaluation
 
-hoverHandler docStore req respond = do
+hoverHandler gState req respond = do
   let uri = req ^. LSP.params . LSP.textDocument . LSP.uri
       pos = req ^. LSP.params . LSP.position
-  mDoc <- liftIO $ atomically $ Map.lookup (toNormalizedUri uri) <$> readTVar docStore
+  mDoc <- liftIO $ atomically $ Map.lookup (toNormalizedUri uri) <$> readTVar (docStore gState)
   case mDoc of
     Nothing -> respond $ Right $ LSPTypes.InR LSPTypes.Null
     Just docState -> do
@@ -212,15 +245,21 @@ hoverHandler docStore req respond = do
               rng = Range pos pos
               hov = LSPTypes.Hover (LSPTypes.InL md) (Just rng)
           respond $ Right $ LSPTypes.InL hov
-        Right _okAST -> do
-          -- Fallback to current lexical hover until AST-based hover is added
+        Right parsedDoc -> do
+          -- Get expression at cursor position
           let text = docText docState
           case getExpressionAtPosition text pos of
             Nothing -> respond $ Right $ LSPTypes.InR LSPTypes.Null
             Just (exprText, exprRange) -> do
-              let evaluationResult = evaluateExpression exprText
+              -- Get module bindings for evaluation context
+              bindings <- liftIO $ readTVarIO (moduleBindings gState)
+              
+              -- Attempt partial evaluation using eval2IExpr
+              let evaluationResult = evaluateExpression bindings exprText
                   markdown = case evaluationResult of
-                    Left e    -> T.pack $ "**Parse Error:**\n```\n" ++ e ++ "\n```"
+                    Left e -> 
+                      T.pack $ "**Expression:**\n```telomare\n" ++ T.unpack exprText
+                            ++ "\n```\n\n**Error:**\n```\n" ++ e ++ "\n```"
                     Right res ->
                       T.pack $ "**Expression:**\n```telomare\n" ++ T.unpack exprText
                             ++ "\n```\n\n**Partial Evaluation:**\n```\n" ++ res ++ "\n```"
@@ -229,36 +268,82 @@ hoverHandler docStore req respond = do
               respond $ Right $ LSPTypes.InL hover
 
 --------------------------------------------------------------------------------
--- Placeholder evaluation function - replace with actual eval integration later
+-- Partial evaluation using eval2IExpr
 
-evaluateExpression :: T.Text -> Either String String
-evaluateExpression expr =
-  Right $ "TODO: Integrate eval2IExpr\nExpression: " ++ T.unpack expr
+evaluateExpression :: ModuleBindings -> T.Text -> Either String String
+evaluateExpression bindings expr = 
+  case eval2IExpr bindings (T.unpack expr) of
+    Left err -> Left err
+    Right iexpr -> Right (show iexpr)
 
 --------------------------------------------------------------------------------
--- Extract expression at cursor position (lexical fallback)
+-- Extract expression at cursor position
+-- Enhanced to handle more complex expressions
 
 getExpressionAtPosition :: T.Text -> Position -> Maybe (T.Text, Range)
 getExpressionAtPosition text (Position line char) = do
   let textLines = T.lines text
   guard $ line < fromIntegral (length textLines)
   let targetLine = textLines !! fromIntegral line
-      (before, after) = T.splitAt (fromIntegral char) targetLine
-      beforeRev  = T.reverse before
-      identStart = T.dropWhile isIdentChar beforeRev
-      wordBefore = T.reverse $ T.take (T.length beforeRev - T.length identStart) beforeRev
-      wordAfter  = T.takeWhile isIdentChar after
-      word       = wordBefore <> wordAfter
-  if T.null word
-    then Nothing
-    else Just
-      ( word
-      , Range
-          (Position line (char - fromIntegral (T.length wordBefore)))
-          (Position line (char + fromIntegral (T.length wordAfter)))
-      )
+      lineOffset = fromIntegral line
+      charOffset = fromIntegral char
+  
+  -- Try multiple strategies to find the expression
+  findExpression targetLine charOffset lineOffset
+    <|> findSimpleIdentifier targetLine charOffset lineOffset
   where
-    isIdentChar c = c `elem` ("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_'" :: String)
+    -- Try to find a complete expression (handles parentheses, lambdas, etc.)
+    findExpression :: T.Text -> UInt -> UInt -> Maybe (T.Text, Range)
+    findExpression lineText col lineNum = do
+      -- Look for balanced expressions around cursor
+      let beforeCursor = T.take (fromIntegral col) lineText
+          afterCursor = T.drop (fromIntegral col) lineText
+      
+      -- Check if we're inside parentheses or at a lambda
+      case findBalancedExpr lineText col of
+        Just (startCol, endCol) -> 
+          let expr = T.take (fromIntegral $ endCol - startCol) $ 
+                     T.drop (fromIntegral startCol) lineText
+          in Just (expr, Range 
+                    (Position lineNum startCol)
+                    (Position lineNum endCol))
+        Nothing -> Nothing
+    
+    -- Fallback: find simple identifier or operator
+    findSimpleIdentifier :: T.Text -> UInt -> UInt -> Maybe (T.Text, Range)
+    findSimpleIdentifier lineText col lineNum = do
+      let (before, after) = T.splitAt (fromIntegral col) lineText
+          beforeRev = T.reverse before
+          identStart = T.dropWhile isIdentChar beforeRev
+          wordBefore = T.reverse $ T.take (T.length beforeRev - T.length identStart) beforeRev
+          wordAfter = T.takeWhile isIdentChar after
+          word = wordBefore <> wordAfter
+      if T.null word
+        then Nothing
+        else Just
+          ( word
+          , Range
+              (Position lineNum (col - fromIntegral (T.length wordBefore)))
+              (Position lineNum (col + fromIntegral (T.length wordAfter)))
+          )
+    
+    -- Find balanced expression (parentheses, lambdas, etc.)
+    findBalancedExpr :: T.Text -> UInt -> Maybe (UInt, UInt)
+    findBalancedExpr lineText col = 
+      -- Simple heuristic: find the innermost balanced parentheses containing the cursor
+      findParens 0 0 0 (T.unpack lineText)
+      where
+        findParens :: Int -> UInt -> UInt -> String -> Maybe (UInt, UInt)
+        findParens _ _ _ [] = Nothing
+        findParens depth start pos ('(':rest)
+          | pos <= col = findParens (depth + 1) (if depth == 0 then pos else start) (pos + 1) rest
+          | otherwise = if depth > 0 && start < col then Just (start, pos) else Nothing
+        findParens depth start pos (')':rest)
+          | pos > col && depth == 1 = Just (start, pos + 1)
+          | otherwise = findParens (depth - 1) start (pos + 1) rest
+        findParens depth start pos (_:rest) = findParens depth start (pos + 1) rest
+    
+    isIdentChar c = c `elem` ("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_'." :: String)
 
 --------------------------------------------------------------------------------
 -- Simple lexer (still useful for semantic tokens)
@@ -266,7 +351,7 @@ getExpressionAtPosition text (Position line char) = do
 keywords :: [T.Text]
 keywords =
   [ "let", "in", "if", "then", "else", "case", "of"
-  , "import", "qualified", "as"
+  , "import", "qualified", "as", "where"
   ]
 
 lexTelomare :: T.Text -> [Token]
@@ -407,3 +492,8 @@ withinRange (Range (Position sl sc) (Position el ec)) tok =
 guard :: Bool -> Maybe ()
 guard True  = Just ()
 guard False = Nothing
+
+-- Alternative operator for Maybe
+(<|>) :: Maybe a -> Maybe a -> Maybe a
+Nothing <|> b = b
+a <|> _ = a
