@@ -2,7 +2,7 @@
 
 -- Hello World example.
 aux = "Hello"
-main = \input -> ("Hello", 0)
+main = \input -> (aux, 0)
 
 -- -- refinement fail
 -- main : (\x -> if x then "fail" else 0) = 1
