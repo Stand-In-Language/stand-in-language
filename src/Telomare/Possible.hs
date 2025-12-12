@@ -71,7 +71,7 @@ import Test.QuickCheck.Gen (sized)
 import Telomare.RunTime (hvmEval)
 
 debug :: Bool
-debug = False
+debug = True
 
 debugTrace :: String -> a -> a
 -- debugTrace s x = if debug then debugTrace' s x else x
@@ -1162,13 +1162,13 @@ sizeTermM maxSize x = tidyUp . ($ []) . runReaderT . transformNoDeferM evalStep 
   zeros = (\x -> debugTrace ("sizeTermM inital term is\n" <> prettyPrint cm <> showZeros x) x) $ getInputLimits x
   -- zeros = getInputLimits x
   dtt :: UnsizedExpr -> UnsizedExpr
-  -- dtt t = debugTrace ("sizeTermM initial term is\n" <> prettyPrint t <> "\n...and result should be\n" <> prettyPrint (regularEval t)) t
-  dtt t = debugTrace ("sizeTermM initial term is\n" <> prettyPrint t) t
+  dtt t = debugTrace ("sizeTermM initial term is\n" <> prettyPrint t <> "\n...and result should be\n" <> prettyPrint (regularEval t)) t
+  -- dtt t = debugTrace ("sizeTermM initial term is\n" <> prettyPrint t) t
   cm = removeRefinementWrappers . dtt $ capMain (indexedEE $ IVarF 0) x
   tidyUp (StrictAccum (SizedRecursion sm) r) = debugTrace ("sizes are: " <> show sm <> "\nand result is:\n" <> prettyPrint r) $ case foldAborted r of
-    Just (UnsizableSR i) -> Left i
+    Just (UnsizableSR i) -> debugTrace "sizeTermM hit unsizable" Left i
     _ -> let sized = setSizes sm cm
-         in pure . clean $ if isClosure x
+         in debugTrace "sizeTermM found all sizes" pure . clean $ if isClosure x
             then uncap sized
             else sized
       where uncap = \case
@@ -1180,8 +1180,8 @@ sizeTermM maxSize x = tidyUp . ($ []) . runReaderT . transformNoDeferM evalStep 
   setSizes sizeMap = cata $ \case
     UnsizedFW sw@(SizingWrapperF loc tok sx) -> sx
     UnsizedFW us@(UnsizedStubF tok _) -> case Map.lookup tok sizeMap of
-      Just (Just n) -> debugTrace ("sizeTerm setting size: " <> show (tok, n)) iterate (basicEE . SetEnvSF) (basicEE EnvSF) !! n
-      _      ->  basicEE . SetEnvSF $ basicEE EnvSF
+      Just (Just n) -> debugTrace ("sizeTermM setting size: " <> show (tok, n)) iterate (basicEE . SetEnvSF) (basicEE EnvSF) !! (n + 1)
+      _      -> debugTrace ("no size found for " <> show tok)  basicEE . SetEnvSF $ basicEE EnvSF
     x -> embed x
   foldAborted = cata f where
     f = \case
@@ -1221,11 +1221,11 @@ evalTrace x = debugTrace ("evalTrace:\n" <> prettyPrint (transformNoDefer evalSt
 -- inputtest zero: 59 L - 60 L actual
 abortPossibilities :: Int -> UnsizedExpr -> Set IExpr
 abortPossibilities maxSize x = tidyUp . ($ []) . runReaderT . transformNoDeferM evalStep $ cm where
-  failConvert x = error $ "sizeTerm convert, unhandled:\n" <> prettyPrint x
+  failConvert x = error $ "abortPossibilities convert, unhandled:\n" <> prettyPrint x
   -- zeros = (\x -> debugTrace ("sizeTerm zeros are " <> show x) x) $ getInputLimits x
   forceType :: StuckExpr -> StuckExpr
   forceType = id
-  showZeros z = "\nsizeTermM zeros are: " <> show z <> "\nzeros are:\n" <> concatMap (prettyPrint . forceType . zeroToBranch) z
+  showZeros z = "\nabortPossibilities zeros are: " <> show z <> "\nzeros are:\n" <> concatMap (prettyPrint . forceType . zeroToBranch) z
   -- zeros = (\x -> debugTrace ("sizeTerm inital term is\n" <> prettyPrint cm <> showZeros x) x) $ getInputLimits x
   zeros = getInputLimits x
   -- cm = removeRefinementWrappers . evalTrace $ capMain (indexedEE $ IVarF 0) x -- traceRefinement
@@ -1237,28 +1237,28 @@ abortPossibilities maxSize x = tidyUp . ($ []) . runReaderT . transformNoDeferM 
   setSizes sizeMap = cata $ \case
     UnsizedFW sw@(SizingWrapperF loc tok sx) -> sx
     UnsizedFW us@(UnsizedStubF tok _) -> case Map.lookup tok sizeMap of
-      Just (Just n) -> debugTrace ("sizeTerm setting size: " <> show (tok, n)) iterate (basicEE . SetEnvSF) (basicEE EnvSF) !! n
+      Just (Just n) -> debugTrace ("abortPossibilities setting size: " <> show (tok, n)) iterate (basicEE . SetEnvSF) (basicEE EnvSF) !! n
       _      ->  basicEE . SetEnvSF $ basicEE EnvSF
     x -> embed x
   foldAborted = cata f where
     f = \case
       AbortFW (AbortedF x) -> Set.singleton x
       x                                 -> Data.Foldable.fold x
-  unhandledMerge x y = error ("sizeTerm unhandledMerge: " <> show (x,y))
-  unhandledGate x = error ("sizeTerm unhandled gate input: " <> show x)
+  unhandledMerge x y = error ("abortPossibilities unhandledMerge: " <> show (x,y))
+  unhandledGate x = error ("abortPossibilities unhandled gate input: " <> show x)
   gateResult = gateBasicResult (gateAbortResult (gateIndexedResult (gateSuperResult gateResult unhandledGate)))
   unsizedTest :: UnsizedRecursionToken -> UnsizedExpr -> UnsizedExpr
   unsizedTest ri = unsizedTestIndexed zeros (unsizedTestSuper (unsizedTest ri) (const id)) ri
   -- unsizedTest' ri = (\x -> debugTrace ("unsizedTest value of\n" <> prettyPrint x) x) . unsizedTest ri
   unsizedTest' ri = unsizedTest ri . (\x -> debugTrace ("unsizedTest value of\n" <> prettyPrint x) x)
-  unhandledError x = error ("sizeTerm unhandled case\n" <> prettyPrint x)
+  unhandledError x = error ("abortPossibilities unhandled case\n" <> prettyPrint x)
   -- evalStep = basicStepM (stuckStepWithTrace (abortStepM (indexedAbortStepM (indexedInputStepM zeros (indexedSuperStepM (superStepM gateResult evalStep (superAbortStepM evalStep (unsizedStepM maxSize unsizedTest failAndPrintStack))))))))
   -- evalStep = basicStepM (stuckStepDebugM (abortStepM (indexedAbortStepM (indexedInputStepM zeros (indexedSuperStepM (superStepM gateResult evalStep (superAbortStepM evalStep (unsizedStepM''' maxSize zeros unsizedTest unhandledError))))))))
   evalStep = basicStepM (stuckStepWithTrace (abortStepM (indexedAbortStepM (indexedInputStepM zeros (indexedSuperStepM (superStepM gateResult evalStep (superAbortStepM evalStep (unsizedStepM''' maxSize zeros unsizedTest failAndPrintStack))))))))
 
 getSizesM :: Int -> UnsizedExpr -> Either UnsizedRecursionToken SizedRecursion
 getSizesM maxSize x = tidyUp . ($ []) . runReaderT . transformNoDeferM evalStep $ cm where
-  failConvert x = error $ "sizeTerm convert, unhandled:\n" <> prettyPrint x
+  failConvert x = error $ "getSizesM convert, unhandled:\n" <> prettyPrint x
   -- zeros = (\x -> debugTrace ("sizeTerm zeros are " <> show x) x) $ getInputLimits x
   -- zeros = (\x -> debugTrace ("sizeTerm inital term is\n" <> prettyPrint cm <> "\nsizeTerm zeros are " <> show x) x) $ getInputLimits x
   zeros = getInputLimits x
@@ -1272,14 +1272,14 @@ getSizesM maxSize x = tidyUp . ($ []) . runReaderT . transformNoDeferM evalStep 
       AbortFW (AbortedF AbortAny) -> Just . UnsizableSR $ toEnum (-1)
       AbortFW (AbortedF (AbortUnsizeable t)) -> Just . UnsizableSR . toEnum . g2i $ t
       x                                 -> Data.Foldable.fold x
-  unhandledMerge x y = error ("sizeTerm unhandledMerge: " <> show (x,y))
-  unhandledGate x = error ("sizeTerm unhandled gate input: " <> show x)
+  unhandledMerge x y = error ("getSizesM unhandledMerge: " <> show (x,y))
+  unhandledGate x = error ("getSizesM unhandled gate input: " <> show x)
   gateResult = gateBasicResult (gateAbortResult (gateIndexedResult (gateSuperResult gateResult unhandledGate)))
   unsizedTest :: UnsizedRecursionToken -> UnsizedExpr -> UnsizedExpr
   unsizedTest ri = unsizedTestIndexed zeros (unsizedTestSuper (unsizedTest ri) (const id)) ri
   -- unsizedTest' ri = (\x -> debugTrace ("unsizedTest value of\n" <> prettyPrint x) x) . unsizedTest ri
-  unsizedTest' ri = unsizedTest ri . (\x -> debugTrace ("unsizedTest value of\n" <> prettyPrint x) x)
-  unhandledError x = error ("sizeTerm unhandled case\n" <> prettyPrint x)
+  unsizedTest' ri = unsizedTest ri . (\x -> debugTrace ("getSizesM value of\n" <> prettyPrint x) x)
+  unhandledError x = error ("getSizesM unhandled case\n" <> prettyPrint x)
   -- evalStep = basicStepM (stuckStepWithTrace (abortStepM (indexedAbortStepM (indexedInputStepM zeros (indexedSuperStepM (superStepM gateResult evalStep (superAbortStepM evalStep (unsizedStepM maxSize unsizedTest failAndPrintStack))))))))
   -- evalStep = basicStepM (stuckStepDebugM (abortStepM (indexedAbortStepM (indexedInputStepM zeros (indexedSuperStepM (superStepM' gateResult evalStep (superAbortStepM evalStep (unsizedStepM''' maxSize zeros unsizedTest unhandledError))))))))
   evalStep = basicStepM (stuckStepWithTrace (abortStepM (indexedAbortStepM (indexedInputStepM zeros (indexedSuperStepM (superStepM gateResult evalStep (superAbortStepM evalStep (unsizedStepM''' maxSize zeros unsizedTest' failAndPrintStack))))))))

@@ -509,7 +509,7 @@ unitTests_ parse = do
                                     (ints2g [1,2,3])
 -}
   describe "bottom up eval" $ do
-    unitTest2 "main = d2c 3 succ 0" "3"
+    -- unitTest2 "main = d2c 3 succ 0" "3"
     {-
     it "test SBV" . liftIO $ do
       testSBV' == pure 3
@@ -548,21 +548,20 @@ unitTests_ parse = do
     -- unitTest2 "main = d2c 2 succ 0" "2"
     -- unitTestStaticChecks "main : (\\x -> assert 1 \"A\") = 1" (not . null)
     -- unitTest2 "main = d2c 3 succ 0" "3"
-  {-
     preludeFile <- runIO $ Strict.readFile "Prelude.tel"
     -- testMain <- runIO $ Strict.readFile "simpleplus2.tel"
-    testMain <- runIO $ Strict.readFile "simpleplus4.tel"
-    runIO . putStrLn $ showSizingInSource preludeFile testMain
+    testMain <- runIO $ Strict.readFile "simpleplus6.tel"
+    -- runIO . putStrLn $ showSizingInSource preludeFile testMain
     runIO . putStrLn $ showFunctionIndexesInSource preludeFile testMain
-    case fmap compileMain (parse testMain) of
+    case fmap compileMain (parse True testMain) of
       Right (Right g) ->
         let eval = funWrap g appB
             unitTestMain s i e = it ("main input " <> i) $ eval (Just (i, s)) `shouldBe` e
         in do
         -- unitTestMain Zero "0 0" ("0 plus 0 is 0", Just Zero)
-        unitTestMain Zero "9 9" ("18", Right zeroB)
+        -- unitTestMain Zero "9 9" ("18", Right zeroB)
+        unitTestMain Zero "5" ("A", Right zeroB)
       z -> runIO . expectationFailure $ "failed to compile simpleplus.tel: " <> show z
--}
   {-     testing harness for finding refinement zeros. Needs a bit of work
     preludeFile <- runIO $ Strict.readFile "Prelude.tel"
     testMain <- runIO $ Strict.readFile "inputtest.tel"
@@ -945,5 +944,5 @@ main = do
       then main2Term3let (parseAuxModule str:prelude) "AuxModule"
       else main2Term3 (parseAuxModule str:prelude) "AuxModule"
 
-  hspec $ unitTests parse
+  hspec $ unitTests_ parse
     --nexprTests

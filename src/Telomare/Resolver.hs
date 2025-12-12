@@ -473,6 +473,11 @@ letsToApps term =
       makeBindingsAsoc (name, def) = case runWriterT def of
         Left s           -> Left s
         Right (nx, refs) -> pure (name, (nx,refs))
+      filterReferenced :: Map String (Set String) -> Set String -> Set String
+      filterReferenced depMap working = F.fold . fmap f $ Set.toList working where
+        f x =  case Map.lookup x depMap of
+          Nothing -> Set.empty
+          Just s -> Set.singleton x <> filterReferenced depMap s
       buildRefs :: CofreeF UnprocessedParsedTermF LocTag (WriterT (Set String) (Either String) Term1)
                    -> WriterT (Set String) (Either String) Term1
       buildRefs (anno CofreeT.:< upf) = case upf of
@@ -485,8 +490,12 @@ letsToApps term =
           Right (nInner, refs) -> WriterT $ do
             -- Build dependency graph
             nBindings <- traverse makeBindingsAsoc bindings
-            let originalOrder = fmap fst bindings
+            -- let originalOrder = fmap fst bindings
+            let originalOrder = Set.toList $ filterReferenced dependencies refs
                 dependencies = Map.fromList $ fmap (second snd) nBindings
+                getDeps k = Map.findWithDefault Set.empty k dependencies
+                transitiveRefs = F.fold $ fmap getDeps originalOrder
+                newRefs = Set.difference (refs <> transitiveRefs) (Map.keysSet dependencies)
                 sortedBindings :: Either String [(String, Term1)]
                 sortedBindings =
                   case topologicalSort originalOrder dependencies of
@@ -495,8 +504,7 @@ letsToApps term =
                       pure [(name, def) | name <- sortedNames,
                             (name', (def, _)) <- nBindings, name == name']
                 makeBinding (n,d) inner = anno :< TAppF (makeLambda n inner) d
-            sortedBindings >>= \sb ->
-                pure (foldr makeBinding nInner sb, Set.difference refs (Map.keysSet dependencies))
+            sortedBindings >>= \sb -> pure (foldr makeBinding nInner sb, newRefs)
         x -> WriterT . fmap (first ((anno :<) . brt)) . runWriterT $ sequence x where
           brt = \case
             ITEUPF i t e -> TITEF i t e

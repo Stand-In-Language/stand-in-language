@@ -44,11 +44,24 @@
           #     jailbreak = true;
           #   };
           # };
+	  settings = {
+	    telomare = {
+		extraBuildDepends = with pkgs; [
+		  # Node.js and npm for Claude Code
+		  #nodejs_20
+		  nodejs_22
+		  nodePackages.npm
+		];
+	    };
+	  };
           devShell = {
             enable = true;
             tools = hp: {
               inherit (hp) cabal-install haskell-language-server;
-            };
+            } // {
+	      inherit (pkgs) nodejs_22;
+	      inherit (pkgs.nodePackages) npm;
+	    };
           };
       };
 

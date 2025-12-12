@@ -110,7 +110,7 @@ findChurchSizeD useSizing t3 =
     else pure (convertPT (const 255) t3)  -- Use fixed size of 255
 
 findChurchSize :: Term3 -> Either EvalError Term4
-findChurchSize = findChurchSizeD False -- True
+findChurchSize = findChurchSizeD True
 
 -- rather than remove checks, we should extract them so that they can be run separately, if that gives a performance benefit
 {-
@@ -127,6 +127,12 @@ removeChecks (Term4 m) =
 -}
 removeChecks :: Term4 -> Term4
 removeChecks = id
+
+{-
+removeRecursionChecks :: CompiledExpr -> CompiledExpr
+removeRecursionChecks = cata f where
+  f = \case
+-}
 
 runStaticChecks :: Term4 -> Either EvalError Term4
 runStaticChecks t@(Term4 termMap) =
