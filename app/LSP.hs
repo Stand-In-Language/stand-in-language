@@ -20,7 +20,7 @@ import System.FilePath ((</>))
 import Language.LSP.Server
 import qualified Language.LSP.Protocol.Types as LSPTypes
 import Language.LSP.Protocol.Types
-  ( Position(..), Range(..), UInt, NormalizedUri, toNormalizedUri )
+  ( Position(..), Range(..), UInt, NormalizedUri, toNormalizedUri, type (|?) )
 import Language.LSP.Protocol.Message (SMethod(..))
 import Control.Lens ((^.))
 import qualified Language.LSP.Protocol.Lens as LSP
@@ -71,13 +71,13 @@ data Token = Token
 main :: IO ()
 main = do
   docStore' <- newTVarIO Map.empty
-  
+
   -- Load Prelude.tel if available
   preludeBindings <- loadPrelude
   moduleBindings' <- newTVarIO preludeBindings
-  
+
   let globalState = GlobalState docStore' moduleBindings'
-  
+
   void $ runServer $ ServerDefinition
     { parseConfig      = const $ const $ Right ()
     , onConfigChange   = const $ pure ()
@@ -97,7 +97,7 @@ loadPrelude = do
   preludeContents <- tryLoadFiles preludePaths
   case preludeContents of
     Nothing -> return []
-    Just content -> 
+    Just content ->
       case parseModule content of
         Left err -> do
           putStrLn $ "Warning: Failed to parse Prelude.tel: " ++ err
@@ -122,7 +122,9 @@ serverOptions =
           (Just False)                              -- willSave
           (Just False)                              -- willSaveWaitUntil
           Nothing                                   -- save
-  in defaultOptions { optTextDocumentSync = Just syncOpts }
+  in defaultOptions { optTextDocumentSync = Just syncOpts
+                    , optExecuteCommandCommands = Just ["telomare.partialEval"]
+                    }
 
 -- Token type indices (matching the server's reported legend)
 tokComment, tokKeyword, tokString, tokNumber, tokOperator, tokVariable, tokFunction, tokType :: UInt
@@ -157,10 +159,16 @@ commandHandlers gState = mconcat
   ]
 
 -- Execute command handler
+executeCommandHandler :: GlobalState 
+                      -> LSPMsg.TRequestMessage LSPMsg.Method_WorkspaceExecuteCommand
+                      -> (Either (LSPMsg.TResponseError LSPMsg.Method_WorkspaceExecuteCommand)
+                               (JSON.Value LSPTypes.|? LSPTypes.Null)
+                         -> LspM () ())
+                      -> LspM () ()
 executeCommandHandler gState req respond = do
   let command = req ^. LSP.params . LSP.command
       mArgs = req ^. LSP.params . LSP.arguments
-  
+
   case command of
     "telomare.partialEval" -> do
       case mArgs of
@@ -169,7 +177,7 @@ executeCommandHandler gState req respond = do
           let uriResult = JSON.fromJSON (args !! 0) :: JSON.Result LSPTypes.Uri
               rangeResult = JSON.fromJSON (args !! 1) :: JSON.Result Range
               exprResult = JSON.fromJSON (args !! 2) :: JSON.Result T.Text
-          
+
           case (uriResult, rangeResult, exprResult) of
             (JSON.Success uri, JSON.Success range, JSON.Success exprText) -> do
               executePartialEvaluation gState uri range exprText
@@ -260,6 +268,12 @@ semanticTokensRangeHandler docStore' req respond = do
 --------------------------------------------------------------------------------
 -- Code Actions for Partial Evaluation
 
+codeActionHandler :: GlobalState 
+                  -> LSPMsg.TRequestMessage LSPMsg.Method_TextDocumentCodeAction
+                  -> (Either (LSPMsg.TResponseError LSPMsg.Method_TextDocumentCodeAction)
+                           ([LSPTypes.Command LSPTypes.|? LSPTypes.CodeAction] LSPTypes.|? LSPTypes.Null)
+                     -> LspM () ())
+                  -> LspM () ()
 codeActionHandler gState req respond = do
   let uri = req ^. LSP.params . LSP.textDocument . LSP.uri
       range = req ^. LSP.params . LSP.range
@@ -275,35 +289,44 @@ codeActionHandler gState req respond = do
           -- Get the selected text
           let text = docText docState
               selectedText = getTextInRange text range
-          
+
           case selectedText of
             Nothing -> respond $ Right $ LSPTypes.InL []
             Just exprText -> do
               -- Create a code action for partial evaluation
-              let title = T.pack $ "Partially evaluate: " ++ take 20 (T.unpack exprText) ++ if T.length exprText > 20 then "..." else ""
-                  codeAction = LSPTypes.CodeAction
-                    { LSPTypes._title = title
-                    , LSPTypes._kind = Just LSPTypes.CodeActionKind_RefactorExtract
-                    , LSPTypes._diagnostics = Nothing
-                    , LSPTypes._isPreferred = Just False
-                    , LSPTypes._disabled = Nothing
-                    , LSPTypes._edit = Nothing
-                    , LSPTypes._command = Just $ LSPTypes.Command
-                        { LSPTypes._title = "Partial Evaluation"
-                        , LSPTypes._command = "telomare.partialEval"
-                        , LSPTypes._arguments = Just
-                            [ JSON.toJSON uri
-                            , JSON.toJSON range
-                            , JSON.toJSON exprText
-                            ]
-                        }
-                    , LSPTypes._data_ = Nothing
-                    }
-              respond $ Right $ LSPTypes.InL [LSPTypes.InL codeAction]
+              let title = T.pack $ "Partially evaluate: " ++
+                            take 20 (T.unpack exprText) ++
+                            if T.length exprText > 20 then "..." else ""
+                  codeAction =
+                    LSPTypes.CodeAction
+                      title
+                      (Just LSPTypes.CodeActionKind_RefactorExtract)
+                      Nothing
+                      (Just False)
+                      Nothing
+                      Nothing
+                      (Just (LSPTypes.Command
+                              "Partial Evaluation"
+                              "telomare.partialEval"
+                              (Just [ JSON.toJSON uri
+                                   , JSON.toJSON range
+                                   , JSON.toJSON exprText
+                                   ])))
+                      Nothing
 
+              respond $ Right $ LSPTypes.InL [LSPTypes.InR codeAction]
+
+codeActionResolveHandler :: GlobalState
+                         -> LSPMsg.TRequestMessage LSPMsg.Method_CodeActionResolve
+                         -> (Either (LSPMsg.TResponseError LSPMsg.Method_CodeActionResolve)
+                                  LSPTypes.CodeAction
+                            -> LspM () ())
+                         -> LspM () ()
 codeActionResolveHandler gState req respond = do
   -- For now, just return the action as-is since we're using commands
-  respond $ Right req
+  -- The request body should contain a CodeAction
+  let codeAction = req ^. LSP.params
+  respond $ Right codeAction
 
 -- Execute partial evaluation and show result
 executePartialEvaluation :: GlobalState -> LSPTypes.Uri -> Range -> T.Text -> LspM () ()
@@ -313,20 +336,19 @@ executePartialEvaluation gState uri range exprText = do
       message = case evaluationResult of
         Left e -> T.pack $ "Evaluation Error: " ++ e
         Right res -> T.pack $ "Result: " ++ res
-  
+
   -- Show result as a window message
   sendNotification SMethod_WindowShowMessage $
     LSPTypes.ShowMessageParams
-      { LSPTypes._type_ = LSPTypes.MessageType_Info
-      , LSPTypes._message = message
-      }
+      LSPTypes.MessageType_Info
+      message
 
 -- Get text within a range
 getTextInRange :: T.Text -> Range -> Maybe T.Text
 getTextInRange text (Range (Position startLine startChar) (Position endLine endChar)) = do
   let textLines = T.lines text
   guard $ startLine < fromIntegral (length textLines) && endLine < fromIntegral (length textLines)
-  
+
   if startLine == endLine
     then do
       let line = textLines !! fromIntegral startLine
