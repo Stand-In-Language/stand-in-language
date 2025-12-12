@@ -175,6 +175,7 @@ executable telomare-lsp
                      , lens
                      , mtl
                      , filepath
+                     , aeson
 
   default-language:    Haskell2010
   ghc-options:         -Wall

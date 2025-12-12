@@ -25,6 +25,7 @@ import Language.LSP.Protocol.Message (SMethod(..))
 import Control.Lens ((^.))
 import qualified Language.LSP.Protocol.Lens as LSP
 import qualified Language.LSP.Protocol.Message as LSPMsg
+import qualified Data.Aeson as JSON
 
 import Telomare.Parser (parseModule, AnnotatedUPT)
 import Telomare.Eval (eval2IExpr)
@@ -83,7 +84,7 @@ main = do
     , defaultConfig    = ()
     , configSection    = "telomare"
     , doInitialize     = \env _req -> pure $ Right env
-    , staticHandlers   = \_caps -> handlers globalState
+    , staticHandlers   = \_caps -> mconcat [handlers globalState, commandHandlers globalState]
     , interpretHandler = \env -> Iso (runLspT env) liftIO
     , options          = serverOptions
     }
@@ -92,7 +93,7 @@ main = do
 loadPrelude :: IO ModuleBindings
 loadPrelude = do
   -- Try to load Prelude.tel from common locations
-  let preludePaths = ["~/src/telomare/Prelude.tel", "Prelude.tel", "lib/Prelude.tel", "../lib/Prelude.tel"]
+  let preludePaths = ["Prelude.tel", "lib/Prelude.tel", "../lib/Prelude.tel"]
   preludeContents <- tryLoadFiles preludePaths
   case preludeContents of
     Nothing -> return []
@@ -145,8 +146,37 @@ handlers gState = mconcat
   , notificationHandler SMethod_TextDocumentDidClose          $ didCloseHandler (docStore gState)
   , requestHandler     SMethod_TextDocumentSemanticTokensFull  $ semanticTokensFullHandler (docStore gState)
   , requestHandler     SMethod_TextDocumentSemanticTokensRange $ semanticTokensRangeHandler (docStore gState)
-  , requestHandler     SMethod_TextDocumentHover               $ hoverHandler gState
+  , requestHandler     SMethod_TextDocumentCodeAction          $ codeActionHandler gState
+  , requestHandler     SMethod_CodeActionResolve               $ codeActionResolveHandler gState
   ]
+
+-- Command handlers
+commandHandlers :: GlobalState -> Handlers (LspM ())
+commandHandlers gState = mconcat
+  [ requestHandler SMethod_WorkspaceExecuteCommand $ executeCommandHandler gState
+  ]
+
+-- Execute command handler
+executeCommandHandler gState req respond = do
+  let command = req ^. LSP.params . LSP.command
+      mArgs = req ^. LSP.params . LSP.arguments
+  
+  case command of
+    "telomare.partialEval" -> do
+      case mArgs of
+        Just args | length args >= 3 -> do
+          -- Parse the JSON values
+          let uriResult = JSON.fromJSON (args !! 0) :: JSON.Result LSPTypes.Uri
+              rangeResult = JSON.fromJSON (args !! 1) :: JSON.Result Range
+              exprResult = JSON.fromJSON (args !! 2) :: JSON.Result T.Text
+          
+          case (uriResult, rangeResult, exprResult) of
+            (JSON.Success uri, JSON.Success range, JSON.Success exprText) -> do
+              executePartialEvaluation gState uri range exprText
+              respond $ Right $ LSPTypes.InL JSON.Null
+            _ -> respond $ Right $ LSPTypes.InL JSON.Null
+        _ -> respond $ Right $ LSPTypes.InL JSON.Null
+    _ -> respond $ Right $ LSPTypes.InL JSON.Null
 
 --------------------------------------------------------------------------------
 -- Helpers: centralize parsing through parseModule
@@ -228,44 +258,84 @@ semanticTokensRangeHandler docStore' req respond = do
       respond $ Right $ LSPTypes.InL $ LSPTypes.SemanticTokens Nothing encoded
 
 --------------------------------------------------------------------------------
--- Hover with Partial Evaluation
+-- Code Actions for Partial Evaluation
 
-hoverHandler gState req respond = do
+codeActionHandler gState req respond = do
   let uri = req ^. LSP.params . LSP.textDocument . LSP.uri
-      pos = req ^. LSP.params . LSP.position
+      range = req ^. LSP.params . LSP.range
+      context = req ^. LSP.params . LSP.context
+      
   mDoc <- liftIO $ atomically $ Map.lookup (toNormalizedUri uri) <$> readTVar (docStore gState)
   case mDoc of
-    Nothing -> respond $ Right $ LSPTypes.InR LSPTypes.Null
+    Nothing -> respond $ Right $ LSPTypes.InL []
     Just docState -> do
-      -- If parse failed, surface error immediately (using current cursor as range anchor)
       case docParse docState of
-        Left err -> do
-          let md  = LSPTypes.MarkupContent LSPTypes.MarkupKind_Markdown
-                    (T.pack $ "**Parse Error**\n\n```\n" <> err <> "\n```")
-              rng = Range pos pos
-              hov = LSPTypes.Hover (LSPTypes.InL md) (Just rng)
-          respond $ Right $ LSPTypes.InL hov
+        Left err -> respond $ Right $ LSPTypes.InL []
         Right parsedDoc -> do
-          -- Get expression at cursor position
+          -- Get the selected text
           let text = docText docState
-          case getExpressionAtPosition text pos of
-            Nothing -> respond $ Right $ LSPTypes.InR LSPTypes.Null
-            Just (exprText, exprRange) -> do
-              -- Get module bindings for evaluation context
-              bindings <- liftIO $ readTVarIO (moduleBindings gState)
-              
-              -- Attempt partial evaluation using eval2IExpr
-              let evaluationResult = evaluateExpression bindings exprText
-                  markdown = case evaluationResult of
-                    Left e -> 
-                      T.pack $ "**Expression:**\n```telomare\n" ++ T.unpack exprText
-                            ++ "\n```\n\n**Error:**\n```\n" ++ e ++ "\n```"
-                    Right res ->
-                      T.pack $ "**Expression:**\n```telomare\n" ++ T.unpack exprText
-                            ++ "\n```\n\n**Partial Evaluation:**\n```\n" ++ res ++ "\n```"
-                  hoverContent = LSPTypes.MarkupContent LSPTypes.MarkupKind_Markdown markdown
-                  hover = LSPTypes.Hover (LSPTypes.InL hoverContent) (Just exprRange)
-              respond $ Right $ LSPTypes.InL hover
+              selectedText = getTextInRange text range
+          
+          case selectedText of
+            Nothing -> respond $ Right $ LSPTypes.InL []
+            Just exprText -> do
+              -- Create a code action for partial evaluation
+              let title = T.pack $ "Partially evaluate: " ++ take 20 (T.unpack exprText) ++ if T.length exprText > 20 then "..." else ""
+                  codeAction = LSPTypes.CodeAction
+                    { LSPTypes._title = title
+                    , LSPTypes._kind = Just LSPTypes.CodeActionKind_RefactorExtract
+                    , LSPTypes._diagnostics = Nothing
+                    , LSPTypes._isPreferred = Just False
+                    , LSPTypes._disabled = Nothing
+                    , LSPTypes._edit = Nothing
+                    , LSPTypes._command = Just $ LSPTypes.Command
+                        { LSPTypes._title = "Partial Evaluation"
+                        , LSPTypes._command = "telomare.partialEval"
+                        , LSPTypes._arguments = Just
+                            [ JSON.toJSON uri
+                            , JSON.toJSON range
+                            , JSON.toJSON exprText
+                            ]
+                        }
+                    , LSPTypes._data_ = Nothing
+                    }
+              respond $ Right $ LSPTypes.InL [LSPTypes.InL codeAction]
+
+codeActionResolveHandler gState req respond = do
+  -- For now, just return the action as-is since we're using commands
+  respond $ Right req
+
+-- Execute partial evaluation and show result
+executePartialEvaluation :: GlobalState -> LSPTypes.Uri -> Range -> T.Text -> LspM () ()
+executePartialEvaluation gState uri range exprText = do
+  bindings <- liftIO $ readTVarIO (moduleBindings gState)
+  let evaluationResult = evaluateExpression bindings exprText
+      message = case evaluationResult of
+        Left e -> T.pack $ "Evaluation Error: " ++ e
+        Right res -> T.pack $ "Result: " ++ res
+  
+  -- Show result as a window message
+  sendNotification SMethod_WindowShowMessage $
+    LSPTypes.ShowMessageParams
+      { LSPTypes._type_ = LSPTypes.MessageType_Info
+      , LSPTypes._message = message
+      }
+
+-- Get text within a range
+getTextInRange :: T.Text -> Range -> Maybe T.Text
+getTextInRange text (Range (Position startLine startChar) (Position endLine endChar)) = do
+  let textLines = T.lines text
+  guard $ startLine < fromIntegral (length textLines) && endLine < fromIntegral (length textLines)
+  
+  if startLine == endLine
+    then do
+      let line = textLines !! fromIntegral startLine
+      Just $ T.take (fromIntegral $ endChar - startChar) $ T.drop (fromIntegral startChar) line
+    else do
+      let firstLine = T.drop (fromIntegral startChar) $ textLines !! fromIntegral startLine
+          middleLines = take (fromIntegral $ endLine - startLine - 1) $ drop (fromIntegral startLine + 1) textLines
+          lastLine = T.take (fromIntegral endChar) $ textLines !! fromIntegral endLine
+      Just $ T.intercalate "\n" $ [firstLine] ++ middleLines ++ [lastLine]
 
 --------------------------------------------------------------------------------
 -- Partial evaluation using eval2IExpr
@@ -275,75 +345,6 @@ evaluateExpression bindings expr =
   case eval2IExpr bindings (T.unpack expr) of
     Left err -> Left err
     Right iexpr -> Right (show iexpr)
-
---------------------------------------------------------------------------------
--- Extract expression at cursor position
--- Enhanced to handle more complex expressions
-
-getExpressionAtPosition :: T.Text -> Position -> Maybe (T.Text, Range)
-getExpressionAtPosition text (Position line char) = do
-  let textLines = T.lines text
-  guard $ line < fromIntegral (length textLines)
-  let targetLine = textLines !! fromIntegral line
-      lineOffset = fromIntegral line
-      charOffset = fromIntegral char
-  
-  -- Try multiple strategies to find the expression
-  findExpression targetLine charOffset lineOffset
-    <|> findSimpleIdentifier targetLine charOffset lineOffset
-  where
-    -- Try to find a complete expression (handles parentheses, lambdas, etc.)
-    findExpression :: T.Text -> UInt -> UInt -> Maybe (T.Text, Range)
-    findExpression lineText col lineNum = do
-      -- Look for balanced expressions around cursor
-      let beforeCursor = T.take (fromIntegral col) lineText
-          afterCursor = T.drop (fromIntegral col) lineText
-      
-      -- Check if we're inside parentheses or at a lambda
-      case findBalancedExpr lineText col of
-        Just (startCol, endCol) -> 
-          let expr = T.take (fromIntegral $ endCol - startCol) $ 
-                     T.drop (fromIntegral startCol) lineText
-          in Just (expr, Range 
-                    (Position lineNum startCol)
-                    (Position lineNum endCol))
-        Nothing -> Nothing
-    
-    -- Fallback: find simple identifier or operator
-    findSimpleIdentifier :: T.Text -> UInt -> UInt -> Maybe (T.Text, Range)
-    findSimpleIdentifier lineText col lineNum = do
-      let (before, after) = T.splitAt (fromIntegral col) lineText
-          beforeRev = T.reverse before
-          identStart = T.dropWhile isIdentChar beforeRev
-          wordBefore = T.reverse $ T.take (T.length beforeRev - T.length identStart) beforeRev
-          wordAfter = T.takeWhile isIdentChar after
-          word = wordBefore <> wordAfter
-      if T.null word
-        then Nothing
-        else Just
-          ( word
-          , Range
-              (Position lineNum (col - fromIntegral (T.length wordBefore)))
-              (Position lineNum (col + fromIntegral (T.length wordAfter)))
-          )
-    
-    -- Find balanced expression (parentheses, lambdas, etc.)
-    findBalancedExpr :: T.Text -> UInt -> Maybe (UInt, UInt)
-    findBalancedExpr lineText col = 
-      -- Simple heuristic: find the innermost balanced parentheses containing the cursor
-      findParens 0 0 0 (T.unpack lineText)
-      where
-        findParens :: Int -> UInt -> UInt -> String -> Maybe (UInt, UInt)
-        findParens _ _ _ [] = Nothing
-        findParens depth start pos ('(':rest)
-          | pos <= col = findParens (depth + 1) (if depth == 0 then pos else start) (pos + 1) rest
-          | otherwise = if depth > 0 && start < col then Just (start, pos) else Nothing
-        findParens depth start pos (')':rest)
-          | pos > col && depth == 1 = Just (start, pos + 1)
-          | otherwise = findParens (depth - 1) start (pos + 1) rest
-        findParens depth start pos (_:rest) = findParens depth start (pos + 1) rest
-    
-    isIdentChar c = c `elem` ("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_'." :: String)
 
 --------------------------------------------------------------------------------
 -- Simple lexer (still useful for semantic tokens)
@@ -492,8 +493,3 @@ withinRange (Range (Position sl sc) (Position el ec)) tok =
 guard :: Bool -> Maybe ()
 guard True  = Just ()
 guard False = Nothing
-
--- Alternative operator for Maybe
-(<|>) :: Maybe a -> Maybe a -> Maybe a
-Nothing <|> b = b
-a <|> _ = a
