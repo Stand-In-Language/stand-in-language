@@ -197,6 +197,7 @@ test-suite telomare-test
                      , base
                      , containers
                      , dlist
+                     , free
                      , hspec
                      , hspec-core
                      , mtl

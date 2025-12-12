@@ -1,35 +1,36 @@
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE TypeOperators #-}
-{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE DataKinds           #-}
+{-# LANGUAGE FlexibleContexts    #-}
+{-# LANGUAGE KindSignatures      #-}
+{-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE TypeOperators       #-}
 
 module Main where
 
 import Control.Concurrent.STM
-import Control.Exception (try, IOException)
-import Control.Monad (void, forM)
-import Control.Monad.IO.Class (MonadIO(liftIO))
+import Control.Exception (IOException, try)
+import Control.Monad (forM, void)
+import Control.Monad.IO.Class (MonadIO (liftIO))
+import Data.Char (isAsciiLower, isAsciiUpper, isDigit)
+import Data.Either (isRight)
 import Data.List (sortOn)
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
-import Data.Either (isRight)
 import System.FilePath ((</>))
 
-import Language.LSP.Server
-import qualified Language.LSP.Protocol.Types as LSPTypes
-import Language.LSP.Protocol.Types
-  ( Position(..), Range(..), UInt, NormalizedUri, toNormalizedUri, type (|?) )
-import Language.LSP.Protocol.Message (SMethod(..))
 import Control.Lens ((^.))
-import qualified Language.LSP.Protocol.Lens as LSP
-import qualified Language.LSP.Protocol.Message as LSPMsg
 import qualified Data.Aeson as JSON
+import qualified Language.LSP.Protocol.Lens as LSP
+import Language.LSP.Protocol.Message (SMethod (..))
+import qualified Language.LSP.Protocol.Message as LSPMsg
+import Language.LSP.Protocol.Types (NormalizedUri, Position (..), Range (..),
+                                    UInt, toNormalizedUri, type (|?))
+import qualified Language.LSP.Protocol.Types as LSPTypes
+import Language.LSP.Server
 
-import Telomare.Parser (parseModule, AnnotatedUPT)
-import Telomare.Eval (eval2IExpr)
 import Telomare (IExpr)
+import Telomare.Eval (eval2IExpr)
+import Telomare.Parser (AnnotatedUPT, parseModule)
 
 --------------------------------------------------------------------------------
 -- Document state tracking
@@ -42,16 +43,16 @@ type ParseResult = [Either AnnotatedUPT (String, AnnotatedUPT)]
 type ModuleBindings = [(String, ParseResult)]
 
 data DocState = DocState
-  { docText   :: T.Text
+  { docText    :: T.Text
   , docVersion :: Int
-  , docParse  :: Either String ParseResult
+  , docParse   :: Either String ParseResult
   } deriving (Show)
 
 type DocStore = TVar (Map.Map NormalizedUri DocState)
 
 -- Global state for prelude and other module bindings
 data GlobalState = GlobalState
-  { docStore :: DocStore
+  { docStore       :: DocStore
   , moduleBindings :: TVar ModuleBindings
   }
 
@@ -78,8 +79,8 @@ main = do
 
   let globalState = GlobalState docStore' moduleBindings'
 
-  void $ runServer $ ServerDefinition
-    { parseConfig      = const $ const $ Right ()
+  void . runServer $ ServerDefinition
+    { parseConfig      = const . const $ Right ()
     , onConfigChange   = const $ pure ()
     , defaultConfig    = ()
     , configSection    = "telomare"
@@ -100,7 +101,7 @@ loadPrelude = do
     Just content ->
       case parseModule content of
         Left err -> do
-          putStrLn $ "Warning: Failed to parse Prelude.tel: " ++ err
+          putStrLn $ "Warning: Failed to parse Prelude.tel: " <> err
           return []
         Right parsed -> return [("Prelude", parsed)]
   where
@@ -110,7 +111,7 @@ loadPrelude = do
       result <- try (readFile path) :: IO (Either IOException String)
       case result of
         Right content -> return (Just content)
-        Left _ -> tryLoadFiles paths
+        Left _        -> tryLoadFiles paths
 
 -- Server options (plain TextDocumentSyncOptions for lsp-types-2.3.x)
 serverOptions :: Options
@@ -159,7 +160,7 @@ commandHandlers gState = mconcat
   ]
 
 -- Execute command handler
-executeCommandHandler :: GlobalState 
+executeCommandHandler :: GlobalState
                       -> LSPMsg.TRequestMessage LSPMsg.Method_WorkspaceExecuteCommand
                       -> (Either (LSPMsg.TResponseError LSPMsg.Method_WorkspaceExecuteCommand)
                                (JSON.Value LSPTypes.|? LSPTypes.Null)
@@ -174,17 +175,17 @@ executeCommandHandler gState req respond = do
       case mArgs of
         Just args | length args >= 3 -> do
           -- Parse the JSON values
-          let uriResult = JSON.fromJSON (args !! 0) :: JSON.Result LSPTypes.Uri
+          let uriResult = JSON.fromJSON (head args) :: JSON.Result LSPTypes.Uri
               rangeResult = JSON.fromJSON (args !! 1) :: JSON.Result Range
               exprResult = JSON.fromJSON (args !! 2) :: JSON.Result T.Text
 
           case (uriResult, rangeResult, exprResult) of
             (JSON.Success uri, JSON.Success range, JSON.Success exprText) -> do
               executePartialEvaluation gState uri range exprText
-              respond $ Right $ LSPTypes.InL JSON.Null
-            _ -> respond $ Right $ LSPTypes.InL JSON.Null
-        _ -> respond $ Right $ LSPTypes.InL JSON.Null
-    _ -> respond $ Right $ LSPTypes.InL JSON.Null
+              respond . Right $ LSPTypes.InL JSON.Null
+            _ -> respond . Right $ LSPTypes.InL JSON.Null
+        _ -> respond . Right $ LSPTypes.InL JSON.Null
+    _ -> respond . Right $ LSPTypes.InL JSON.Null
 
 --------------------------------------------------------------------------------
 -- Helpers: centralize parsing through parseModule
@@ -200,9 +201,8 @@ storeParsedDoc
   -> LspM () ()
 storeParsedDoc docStore' uri version text = do
   let parseRes = parseTelomareModule text
-  liftIO . atomically $
-    modifyTVar' docStore' $
-      Map.insert (toNormalizedUri uri) (DocState text version parseRes)
+  liftIO . atomically . modifyTVar' docStore' $
+    Map.insert (toNormalizedUri uri) (DocState text version parseRes)
 
 --------------------------------------------------------------------------------
 -- Document lifecycle handlers
@@ -239,36 +239,36 @@ didCloseHandler :: DocStore
                 -> LspM () ()
 didCloseHandler docStore' notification = do
   let uri = notification ^. LSP.params . LSP.textDocument . LSP.uri
-  liftIO $ atomically $ modifyTVar' docStore' $ Map.delete (toNormalizedUri uri)
+  liftIO . atomically . modifyTVar' docStore' $ Map.delete (toNormalizedUri uri)
 
 --------------------------------------------------------------------------------
 -- Semantic tokens (kept using the simple lexer for now)
 
 semanticTokensFullHandler docStore' req respond = do
   let uri = req ^. LSP.params . LSP.textDocument . LSP.uri
-  mDoc <- liftIO $ atomically $ Map.lookup (toNormalizedUri uri) <$> readTVar docStore'
+  mDoc <- liftIO . atomically $ Map.lookup (toNormalizedUri uri) <$> readTVar docStore'
   case mDoc of
-    Nothing -> respond $ Right $ LSPTypes.InL $ LSPTypes.SemanticTokens Nothing []
+    Nothing -> respond . Right . LSPTypes.InL $ LSPTypes.SemanticTokens Nothing []
     Just docState -> do
       let tokens  = lexTelomare (docText docState)
           encoded = tokensToLSP tokens
-      respond $ Right $ LSPTypes.InL $ LSPTypes.SemanticTokens Nothing encoded
+      respond . Right . LSPTypes.InL $ LSPTypes.SemanticTokens Nothing encoded
 
 semanticTokensRangeHandler docStore' req respond = do
   let uri   = req ^. LSP.params . LSP.textDocument . LSP.uri
       range = req ^. LSP.params . LSP.range
-  mDoc <- liftIO $ atomically $ Map.lookup (toNormalizedUri uri) <$> readTVar docStore'
+  mDoc <- liftIO . atomically $ Map.lookup (toNormalizedUri uri) <$> readTVar docStore'
   case mDoc of
-    Nothing -> respond $ Right $ LSPTypes.InL $ LSPTypes.SemanticTokens Nothing []
+    Nothing -> respond . Right . LSPTypes.InL $ LSPTypes.SemanticTokens Nothing []
     Just docState -> do
       let tokens  = filter (withinRange range) (lexTelomare (docText docState))
           encoded = tokensToLSP tokens
-      respond $ Right $ LSPTypes.InL $ LSPTypes.SemanticTokens Nothing encoded
+      respond . Right . LSPTypes.InL $ LSPTypes.SemanticTokens Nothing encoded
 
 --------------------------------------------------------------------------------
 -- Code Actions for Partial Evaluation
 
-codeActionHandler :: GlobalState 
+codeActionHandler :: GlobalState
                   -> LSPMsg.TRequestMessage LSPMsg.Method_TextDocumentCodeAction
                   -> (Either (LSPMsg.TResponseError LSPMsg.Method_TextDocumentCodeAction)
                            ([LSPTypes.Command LSPTypes.|? LSPTypes.CodeAction] LSPTypes.|? LSPTypes.Null)
@@ -278,24 +278,24 @@ codeActionHandler gState req respond = do
   let uri = req ^. LSP.params . LSP.textDocument . LSP.uri
       range = req ^. LSP.params . LSP.range
       context = req ^. LSP.params . LSP.context
-      
-  mDoc <- liftIO $ atomically $ Map.lookup (toNormalizedUri uri) <$> readTVar (docStore gState)
+
+  mDoc <- liftIO . atomically $ Map.lookup (toNormalizedUri uri) <$> readTVar (docStore gState)
   case mDoc of
-    Nothing -> respond $ Right $ LSPTypes.InL []
+    Nothing -> respond . Right . LSPTypes.InL $ []
     Just docState -> do
       case docParse docState of
-        Left err -> respond $ Right $ LSPTypes.InL []
+        Left err -> respond . Right . LSPTypes.InL $ []
         Right parsedDoc -> do
           -- Get the selected text
           let text = docText docState
               selectedText = getTextInRange text range
 
           case selectedText of
-            Nothing -> respond $ Right $ LSPTypes.InL []
+            Nothing -> respond . Right . LSPTypes.InL $ []
             Just exprText -> do
               -- Create a code action for partial evaluation
-              let title = T.pack $ "Partially evaluate: " ++
-                            take 20 (T.unpack exprText) ++
+              let title = T.pack $ "Partially evaluate: " <>
+                            take 20 (T.unpack exprText) <>
                             if T.length exprText > 20 then "..." else ""
                   codeAction =
                     LSPTypes.CodeAction
@@ -314,7 +314,7 @@ codeActionHandler gState req respond = do
                                    ])))
                       Nothing
 
-              respond $ Right $ LSPTypes.InL [LSPTypes.InR codeAction]
+              respond . Right $ LSPTypes.InL [LSPTypes.InR codeAction]
 
 codeActionResolveHandler :: GlobalState
                          -> LSPMsg.TRequestMessage LSPMsg.Method_CodeActionResolve
@@ -334,8 +334,8 @@ executePartialEvaluation gState uri range exprText = do
   bindings <- liftIO $ readTVarIO (moduleBindings gState)
   let evaluationResult = evaluateExpression bindings exprText
       message = case evaluationResult of
-        Left e -> T.pack $ "Evaluation Error: " ++ e
-        Right res -> T.pack $ "Result: " ++ res
+        Left e    -> T.pack $ "Evaluation Error: " <> e
+        Right res -> T.pack $ "Result: " <> res
 
   -- Show result as a window message
   sendNotification SMethod_WindowShowMessage $
@@ -352,20 +352,20 @@ getTextInRange text (Range (Position startLine startChar) (Position endLine endC
   if startLine == endLine
     then do
       let line = textLines !! fromIntegral startLine
-      Just $ T.take (fromIntegral $ endChar - startChar) $ T.drop (fromIntegral startChar) line
+      Just . T.take (fromIntegral $ endChar - startChar) $ T.drop (fromIntegral startChar) line
     else do
       let firstLine = T.drop (fromIntegral startChar) $ textLines !! fromIntegral startLine
           middleLines = take (fromIntegral $ endLine - startLine - 1) $ drop (fromIntegral startLine + 1) textLines
           lastLine = T.take (fromIntegral endChar) $ textLines !! fromIntegral endLine
-      Just $ T.intercalate "\n" $ [firstLine] ++ middleLines ++ [lastLine]
+      Just . T.intercalate "\n" $ [firstLine] <> middleLines <> [lastLine]
 
 --------------------------------------------------------------------------------
 -- Partial evaluation using eval2IExpr
 
 evaluateExpression :: ModuleBindings -> T.Text -> Either String String
-evaluateExpression bindings expr = 
+evaluateExpression bindings expr =
   case eval2IExpr bindings (T.unpack expr) of
-    Left err -> Left err
+    Left err    -> Left err
     Right iexpr -> Right (show iexpr)
 
 --------------------------------------------------------------------------------
@@ -402,7 +402,7 @@ lexTelomare text = concat $ zipWith lexLine [0..] (T.lines text)
               in Token lineNum col len tokNumber : go (col + len) rest
 
           -- Regular numbers
-          | c >= '0' && c <= '9' =
+          | isDigit c =
               let (len, rest) = spanDigits (c:cs) 0
               in Token lineNum col len tokNumber : go (col + len) rest
 
@@ -441,9 +441,6 @@ lexTelomare text = concat $ zipWith lexLine [0..] (T.lines text)
 
           | otherwise = go (col + 1) cs
 
-        -- Helper to check if character is a digit
-        isDigit c = c >= '0' && c <= '9'
-
         -- Span church numeral (after $)
         spanChurch :: String -> UInt -> (UInt, String)
         spanChurch [] n = (n, [])
@@ -464,7 +461,7 @@ lexTelomare text = concat $ zipWith lexLine [0..] (T.lines text)
           | otherwise = (n, s)
 
         spanIdent :: String -> (String, String)
-        spanIdent s = span isIdentChar s
+        spanIdent = span isIdentChar
 
         spanOperator :: String -> UInt -> (UInt, String)
         spanOperator [] n     = (n, [])
@@ -472,12 +469,12 @@ lexTelomare text = concat $ zipWith lexLine [0..] (T.lines text)
           | isOperatorChar c  = spanOperator cs (n + 1)
           | otherwise         = (n, s)
 
-        isIdentStart c = (c >= 'a' && c <= 'z')
-                      || (c >= 'A' && c <= 'Z')
+        isIdentStart c = isAsciiLower c
+                      || isAsciiUpper c
                       || c == '_'
 
         isIdentChar c = isIdentStart c
-                      || (c >= '0' && c <= '9')
+                      || isDigit c
                       || c == '\''
                       || c == '.'  -- Added dot for qualified names
 
