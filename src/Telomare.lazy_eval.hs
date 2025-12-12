@@ -1,6 +1,4 @@
 {-# LANGUAGE DeriveAnyClass             #-}
-{-# LANGUAGE DeriveFoldable             #-}
-{-# LANGUAGE DeriveFunctor              #-}
 {-# LANGUAGE DeriveGeneric              #-}
 {-# LANGUAGE DeriveTraversable          #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
@@ -137,7 +135,7 @@ data ParserTerm l v
 makeBaseFunctor ''ParserTerm -- Functorial version ParserTermF
 
 instance (Show l, Show v) => Show (ParserTerm l v) where
-  show x = State.evalState (cata alg $ x) 0 where
+  show x = State.evalState (cata alg x) 0 where
     alg :: (Base (ParserTerm l v)) (State Int String) -> State Int String
     alg TZeroF = sindent "TZero"
     alg (TPairF sl sr) = indentWithTwoChildren "TPair" sl sr
@@ -190,9 +188,7 @@ indentWithTwoChildren str sl sr = do
 dropUntil :: (a -> Bool) -> [a] -> [a]
 dropUntil _ [] = []
 dropUntil p x@(x1:_) =
-  case p x1 of
-    False -> dropUntil p (drop 1 x)
-    True  -> x
+  if p x1 then x else dropUntil p (drop 1 x)
 
 newtype FragIndex = FragIndex { unFragIndex :: Int } deriving (Eq, Show, Ord, Enum, NFData, Generic)
 
@@ -289,7 +285,7 @@ data RunTimeError
   deriving (Eq, Ord)
 
 instance Show RunTimeError where
-  show (AbortRunTime a) = "Abort: " <> (show $ g2s a)
+  show (AbortRunTime a) = "Abort: " <> show (g2s a)
   show (SetEnvError e) = "Can't SetEnv: " <> show e
   show (GenericRunTimeError s i) = "Generic Runtime Error: " <> s <> " -- " <> show i
   show (ResultConversionError s) = "Couldn't convert runtime result to IExpr: " <> s
@@ -412,10 +408,10 @@ appF c i =
   in (\tf p -> SetEnvFrag (SetEnvFrag (PairFrag tf p))) <$> twiddleF <*> (PairFrag <$> i <*> c)
 
 lamF :: BreakState' a -> BreakState' a
-lamF x = (\f -> PairFrag f EnvFrag) <$> deferF x
+lamF x = (`PairFrag` EnvFrag) <$> deferF x
 
 clamF :: BreakState' a -> BreakState' a
-clamF x = (\f -> PairFrag f ZeroFrag) <$> deferF x
+clamF x = (`PairFrag` ZeroFrag) <$> deferF x
 
 -- to construct a church numeral (\f x -> f ... (f x))
 -- the new, optimized church numeral operation iterates on a function "frame" (rf, (rf, (f', (x, env))))
@@ -552,25 +548,25 @@ instance Show PrettyIExpr where
 g2i :: IExpr -> Int
 g2i Zero       = 0
 g2i (Pair a b) = 1 + g2i a + g2i b
-g2i x          = error $ "g2i " ++ show x
+g2i x          = error $ "g2i " <> show x
 
 i2g :: Int -> IExpr
 i2g 0 = Zero
 i2g n = Pair (i2g (n - 1)) Zero
 
 ints2g :: [Int] -> IExpr
-ints2g = foldr (\i g -> Pair (i2g i) g) Zero
+ints2g = foldr (Pair . i2g) Zero
 
 g2Ints :: IExpr -> [Int]
 g2Ints Zero       = []
 g2Ints (Pair n g) = g2i n : g2Ints g
-g2Ints x          = error $ "g2Ints " ++ show x
+g2Ints x          = error $ "g2Ints " <> show x
 
 s2g :: String -> IExpr
-s2g = ints2g . map ord
+s2g = ints2g . fmap ord
 
 g2s :: IExpr -> String
-g2s = map chr . g2Ints
+g2s = fmap chr . g2Ints
 
 toChurch :: Int -> IExpr
 toChurch x =
@@ -586,7 +582,7 @@ ints2gF :: [Int] -> BreakState' a
 ints2gF = foldr (\i g -> PairFrag <$> i2gF i <*> g) (pure ZeroFrag)
 
 s2gF :: String -> BreakState' a
-s2gF = ints2gF . map ord
+s2gF = ints2gF . fmap ord
 
 -- convention is numbers are left-nested pairs with zero on right
 isNum :: IExpr -> Bool

@@ -47,20 +47,21 @@ library
   build-depends:       base
                      , base16-bytestring
                      , binary
-                     , dlist
-                     , recursion-schemes
+                     , bytestring
                      , clock
                      , containers
-                     , mtl
-                     , vector
                      , data-fix
                      , deepseq
                      , derive-storable
-                     , bytestring
-                     , text
-                     , transformers
+                     , dlist
                      , megaparsec
                      , memory
+                     , mtl
+                     , recursion-schemes
+                     , stm
+                     , text
+                     , transformers
+                     , vector
                      -- , sbv
                      , strict
                      , tasty
@@ -91,11 +92,12 @@ executable telomare
                        -with-rtsopts=-N
   build-depends:       base
                      , containers
-                     , telomare
-                     , strict
-                     , optparse-applicative
                      , directory
                      , filepath
+                     , optparse-applicative
+                     , stm
+                     , strict
+                     , telomare
   default-language:    Haskell2010
 
 executable telomare-repl
@@ -104,13 +106,14 @@ executable telomare-repl
   ghc-options:         -threaded -rtsopts -with-rtsopts=-N
   build-depends:       base
                      , containers
-                     , telomare
+                     , free
                      , haskeline
-                     , strict
-                     , optparse-applicative
                      , megaparsec
                      , mtl
-                     , free
+                     , optparse-applicative
+                     , stm
+                     , strict
+                     , telomare
   default-language:    Haskell2010
 
 executable telomare-evaluare
@@ -118,18 +121,19 @@ executable telomare-evaluare
   main-is: Evaluare.hs
   ghc-options: -threaded -Wall
   build-depends:
-    base,
-    containers,
-    reflex,
-    reflex-vty,
-    text,
-    time,
-    transformers,
-    vty,
-    telomare,
-    mtl,
-    free,
-    strict
+                base,
+                containers,
+                free,
+                mtl,
+                reflex,
+                reflex-vty,
+                stm,
+                strict,
+                telomare,
+                text,
+                time,
+                transformers,
+                vty
   default-language: Haskell2010
   default-extensions:
     BangPatterns
@@ -161,23 +165,46 @@ executable telomare-evaluare
     TypeApplications
     TypeFamilies
 
+executable telomare-lsp
+  main-is:             LSP.hs
+  hs-source-dirs:      app
+
+  build-depends:       base
+                     , containers
+                     , lens
+                     , lsp
+                     , lsp-types
+                     , mtl
+                     , filepath
+                     , stm
+                     , telomare
+                     , text
+                     , aeson
+
+  default-language:    Haskell2010
+  ghc-options:         -Wall
+                       -threaded
+                       -rtsopts
+                       -with-rtsopts=-N
+                       -Wunused-packages
+
 test-suite telomare-test
   type:                exitcode-stdio-1.0
   hs-source-dirs:      test
   main-is:             Spec.hs
   other-modules:       Common
-  build-depends:       base
+  build-depends:       QuickCheck
+                     , base
                      , containers
                      , dlist
-                     , genvalidity-hspec
+                     , free
                      , hspec
                      , hspec-core
                      , mtl
-                     , telomare
+                     , stm
                      , strict
-                     , QuickCheck
+                     , telomare
                      , unix
-                     , free
   ghc-options:         -threaded
                        -rtsopts
                        -- -prof                         -- uncomment this and the following for profiling
@@ -190,21 +217,22 @@ test-suite telomare-parser-test
   hs-source-dirs:      test
   main-is:             ParserTests.hs
   other-modules:       Common
-  build-depends:       base
-                     , telomare
+  build-depends:       QuickCheck
+                     , base
+                     , containers
+                     , free
+                     , lens
+                     , megaparsec
+                     , mtl
+                     , process
+                     , recursion-schemes
+                     , stm
                      , strict
-                     , QuickCheck
                      , tasty
                      , tasty-hunit
                      , tasty-quickcheck
-                     , containers
-                     , megaparsec
-                     , mtl
-                     , recursion-schemes
-                     , process
-                     , lens
+                     , telomare
                      , unix
-                     , free
   ghc-options:         -threaded -rtsopts -with-rtsopts=-N
   default-language:    Haskell2010
 
@@ -214,21 +242,22 @@ test-suite telomare-resolver-test
   main-is:             ResolverTests.hs
   other-modules:       Common
                      , CaseTests
-  build-depends:       base
-                     , telomare
+  build-depends:       Diff
+                     , QuickCheck
+                     , base
+                     , containers
+                     , free
+                     , megaparsec
+                     , mtl
+                     , pretty-show
+                     , recursion-schemes
+                     , stm
+                     , strict
                      , tasty
                      , tasty-hunit
                      , tasty-quickcheck
-                     , containers
-                     , QuickCheck
-                     , strict
-                     , megaparsec
+                     , telomare
                      , unix
-                     , mtl
-                     , Diff
-                     , pretty-show
-                     , recursion-schemes
-                     , free
   ghc-options:         -threaded -rtsopts -with-rtsopts=-N
   default-language:    Haskell2010
 
