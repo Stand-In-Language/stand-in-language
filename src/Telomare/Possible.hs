@@ -71,7 +71,7 @@ import Test.QuickCheck.Gen (sized)
 import Telomare.RunTime (hvmEval)
 
 debug :: Bool
-debug = True
+debug = False
 
 debugTrace :: String -> a -> a
 -- debugTrace s x = if debug then debugTrace' s x else x
@@ -716,7 +716,8 @@ unsizedStepM''' maxSize zeros recursionTest handleOther x = f x where
                   rf = dbtw uwe $ lamB unsizedStepMrfa (iteB (dbti $ appB argFour argT2One)
                                               (appB (appB argThree (unsizedEE $ SizeStepStubF tok 1 envB)) argOne)
                                               (dbt tok . unsizedEE . SizeStageF (SizedRecursion . Map.singleton tok $ pure 1) $ appB argTwo argOne))
-              in debugTrace ("unwrap sizingWrapper\n" <> prettyPrint uwe) . pure $ pairB (deferB unsizedStepMw rf) trb
+                  result = pairB (deferB unsizedStepMw rf) trb
+              in pure $ result
     UnsizedFW (SizeStepStubF tok n e@(BasicEE (PairSF _ es))) ->
       let dbti = if fromEnum tok `elem` [0,1,5]
                  then unsizedEE . TraceF ("unsized inner test i for tok " <> show tok)
@@ -1055,7 +1056,7 @@ term3ToUnsizedExpr maxSize (Term3 termMap) =
 -- get simple input limits derived from refinements
 -- returns a set of guaranteed Zeros, where the Integer is the encoded path from root of intput
 getInputLimits :: UnsizedExpr -> Set Integer
-getInputLimits = getAccum . transformNoDeferM evalStep . capMain (indexedEE $ IVarF 0) . convertIS where
+getInputLimits = getAccum . transformNoDeferM evalStep . convertIS where
   convertU = \case
     UnsizedFW (SizingWrapperF _ _ _) -> indexedEE AnyF
     UnsizedFW (UnsizedStubF _ _) -> indexedEE AnyF
@@ -1063,14 +1064,13 @@ getInputLimits = getAccum . transformNoDeferM evalStep . capMain (indexedEE $ IV
     UnsizedFW rw@(RefinementWrapperF _ _ _) -> unsizedEE rw
     x -> error $ "getInputLimits convert, unhandled:\n" <> prettyPrint x
   convertIS :: UnsizedExpr -> InputSizingExpr
-  convertIS = cata $ convertBasic (convertStuck (convertAbort convertU))
+  convertIS = cata $ convertBasic (convertStuck (convertAbort (convertIndexed convertU)))
   unexpectedI x = error $ "getInputLimits eval, unexpected:\n" <> prettyPrint x
-  evalStep = basicStepM (stuckStepM (abortStepM (indexedInputStepM' Set.empty (indexedInputIgnoreSwitchStepM (findInputLimitStepM unexpectedI)))))
+  evalStep = basicStepM (stuckStepM (abortStepM (indexedInputStepM Set.empty (indexedInputIgnoreSwitchStepM (findInputLimitStepM unexpectedI)))))
 
 capMain :: (Base g ~ f, BasicBase f, StuckBase f, Recursive g, Corecursive g) => g -> g -> g
-capMain cap = \case  -- make sure main functions are fully applied with Any data
-  BasicEE (PairSF d@(StuckEE (DeferSF _ _)) _) -> setEnvB $ pairB d (pairB cap zeroB)
-  x -> x
+capMain i c = appB c i
+
 
 isClosure :: (Base g ~ f, BasicBase f, StuckBase f, Recursive g, Corecursive g) => g -> Bool
 isClosure = \case
@@ -1152,28 +1152,33 @@ sizeTerm maxSize x = tidyUp . foldAborted . debugResult . transformNoDefer evalS
 
 
 
-sizeTermM :: Int -> UnsizedExpr -> Either UnsizedRecursionToken AbortExpr
-sizeTermM maxSize x = tidyUp . ($ []) . runReaderT . transformNoDeferM evalStep $ cm where
+sizeTermM :: Int -> Bool -> UnsizedExpr -> Either UnsizedRecursionToken AbortExpr
+sizeTermM maxSize doCap x = tidyUp . ($ []) . runReaderT . transformNoDeferM evalStep $ cm where
   failConvert x = error $ "sizeTermM convert, unhandled:\n" <> prettyPrint x
   forceType :: StuckExpr -> StuckExpr
   forceType = id
   showZeros z = "\nsizeTermM zeros are: " <> show z <> "\nzeros are:\n" <> concatMap ((<> "\n") . prettyPrint . forceType . zeroToBranch) z
   -- zeros = (\x -> debugTrace ("sizeTerm zeros are " <> show x) x) $ getInputLimits x
-  zeros = (\x -> debugTrace ("sizeTermM inital term is\n" <> prettyPrint cm <> showZeros x) x) $ getInputLimits x
+  zeros = (\x -> debugTrace ("sizeTermM inital term is\n" <> prettyPrint cm <> showZeros x) x) $ getInputLimits cm'
   -- zeros = getInputLimits x
   dtt :: UnsizedExpr -> UnsizedExpr
   dtt t = debugTrace ("sizeTermM initial term is\n" <> prettyPrint t <> "\n...and result should be\n" <> prettyPrint (regularEval t)) t
+  -- dtt t = error ("sizeTermM regularEval with zero is\n" <> prettyPrint (regularEval (capMain zeroB x))) t
   -- dtt t = debugTrace ("sizeTermM initial term is\n" <> prettyPrint t) t
-  cm = removeRefinementWrappers . dtt $ capMain (indexedEE $ IVarF 0) x
+  -- cm = removeRefinementWrappers . dtt $ capMain (indexedEE $ IVarF 0) x
+  cm' = dtt $ if doCap
+    then capMain (indexedEE $ IVarF 0) x
+    else x
+  cm = removeRefinementWrappers cm'
   tidyUp (StrictAccum (SizedRecursion sm) r) = debugTrace ("sizes are: " <> show sm <> "\nand result is:\n" <> prettyPrint r) $ case foldAborted r of
     Just (UnsizableSR i) -> debugTrace "sizeTermM hit unsizable" Left i
     _ -> let sized = setSizes sm cm
-         in debugTrace "sizeTermM found all sizes" pure . clean $ if isClosure x
+         in debugTrace "sizeTermM found all sizes" pure . clean $ if doCap
             then uncap sized
             else sized
       where uncap = \case
-              BasicEE (SetEnvSF (BasicEE (PairSF d _))) -> basicEE $ PairSF d (basicEE ZeroSF)
-              z -> error ("sizeTerm tidyUp trying to uncap something that isn't a main function: " <> show z)
+              AppEE c _ -> c
+              z -> error ("sizeTermM tidyUp trying to uncap something that isn't a main function:\n" <> prettyPrint z)
   clean :: UnsizedExpr -> AbortExpr
   clean = cata (convertBasic (convertStuck (convertAbort failConvert)))
   setSizes :: Map UnsizedRecursionToken (Maybe Int) -> UnsizedExpr -> UnsizedExpr
@@ -1396,15 +1401,16 @@ instance AbstractRunTime CompiledExpr where
       Just e -> Left $ AbortRunTime e
       _      -> pure x --  $ CompiledExpr x
 
-evalA :: StaticCheckExpr -> Maybe IExpr
-evalA t =
+evalStaticCheck :: Bool -> StaticCheckExpr -> Maybe IExpr
+evalStaticCheck doCap t =
   let unhandledError x = error ("evalA unhandled case " <> prettyPrint x)
       runResult = let aStep :: StaticCheckExprF StaticCheckExpr -> StaticCheckExpr
                       aStep = basicStep (stuckStep (abortStep (deferredEvalStep' unhandledError)))
                       eval' :: StaticCheckExpr -> StaticCheckExpr
                       eval' = transformNoDefer aStep
                       inp = deferredEE $ BarrierF envB
-                  in eval' $ capMain inp t
+                      x = if doCap then capMain inp t else t
+                  in eval' x
       getAborted = \case
         AbortFW (AbortedF e) -> Just e
         DeferredFW (BarrierF _) -> Nothing

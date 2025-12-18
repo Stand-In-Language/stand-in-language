@@ -39,8 +39,8 @@ import Telomare (AbstractRunTime, BreakState, BreakState', ExprA (..),
 import Telomare.Parser (AnnotatedUPT, parseModule, parseOneExprOrTopLevelDefs,
                         parsePrelude)
 import Telomare.Possible (abortExprToTerm4, abortPossibilities, appB,
-                          buildUnsizedLocMap, deferB, evalA, getSizesM,
-                          sizeTermM, term3ToUnsizedExpr, term4toAbortExpr)
+                          buildUnsizedLocMap, deferB, evalStaticCheck, getSizesM,
+                          sizeTermM, term3ToUnsizedExpr, term4toAbortExpr, evalStaticCheck)
 import Telomare.PossibleData (AbortExpr, CompiledExpr (..), SizedRecursion (..),
                               VoidF, envB, leftB, pairB, pattern AbortFW,
                               rightB, setEnvB)
@@ -103,14 +103,16 @@ convertPT ll (Term3 termMap) =
         AuxFragF z     -> error "convertPT should be no AuxFrags here TODO"
   in Term4 $ fmap (hoistCofree changeType) newMap
 
-findChurchSizeD :: Bool -> Term3 -> Either EvalError Term4
-findChurchSizeD useSizing t3 =
-  if useSizing
-    then calculateRecursionLimits t3  -- Use sizing algorithm
-    else pure (convertPT (const 255) t3)  -- Use fixed size of 255
+data SizingOption
+  = NoSizing
+  | UnitTestSizing
+  | MainSizing
 
-findChurchSize :: Term3 -> Either EvalError Term4
-findChurchSize = findChurchSizeD True
+findChurchSizeD :: SizingOption -> Term3 -> Either EvalError Term4
+findChurchSizeD so t3 = case so of
+  NoSizing -> pure (convertPT (const 255) t3)
+  UnitTestSizing -> calculateRecursionLimits False t3
+  MainSizing -> calculateRecursionLimits True t3
 
 -- rather than remove checks, we should extract them so that they can be run separately, if that gives a performance benefit
 {-
@@ -128,15 +130,9 @@ removeChecks (Term4 m) =
 removeChecks :: Term4 -> Term4
 removeChecks = id
 
-{-
-removeRecursionChecks :: CompiledExpr -> CompiledExpr
-removeRecursionChecks = cata f where
-  f = \case
--}
-
 runStaticChecks :: Term4 -> Either EvalError Term4
 runStaticChecks t@(Term4 termMap) =
-  let result = evalA scTerm
+  let result = evalStaticCheck False scTerm
       scTerm = term4toAbortExpr t
   in case debugTrace ("running static checks for:\n" <> prettyPrint t) result of
     Nothing -> pure t
@@ -145,14 +141,14 @@ runStaticChecks t@(Term4 termMap) =
 compileMain :: Term3 -> Either EvalError CompiledExpr
 compileMain term = case typeCheck (PairTypeP (ArrTypeP ZeroTypeP ZeroTypeP) AnyType) term of
   Just e -> Left $ TCE e
-  _      -> compile pure term -- TODO add runStaticChecks back in
+  _      -> compile MainSizing pure term -- TODO add runStaticChecks back in
 
 -- for testing
 compileMain' :: Term3 -> Either EvalError CompiledExpr
-compileMain' = compile pure
+compileMain' = compile MainSizing pure
 
 compileUnitTest :: Term3 -> Either EvalError CompiledExpr
-compileUnitTest = compile runStaticChecks
+compileUnitTest = compile UnitTestSizing runStaticChecks
 
 -- TODO kind of a hack, really CompiledExpr should be the basis for TelomareLike
 compileUnitTestNoAbort :: Term3 -> Either EvalError CompiledExpr
@@ -161,9 +157,9 @@ compileUnitTestNoAbort = fmap (cata f) . compileUnitTest where
     AbortFW _ -> deferB (toEnum (-9)) envB
     x -> embed x
 
-compile :: (Term4 -> Either EvalError Term4) -> Term3 -> Either EvalError CompiledExpr
-compile staticCheck t = debugTrace ("compiling term3:\n" <> prettyPrint t)
-  $ term4toAbortExpr . removeChecks <$> (findChurchSize t >>= staticCheck)
+compile :: SizingOption -> (Term4 -> Either EvalError Term4) -> Term3 -> Either EvalError CompiledExpr
+compile so staticCheck t = debugTrace ("compiling term3:\n" <> prettyPrint t)
+  $ term4toAbortExpr . removeChecks <$> (findChurchSizeD so t >>= staticCheck)
 
 -- converts between easily understood Haskell types and untyped IExprs around an iteration of a Telomare expression
 funWrap :: forall a. (Show a, AbstractRunTime a) => a -> (a -> a -> a) -> Maybe (String, IExpr) -> (String, Either RunTimeError a)
@@ -271,12 +267,12 @@ evalLoop_ iexpr = evalLoopCore iexpr printAcc "" []
                        then pure out
                        else pure (acc <> "\n" <> out)
 
-calculateRecursionLimits :: Term3 -> Either EvalError Term4
-calculateRecursionLimits t3 =
+calculateRecursionLimits :: Bool -> Term3 -> Either EvalError Term4
+calculateRecursionLimits doCap t3 =
   let abortExprToTerm4' :: AbortExpr -> Either IExpr Term4
       abortExprToTerm4' = abortExprToTerm4
       limitSize = 256
-  in case fmap abortExprToTerm4' . sizeTermM limitSize $ term3ToUnsizedExpr limitSize t3 of
+  in case fmap abortExprToTerm4' . sizeTermM limitSize doCap $ term3ToUnsizedExpr limitSize t3 of
     Left urt -> Left $ RecursionLimitError urt
     Right t  -> case t of
       Left a  -> Left . StaticCheckError . convertAbortMessage $ a

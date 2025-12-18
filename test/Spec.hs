@@ -376,7 +376,7 @@ qcDecompileIExprAndBackEvalsSame (IExprWrapper x) = pure (showResult $ eval' x)
         parseLongExpr' x = case runTelomareParser (scn *> parseLongExpr <* scn) x of
           Just r -> r
           _      -> error "parseLongExpr' should be impossible"
-        findChurchSize' x = case findChurchSize x of
+        findChurchSize' x = case findChurchSizeD UnitTestSizing x of
           Right r -> r
           Left e  -> error ("findChurchSize' error: " <> show e)
         dec = decompileUPT . decompileTerm1 . decompileTerm2 . decompileTerm4 . decompileIExpr
@@ -407,7 +407,7 @@ qcTestMapBuilderEqualsRegularEval (IExprWrapper x) = (showResult $ eval' x)
 
 qcTestURSizing :: URTestExpr -> Bool
 qcTestURSizing (URTestExpr t3) =
-  let compile x = toTelomare <$> findChurchSize x
+  let compile x = toTelomare <$> findChurchSizeD UnitTestSizing x
       compile' x = pure . toTelomare $ convertPT (const 255) x
   in (fmap . fmap) pureIEval (compile t3) == (fmap . fmap) pureIEval (compile' t3)
 {-
@@ -552,7 +552,7 @@ unitTests_ parse = do
     -- testMain <- runIO $ Strict.readFile "simpleplus2.tel"
     testMain <- runIO $ Strict.readFile "simpleplus6.tel"
     -- runIO . putStrLn $ showSizingInSource preludeFile testMain
-    runIO . putStrLn $ showFunctionIndexesInSource preludeFile testMain
+    -- runIO . putStrLn $ showFunctionIndexesInSource preludeFile testMain
     case fmap compileMain (parse True testMain) of
       Right (Right g) ->
         let eval = funWrap g appB
@@ -895,7 +895,7 @@ unitTestType' parse s t tef = it s $ case parse s of
 
 unitTestStaticChecks' parse s c = it s $ case parse s of
   Left e -> expectationFailure $ concat ["failed to parse ", s, " ", show e]
-  Right g -> let rr = findChurchSize g >>= runStaticChecks
+  Right g -> let rr = findChurchSizeD UnitTestSizing g >>= runStaticChecks
               in if c rr
                 then pure ()
                 else do
@@ -944,5 +944,5 @@ main = do
       then main2Term3let (parseAuxModule str:prelude) "AuxModule"
       else main2Term3 (parseAuxModule str:prelude) "AuxModule"
 
-  hspec $ unitTests_ parse
+  hspec $ unitTests parse
     --nexprTests
