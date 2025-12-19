@@ -66,6 +66,10 @@
         type = "app";
         program = self.packages.${system}.telomare + "/bin/telomare-evaluare";
       };
+      apps.lsp = {
+        type = "app";
+        program = "${self.packages.${system}.telomare}/bin/telomare-lsp";
+      };
 
       checks = self'.packages;
     };
