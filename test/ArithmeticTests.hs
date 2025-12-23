@@ -11,6 +11,7 @@ import Control.Monad (unless)
 import Data.Bifunctor (second)
 import Data.List (isInfixOf)
 import Data.Ratio
+import Debug.Trace
 import PrettyPrint
 import qualified System.IO.Strict as Strict
 import Telomare
@@ -65,12 +66,15 @@ evalExprString input = do
           allBindings = fmap (second (tag DummyLoc)) allBindingsUPT
           uptMaybe = lookup "_tmp_" allBindings
           termMaybe = fmap ((DummyLoc :<) . LetUPF allBindings) uptMaybe
-          compiled = compileUnitTest =<< maybeToRight (termMaybe >>= rightToMaybe . process)
+          compiled = traceShowId (compileUnitTest =<< maybeToRight (termMaybe >>= rightToMaybe . process))
       case compiled of
         Left err -> pure $ Left (show err)
-        Right iexpr -> do
-          result <- simpleEval (SetEnv (Pair (Defer iexpr) Zero))
-          pure $ Right (show $ PrettyIExpr result)
+        Right compiledExpr ->
+          case toTelomare compiledExpr of
+            Just iexpr -> do
+              result <- simpleEval (SetEnv (Pair (Defer iexpr) Zero))
+              pure $ Right (show $ PrettyIExpr result)
+            Nothing -> pure . Left $ "Unable to turn CompiledExpr to IExpr"
 
 assertExpr :: String -> String -> Assertion
 assertExpr input expected = do
