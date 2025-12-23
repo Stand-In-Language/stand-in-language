@@ -640,8 +640,8 @@ resolveAllImports' modules x =
      then resolved
      else resolveAllImports' modules resolved
 
-resolveAllImports :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
-                  -> [Either AnnotatedUPT (String, AnnotatedUPT)]
+resolveAllImports :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -- ^All the modules
+                  -> [Either AnnotatedUPT (String, AnnotatedUPT)] -- ^Module to be resolved (i.e. list of either Import_UPT or top level definitions)
                   -> [(String, AnnotatedUPT)]
 resolveAllImports x y = removeRights <$> resolveAllImports' x y
   where
