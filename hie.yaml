@@ -1,10 +1,31 @@
 cradle:
   cabal:
-    - path: "./src"
+    - path: "src"
       component: "lib:telomare"
+
+    - path: "app/Main.hs"
+      component: "telomare:exe:telomare"
+
+    - path: "app/Repl.hs"
+      component: "telomare:exe:telomare-repl"
+
+    - path: "app/Evaluare.hs"
+      component: "telomare:exe:telomare-evaluare"
+
+    - path: "app/LSP.hs"
+      component: "telomare:exe:telomare-lsp"
+
     - path: "./test/Spec.hs"
       component: "test:telomare-test"
+
+    - path: "test/ParserTests.hs"
+      component: "telomare:test:telomare-parser-test"
+
+    - path: "test/ResolverTests.hs"
+      component: "telomare:test:telomare-resolver-test"
+
     - path: "./test/SizingTest.hs"
       component: "test:telomare-sizing-test"
+
     - path: "./test/SizingTests.hs"
       component: "test:telomare-sizing-test"
