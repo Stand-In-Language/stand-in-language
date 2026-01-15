@@ -368,7 +368,7 @@ eval2IExpr extraModuleBindings str =
         Right x -> case toTelomare x of
           Just ie -> pure ie
           _ -> Left $ "eval2IExpr conversion error back to iexpr:\n" <> prettyPrint x
-      aux = (\str -> Left (DummyLoc :< ImportQualifiedUPF str str)) . fst <$> extraModuleBindings
+      aux = (\str -> Left (DummyLoc :< ImportUPF str)) . fst <$> extraModuleBindings
       resolved = resolveAllImports extraModuleBindings aux
 
 tagIExprWithEval :: IExpr -> Cofree IExprF (Int, IExpr)
