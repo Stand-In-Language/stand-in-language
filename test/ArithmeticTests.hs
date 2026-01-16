@@ -8,7 +8,7 @@ module Main where
 import Common
 import Control.Comonad.Cofree (Cofree ((:<)))
 import Control.Monad (unless)
-import Data.Bifunctor (second)
+import Data.Bifunctor (Bifunctor (first))
 import Data.List (isInfixOf)
 import Data.Ratio
 import Debug.Trace
@@ -24,6 +24,7 @@ import Test.Tasty
 import Test.Tasty.HUnit
 import Test.Tasty.QuickCheck as QC
 import Text.Megaparsec (eof, errorBundlePretty, runParser)
+import Telomare.Eval (compileUnitTestNoAbort)
 
 main :: IO ()
 main = defaultMain tests
@@ -32,12 +33,8 @@ tests :: TestTree
 tests = testGroup "Arithmetic Tests" [ unitTestsNatArithmetic
                                      , unitTestsRatArithmetic
                                      , qcPropsNatArithmetic
-                                     , qcPropsRatArithmetic]
-
-parseReplExpr :: TelomareParser [(String, UnprocessedParsedTerm)]
-parseReplExpr = do
-  expr <- parseLongExpr <* eof
-  pure [("_tmp_", forget expr)]
+                                     , qcPropsRatArithmetic
+                                     ]
 
 maybeToRight :: Maybe a -> Either EvalError a
 maybeToRight (Just x) = Right x
@@ -47,34 +44,32 @@ rightToMaybe :: Either String a -> Maybe a
 rightToMaybe (Right x) = Just x
 rightToMaybe _         = Nothing
 
-loadPreludeBindings :: IO [(String, UnprocessedParsedTerm)]
+loadPreludeBindings :: IO [(String, AnnotatedUPT)]
 loadPreludeBindings = do
   preludeResult <- Strict.readFile "Prelude.tel"
   case parsePrelude preludeResult of
     Left _   -> pure []
-    Right bs -> pure $ fmap (second forget) bs
+    Right bs -> pure bs
 
 evalExprString :: String -> IO (Either String String)
 evalExprString input = do
   preludeBindings <- loadPreludeBindings
-  let parseResult = runParser (parseReplExpr <* eof) "" input
+  let parseResult = runParser (parseLongExpr <* eof) "" input
   case parseResult of
     Left err -> pure $ Left (errorBundlePretty err)
-    Right exprBindings -> do
-      let allBindingsUPT = preludeBindings <> exprBindings
-          allBindings :: [(String, Cofree UnprocessedParsedTermF LocTag)]
-          allBindings = fmap (second (tag DummyLoc)) allBindingsUPT
-          uptMaybe = lookup "_tmp_" allBindings
-          termMaybe = fmap ((DummyLoc :<) . LetUPF allBindings) uptMaybe
-          compiled = traceShowId (compileUnitTest =<< maybeToRight (termMaybe >>= rightToMaybe . process))
-      case compiled of
+    Right aupt -> do
+      let term = DummyLoc :< LetUPF preludeBindings aupt
+          compile' :: Term3 -> Either String IExpr
+          compile' x = case compileUnitTestNoAbort x of
+                         Left err -> Left . show $ err
+                         Right r  -> case toTelomare r of
+                           Just te -> pure $ fromTelomare te
+                           Nothing -> Left $ "conversion error from compiled expr:\n" <> prettyPrint r
+      case process term >>= compile' of
         Left err -> pure $ Left (show err)
-        Right compiledExpr ->
-          case toTelomare compiledExpr of
-            Just iexpr -> do
-              result <- simpleEval (SetEnv (Pair (Defer iexpr) Zero))
-              pure $ Right (show $ PrettyIExpr result)
-            Nothing -> pure . Left $ "Unable to turn CompiledExpr to IExpr"
+        Right iexpr -> case eval iexpr of
+                         Left e -> pure . Left . show $ e
+                         Right result -> pure . Right . show . PrettyIExpr $ result
 
 assertExpr :: String -> String -> Assertion
 assertExpr input expected = do
@@ -203,6 +198,4 @@ qcPropsNatArithmetic = testGroup "Property tests on natural arithmetic expressio
           Right val -> val === show x
   ]
 
-qcPropsRatArithmetic = testGroup "Property tests on rational arithmetic expressions (QuickCheck)"
-  [
-  ]
+qcPropsRatArithmetic = testGroup "Property tests on rational arithmetic expressions (QuickCheck)" []

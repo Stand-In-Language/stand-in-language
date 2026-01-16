@@ -173,7 +173,10 @@ funWrap fun app inp =
       Just z -> ("unexpected runtime value, dumped:\n" <> show z, Left $ GenericRunTimeError "unexpected runtime value" z)
     Left e -> ("runtime error:\n" <> show e, Left e)
 
-runMainCore :: [(String, String)] -> String -> (CompiledExpr -> IO a) -> IO a
+runMainCore :: [(String, String)] -- ^All modules as (Module_Name, Module_Content)
+            -> String -- ^Module's name with `main` function
+            -> (CompiledExpr -> IO a)
+            -> IO a
 runMainCore modulesStrings s e =
   let parsedModules :: [(String, Either String [Either AnnotatedUPT (String, AnnotatedUPT)])]
       parsedModules = (fmap . fmap) parseModule modulesStrings
@@ -204,13 +207,20 @@ runMainCore modulesStrings s e =
       Right (Right g) -> e g
       Right (Left z) -> error $ "compilation failed somehow, with result:\n" <> show z
 
-runMain_ :: [(String, String)] -> String -> IO String
+runMain_ :: [(String, String)] -- ^All modules as (Module_Name, Module_Content)
+         -> String -- ^Module's name with `main` function
+         -> IO String
 runMain_ modulesStrings s = runMainCore modulesStrings s evalLoop_
 
-runMain :: [(String, String)] -> String -> IO ()
+runMain :: [(String, String)] -- ^All modules as (Module_Name, Module_Content)
+        -> String -- ^Module's name with `main` function
+        -> IO ()
 runMain modulesStrings s = runMainCore modulesStrings s evalLoop
 
-runMainWithInput :: [String] -> [(String, String)] -> String -> IO String
+runMainWithInput :: [String] -- ^Inputs
+                 -> [(String, String)] -- ^All modules as (Module_Name, Module_Content)
+                 -> String -- ^Module's name with `main` function
+                 -> IO String
 runMainWithInput inputList modulesStrings s = runMainCore modulesStrings s (evalLoopWithInput inputList)
 
 schemeEval :: IExpr -> IO ()
