@@ -29,3 +29,6 @@ cradle:
 
     - path: "./test/SizingTests.hs"
       component: "test:telomare-sizing-test"
+
+    - path: "./test/ArithmeticTests.hs"
+      component: "test:telomare-arithmetic-test"

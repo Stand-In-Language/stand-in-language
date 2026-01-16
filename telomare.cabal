@@ -281,6 +281,26 @@ test-suite telomare-sizing-test
   ghc-options:         -threaded -rtsopts -with-rtsopts=-N
   default-language:    Haskell2010
 
+test-suite telomare-arithmetic-test
+  type:                exitcode-stdio-1.0
+  hs-source-dirs:      test
+  main-is:             ArithmeticTests.hs
+  other-modules:       Common
+  build-depends:       base
+                     , containers
+                     , free
+                     , megaparsec
+                     , QuickCheck
+                     , strict
+                     , tasty
+                     , tasty-hunit
+                     , tasty-quickcheck
+                     , telomare
+                     , unix
+
+  ghc-options:         -threaded -rtsopts -with-rtsopts=-N
+  default-language:    Haskell2010
+
 benchmark telomare-serializer-benchmark
   type:                exitcode-stdio-1.0
   hs-source-dirs:      bench/

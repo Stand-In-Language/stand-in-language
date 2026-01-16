@@ -110,7 +110,8 @@ printLastExpr eval bindings = do
     case lookup "_tmp_" bindings' of
       Nothing -> putStrLn "Could not find _tmp_ in bindings"
       Just upt -> do
-        let compile' x = case compileUnitTestNoAbort x of
+        let compile' :: Term3 -> Either String IExpr
+            compile' x = case compileUnitTestNoAbort x of
                            Left err -> Left . show $ err
                            Right r  -> case toTelomare r of
                              Just te -> pure $ fromTelomare te
