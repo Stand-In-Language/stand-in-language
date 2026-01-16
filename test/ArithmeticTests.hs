@@ -15,7 +15,8 @@ import Debug.Trace
 import PrettyPrint
 import qualified System.IO.Strict as Strict
 import Telomare
-import Telomare.Eval (EvalError (CompileConversionError), compileUnitTest)
+import Telomare.Eval (EvalError (CompileConversionError), compileUnitTest,
+                      compileUnitTestNoAbort)
 import Telomare.Parser (AnnotatedUPT, TelomareParser, parseLongExpr,
                         parsePrelude)
 import Telomare.Resolver (process)
@@ -24,7 +25,7 @@ import Test.Tasty
 import Test.Tasty.HUnit
 import Test.Tasty.QuickCheck as QC
 import Text.Megaparsec (eof, errorBundlePretty, runParser)
-import Telomare.Eval (compileUnitTestNoAbort)
+
 
 main :: IO ()
 main = defaultMain tests
