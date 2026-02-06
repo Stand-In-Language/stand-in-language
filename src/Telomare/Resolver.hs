@@ -33,6 +33,7 @@ import PrettyPrint (TypeDebugInfo (..), prettyPrint, showTypeDebugInfo)
 import Telomare
 import Telomare.Parser (AnnotatedUPT, TelomareParser)
 import Text.Megaparsec (errorBundlePretty, runParser)
+import Data.Fix (Fix)
 
 debug :: Bool
 debug = False
@@ -274,6 +275,7 @@ debruijinize vl = \case
   (anno :< TLamF (Closed n) x) -> (\y -> anno :< TLamF (Closed ()) y) <$> debruijinize (n : vl) x
   (anno :< TChurchF n) -> pure $ anno :< TChurchF n
   (anno :< TLimitedRecursionF t r b) -> (\x y z -> anno :< TLimitedRecursionF x y z) <$> debruijinize vl t <*> debruijinize vl r <*> debruijinize vl b
+  (anno :< TUnsizedRepeaterF) -> pure $ anno :< TUnsizedRepeaterF
 
 rewriteOuterTag :: anno -> Cofree a anno -> Cofree a anno
 rewriteOuterTag anno (_ :< x) = anno :< x
@@ -283,6 +285,9 @@ splitExpr' = \case
   (anno :< TZeroF) -> pure (anno :< ZeroFragF)
   (anno :< TPairF a b) -> rewriteOuterTag anno <$> pairF (splitExpr' a) (splitExpr' b)
   (anno :< TVarF n) -> pure . tag anno $ varNF n
+  (anno :< TAppF (_ :< TLimitedRecursionF t r b) (_ :< TUnsizedRepeaterF)) -> do
+    tok <- nextBreakToken
+    rewriteOuterTag anno <$> appF (unsizedRecursionWrapper anno tok (splitExpr' t) (splitExpr' r) (splitExpr' b)) (unsizedRepeater anno tok)
   (anno :< TAppF c i) ->
     rewriteOuterTag anno <$> appF (splitExpr' c) (splitExpr' i)
   (anno :< TCheckF tc c) -> (\tc' c' -> anno :< AuxFragF (CheckingWrapper anno (FragExprUR tc') (FragExprUR c'))) <$> splitExpr' tc <*> splitExpr' c
@@ -293,9 +298,6 @@ splitExpr' = \case
   (anno :< TLamF (Open ()) x) -> rewriteOuterTag anno <$> lamF (splitExpr' x)
   (anno :< TLamF (Closed ()) x) -> rewriteOuterTag anno <$> clamF (splitExpr' x)
   (anno :< TChurchF n) -> i2cF anno n
-  (anno :< TLimitedRecursionF t r b) ->
-    rewriteOuterTag anno <$> (nextBreakToken >>=
-      (\x -> unsizedRecursionWrapper anno x (splitExpr' t) (splitExpr' r) (splitExpr' b)))
 
 newtype FragExprUR' =
   FragExprUR' { unFragExprUR' :: FragExpr (RecursionSimulationPieces FragExprUR')
@@ -428,10 +430,10 @@ validateVariables term =
         anno :< AppUPF f x -> (\a b -> anno :< TAppF a b) <$> validateWithEnvironment f
                                                           <*> validateWithEnvironment x
         anno :< UnsizedRecursionUPF t r b ->
-          (\x y z -> anno :< TLimitedRecursionF x y z) <$> validateWithEnvironment t
-                                                       <*> validateWithEnvironment r
-                                                       <*> validateWithEnvironment b
-        -- anno :< ChurchUPF n -> pure $ i2c anno n
+          (\x y z -> anno :< TAppF (anno :< TLimitedRecursionF x y z) (anno :< TUnsizedRepeaterF))
+          <$> validateWithEnvironment t
+          <*> validateWithEnvironment r
+          <*> validateWithEnvironment b
         anno :< ChurchUPF n -> pure $ anno :< TChurchF n
         anno :< LeftUPF x -> (\y -> anno :< TLeftF y) <$> validateWithEnvironment x
         anno :< RightUPF x -> (\y -> anno :< TRightF y) <$> validateWithEnvironment x
@@ -470,6 +472,11 @@ letsToApps term =
             all (`notElem` rn) (Set.toList $ Map.findWithDefault Set.empty name deps)
 
           delete x = filter (/= x)
+      getTransitive :: Map String (Set String) -> String -> Set String
+      getTransitive deps n = Set.singleton n <> case Map.lookup n deps of
+        Just s | not (null s) -> mconcat . fmap (getTransitive deps) $ Set.toList s
+        _ -> Set.empty
+      getTransitive' deps = mconcat . fmap (getTransitive deps) . Set.toList
       makeBindingsAsoc (name, def) = case runWriterT def of
         Left s           -> Left s
         Right (nx, refs) -> pure (name, (nx,refs))
@@ -495,8 +502,9 @@ letsToApps term =
                       pure [(name, def) | name <- sortedNames,
                             (name', (def, _)) <- nBindings, name == name']
                 makeBinding (n,d) inner = anno :< TAppF (makeLambda n inner) d
-            sortedBindings >>= \sb ->
-                pure (foldr makeBinding nInner sb, Set.difference refs (Map.keysSet dependencies))
+            sortedBindings >>= \sb -> let trans = getTransitive' dependencies refs
+                                          sb' = [x | x <- sb, elem (fst x) trans]
+                                      in pure (foldr makeBinding nInner sb', Set.difference trans (Set.fromList $ map fst sb'))
         x -> WriterT . fmap (first ((anno :<) . brt)) . runWriterT $ sequence x where
           brt = \case
             ITEUPF i t e -> TITEF i t e
@@ -505,7 +513,7 @@ letsToApps term =
             PairUPF a b -> TPairF a b
             ListUPF l -> unwrap $ foldr (\x y -> anno :< TPairF x y) (anno :< TZeroF) l
             AppUPF f x -> TAppF f x
-            UnsizedRecursionUPF t r b -> TLimitedRecursionF t r b
+            UnsizedRecursionUPF t r b -> TAppF (anno :< TLimitedRecursionF t r b) (anno :< TUnsizedRepeaterF)
             ChurchUPF n -> TChurchF n
             LeftUPF x -> TLeftF x
             RightUPF x -> TRightF x
@@ -582,15 +590,19 @@ process :: AnnotatedUPT
 process upt = (\dt -> debugTrace ("Resolver process term:\n" <> prettyPrint dt) dt) . splitExpr <$> process2Term2 upt
 
 processWlet :: AnnotatedUPT -> Either String Term3
-processWlet = fmap splitExpr . process2Term2let
+processWlet = fmap (splitExpr . (\dt -> debugTrace ("Resolver processWlet before split:\n" <> pt dt) dt)) . process2Term2let where
+  pt x = show $ fg x
+  fg :: Term2 -> Fix (ParserTermF () Int)
+  fg = forget
 
 process2Term2 :: AnnotatedUPT
               -> Either String Term2
 process2Term2 = fmap generateAllHashes
-              . debruijinize [] <=< validateVariables
+              . debruijinize [] <=< (fmap tf . validateVariables)
               . removeCaseUPs
               . optimizeBuiltinFunctions
               . addBuiltins
+                 where tf x = debugTrace ("reg Term1:\n" <> prettyPrint x) x
 
 process2Term2let :: AnnotatedUPT -> Either String Term2
 process2Term2let = fmap generateAllHashes
@@ -598,7 +610,7 @@ process2Term2let = fmap generateAllHashes
                  . removeCaseUPs
                  . optimizeBuiltinFunctions
                  . addBuiltins
-                 where tf x = debugTrace ("Term1:\n" <> prettyPrint x) x
+                 where tf x = debugTrace ("wLet Term1:\n" <> prettyPrint x) x
 
 -- |Helper function to compile to Term2
 runTelomareParser2Term2 :: TelomareParser AnnotatedUPT -- ^Parser to run

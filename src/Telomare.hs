@@ -151,12 +151,30 @@ data ParserTerm l v
   --  | TLam [ParserTerm l v] (ParserTerm l v)
   --  | TLam l [FunRef v (ParserTerm l v)] (ParserTerm l v)
   | TLimitedRecursion (ParserTerm l v) (ParserTerm l v) (ParserTerm l v)
+  | TUnsizedRepeater
   deriving (Eq, Ord, Functor, Foldable, Traversable)
 --   deriving (Eq, Ord)
 makeBaseFunctor ''ParserTerm -- Functorial version ParserTermF
 deriving instance (Show l, Show v, Show a) => Show (ParserTermF l v a)
 deriving instance (Show l, Show v) => Show1 (ParserTermF l v)
-deriving instance (Show l) => Show2 (ParserTermF l)
+instance Show l => Show2 (ParserTermF l) where
+  -- p1Show2 = _
+  liftShowsPrec2 showsPrecA showListA showsPrecB showListB prec = \case
+    TZeroF -> shows "TZeroF"
+    TPairF a b -> shows "TPairF (" . showsPrecB 0 a . shows ", " . showsPrecB 0 b . shows ")"
+    TVarF v -> shows "TVarF " . showsPrecA 0 v
+    TAppF c i -> shows "TAppF (" . showsPrecB 0 c . shows " " . showsPrecB 0 i . shows ")"
+    TCheckF cf c -> shows "TCheckF( " . showsPrecB 0 cf . shows ": " . showsPrecB 0 c . shows ")"
+    TITEF i t e -> shows "( " . showsPrecB 0 i . shows " ? " . showsPrecB 0 t . shows " : " . showsPrecB 0 e . shows " )"
+    TLeftF x -> shows "TLeftF (" . showsPrecB 0 x . shows ")"
+    TRightF x -> shows "TRightF (" . showsPrecB 0 x . shows ")"
+    TTraceF x -> shows "TTraceF (" . showsPrecB 0 x . shows ")"
+    THashF x -> shows "THashF (" . showsPrecB 0 x . shows ")"
+    TChurchF n -> shows "TChurchF " . shows n
+    TLamF t x -> shows "TLamF " . shows t . shows " (" . showsPrecB 0 x . shows ")"
+    TLimitedRecursionF t r b -> shows "{" . showsPrecB 0 t . shows ", " . showsPrecB 0 r . shows ", " . showsPrecB 0 b . shows "}"
+    TUnsizedRepeaterF -> shows "TUnsizedRepeaterF"
+
 deriving instance (Eq l, Eq v, Eq a) => Eq (ParserTermF l v a)
 instance Eq l => Eq2 (ParserTermF l) where
   liftEq2 eqv eqa TZeroF TZeroF = True
@@ -175,6 +193,7 @@ instance Eq l => Eq2 (ParserTermF l) where
   -- liftEq2 eqv eqa (TLamF v1 x1) (TLamF v2 x2) = and (zipWith eqa v1 v2) && eqa x1 x2
   liftEq2 eqv eqa (TLimitedRecursionF a1 b1 c1) (TLimitedRecursionF a2 b2 c2) =
     eqa a1 a2 && eqa b1 b2 && eqa c1 c2
+  liftEq2 _ _ TUnsizedRepeaterF TUnsizedRepeaterF = True
   liftEq2 _ _ _ _ = False
 deriving instance (Eq l, Eq v) => Eq1 (ParserTermF l v)
 deriving instance (Ord l, Ord v, Ord a) => Ord (ParserTermF l v a)
@@ -216,6 +235,7 @@ instance (Show l, Show v) => Show (ParserTerm l v) where
     alg (TChurchF n) = sindent $ "TChurch " <> show n
     alg (TLamF l x) = indentWithOneChild ("TLam " <> show l) x
     alg (TLimitedRecursionF t r b) = indentWithThreeChildren "TLimitedRecursion" t  r  b
+    alg TUnsizedRepeaterF = sindent "TUnsizedRepeater"
 
 -- |Helper function to indent. Usefull for indented Show instances.
 indent :: Int -> String -> String
@@ -631,12 +651,13 @@ gateF x y = do
 iteF :: BreakState' a b -> BreakState' a b -> BreakState' a b -> BreakState' a b
 iteF x y z = setEnvF (pairF (gateF z y) x)
 
--- inside two lambdas, (\f x -> ...)
+-- inside three lambdas (\r f x -> ...)
+-- r is the repeater function
 -- creates and iterates on a function "frame" (rf, (rf, (f', (x, env'))))
 -- rf is the function to pull arguments out of the frame, run f', and construct the next frame
 -- (f',env') is f (since f may contain a saved environment/closure env we want to use for each iteration)
-repeatFunctionF :: (Show a, Enum b) => LocTag -> FragExpr a -> BreakState' a b
-repeatFunctionF l repeater =
+repeatFunctionF :: (Show a, Show b, Enum b) => LocTag -> BreakState' a b
+repeatFunctionF l =
   let applyF = SetEnvFrag $ RightFrag EnvFrag
       env' = RightFrag (RightFrag (RightFrag EnvFrag))
       -- takes (rf, (f', (x, env'))), executes f' with (x, env') and creates a new frame
@@ -645,19 +666,23 @@ repeatFunctionF l repeater =
                           (PairFrag (LeftFrag EnvFrag)
                                     (PairFrag (LeftFrag (RightFrag EnvFrag))
                                               (PairFrag applyF env')))
+      r = pure . tag l . LeftFrag . LeftFrag . RightFrag . RightFrag $ EnvFrag
       x = pure . tag l $ LeftFrag EnvFrag
       f' = pure . tag l . LeftFrag . LeftFrag $ RightFrag EnvFrag
       fenv = pure . tag l . RightFrag . LeftFrag $ RightFrag EnvFrag
-      -- (x, ((f', fenv), 0)) -> (rf, (rf, (f', (x, fenv))))
+      -- (r, (x, ((f', fenv), 0))) -> (rf, (rf, (f', (x, fenv))))
       frameSetup = rf >>= (\rf' -> pairF (pure rf') (pairF (pure rf') (pairF f' (pairF x fenv))))
-      -- run the iterations x' number of times, then unwrap the result from the final frame
-      unwrapFrame = LeftFrag . RightFrag . RightFrag . RightFrag $ repeater
-  in clamF (lamF (setEnvF (pairF (deferF (pure . tag l $ unwrapFrame)) frameSetup)))
+  in clamF . lamF . lamF . setEnvF $ pairF r frameSetup
+
+unsizedRepeater :: LocTag -> UnsizedRecursionToken -> BreakState' RecursionPieceFrag UnsizedRecursionToken
+unsizedRepeater l tok = clamF . pure . tag l . LeftFrag . RightFrag . RightFrag . RightFrag
+  . AuxFrag $ NestedSetEnvs tok
 
 -- to construct a church numeral (\f x -> f ... (f x))
 -- the core is nested setenvs around an env, where the number of setenvs is magnitude of church numeral
-i2cF :: (Show a, Enum b) => LocTag -> Int -> BreakState' a b
-i2cF l n = repeatFunctionF l (iterate SetEnvFrag EnvFrag !! n)
+i2cF :: (Show a, Show b, Enum b) => LocTag -> Int -> BreakState' a b
+i2cF l n = appF (repeatFunctionF l) . clamF . pure . tag l . LeftFrag . RightFrag . RightFrag . RightFrag
+  $ iterate SetEnvFrag EnvFrag !! n
 
 unsizedRecursionWrapper :: LocTag
                         -> UnsizedRecursionToken
@@ -673,20 +698,20 @@ unsizedRecursionWrapper loc urToken t r b =
       fifthArgF = pure . tag loc . LeftFrag . RightFrag . RightFrag . RightFrag . RightFrag $ EnvFrag
       abortToken = pure . tag loc $ PairFrag ZeroFrag ZeroFrag
       abortFragF = pure $ loc :< AbortFragF
+      -- drop first arg (repeater)
+      nsLamF x = pairF (deferF x) . pure . tag loc $ RightFrag EnvFrag
       -- b is on the stack when this is called, so args are (i, (b, ...))
-      abrt = lamF (setEnvF $ pairF (setEnvF (pairF abortFragF abortToken))
+      abrt = nsLamF (setEnvF $ pairF (setEnvF (pairF abortFragF abortToken))
                                    (appF secondArgF firstArgF))
       wrapU =  fmap ((loc :<) . AuxFragF . SizingWrapper loc urToken . FragExprUR)
       -- \t r b r' i -> if t i then r r' i else b i -- t r b are already on the stack when this is evaluated
-      rWrap = lamF . lamF $ iteF (appF fifthArgF firstArgF)
+      rWrap = nsLamF . lamF $ iteF (appF fifthArgF firstArgF)
                                  (appF (appF fourthArgF secondArgF) firstArgF)
                                  (appF thirdArgF firstArgF)
       -- hack to make sure recursion test wrapper can be put in a definite place when sizing
       tWrap = pairF (deferF $ appF secondArgF firstArgF) (pairF t . pure $ loc :< ZeroFragF)
-      repeater = AuxFrag $ NestedSetEnvs urToken
-      churchNum = repeatFunctionF loc repeater
       trb = pairF b (pairF r (pairF tWrap (pure . tag loc $ ZeroFrag)))
-  in setEnvF . wrapU $ pairF (deferF $ appF (appF churchNum rWrap) abrt) trb
+  in wrapU $ pairF (deferF $ appF (appF (appF (repeatFunctionF loc) firstArgF) rWrap) abrt) trb
 
 nextBreakToken :: (Enum b, Show b) => BreakState a b b
 nextBreakToken = do
@@ -981,8 +1006,8 @@ insertAndGetKey v = do
 -- setenv (setenv env) -- church numeral 2
 
 
-pattern AbortRecursion :: IExpr
-pattern AbortRecursion = Pair Zero Zero
+pattern AbortRecursion :: IExpr -> IExpr
+pattern AbortRecursion t = Pair Zero t
 pattern AbortUser :: IExpr -> IExpr -- convert to String -> IExpr ?
 pattern AbortUser m = Pair (Pair Zero Zero) m
 pattern AbortAny :: IExpr
@@ -992,7 +1017,7 @@ pattern AbortUnsizeable t = Pair (Pair (Pair (Pair Zero Zero) Zero) Zero) t
 
 convertAbortMessage :: IExpr -> String
 convertAbortMessage = \case
-  AbortRecursion -> "recursion overflow (should be caught by other means)"
+  AbortRecursion t -> "recursion overflow (should be caught by other means) for rt: " <> show (g2i t)
   AbortUser s -> "user abort: " <> g2s s
   AbortAny -> "user abort of all possible abort reasons (non-deterministic input)"
   x -> "unexpected abort: " <> show x

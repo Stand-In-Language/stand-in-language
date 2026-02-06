@@ -196,6 +196,7 @@ instance {-# OVERLAPPING #-} PrettyPrintable Term1 where
       TLamF (Open v) x         -> indentWithOneChild' ("\\" <> v) x
       TLamF (Closed v) x       -> indentWithOneChild' ("[\\" <> v) x
       TLimitedRecursionF t r b -> indentWithChildren' "TRB" [t,r,b]
+      TUnsizedRepeaterF        -> pure "*"
 
 showTypeDebugInfo :: TypeDebugInfo -> String
 showTypeDebugInfo (TypeDebugInfo (Term3 m) lookup rootType) =
