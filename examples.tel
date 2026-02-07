@@ -1,28 +1,28 @@
+import Prelude
+
 -- File for small illustrative telomare programs and for testing
 
 -- Hello World example.
-aux = "Hello"
--- main = \input -> (aux, 0)
-main = \input -> ("Hello", 0)
+-- aux = "Hello"
+-- -- main = \input -> (aux, 0)
+-- main = \input -> ("Hello", 0)
 
 -- -- refinement fail
 -- main : (\x -> if x then "fail" else 0) = 1
 
 -- Ad hoc user defined types example:
 
--- MyInt = let wrapper = \h -> ( \i -> if not i
---                                     then abort "MyInt cannot be 0"
---                                     else  i
---                             , \i -> if dEqual (left i) h
---                                     then 0
---                                     else abort "Not a MyInt"
---                             )
---         in wrapper (# wrapper)
+MyInt = let wrapper = \h -> ( \i -> if not i
+                                    then abort "MyInt cannot be 0"
+                                    else  i
+                            , \i -> if dEqual (left i) h
+                                    then 0
+                                    else abort "Not a MyInt"
+                            )
+        in wrapper (# wrapper)
 
--- aux = \x -> if dEqual x 8 then "Success" else "Failure"
--- main = \i -> (aux ((left MyInt) 8), 0)
-
--- aux2 = [1,2,3]
+aux = \x -> if dEqual x 0 then "Success" else "Failure"
+main = \i -> (aux ((left MyInt) 0), 0)
 
 -- something
 -- main =

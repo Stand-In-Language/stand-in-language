@@ -6,7 +6,7 @@ module Telomare.Parser where
 
 import Control.Comonad.Cofree (Cofree (..), unwrap)
 import Control.Lens.Plated (Plated (..))
-import Control.Monad (void)
+import Control.Monad (void, join)
 import Control.Monad.State (State)
 import Data.Bifunctor (Bifunctor (first, second), bimap)
 import Data.Functor (($>))
@@ -195,6 +195,14 @@ parseHash = do
   upt <- parseSingleExpr
   pure $ x :< HashUPF upt
 
+parseBrand :: TelomareParser AnnotatedUPT
+parseBrand = do
+  x <- getLineColumn
+  brandElements :: [String] <- brackets (commaSep (scn *> identifier <*scn))
+  scn *> symbol "=" <?> "brand assignment ="
+  expr <- scn *> parseLongExpr <* scn
+  pure $ x :< BrandUPF brandElements expr
+
 parseCase :: TelomareParser AnnotatedUPT
 parseCase = do
   x <- getLineColumn
@@ -343,19 +351,54 @@ parseImportQualified = do
   qualifier <- identifier <* scn
   pure $ x :< ImportQualifiedUPF qualifier m
 
+parseOneAssignmentOrBrand :: TelomareParser (String, AnnotatedUPT)
+parseOneAssignmentOrBrand =
+  parseAssignment
+    <|> ((\exp -> ("8@$temp_label$@8", exp)) <$> parseBrand)
+
+-- |Parse assignment or Brands, and add adding binding to ParserState.
+parseAssignmentsAndBrands :: TelomareParser [(String, AnnotatedUPT)]
+parseAssignmentsAndBrands = do
+  tempBindingList :: [(String, AnnotatedUPT)] <- scn *> many parseOneAssignmentOrBrand <* eof
+  let removeBrands = \case
+        ("8@$temp_label$@8", exp) -> expandBrand exp
+        x -> [x]
+  pure . join $  removeBrands <$> tempBindingList
+
 -- |Parse top level expressions.
 parseTopLevelWithExtraModuleBindings :: [(String, AnnotatedUPT)]
                                      -> TelomareParser AnnotatedUPT
 parseTopLevelWithExtraModuleBindings lst = do
   x <- getLineColumn
-  bindingList <- scn *> many parseAssignment <* eof
+  bindingList <- parseAssignmentsAndBrands
   pure $ x :< LetUPF (lst <> bindingList) (fromJust $ lookup "main" bindingList)
 
-parseDefinitions :: TelomareParser (AnnotatedUPT -> AnnotatedUPT)
-parseDefinitions = do
-  x <- getLineColumn
-  bindingList <- scn *> many parseAssignment <* eof
-  pure $ \y -> x :< LetUPF bindingList y
+-- expandBrand :: UnprocessedParsedTerm -> [(String, UnprocessedParsedTerm)]
+-- expandBrand = \case
+--   BrandUP l exp -> undefined
+--   _ -> []
+
+expandBrand :: AnnotatedUPT -> [(String, AnnotatedUPT)]
+expandBrand (loc :< term) = case term of
+  BrandUPF l exp -> zipWith (\name accessor -> (name, loc :< AppUPF (loc :< VarUPF accessor) exp)) l accessors
+    where
+      accessors = ["first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth"]
+  _ -> []
+
+-- expandBrand :: AnnotatedUPT -> [(String, AnnotatedUPT)]
+-- expandBrand = \case
+--   (_ :< BrandUPF l exp) -> undefined
+--   _ -> []
+-- expandBrand = undefined where
+--   interim :: AnnotatedUPT -> AnnotatedUPT
+--   interim = \case
+--     (anno :< BrandUPF l exp) -> undefined
+
+-- parseDefinitions :: TelomareParser (AnnotatedUPT -> AnnotatedUPT)
+-- parseDefinitions = do
+--   x <- getLineColumn
+--   bindingList <- scn *> many parseAssignment <* eof
+--   pure $ \y -> x :< LetUPF bindingList y
 
 -- |Helper function to test parsers without a result.
 runTelomareParser_ :: Show a => TelomareParser a -> String -> IO ()
@@ -386,7 +429,7 @@ runParseLongExpr str = bimap errorBundlePretty forget' $ runParser parseLongExpr
     forget' = forget
 
 parsePrelude :: String -> Either String [(String, AnnotatedUPT)]
-parsePrelude str = let result = runParser (scn *> many parseAssignment <* eof) "" str
+parsePrelude str = let result = runParser parseAssignmentsAndBrands "" str
                     in first errorBundlePretty result
 
 parseImportOrAssignment :: TelomareParser (Either AnnotatedUPT (String, AnnotatedUPT))
@@ -395,7 +438,7 @@ parseImportOrAssignment = do
   maybeImport <- optional $ scn *> (try parseImportQualified <|> try parseImport) <* scn
   case maybeImport of
     Nothing -> do
-      maybeAssignment <- optional $ scn *> try parseAssignment <* scn
+      maybeAssignment <- optional $ scn *> try parseOneAssignmentOrBrand <* scn
       case maybeAssignment of
         Nothing -> fail "Expected either an import statement or an assignment"
         Just a  -> pure $ Right a
