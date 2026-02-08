@@ -584,16 +584,6 @@ unsizedStep maxSize recursionTest fullStep handleOther =
         UnsizedEE (SizeStageF smb x) -> unsizedEE $ SizeStageF (smb <> sm) x
         x -> unsizedEE $ SizeStageF sm x
   in \case
-    UnsizedFW (SizingWrapperF _ tok (BasicEE (PairSF d (BasicEE (PairSF b (BasicEE (PairSF r (BasicEE (PairSF tp (BasicEE ZeroSF))))))))))
-      -> case tp of
-            BasicEE (PairSF (StuckEE (DeferSF sid tf)) e) ->
-              let nt = pairB (stuckEE . DeferSF sid . unsizedEE $ RecursionTestF tok tf) e
-                  trb = pairB b (pairB r (pairB nt zeroB))
-                  -- \t r b i ->
-                  rf = lamB unsizedStepMrfa (iteB (appB argFourB argOneB)
-                                              (appB (appB argThreeB (unsizedEE $ SizeStepStubF tok 1 envB)) argOneB)
-                                              (unsizedEE . SizeStageF (SizedRecursion . Map.singleton tok $ pure 1) $ appB argTwoB argOneB))
-              in pairB (deferB unsizedStepMw rf) trb
     UnsizedFW (SizeStepStubF tok n (BasicEE (PairSF _ e))) -> -- id -- debugTrace ("hit sizestepstub with " <> show n <> "\nand env of\n" <> prettyPrint e)
       pairB (deferB unsizedStepMrfa (unsizedEE . SizeStageF (SizedRecursion . Map.singleton tok $ pure (n + 1)) $ iteB (appB argFourB argOneB)
                                                 (appB (appB argThreeB (unsizedEE $ SizeStepStubF tok (n + 1) envB)) argOneB)
@@ -615,28 +605,6 @@ unsizedStepM :: forall a f t m. (Base a ~ f, Traversable f, BasicBase f, StuckBa
   -> (f a -> t m a) -> f a -> t m a
 unsizedStepM maxSize recursionTest handleOther x = f x where
   f = \case
-    UnsizedFW (SizingWrapperF _ tok (BasicEE (PairSF d (BasicEE (PairSF b (BasicEE (PairSF r (BasicEE (PairSF tp (BasicEE ZeroSF))))))))))
-      -> case tp of
-            BasicEE (PairSF (StuckEE (DeferSF sid tf)) e) ->
-              let nt = pairB (stuckEE . DeferSF sid . unsizedEE $ RecursionTestF tok tf) e
-                  trb = pairB b (pairB r (pairB nt zeroB))
-                  argOne = leftB envB
-                  argTwo = leftB (rightB envB)
-                  argThree = leftB (rightB (rightB envB))
-                  argFour = leftB (rightB (rightB (rightB envB)))
-                  argFive = leftB (rightB (rightB (rightB (rightB envB))))
-                  iteB i t e = fillFunction (fillFunction (gateB (deferB unsizedStepMEInd e) (deferB unsizedStepMTInd t)) i) envB -- TODO THIS IS HOW TO DO LAZY IF/ELSE, COPY!
-                  abrt = lamB unsizedStepMa . abortEE . AbortedF $ AbortRecursion (i2g (fromEnum tok))
-                  rf n = lamB unsizedStepMrfb (lamB unsizedStepMrfa (iteB (appB argFive argOne)
-                                                                         (appB (appB argFour argTwo) argOne)
-                                                                         (unsizedEE . SizeStageF (SizedRecursion . Map.singleton tok $ pure n)
-                                                                          $ appB argThree argOne)))
-                  -- rf' n = appB (rf n) (rf' (n + 1))
-                  rf' n = if n > maxSize
-                    -- then error "reached recursion limit"
-                    then abrt
-                    else appB (rf n) (rf' (n + 1))
-              in pure $ pairB (deferB unsizedStepMw $ rf' 1) trb
     UnsizedFW (RecursionTestF ri x) -> pure $ recursionTest ri x
     -- UnsizedFW (SizeStageF urt n x) -> debugTrace ("unsizedStepM hit size of " <> show (urt, n)) StrictAccum (SizedRecursion $ Map.singleton urt n) x
     UnsizedFW (SizeStageF sr x) -> lift $ StrictAccum sr x
@@ -646,7 +614,6 @@ unsizedStepM maxSize recursionTest handleOther x = f x where
 
 forceSizes :: Int -> UnsizedExpr -> UnsizedExpr
 forceSizes n = cata $ \case
-  UnsizedFW (SizingWrapperF _ _ sx) -> sx
   UnsizedFW (UnsizedStubF _ _) -> iterate (basicEE . SetEnvSF) envB !! n
   x -> embed x
 
@@ -655,29 +622,6 @@ unsizedStepM' :: forall a f t m. (Base a ~ f, Traversable f, BasicBase f, StuckB
   => Int -> Set Integer -> (UnsizedRecursionToken -> a -> a) -> (f a -> t m a) -> f a -> t m a
 unsizedStepM' maxSize zeros recursionTest handleOther x = f x where
   f = \case
-    UnsizedFW (SizingWrapperF _ tok uwe@(BasicEE (PairSF d (BasicEE (PairSF b (BasicEE (PairSF r (BasicEE (PairSF tp (BasicEE ZeroSF))))))))))
-      -> case tp of
-            BasicEE (PairSF (StuckEE (DeferSF sid tf)) e) ->
-              let nt = pairB (stuckEE . DeferSF sid . unsizedEE $ RecursionTestF tok tf) e
-                  trb = pairB b (pairB r (pairB nt zeroB))
-                  argOne = leftB envB
-                  argTwo = leftB (rightB envB)
-                  argThree = leftB (rightB (rightB envB))
-                  argFour = leftB (rightB (rightB (rightB envB)))
-                  argFive = leftB (rightB (rightB (rightB (rightB envB))))
-                  iteB i t e = fillFunction (fillFunction (gateB (deferB unsizedStepMEInd e) (deferB unsizedStepMTInd t)) i) envB -- TODO THIS IS HOW TO DO LAZY IF/ELSE, COPY!
-                  abrt = lamB unsizedStepMa . abortEE . AbortedF $ AbortRecursion (i2g (fromEnum tok))
-                  rf n = lamB unsizedStepMrfb (lamB unsizedStepMrfa (iteB (appB argFive argOne)
-                                                                         (appB (appB argFour argTwo) argOne)
-                                                                         (unsizedEE . SizeStageF (SizedRecursion . Map.singleton tok $ pure n)
-                                                                          $ appB argThree argOne)))
-                  -- rf' n = appB (rf n) (rf' (n + 1))
-                  rf' n = if n > maxSize
-                    -- then error "reached recursion limit"
-                    then abrt
-                    else appB (rf n) (rf' (n + 1))
-                  dbt = id
-              in pure . dbt $ pairB (deferB unsizedStepMw $ rf' 1) trb
     UnsizedFW (RecursionTestF ri x) -> pure $ recursionTest ri x
     -- UnsizedFW (SizeStageF urt n x) -> debugTrace ("unsizedStepM hit size of " <> show (urt, n)) StrictAccum (SizedRecursion $ Map.singleton urt n) x
     UnsizedFW (SizeStageF sr x) -> lift $ StrictAccum sr x
@@ -706,7 +650,6 @@ unsizedStepM''' maxSize zeros recursionTest handleOther x = f x where
   argT2One = leftB . unsizedEE $ TraceF "env inside unwrapped sizing wrapper" envB
   -- argT2One = leftB envB
   f = \case
-    UnsizedFW (SizingWrapperF _ _ x) -> pure x
     UnsizedFW (UnsizedStubF tok (BasicEE (PairSF _ (BasicEE (PairSF _ (BasicEE (PairSF _ (BasicEE (PairSF _ env))))))))) -> case env of
       BasicEE (PairSF b (BasicEE (PairSF r (BasicEE (PairSF tp (BasicEE ZeroSF)))))) -> case tp of
         BasicEE (PairSF (StuckEE (DeferSF sid tf)) e) ->
@@ -1047,7 +990,6 @@ term3ToUnsizedExpr maxSize (Term3 termMap) =
         LeftFrag x -> basicEE . LeftSF $ f x
         RightFrag x -> basicEE . RightSF $ f x
         TraceFrag -> unsizedEE . TraceF "from Term3" $ basicEE EnvSF
-        AuxFrag (SizingWrapper loc tok (FragExprUR x)) -> unsizedEE . SizingWrapperF loc tok . f $ forget x
         AuxFrag (NestedSetEnvs t) -> unsizedEE . UnsizedStubF t . embed $ embedB EnvSF
         AuxFrag (CheckingWrapper loc (FragExprUR tc) (FragExprUR c)) -> unsizedEE $ RefinementWrapperF loc (f $ forget tc) (f $ forget c)
   in f . forget . unFragExprUR $ rootFrag termMap
@@ -1057,7 +999,6 @@ term3ToUnsizedExpr maxSize (Term3 termMap) =
 getInputLimits :: UnsizedExpr -> Set Integer
 getInputLimits = getAccum . transformNoDeferM evalStep . convertIS where
   convertU = \case
-    UnsizedFW (SizingWrapperF _ _ _) -> indexedEE AnyF
     UnsizedFW (UnsizedStubF _ _) -> indexedEE AnyF
     UnsizedFW (RecursionTestF _ x) -> x
     UnsizedFW rw@(RefinementWrapperF _ _ _) -> unsizedEE rw
@@ -1110,16 +1051,12 @@ sizeTerm maxSize x = tidyUp . foldAborted . debugResult . transformNoDefer evalS
   tracePartialSizes = id
   setSizes :: Map UnsizedRecursionToken (Maybe Int) -> UnsizedExpr -> UnsizedExpr
   setSizes sizeMap = cata $ \case
-    UnsizedFW sw@(SizingWrapperF loc tok sx) -> sx
     UnsizedFW us@(UnsizedStubF tok _) -> tracePartialSizes $ case Map.lookup tok sizeMap of
       Just (Just n) -> debugTrace ("sizeTerm setting size: " <> show (tok, n)) iterate (basicEE . SetEnvSF) (basicEE EnvSF) !! n
       _      ->  basicEE . SetEnvSF $ basicEE EnvSF
     x -> embed x
   setSomeSizes :: Map UnsizedRecursionToken (Maybe Int) -> InputSizingExpr -> InputSizingExpr
   setSomeSizes sizeMap = cata $ \case
-    UnsizedFW sw@(SizingWrapperF loc tok sx) -> case Map.lookup tok sizeMap of
-      Just (Just _) -> sx
-      _             -> embed $ embedU sw
     UnsizedFW us@(UnsizedStubF tok _) -> tracePartialSizes $ case Map.lookup tok sizeMap of
       Just (Just n) -> iterate (basicEE . SetEnvSF) (basicEE EnvSF) !! n
       _             -> embed $ embedU us
@@ -1180,7 +1117,6 @@ sizeTermM maxSize doCap x = tidyUp . ($ []) . runReaderT . transformNoDeferM eva
   clean = cata (convertBasic (convertStuck (convertAbort failConvert)))
   setSizes :: Map UnsizedRecursionToken (Maybe Int) -> UnsizedExpr -> UnsizedExpr
   setSizes sizeMap = cata $ \case
-    UnsizedFW sw@(SizingWrapperF loc tok sx) -> sx
     UnsizedFW us@(UnsizedStubF tok _) -> case Map.lookup tok sizeMap of
       Just (Just n) -> trace ("sizeTermM setting size: " <> show (tok, n)) iterate (basicEE . SetEnvSF) envB !! (n + 1)
       _      -> trace ("no size found for " <> show tok) setEnvB $ leftB envB
@@ -1233,7 +1169,6 @@ abortPossibilities maxSize x = tidyUp . ($ []) . runReaderT . transformNoDeferM 
   clean = cata (convertBasic (convertStuck (convertAbort failConvert)))
   setSizes :: Map UnsizedRecursionToken (Maybe Int) -> UnsizedExpr -> UnsizedExpr
   setSizes sizeMap = cata $ \case
-    UnsizedFW sw@(SizingWrapperF loc tok sx) -> sx
     UnsizedFW us@(UnsizedStubF tok _) -> case Map.lookup tok sizeMap of
       Just (Just n) -> debugTrace ("abortPossibilities setting size: " <> show (tok, n)) iterate (basicEE . SetEnvSF) (basicEE EnvSF) !! n
       _      ->  basicEE . SetEnvSF $ basicEE EnvSF
@@ -1282,12 +1217,6 @@ getSizesM maxSize x = tidyUp . ($ []) . runReaderT . transformNoDeferM evalStep 
   -- evalStep = basicStepM (stuckStepDebugM (abortStepM (indexedAbortStepM (indexedInputStepM zeros (indexedSuperStepM (superStepM' gateResult evalStep (superAbortStepM evalStep (unsizedStepM''' maxSize zeros unsizedTest unhandledError))))))))
   evalStep = basicStepM (stuckStepWithTrace (abortStepM (indexedAbortStepM (indexedInputStepM zeros (indexedSuperStepM (superStepM gateResult evalStep (superAbortStepM evalStep (unsizedStepM''' maxSize zeros unsizedTest' failAndPrintStack))))))))
 
-buildUnsizedLocMap :: UnsizedExpr -> Map UnsizedRecursionToken LocTag
-buildUnsizedLocMap = cata f where
-  f = \case
-    UnsizedFW (SizingWrapperF loc tok x) -> x <> Map.singleton tok loc
-    x -> Data.Foldable.fold x
-
 removeRefinementWrappers :: (Base g ~ f, BasicBase f, StuckBase f, AbortBase f, UnsizedBase f, Recursive g, Corecursive g) => g -> g
 removeRefinementWrappers = cata f where
   f = \case
@@ -1322,7 +1251,6 @@ regularEval = transformNoDefer f . cata ss where
       let innerTC = appB (leftB envB) (rightB envB)
           performTC = deferB removeRefinementWrappersTC . setEnvB $ pairB (setEnvB $ pairB (abortEE AbortF) innerTC) (rightB envB)
       in setEnvB $ pairB performTC (pairB tc c)
-    UnsizedFW (SizingWrapperF _ _ x) -> x
     UnsizedFW (UnsizedStubF _ _) -> iterate setEnvB envB !! 255
     x -> embed x
     -- z -> error ("regularEval unhandled case\n" <> prettyPrint (embed z))

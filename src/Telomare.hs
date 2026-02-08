@@ -419,7 +419,6 @@ instance Validity UnsizedRecursionToken
 
 data RecursionSimulationPieces a
   = NestedSetEnvs UnsizedRecursionToken
-  | SizingWrapper LocTag UnsizedRecursionToken a
   | CheckingWrapper LocTag a a
   deriving (Eq, Ord, Show, NFData, Generic, Functor)
 
@@ -703,7 +702,6 @@ unsizedRecursionWrapper loc urToken t r b =
       -- b is on the stack when this is called, so args are (i, (b, ...))
       abrt = nsLamF (setEnvF $ pairF (setEnvF (pairF abortFragF abortToken))
                                    (appF secondArgF firstArgF))
-      wrapU =  fmap ((loc :<) . AuxFragF . SizingWrapper loc urToken . FragExprUR)
       -- \t r b r' i -> if t i then r r' i else b i -- t r b are already on the stack when this is evaluated
       rWrap = nsLamF . lamF $ iteF (appF fifthArgF firstArgF)
                                  (appF (appF fourthArgF secondArgF) firstArgF)
@@ -711,7 +709,7 @@ unsizedRecursionWrapper loc urToken t r b =
       -- hack to make sure recursion test wrapper can be put in a definite place when sizing
       tWrap = pairF (deferF $ appF secondArgF firstArgF) (pairF t . pure $ loc :< ZeroFragF)
       trb = pairF b (pairF r (pairF tWrap (pure . tag loc $ ZeroFrag)))
-  in wrapU $ pairF (deferF $ appF (appF (appF (repeatFunctionF loc) firstArgF) rWrap) abrt) trb
+  in pairF (deferF $ appF (appF (appF (repeatFunctionF loc) firstArgF) rWrap) abrt) trb
 
 nextBreakToken :: (Enum b, Show b) => BreakState a b b
 nextBreakToken = do
@@ -944,13 +942,6 @@ newtype FragExprURSansAnnotation =
                }
   deriving (Eq, Show)
 
--- note: throws away SizingWrappers, and just folds their contents
-cataFragExprUR :: (CofreeT.CofreeF (FragExprF (RecursionSimulationPieces FragExprUR)) LocTag c -> c) -> FragExprUR -> c
-cataFragExprUR f = cata f' . unFragExprUR where
-  f' = \case
-    (_ CofreeT.:< AuxFragF (SizingWrapper _ _ x)) -> cataFragExprUR f x
-    x -> f x
-
 forgetAnnotationFragExprUR :: FragExprUR -> FragExprURSansAnnotation
 forgetAnnotationFragExprUR = FragExprURSA . cata ff . forget' . unFragExprUR where
   forget' :: Cofree (Base (FragExpr (RecursionSimulationPieces FragExprUR))) anno
@@ -960,7 +951,6 @@ forgetAnnotationFragExprUR = FragExprURSA . cata ff . forget' . unFragExprUR whe
              (FragExpr (RecursionSimulationPieces FragExprURSansAnnotation))
      -> FragExpr (RecursionSimulationPieces FragExprURSansAnnotation)
   ff = \case
-    AuxFragF (SizingWrapper loc ind x) -> AuxFrag . SizingWrapper loc ind . forgetAnnotationFragExprUR $ x
     AuxFragF (NestedSetEnvs t) -> AuxFrag . NestedSetEnvs $ t
     ZeroFragF -> ZeroFrag
     PairFragF a b -> PairFrag a b

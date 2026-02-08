@@ -33,13 +33,13 @@ import Telomare (AbstractRunTime, BreakState, BreakState', ExprA (..),
                  RunTimeError (..), TelomareLike (..), Term3 (Term3),
                  Term4 (Term4), UnprocessedParsedTerm (..),
                  UnprocessedParsedTermF (..), UnsizedRecursionToken (..), app,
-                 appF, cataFragExprUR, convertAbortMessage, deferF, eval,
+                 appF, convertAbortMessage, deferF, eval,
                  forget, g2s, innerChurchF, insertAndGetKey, pairF, rootFrag,
                  s2g, setEnvF, tag, unFragExprUR)
 import Telomare.Parser (AnnotatedUPT, parseModule, parseOneExprOrTopLevelDefs,
                         parsePrelude)
 import Telomare.Possible (abortExprToTerm4, abortPossibilities, appB,
-                          buildUnsizedLocMap, deferB, evalStaticCheck, getSizesM,
+                          deferB, evalStaticCheck, getSizesM,
                           sizeTermM, term3ToUnsizedExpr, term4toAbortExpr, evalStaticCheck)
 import Telomare.PossibleData (AbortExpr, CompiledExpr (..), SizedRecursion (..),
                               VoidF, envB, leftB, pairB, pattern AbortFW,
@@ -75,7 +75,6 @@ convertPT ll (Term3 termMap) =
                       (Cofree (FragExprF RecursionPieceFrag) LocTag)
       changeFrag = \case
         anno :< AuxFragF (NestedSetEnvs n) -> innerChurchF anno $ ll n
-        _ :< AuxFragF (SizingWrapper _ _ x) -> transformM changeFrag $ unFragExprUR x
         _ :< AuxFragF (CheckingWrapper anno tc c) ->
           let performTC = deferF ((\ia -> setEnvF (pairF (setEnvF (pairF (pure $ tag anno AbortFrag) ia))
                                                         (pure . tag anno $ RightFrag EnvFrag))) $ appF (pure . tag anno $ LeftFrag EnvFrag)
@@ -296,13 +295,14 @@ showSizingInSource prelude s
         parsed = parsePrelude prelude >>= (`parseMain` s)
         unsizedExpr = term3ToUnsizedExpr 256 <$> parsed
         sizedRecursion = unsizedExpr >>= (first (("Could not size token: " <>) . show) . getSizesM 256)
-        sizeLocs = Map.toAscList . buildUnsizedLocMap <$> unsizedExpr
+        sizeLocs = error "TODO showSizingInSource implement sizeLocs" --Map.toAscList . buildUnsizedLocMap <$> unsizedExpr
         -- (orphanLocs, lineLocs) = partition ((== DummyLoc) . snd) sizeLocs
         (orphanLocs, lineLocs) = case sizeLocs of
-          Left e   -> error ("Could not size: " <> show e)
+          Left e   -> error "uh" -- ("Could not size: " <> show e)
           Right sl -> partition ((== DummyLoc) . snd) sl
         -- orphanList = map ((<> " ") . show . fst) orphanLocs
-        orphans = "unsized with no location: " <> foldMap ((<> " ") . show . fst) orphanLocs
+        -- orphans = "unsized with no location: " <> foldMap ((<> " ") . show . fst) orphanLocs
+        orphans = error "TODO showSizingInSource thing"
         fromEnum' = \case
           Loc x _ -> x
           _ -> error "unexpected DummyLoc"
@@ -327,7 +327,6 @@ showFunctionIndexesInSource prelude s
         unAss (a :< _) = a
         -- sizeLocs = (\(fi, t) -> (fi))
         reduceL (a CofreeT.:< x) = let l = fromEnum' a in (Min l, Max l) <> fold x
-        bodyLocs = second (cataFragExprUR reduceL) <$> Map.toAscList funMap
         sizeLocs = second (unAss . unFragExprUR) <$> Map.toAscList funMap
         (orphanLocs, lineLocs) = partition ((== DummyLoc) . snd) sizeLocs
         orphans = "functions with no location: " <> foldMap ((<> " ") . show . fst) orphanLocs

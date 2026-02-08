@@ -376,7 +376,7 @@ qcDecompileIExprAndBackEvalsSame (IExprWrapper x) = pure (showResult $ eval' x)
         parseLongExpr' x = case runTelomareParser (scn *> parseLongExpr <* scn) x of
           Just r -> r
           _      -> error "parseLongExpr' should be impossible"
-        findChurchSize' x = case findChurchSize x of
+        findChurchSize' x = case findChurchSizeD UnitTestSizing x of
           Right r -> r
           Left e  -> error ("findChurchSize' error: " <> show e)
         dec = decompileUPT . decompileTerm1 . decompileTerm2 . decompileTerm4 . decompileIExpr
@@ -407,7 +407,7 @@ qcTestMapBuilderEqualsRegularEval (IExprWrapper x) = (showResult $ eval' x)
 
 qcTestURSizing :: URTestExpr -> Bool
 qcTestURSizing (URTestExpr t3) =
-  let compile x = toTelomare <$> findChurchSize x
+  let compile x = toTelomare <$> findChurchSizeD UnitTestSizing x
       compile' x = pure . toTelomare $ convertPT (const 255) x
   in (fmap . fmap) pureIEval (compile t3) == (fmap . fmap) pureIEval (compile' t3)
 {-
@@ -509,6 +509,7 @@ unitTests_ parse = do
                                     (ints2g [1,2,3])
 -}
   describe "bottom up eval" $ do
+    -- unitTest2 "main = plus $3 $2 succ 0" "5"
     unitTest2 "main = d2c 3 succ 0" "3"
     {-
     it "test SBV" . liftIO $ do
@@ -896,7 +897,7 @@ unitTestType' parse s t tef = it s $ case parse s of
 
 unitTestStaticChecks' parse s c = it s $ case parse s of
   Left e -> expectationFailure $ concat ["failed to parse ", s, " ", show e]
-  Right g -> let rr = findChurchSize g >>= runStaticChecks
+  Right g -> let rr = findChurchSizeD UnitTestSizing g >>= runStaticChecks
               in if c rr
                 then pure ()
                 else do
@@ -938,6 +939,7 @@ main = do
     parseAuxModule :: String -> (String, [Either AnnotatedUPT (String, AnnotatedUPT)])
     parseAuxModule str =
       case sequence ("AuxModule", parseModule ("import Prelude\n" <> str)) of
+      -- case sequence ("AuxModule", parseModule str) of
         Left e    -> error $ show e
         Right pam -> pam
     parse :: Bool -> String -> Either String Term3
