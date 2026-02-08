@@ -17,9 +17,9 @@ import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Reader (Reader, ReaderT, ask, local, runReaderT)
 import qualified Control.Monad.Reader as Reader
+import qualified Control.Monad.State.Lazy as StateL
 import Control.Monad.State.Strict (State, StateT)
 import qualified Control.Monad.State.Strict as State
-import qualified Control.Monad.State.Lazy as StateL
 import Control.Monad.Trans.Class
 import Data.Bifunctor
 import Data.Char (chr)
@@ -661,7 +661,7 @@ unsizedStepM''' maxSize zeros recursionTest handleOther x = f x where
                                           (appB (appB argThree (unsizedEE $ SizeStepStubF tok 1 envB)) argOne)
                                           (dbt tok . unsizedEE . SizeStageF (SizedRecursion . Map.singleton tok $ pure 1) $ appB argTwo argOne))
               result = pairB zeroB (pairB zeroB (pairB zeroB (pairB (pairB rf trb) zeroB)))
-          in pure $ result
+          in pure result
     UnsizedFW (SizeStepStubF tok n e@(BasicEE (PairSF _ es))) ->
       let dbti = id
       in pure $ pairB (deferB unsizedStepMrfa $ dbtisss (iteB (dbti $ appB argFour argTOne)
@@ -1321,8 +1321,8 @@ instance {-# OVERLAPPING #-} PrettyPrintable (PPOut CompiledExpr) where
       BasicEE (PairSF a b) -> liftA2 (<>) (doLet a) (f b)
       z -> indentWithTwoChildren' "#!#" (pure "") (showP z)
     doLet x = case cata lf x of
-      Just n -> pure $ chr n : []
-      _ -> indentWithTwoChildren' "#/#" (pure "") (showP x)
+      Just n -> pure [chr n]
+      _      -> indentWithTwoChildren' "#/#" (pure "") (showP x)
     lf = \case
       BasicFW ZeroSF -> Just 0
       BasicFW (PairSF n (Just 0)) -> succ <$> n

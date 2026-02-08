@@ -20,6 +20,7 @@ import qualified Data.ByteArray as BA
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
 import Data.Char (ord)
+import Data.Fix (Fix)
 import qualified Data.Foldable as F
 import Data.Functor.Foldable (Base, Corecursive (ana, apo), Recursive (cata))
 import Data.List (delete, elem, elemIndex, find, foldl', intercalate, nubBy,
@@ -33,7 +34,6 @@ import PrettyPrint (TypeDebugInfo (..), prettyPrint, showTypeDebugInfo)
 import Telomare
 import Telomare.Parser (AnnotatedUPT, TelomareParser)
 import Text.Megaparsec (errorBundlePretty, runParser)
-import Data.Fix (Fix)
 
 debug :: Bool
 debug = False
@@ -503,8 +503,8 @@ letsToApps term =
                             (name', (def, _)) <- nBindings, name == name']
                 makeBinding (n,d) inner = anno :< TAppF (makeLambda n inner) d
             sortedBindings >>= \sb -> let trans = getTransitive' dependencies refs
-                                          sb' = [x | x <- sb, elem (fst x) trans]
-                                      in pure (foldr makeBinding nInner sb', Set.difference trans (Set.fromList $ map fst sb'))
+                                          sb' = [x | x <- sb, fst x `elem` trans]
+                                      in pure (foldr makeBinding nInner sb', Set.difference trans (Set.fromList $ fmap fst sb'))
         x -> WriterT . fmap (first ((anno :<) . brt)) . runWriterT $ sequence x where
           brt = \case
             ITEUPF i t e -> TITEF i t e
