@@ -1040,6 +1040,7 @@ data UnprocessedParsedTerm
   | TraceUP UnprocessedParsedTerm
   | CheckUP UnprocessedParsedTerm UnprocessedParsedTerm
   | HashUP UnprocessedParsedTerm -- ^ On ad hoc user defined types, this term will be substitued to a unique Int.
+  | BrandUP [String] UnprocessedParsedTerm
   | CaseUP UnprocessedParsedTerm [(Pattern, UnprocessedParsedTerm)]
   -- TODO: check if adding this doesn't create partial functions
   | ImportQualifiedUP String String
