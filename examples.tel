@@ -21,8 +21,22 @@ MyInt = let wrapper = \h -> ( \i -> if not i
                             )
         in wrapper (# wrapper)
 
-aux = \x -> if dEqual x 0 then "Success" else "Failure"
-main = \i -> (aux ((left MyInt) 0), 0)
+aux = \x -> if dEqual x 8 then "Success" else "Failure"
+main = \i -> (aux ((left MyInt) 8), 0)
+
+[Nat, toNat, nPlus, nMinus]
+  = let wrapper = \h ->
+        let N = \(hc, _) x -> assert (dEqual hc h) "not Natural"
+        in [ N
+           , \x -> (h, x)
+           , \((_, aa) : N) ((_, bb) : N) -> (h, d2c aa succ bb)
+           , \((_, aa) : N) ((_, bb) : N) ->
+               let sLeft = \x -> case x of
+                                   (l, _) -> l
+                                   y -> abort "can't subtract larger number from smaller one"
+               in (h, d2c bb sLeft aa)
+           ]
+    in wrapper (# wrapper)
 
 -- something
 -- main =

@@ -1,12 +1,13 @@
 {-# LANGUAGE LambdaCase          #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections       #-}
 {-# LANGUAGE TypeFamilies        #-}
 
 module Telomare.Parser where
 
 import Control.Comonad.Cofree (Cofree (..), unwrap)
 import Control.Lens.Plated (Plated (..))
-import Control.Monad (void, join)
+import Control.Monad (join, void)
 import Control.Monad.State (State)
 import Data.Bifunctor (Bifunctor (first, second), bimap)
 import Data.Functor (($>))
@@ -354,7 +355,7 @@ parseImportQualified = do
 parseOneAssignmentOrBrand :: TelomareParser (String, AnnotatedUPT)
 parseOneAssignmentOrBrand =
   parseAssignment
-    <|> ((\exp -> ("8@$temp_label$@8", exp)) <$> parseBrand)
+    <|> (("8@$temp_label$@8",) <$> parseBrand)
 
 -- |Parse assignment or Brands, and add adding binding to ParserState.
 parseAssignmentsAndBrands :: TelomareParser [(String, AnnotatedUPT)]
@@ -363,7 +364,7 @@ parseAssignmentsAndBrands = do
   let removeBrands = \case
         ("8@$temp_label$@8", exp) -> expandBrand exp
         x -> [x]
-  pure . join $  removeBrands <$> tempBindingList
+  pure (removeBrands =<< tempBindingList)
 
 -- |Parse top level expressions.
 parseTopLevelWithExtraModuleBindings :: [(String, AnnotatedUPT)]
