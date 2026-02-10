@@ -27,7 +27,7 @@ import System.Console.Haskeline
 import System.Exit (exitSuccess)
 import qualified System.IO.Strict as Strict
 import Telomare
-import Telomare.Eval (EvalError (..), compileUnitTestNoAbort)
+import Telomare.Eval (compileUnitTestNoAbort)
 import Telomare.Parser (TelomareParser, parseAssignment, parseLongExpr,
                         parsePrelude)
 import Telomare.Possible (deferB, evalPartial')
@@ -110,14 +110,14 @@ printLastExpr eval bindings = do
     case lookup "_tmp_" bindings' of
       Nothing -> putStrLn "Could not find _tmp_ in bindings"
       Just upt -> do
-        let compile' :: Term3 -> Either String IExpr
+        let compile' :: Term3 -> Either EvalError IExpr
             compile' x = case compileUnitTestNoAbort x of
-                           Left err -> Left . show $ err
+                           Left err -> Left  err
                            Right r  -> case toTelomare r of
                              Just te -> pure $ fromTelomare te
-                             _ -> Left $ "conversion error from compiled expr:\n" <> prettyPrint r
-        case compile' =<< process (DummyLoc :< LetUPF bindings' upt) of
-          Left err -> putStrLn err
+                             _ -> Left . RTE . ResultConversionError $ "conversion error from compiled expr:\n" <> prettyPrint r
+        case compile' =<< first RE (process (DummyLoc :< LetUPF bindings' upt)) of
+          Left err -> print err
           Right iexpr' -> case eval iexpr' of
               Left e      -> putStrLn $ "error: " <> show e
               Right expr' -> print . PrettyIExpr $ expr'
