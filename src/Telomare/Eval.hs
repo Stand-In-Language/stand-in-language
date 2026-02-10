@@ -26,13 +26,13 @@ import System.Process
 import qualified Control.Comonad.Trans.Cofree as CofreeT
 import Data.Functor.Foldable (Base, cata, embed, para)
 import PrettyPrint
-import Telomare (AbstractRunTime, BreakState, BreakState', ExprA (..),
-                 FragExpr (..), FragExprF (..), FragIndex (FragIndex),
-                 IExpr (..), IExprF (..), LocTag (..), PartialType (..),
-                 Pattern, RecursionPieceFrag, RecursionSimulationPieces (..),
+import Telomare (AbstractRunTime, BreakState, BreakState', EvalError (..),
+                 ExprA (..), FragExpr (..), FragExprF (..),
+                 FragIndex (FragIndex), IExpr (..), IExprF (..), LocTag (..),
+                 PartialType (..), Pattern, RecursionPieceFrag,
+                 RecursionSimulationPieces (..), ResolverError (..),
                  RunTimeError (..), TelomareLike (..), Term2, Term3 (Term3),
-                 Term4 (Term4), UnprocessedParsedTerm (..), EvalError (..),
-                 ResolverError (..),
+                 Term4 (Term4), UnprocessedParsedTerm (..),
                  UnprocessedParsedTermF (..), UnsizedRecursionToken (..), app,
                  appF, convertAbortMessage, deferF, eval, forget, g2s,
                  innerChurchF, insertAndGetKey, pairF, rootFrag, s2g, setEnvF,
@@ -137,7 +137,7 @@ compileMain modules term = do
   tcTerm <- first RE $ main2Term3 modules term
   case typeCheck (PairTypeP (ArrTypeP ZeroTypeP ZeroTypeP) AnyType) tcTerm of
     Just e -> Left $ TCE e
-    _ -> first RE (main2Term3let modules term) >>= compile MainSizing pure
+    _      -> first RE (main2Term3let modules term) >>= compile MainSizing pure
 
 -- for testing
 compileMain' :: Term3 -> Either EvalError CompiledExpr
@@ -201,7 +201,7 @@ runMainCore modulesStrings s e =
 
   in
     case compileMain modules s of
-      Left e -> error $ concat ["runMainCore failed: ", show e]
+      Left e  -> error $ "runMainCore failed: " <> show e
       Right g -> e g
 
 runMain_ :: [(String, String)] -- ^All modules as (Module_Name, Module_Content)

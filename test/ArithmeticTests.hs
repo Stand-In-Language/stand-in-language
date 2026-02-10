@@ -24,7 +24,6 @@ import Test.Tasty
 import Test.Tasty.HUnit
 import Test.Tasty.QuickCheck as QC
 import Text.Megaparsec (eof, errorBundlePretty, runParser)
-import Telomare (RunTimeError(ResultConversionError))
 
 
 main :: IO ()
