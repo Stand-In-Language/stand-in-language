@@ -372,7 +372,7 @@ qcDecompileIExprAndBackEvalsSame (IExprWrapper x) = pure (showResult $ eval' x)
           _      -> error "debruijinize error"
         validateVariables' x = case validateVariables x of
           Right r -> r
-          Left e  -> error ("validateVariables " <> e)
+          Left e  -> error ("validateVariables " <> show e)
         parseLongExpr' x = case runTelomareParser (scn *> parseLongExpr <* scn) x of
           Just r -> r
           _      -> error "parseLongExpr' should be impossible"
@@ -457,6 +457,10 @@ unitTests_ parse = do
       -- decompileExample = IExprWrapper (SetEnv (SetEnv (Pair (Defer (Pair (Gate Env Env) (Pair Zero Zero))) (SetEnv (SetEnv (SetEnv (PLeft (Pair (Pair (Defer (Pair (Defer (Pair (Defer Zero) Env)) Env)) Zero) Zero))))))))
       -- decompileExample = IExprWrapper (SetEnv (SetEnv (Pair (Defer (Pair (Gate Env Env) (Pair Zero Zero))) Zero)))
       decompileExample = IExprWrapper (SetEnv (SetEnv (Pair (Defer (Pair (Gate Env Env) (Pair Zero (Pair Zero Zero)))) Zero)))
+      buildMainTest s = case fmap compileMain' (parse True s) of
+        Right (Right g) -> let eval = funWrap g appB
+                           in pure $ \s i e -> it ("main input " <> i) $ eval (Just (i, s)) `shouldBe` e
+        z -> pure $ \s i e -> runIO . expectationFailure $ "failed to compile main:\n" <> show s <> "\nbecause:\n" <> show z
       -- decompileExample = IExprWrapper (SetEnv (SetEnv (SetEnv (Pair (Defer (Pair (Defer (Pair (Defer Zero) Env)) Env)) Zero))))
   {-
       unitTestRuntime = unitTestRuntime' parse
@@ -508,9 +512,13 @@ unitTests_ parse = do
   unitTest "map" "(2,(3,5))" $ app (app map_ (lam (pair (varN 0) zero)))
                                     (ints2g [1,2,3])
 -}
-  describe "bottom up eval" $ do
+  -- describe "bottom up eval" $ do
+  describe "main function tests" $ do
+    testMain <- runIO $ Strict.readFile "testchar.tel"
+    unitTestMain <- buildMainTest testMain
+    unitTestMain Zero "A" ("ascii value of first char is odd", Right zeroB)
     -- unitTest2 "main = plus $3 $2 succ 0" "5"
-    unitTest2 "main = d2c 3 succ 0" "3"
+    -- unitTest2 "main = d2c 3 succ 0" "3"
     {-
     it "test SBV" . liftIO $ do
       testSBV' == pure 3
@@ -646,7 +654,7 @@ unitTests parse = do
   let unitTestType = unitTestType' (parse False)
       unitTest2 = unitTest2' (parse True)
       unitTestStaticChecks = unitTestStaticChecks' (parse True)
-      buildMainTest s = case fmap compileMain (parse True s) of
+      buildMainTest s = case fmap compileMain' (parse True s) of
         Right (Right g) -> let eval = funWrap g appB
                            in pure $ \s i e -> it ("main input " <> i) $ eval (Just (i, s)) `shouldBe` e
         z -> pure $ \s i e -> runIO . expectationFailure $ "failed to compile main:\n" <> show s <> "\nbecause:\n" <> show z
@@ -944,8 +952,8 @@ main = do
         Right pam -> pam
     parse :: Bool -> String -> Either String Term3
     parse appLet str = if appLet
-      then main2Term3let (parseAuxModule str:prelude) "AuxModule"
-      else main2Term3 (parseAuxModule str:prelude) "AuxModule"
+      then first show $ main2Term3let (parseAuxModule str:prelude) "AuxModule"
+      else first show $ main2Term3 (parseAuxModule str:prelude) "AuxModule"
 
   hspec $ unitTests parse
     --nexprTests

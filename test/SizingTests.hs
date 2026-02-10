@@ -63,17 +63,17 @@ createMinimalSizingTest = do
 parsePreludeWithFile :: FilePath -> String -> IO Term3
 parsePreludeWithFile preludePath telFile = do
   preludeString <- Strict.readFile preludePath
-  case parsePrelude preludeString >>= (`parseMain` telFile) of
+  case first ParseError (parsePrelude preludeString) >>= (`parseMain` telFile) of
     Right p -> pure p
-    Left e  -> error e
+    Left e  -> error $ show e
 
 -- | Compile using our sizing toggle function
-compileWithSizing :: Bool -> Term3 -> Either EvalError IExpr
+compileWithSizing :: SizingOption -> Term3 -> Either EvalError IExpr
 compileWithSizing useSizing term = case typeCheck (PairTypeP (ArrTypeP ZeroTypeP ZeroTypeP) AnyType) term of
   Just e -> Left $ TCE e
   _      -> compileWithSizing' useSizing term
 
-compileWithSizing' :: Bool -> Term3 -> Either EvalError IExpr
+compileWithSizing' :: SizingOption -> Term3 -> Either EvalError IExpr
 compileWithSizing' useSizing t =
   case toTelomare . removeChecks <$> findChurchSizeD useSizing t of
     Right (Just i) -> pure i

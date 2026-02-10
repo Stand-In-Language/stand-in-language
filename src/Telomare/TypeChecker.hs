@@ -18,7 +18,7 @@ import Debug.Trace
 import PrettyPrint
 import Telomare (FragExpr (..), FragExprF (..), FragExprUR (..), FragIndex (..),
                  LocTag (..), PartialType (..), RecursionSimulationPieces (..),
-                 Term3 (..), rootFrag)
+                 Term3 (..), TypeCheckError (..), rootFrag)
 
 debug :: Bool
 debug = False
@@ -31,12 +31,6 @@ newtype DebugTypeMap = DebugTypeMap (Map Int PartialType)
 instance Show DebugTypeMap where
   show (DebugTypeMap x) = ("typeMap:\n" ++) .
     concatMap ((++ "\n") . show . second PrettyPartialType) $ Map.toAscList x
-
-data TypeCheckError
-  = UnboundType Int
-  | InconsistentTypes PartialType PartialType
-  | RecursiveType Int
-  deriving (Eq, Ord, Show)
 
 -- State is closure environment, set of associations between type variables and types, unresolved type id supply
 type AnnotateState = ExceptT TypeCheckError (State (PartialType, Set TypeAssociation, Int))

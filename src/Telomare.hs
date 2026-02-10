@@ -476,6 +476,28 @@ instance NFData IExpr where
   rnf (PRight  e)  = rnf e
   rnf Trace        = ()
 
+data TypeCheckError
+  = UnboundType Int
+  | InconsistentTypes PartialType PartialType
+  | RecursiveType Int
+  deriving (Eq, Ord, Show)
+
+data ResolverError
+  = NoMainFunction String
+  | ModuleNotFound String
+  | DefinitionCycle [String]
+  | MissingDefinitions [String]
+  | ParseError String
+  deriving (Eq, Ord, Show)
+
+data EvalError = RTE RunTimeError
+    | TCE TypeCheckError
+    | RE ResolverError
+    | StaticCheckError String
+    | CompileConversionError
+    | RecursionLimitError UnsizedRecursionToken
+    deriving (Eq, Ord, Show)
+
 data RunTimeError
   = AbortRunTime IExpr
   | GenericRunTimeError String IExpr

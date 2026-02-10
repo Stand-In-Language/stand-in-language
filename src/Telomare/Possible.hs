@@ -1118,8 +1118,8 @@ sizeTermM maxSize doCap x = tidyUp . ($ []) . runReaderT . transformNoDeferM eva
   setSizes :: Map UnsizedRecursionToken (Maybe Int) -> UnsizedExpr -> UnsizedExpr
   setSizes sizeMap = cata $ \case
     UnsizedFW us@(UnsizedStubF tok _) -> case Map.lookup tok sizeMap of
-      Just (Just n) -> trace ("sizeTermM setting size: " <> show (tok, n)) iterate (basicEE . SetEnvSF) envB !! (n + 1)
-      _      -> trace ("no size found for " <> show tok) setEnvB $ leftB envB
+      Just (Just n) -> debugTrace ("sizeTermM setting size: " <> show (tok, n)) iterate (basicEE . SetEnvSF) envB !! (n + 1)
+      _      -> debugTrace ("no size found for " <> show tok) setEnvB $ leftB envB
     UnsizedFW (TraceF _ x) -> x
     x -> embed x
   foldAborted = cata f where

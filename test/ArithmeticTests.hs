@@ -15,8 +15,7 @@ import Debug.Trace
 import PrettyPrint
 import qualified System.IO.Strict as Strict
 import Telomare
-import Telomare.Eval (EvalError (CompileConversionError), compileUnitTest,
-                      compileUnitTestNoAbort)
+import Telomare.Eval (compileUnitTest, compileUnitTestNoAbort)
 import Telomare.Parser (AnnotatedUPT, TelomareParser, parseLongExpr,
                         parsePrelude)
 import Telomare.Resolver (process)
@@ -25,6 +24,7 @@ import Test.Tasty
 import Test.Tasty.HUnit
 import Test.Tasty.QuickCheck as QC
 import Text.Megaparsec (eof, errorBundlePretty, runParser)
+import Telomare (RunTimeError(ResultConversionError))
 
 
 main :: IO ()
@@ -60,13 +60,13 @@ evalExprString input = do
     Left err -> pure $ Left (errorBundlePretty err)
     Right aupt -> do
       let term = DummyLoc :< LetUPF preludeBindings aupt
-          compile' :: Term3 -> Either String IExpr
+          compile' :: Term3 -> Either EvalError IExpr
           compile' x = case compileUnitTestNoAbort x of
-                         Left err -> Left . show $ err
+                         Left err -> Left  err
                          Right r  -> case toTelomare r of
                            Just te -> pure $ fromTelomare te
-                           Nothing -> Left $ "conversion error from compiled expr:\n" <> prettyPrint r
-      case process term >>= compile' of
+                           Nothing -> Left . RTE . ResultConversionError $ "conversion error from compiled expr:\n" <> prettyPrint r
+      case first RE (process term) >>= compile' of
         Left err -> pure $ Left (show err)
         Right iexpr -> case eval iexpr of
                          Left e -> pure . Left . show $ e
