@@ -34,7 +34,7 @@ import Telomare (IExpr (..), LocTag (..), PartialType (..), TelomareLike (..),
                  indentWithTwoChildren')
 
 debug' :: Bool
-debug' = True
+debug' = False
 
 debugTrace' :: String -> a -> a
 debugTrace' s x = if debug' then trace s x else x
@@ -335,7 +335,6 @@ instance ShallowEq1 AbortableF where
 data UnsizedRecursionF f
   = RecursionTestF UnsizedRecursionToken f
   | UnsizedStubF UnsizedRecursionToken f
-  | SizingWrapperF LocTag UnsizedRecursionToken f
   | SizeStageF SizedRecursion f
   | RefinementWrapperF LocTag f f
   | SizeStepStubF UnsizedRecursionToken Int f
@@ -382,7 +381,6 @@ instance PrettyPrintable1 AbortableF where
 instance PrettyPrintable1 UnsizedRecursionF where
   showP1 = \case
     RecursionTestF (UnsizedRecursionToken ind) x -> indentWithOneChild' ("T(" <> show ind <> ")") $ showP x
-    SizingWrapperF loc (UnsizedRecursionToken ind) x -> indentWithOneChild' ("&(" <> show loc <> " " <> show ind <> ")") $ showP x
     UnsizedStubF (UnsizedRecursionToken ind) x -> indentWithOneChild' ("#" <> show ind) $ showP x
     SizeStageF _ x -> indentWithOneChild' "^" $ showP x
     RefinementWrapperF l tc x -> indentWithTwoChildren' (":" <> show l) (showP tc) (showP x)
@@ -1005,7 +1003,6 @@ instance Annotatable1 UnsizedRecursionF where
       xt <- anno x
       associateVar xt ZeroTypeP
       pure xt
-    SizingWrapperF _ _ x -> anno x -- not bothering on checking for pair structure for now
     SizeStageF _ x -> anno x
     UnsizedStubF _ x -> anno x -- not bothering on checking internal structure (is it even possible?)
     RefinementWrapperF _ c x -> anno x -- not bothering on checking c

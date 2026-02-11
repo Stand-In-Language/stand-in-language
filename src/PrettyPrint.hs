@@ -155,7 +155,6 @@ instance PrettyPrintable Term3 where
       RightFragF x -> indentWithOneChild' "R" x
       TraceFragF -> pure "T"
       AuxFragF x -> case x of
-        SizingWrapper _ ind x' -> indentWithOneChild' ("?" <> show (fromEnum ind)) . showFrag $ unFragExprUR x'
         CheckingWrapper l tc x' -> indentWithTwoChildren' (":" <> show l) (showFrag $ unFragExprUR tc) (showFrag $ unFragExprUR x')
         NestedSetEnvs _ -> pure "%"
 
@@ -196,6 +195,7 @@ instance {-# OVERLAPPING #-} PrettyPrintable Term1 where
       TLamF (Open v) x         -> indentWithOneChild' ("\\" <> v) x
       TLamF (Closed v) x       -> indentWithOneChild' ("[\\" <> v) x
       TLimitedRecursionF t r b -> indentWithChildren' "TRB" [t,r,b]
+      TUnsizedRepeaterF        -> pure "*"
 
 showTypeDebugInfo :: TypeDebugInfo -> String
 showTypeDebugInfo (TypeDebugInfo (Term3 m) lookup rootType) =
@@ -218,7 +218,6 @@ showTypeDebugInfo (TypeDebugInfo (Term3 m) lookup rootType) =
           LeftFrag x                                 -> "L " <> recur x
           RightFrag x                                -> "R " <> recur x
           TraceFrag                                  -> "T"
-          AuxFrag (SizingWrapper _ _ (FragExprURSA x)) -> "?" <> recur x
           AuxFrag (NestedSetEnvs _)                  -> "%"
   in showFrag (FragIndex 0) rootType (unFragExprURSA $ rootFrag termMap) <> "\n"
      <> concatMap (\(k, v) -> showFrag k (lookup k) v <> "\n")

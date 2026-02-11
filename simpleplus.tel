@@ -1,3 +1,5 @@
+import Prelude
+
 validDigit = \x -> and ($47 left x) (not ($57 left x))
 
 validInput = \x -> assert (and (validDigit (left x))

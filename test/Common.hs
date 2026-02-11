@@ -378,8 +378,10 @@ instance Arbitrary Term2 where
                   Left str -> error $ "Non valid `Term1` generated from `arbitrarry :: Gen Term1`: "
                                         <> show term1
                                         <> " With error message: "
-                                        <> str
+                                        <> shre str
                   Right t2 -> t2
+        shre :: ResolverError -> String
+        shre = show
     pure term2
   shrink = \case
     _ :< TZeroF -> []

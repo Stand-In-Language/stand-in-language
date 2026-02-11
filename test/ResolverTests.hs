@@ -71,7 +71,7 @@ qcProps = testGroup "Property tests (QuickCheck)"
       \() -> withMaxSuccess 16 . QC.idempotentIOProperty $ do
         assignments <- generate genRecursiveLetWithCycle
         let dummymodule   = wrapRecursiveBackwardLet assignments
-            expectedError = "failed to parse DummyModule Recursion not allowed: circular dependency "
+            expectedError = "failed: RE (DefinitionCycle"
         result <- try (testUserDefAdHocTypes dummymodule) :: IO (Either SomeException String)
         pure $ case result of
           Left err  -> expectedError `isInfixOf` show err
@@ -80,7 +80,7 @@ qcProps = testGroup "Property tests (QuickCheck)"
       \() -> withMaxSuccess 16 . QC.idempotentIOProperty $ do
         assignments <- generate genRecursiveLetWithCycle
         let dummymodule = wrapRecursiveForwardLet assignments
-            expectedError = "failed to parse DummyModule Recursion not allowed: circular dependency "
+            expectedError = "failed: RE (DefinitionCycle"
         result <- try (testUserDefAdHocTypes dummymodule) :: IO (Either SomeException String)
         pure $ case result of
           Left err  -> expectedError `isInfixOf` show err
@@ -90,7 +90,7 @@ qcProps = testGroup "Property tests (QuickCheck)"
         assignments <- generate genRecursiveLetWithCycle
         shuffleInt  <- generate genInt
         let dummymodule = wrapRecursiveRandomLet assignments shuffleInt
-            expectedError = "failed to parse DummyModule Recursion not allowed: circular dependency "
+            expectedError = "failed: RE (DefinitionCycle"
         result <- try (testUserDefAdHocTypes dummymodule) :: IO (Either SomeException String)
         pure $ case result of
           Left err  -> expectedError `isInfixOf` show err
@@ -363,9 +363,9 @@ unitTests = testGroup "Unit tests"
       res @?= "whattt\ndone"
   ]
 
-runBackwardCycleLet = "failed to parse DummyModule Recursion not allowed: circular dependency xyz -> abc -> def -> ghi -> jkl -> xyz"
+runBackwardCycleLet = "runMainCore failed: RE (DefinitionCycle [\"xyz\",\"abc\",\"def\",\"ghi\",\"jkl\",\"xyz\"])"
 
-runForwardCycleLet = "failed to parse DummyModule Recursion not allowed: circular dependency abc -> def -> ghi -> jkl -> xyz -> abc"
+runForwardCycleLet = "runMainCore failed: RE (DefinitionCycle [\"abc\",\"def\",\"ghi\",\"jkl\",\"xyz\",\"abc\"])"
 
 removeCallStack :: String -> String
 removeCallStack = unlines . takeWhile (/= "CallStack (from HasCallStack):") . lines
@@ -563,7 +563,7 @@ showAllTransformations input = do
       diff = getGroupedDiff str5 str4
   section "splitExpr" . ppShow $ splitExprVar
   section "Diff splitExpr" $ ppDiff diff
-  let Right (Just toTelomareVar) = fmap toTelomare . findChurchSize $ splitExprVar
+  let Right (Just toTelomareVar) = fmap toTelomare . findChurchSizeD NoSizing $ splitExprVar
       str6 = lines . show $ toTelomareVar
       diff = getGroupedDiff str6 str5
   section "toTelomare" . show $ toTelomareVar

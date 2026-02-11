@@ -26,27 +26,31 @@ import System.Process
 import qualified Control.Comonad.Trans.Cofree as CofreeT
 import Data.Functor.Foldable (Base, cata, embed, para)
 import PrettyPrint
-import Telomare (AbstractRunTime, BreakState, BreakState', ExprA (..),
-                 FragExpr (..), FragExprF (..), FragIndex (FragIndex),
-                 IExpr (..), IExprF (..), LocTag (..), PartialType (..),
-                 Pattern, RecursionPieceFrag, RecursionSimulationPieces (..),
-                 RunTimeError (..), TelomareLike (..), Term3 (Term3),
+import Telomare (AbstractRunTime, BreakState, BreakState', EvalError (..),
+                 ExprA (..), FragExpr (..), FragExprF (..),
+                 FragIndex (FragIndex), IExpr (..), IExprF (..), LocTag (..),
+                 PartialType (..), Pattern, RecursionPieceFrag,
+                 RecursionSimulationPieces (..), ResolverError (..),
+                 RunTimeError (..), TelomareLike (..), Term2, Term3 (Term3),
                  Term4 (Term4), UnprocessedParsedTerm (..),
                  UnprocessedParsedTermF (..), UnsizedRecursionToken (..), app,
-                 appF, cataFragExprUR, convertAbortMessage, deferF, eval,
-                 forget, g2s, innerChurchF, insertAndGetKey, pairF, rootFrag,
-                 s2g, setEnvF, tag, unFragExprUR)
+                 appF, convertAbortMessage, deferF, eval, forget, g2s,
+                 innerChurchF, insertAndGetKey, pairF, rootFrag, s2g, setEnvF,
+                 tag, unFragExprUR)
 import Telomare.Parser (AnnotatedUPT, parseModule, parseOneExprOrTopLevelDefs,
                         parsePrelude)
 import Telomare.Possible (abortExprToTerm4, abortPossibilities, appB,
-                          buildUnsizedLocMap, deferB, evalStaticCheck, getSizesM,
+                          deferB, evalStaticCheck, getSizesM,
                           sizeTermM, term3ToUnsizedExpr, term4toAbortExpr, evalStaticCheck)
+import Telomare.Possible (abortExprToTerm4, abortPossibilities, appB, deferB,
+                          evalStaticCheck, getSizesM, sizeTermM,
+                          term3ToUnsizedExpr, term4toAbortExpr)
 import Telomare.PossibleData (AbortExpr, CompiledExpr (..), SizedRecursion (..),
                               VoidF, envB, leftB, pairB, pattern AbortFW,
                               rightB, setEnvB)
-import Telomare.Resolver (main2Term3, process, resolveAllImports)
+import Telomare.Resolver (main2Term3, main2Term3let, process, resolveAllImports)
 import Telomare.RunTime (rEval)
-import Telomare.TypeChecker (TypeCheckError (..), typeCheck)
+import Telomare.TypeChecker (typeCheck)
 import Text.Megaparsec (errorBundlePretty, runParser)
 
 debug :: Bool
@@ -54,13 +58,6 @@ debug = False
 
 debugTrace :: String -> a -> a
 debugTrace s x = if debug then trace s x else x
-
-data EvalError = RTE RunTimeError
-    | TCE TypeCheckError
-    | StaticCheckError String
-    | CompileConversionError
-    | RecursionLimitError UnsizedRecursionToken
-    deriving (Eq, Ord, Show)
 
 convertPT :: (UnsizedRecursionToken -> Int) -> Term3 -> Term4
 convertPT ll (Term3 termMap) =
@@ -75,7 +72,6 @@ convertPT ll (Term3 termMap) =
                       (Cofree (FragExprF RecursionPieceFrag) LocTag)
       changeFrag = \case
         anno :< AuxFragF (NestedSetEnvs n) -> innerChurchF anno $ ll n
-        _ :< AuxFragF (SizingWrapper _ _ x) -> transformM changeFrag $ unFragExprUR x
         _ :< AuxFragF (CheckingWrapper anno tc c) ->
           let performTC = deferF ((\ia -> setEnvF (pairF (setEnvF (pairF (pure $ tag anno AbortFrag) ia))
                                                         (pure . tag anno $ RightFrag EnvFrag))) $ appF (pure . tag anno $ LeftFrag EnvFrag)
@@ -138,10 +134,12 @@ runStaticChecks t@(Term4 termMap) =
     Nothing -> pure t
     Just e  -> Left . StaticCheckError $ convertAbortMessage e
 
-compileMain :: Term3 -> Either EvalError CompiledExpr
-compileMain term = case typeCheck (PairTypeP (ArrTypeP ZeroTypeP ZeroTypeP) AnyType) term of
-  Just e -> Left $ TCE e
-  _      -> compile MainSizing pure term -- TODO add runStaticChecks back in
+compileMain :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -> String -> Either EvalError CompiledExpr
+compileMain modules term = do
+  tcTerm <- first RE $ main2Term3 modules term
+  case typeCheck (PairTypeP (ArrTypeP ZeroTypeP ZeroTypeP) AnyType) tcTerm of
+    Just e -> Left $ TCE e
+    _      -> first RE (main2Term3let modules term) >>= compile MainSizing pure
 
 -- for testing
 compileMain' :: Term3 -> Either EvalError CompiledExpr
@@ -175,7 +173,10 @@ funWrap fun app inp =
       Just z -> ("unexpected runtime value, dumped:\n" <> show z, Left $ GenericRunTimeError "unexpected runtime value" z)
     Left e -> ("runtime error:\n" <> show e, Left e)
 
-runMainCore :: [(String, String)] -> String -> (CompiledExpr -> IO a) -> IO a
+runMainCore :: [(String, String)] -- ^All modules as (Module_Name, Module_Content)
+            -> String -- ^Module's name with `main` function
+            -> (CompiledExpr -> IO a)
+            -> IO a
 runMainCore modulesStrings s e =
   let parsedModules :: [(String, Either String [Either AnnotatedUPT (String, AnnotatedUPT)])]
       parsedModules = (fmap . fmap) parseModule modulesStrings
@@ -201,18 +202,24 @@ runMainCore modulesStrings s e =
                     in error . unlines $ joinModuleError <$> moduleWithError
 
   in
-    case compileMain <$> main2Term3 modules s of
-      Left e -> error $ concat ["failed to parse ", s, " ", e]
-      Right (Right g) -> e g
-      Right (Left z) -> error $ "compilation failed somehow, with result:\n" <> show z
+    case compileMain modules s of
+      Left e  -> error $ "runMainCore failed: " <> show e
+      Right g -> e g
 
-runMain_ :: [(String, String)] -> String -> IO String
+runMain_ :: [(String, String)] -- ^All modules as (Module_Name, Module_Content)
+         -> String -- ^Module's name with `main` function
+         -> IO String
 runMain_ modulesStrings s = runMainCore modulesStrings s evalLoop_
 
-runMain :: [(String, String)] -> String -> IO ()
+runMain :: [(String, String)] -- ^All modules as (Module_Name, Module_Content)
+        -> String -- ^Module's name with `main` function
+        -> IO ()
 runMain modulesStrings s = runMainCore modulesStrings s evalLoop
 
-runMainWithInput :: [String] -> [(String, String)] -> String -> IO String
+runMainWithInput :: [String] -- ^Inputs
+                 -> [(String, String)] -- ^All modules as (Module_Name, Module_Content)
+                 -> String -- ^Module's name with `main` function
+                 -> IO String
 runMainWithInput inputList modulesStrings s = runMainCore modulesStrings s (evalLoopWithInput inputList)
 
 schemeEval :: IExpr -> IO ()
@@ -282,16 +289,17 @@ calculateRecursionLimits doCap t3 =
 showSizingInSource :: String -> String -> String
 showSizingInSource prelude s
   = let asLines = zip [0..] $ lines s
-        parsed = parsePrelude prelude >>= (`parseMain` s)
-        unsizedExpr = term3ToUnsizedExpr 256 <$> parsed
-        sizedRecursion = unsizedExpr >>= (first (("Could not size token: " <>) . show) . getSizesM 256)
-        sizeLocs = Map.toAscList . buildUnsizedLocMap <$> unsizedExpr
+        parsed = first ParseError (parsePrelude prelude) >>= (`parseMain` s)
+        unsizedExpr = term3ToUnsizedExpr 256 <$> first RE parsed
+        sizedRecursion = unsizedExpr >>= (first RecursionLimitError . getSizesM 256)
+        sizeLocs = error "TODO showSizingInSource implement sizeLocs" --Map.toAscList . buildUnsizedLocMap <$> unsizedExpr
         -- (orphanLocs, lineLocs) = partition ((== DummyLoc) . snd) sizeLocs
         (orphanLocs, lineLocs) = case sizeLocs of
-          Left e   -> error ("Could not size: " <> show e)
+          Left e   -> error "uh" -- ("Could not size: " <> show e)
           Right sl -> partition ((== DummyLoc) . snd) sl
         -- orphanList = map ((<> " ") . show . fst) orphanLocs
-        orphans = "unsized with no location: " <> foldMap ((<> " ") . show . fst) orphanLocs
+        -- orphans = "unsized with no location: " <> foldMap ((<> " ") . show . fst) orphanLocs
+        orphans = error "TODO showSizingInSource thing"
         fromEnum' = \case
           Loc x _ -> x
           _ -> error "unexpected DummyLoc"
@@ -310,13 +318,12 @@ showFunctionIndexesInSource :: String -> String -> String
 showFunctionIndexesInSource prelude s
   = let asLines = zip [1..] $ lines s
         -- parsed = parsePrelude prelude >>= (\p -> parseMain p s)
-        funMap = case parsePrelude prelude >>= (`parseMain` s) of
+        funMap = case first ParseError (parsePrelude prelude) >>= (`parseMain` s) of
           Right (Term3 f) -> f
           e               -> error ("could not parse " <> show e)
         unAss (a :< _) = a
         -- sizeLocs = (\(fi, t) -> (fi))
         reduceL (a CofreeT.:< x) = let l = fromEnum' a in (Min l, Max l) <> fold x
-        bodyLocs = second (cataFragExprUR reduceL) <$> Map.toAscList funMap
         sizeLocs = second (unAss . unFragExprUR) <$> Map.toAscList funMap
         (orphanLocs, lineLocs) = partition ((== DummyLoc) . snd) sizeLocs
         orphans = "functions with no location: " <> foldMap ((<> " ") . show . fst) orphanLocs
@@ -332,7 +339,7 @@ showFunctionIndexesInSource prelude s
 
 parseMain :: [(String, AnnotatedUPT)] -- ^Prelude: [(VariableName, BindedUPT)]
           -> String                            -- ^Raw string to be parserd.
-          -> Either String Term3               -- ^Error on Left.
+          -> Either ResolverError Term3               -- ^Error on Left.
 parseMain prelude' str =
   let prelude :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
       prelude = [("Prelude", Right <$> prelude')]
@@ -345,7 +352,7 @@ parseMain prelude' str =
 
 getAbortPossibilities :: String -> String -> Set IExpr
 getAbortPossibilities prelude s
-  = let parsed = parsePrelude prelude >>= (`parseMain` s)
+  = let parsed = first ParseError (parsePrelude prelude) >>= (`parseMain` s)
         unsizedExpr = term3ToUnsizedExpr 256 <$> parsed
     in case unsizedExpr of
          Left e   -> error $ "getAbortPossibilities: " <> show e
@@ -353,7 +360,7 @@ getAbortPossibilities prelude s
 
 getAbortPossibilities' :: String -> String -> Set String
 getAbortPossibilities' prelude s
-  = let parsed = parsePrelude prelude >>= (`parseMain` s)
+  = let parsed = first ParseError (parsePrelude prelude) >>= (`parseMain` s)
         unsizedExpr = term3ToUnsizedExpr 256 <$> parsed
     in case unsizedExpr of
          Left e   -> error $ "getAbortPossibilities: " <> show e
@@ -362,11 +369,11 @@ getAbortPossibilities' prelude s
 eval2IExpr :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -> String -> Either String IExpr
 eval2IExpr extraModuleBindings str =
   first errorBundlePretty (runParser (parseOneExprOrTopLevelDefs resolved) "" str)
-  >>= process
+  >>= first show . process
   >>= tt . first show . compileUnitTest
     where
       tt = \case
-        Left e -> Left e
+        Left e -> Left $ show e
         Right x -> case toTelomare x of
           Just ie -> pure ie
           _ -> Left $ "eval2IExpr conversion error back to iexpr:\n" <> prettyPrint x
@@ -427,7 +434,7 @@ tagUPTwithIExpr :: [(String, AnnotatedUPT)]
                 -> Cofree UnprocessedParsedTermF (Int, Either String IExpr)
 tagUPTwithIExpr prelude upt = evalState (para alg upt) 0 where
   upt2iexpr :: UnprocessedParsedTerm -> Either String IExpr
-  upt2iexpr u = process (tag DummyLoc u) >>= tt . first show . compileUnitTest
+  upt2iexpr u = first show (process (tag DummyLoc u)) >>= tt . first show . compileUnitTest
   tt = \case
     Left e -> Left e
     Right x -> case toTelomare x of
