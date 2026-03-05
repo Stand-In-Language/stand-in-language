@@ -15,9 +15,11 @@ import Debug.Trace
 import PrettyPrint
 import qualified System.IO.Strict as Strict
 import Telomare
-import Telomare.Eval (compileUnitTest, compileUnitTestNoAbort)
+import Telomare.Eval (SizingOption (..), compile, compileUnitTest,
+                      compileUnitTestNoAbort, runStaticChecks)
 import Telomare.Parser (AnnotatedUPT, TelomareParser, parseLongExpr,
                         parsePrelude)
+import Telomare.PossibleData (CompiledExpr)
 import Telomare.Resolver (process)
 import Telomare.RunTime (simpleEval)
 import Test.Tasty
@@ -59,17 +61,15 @@ evalExprString input = do
     Left err -> pure $ Left (errorBundlePretty err)
     Right aupt -> do
       let term = DummyLoc :< LetUPF preludeBindings aupt
-          compile' :: Term3 -> Either EvalError IExpr
-          compile' x = case compileUnitTestNoAbort x of
-                         Left err -> Left  err
-                         Right r  -> case toTelomare r of
-                           Just te -> pure $ fromTelomare te
-                           Nothing -> Left . RTE . ResultConversionError $ "conversion error from compiled expr:\n" <> prettyPrint r
+          compile' :: Term3 -> Either EvalError CompiledExpr
+          compile' = compile NoSizing pure
       case first RE (process term) >>= compile' of
         Left err -> pure $ Left (show err)
         Right iexpr -> case eval iexpr of
                          Left e -> pure . Left . show $ e
-                         Right result -> pure . Right . show . PrettyIExpr $ result
+                         Right result -> case toTelomare result of
+                           Just r -> pure . Right . show $ PrettyIExpr r
+                           Nothing -> pure . Left $ "conversion error from result:\n" <> prettyPrint result
 
 assertExpr :: String -> String -> Assertion
 assertExpr input expected = do
