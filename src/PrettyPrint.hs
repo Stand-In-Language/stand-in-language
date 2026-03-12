@@ -23,6 +23,7 @@ import Control.Comonad.Cofree
 import Data.Functor.Foldable
 import Data.List (elemIndex)
 import Text.Read (readMaybe)
+import Data.Fix (Fix)
 -- import Data.SBV (sFPHalf)
 
 
@@ -194,6 +195,27 @@ instance {-# OVERLAPPING #-} PrettyPrintable Term1 where
       TChurchF n               -> pure $ "$" <> show n
       TLamF (Open v) x         -> indentWithOneChild' ("\\" <> v) x
       TLamF (Closed v) x       -> indentWithOneChild' ("[\\" <> v) x
+      TLamF (LetBinding c v) x -> indentWithOneChild' ("{\\(" <> show c <> ") " <> v) x
+      TLimitedRecursionF t r b -> indentWithChildren' "TRB" [t,r,b]
+      TUnsizedRepeaterF        -> pure "*"
+
+instance {-# OVERLAPPING #-} (Show l, Show v) => PrettyPrintable (Fix (ParserTermF l v)) where
+  showP = cata f where
+    f = \case
+      TZeroF                   -> pure "0"
+      TPairF a b               -> indentWithTwoChildren' "(" a b
+      TVarF v                  -> pure $ show v
+      TAppF c i                -> indentWithTwoChildren' "($)" c i
+      TCheckF cf i             -> indentWithTwoChildren' ":" cf i
+      TITEF i t e              -> indentWithChildren' "ITE" [i,t,e]
+      TLeftF x                 -> indentWithOneChild' "L" x
+      TRightF x                -> indentWithOneChild' "R" x
+      TTraceF x                -> indentWithOneChild' "T" x
+      THashF x                 -> indentWithOneChild' "#" x
+      TChurchF n               -> pure $ "$" <> show n
+      TLamF (Open v) x         -> indentWithOneChild' ("\\" <> show v) x
+      TLamF (Closed v) x       -> indentWithOneChild' ("[\\" <> show v) x
+      TLamF (LetBinding c v) x -> indentWithOneChild' ("{\\(" <> show c <> ") " <> show v) x
       TLimitedRecursionF t r b -> indentWithChildren' "TRB" [t,r,b]
       TUnsizedRepeaterF        -> pure "*"
 

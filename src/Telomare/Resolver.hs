@@ -13,7 +13,7 @@ import Control.Lens.Combinators (transform)
 import Control.Monad (forM, forM_, (<=<))
 import qualified Control.Monad.State as State
 import Control.Monad.Trans (lift)
-import Control.Monad.Trans.Writer.Strict (WriterT (..), writer)
+import Control.Monad.Trans.Writer.Strict (WriterT (..), writer, tell)
 import Crypto.Hash (Digest, SHA256, hash)
 import Data.Bifunctor (Bifunctor (first, second), bimap)
 import qualified Data.ByteArray as BA
@@ -22,7 +22,7 @@ import qualified Data.ByteString as BS
 import Data.Char (ord)
 import Data.Fix (Fix)
 import qualified Data.Foldable as F
-import Data.Functor.Foldable (Base, Corecursive (ana, apo), Recursive (cata))
+import Data.Functor.Foldable (Base, Corecursive (ana, apo, embed), Recursive (cata))
 import Data.List (delete, elem, elemIndex, find, foldl', intercalate, nubBy,
                   zip4)
 import qualified Data.Map as Map
@@ -32,8 +32,14 @@ import qualified Data.Set as Set
 import Debug.Trace (trace, traceShow, traceShowId)
 import PrettyPrint (TypeDebugInfo (..), prettyPrint, showTypeDebugInfo)
 import Telomare
-import Telomare.Parser (AnnotatedUPT, TelomareParser)
+import Telomare.Parser (AnnotatedUPT, TelomareParser, identifier)
 import Text.Megaparsec (errorBundlePretty, runParser)
+import Data.Monoid (Sum (..))
+import Control.Monad.Reader (runReaderT, MonadReader (ask))
+import Control.Monad.Trans.Reader (local, ReaderT)
+import Control.Monad.Reader (reader)
+import Control.Monad.Identity (Identity(..))
+import Control.Monad.State (StateT, evalStateT)
 
 debug :: Bool
 debug = False
@@ -41,33 +47,19 @@ debug = False
 debugTrace :: String -> a -> a
 debugTrace s x = if debug then trace s x else x
 
-type VarList = [String]
-
 -- |Int to ParserTerm
-i2t :: LocTag -> Int -> Cofree (ParserTermF l v) LocTag
+i2t :: a -> Int -> Cofree (ParserTermF l v) a
 i2t anno = ana coalg where
-  coalg :: Int -> CofreeF (ParserTermF l v) LocTag Int
   coalg 0 = anno C.:< TZeroF
   coalg n = anno C.:< TPairF (n-1) 0
 
 -- |List of Int's to ParserTerm
-ints2t :: LocTag ->  [Int] -> Cofree (ParserTermF l v) LocTag
+ints2t :: Foldable t => a -> t Int -> Cofree (ParserTermF l v) a
 ints2t anno = foldr ((\x y -> anno :< TPairF x y) . i2t anno) (anno :< TZeroF)
 
 -- |String to ParserTerm
-s2t :: LocTag -> String -> Cofree (ParserTermF l v) LocTag
+s2t :: (Foldable t, Functor t) => a -> t Char -> Cofree (ParserTermF l v) a
 s2t anno = ints2t anno . fmap ord
-
--- |Int to Church encoding
-{-
-i2c :: LocTag -> Int -> Term1
-i2c anno x = anno :< TLamF (Closed "f") (anno :< TLamF (Open "x") (inner x))
-  where inner :: Int -> Term1
-        inner = apo coalg
-        coalg :: Int -> Base Term1 (Either Term1 Int)
-        coalg 0 = anno C.:< TVarF "x"
-        coalg n = anno C.:< TAppF (Left . (anno :<) . TVarF $ "f") (Right $ n - 1)
--}
 
 instance MonadFail (Either ResolverError) where
   fail = Left . MissingDefinitions . pure
@@ -255,6 +247,8 @@ removeCaseUPs = transform go where
                            resultCaseAlts
     x -> x
 
+type VarList = [String]
+
 debruijinize :: MonadFail m => VarList -> Term1 -> m Term2
 debruijinize vl = \case
   all@(anno :< TZeroF) -> pure $ anno :< TZeroF
@@ -277,6 +271,51 @@ debruijinize vl = \case
   (anno :< TLimitedRecursionF t r b) -> (\x y z -> anno :< TLimitedRecursionF x y z) <$> debruijinize vl t <*> debruijinize vl r <*> debruijinize vl b
   (anno :< TUnsizedRepeaterF) -> pure $ anno :< TUnsizedRepeaterF
 
+-- | Close all naked open lambdas
+closeLams :: Term2 -> Term2
+closeLams = runIdentity .($ True) . runReaderT . cata f where
+  f = \case
+    anno CofreeT.:< x -> case x of
+      TLamF lt ix -> ask >>= \naked -> if naked
+        then (\x' -> anno :< TLamF (Closed ()) x') <$> local (const False) ix
+        else (\x' -> anno :< TLamF lt x') <$> local (const False) ix
+      x' -> (anno :<) <$> sequence x'
+
+debruijinizeApp :: forall m. (Monad m, MonadFail m) => Term1 -> m Term2
+debruijinizeApp = fmap closeLams . ($ []) . runReaderT . cata f where
+  f = \case
+    anno CofreeT.:< x -> case x of
+      TLamF lt ix -> (\lx -> anno :< TLamF (convLam lt) lx) <$> local (lt:) ix
+      TVarF n -> ask >>= \vl -> lift $ findElem anno n vl
+      x -> fmap (anno :<) . sequence $ conv x
+  conv = \case
+    TZeroF -> TZeroF
+    TPairF a b -> TPairF a b
+    TAppF c i -> TAppF c i
+    TCheckF tc c -> TCheckF tc c
+    TITEF i t e -> TITEF i t e
+    TLeftF x -> TLeftF x
+    TRightF x -> TRightF x
+    TTraceF x -> TTraceF x
+    THashF x -> THashF x
+    TChurchF n -> TChurchF n
+    TLimitedRecursionF t r b -> TLimitedRecursionF t r b
+    TUnsizedRepeaterF -> TUnsizedRepeaterF
+  convLam = \case
+    Open _ -> Open ()
+    Closed _ -> Closed ()
+    LetBinding _ _ -> Open ()
+  findElem anno n vl = case find (ff n) (zip [0..] vl) of
+    Just (i, LetBinding c _) -> pure $ iterate (\ix -> anno :< TAppF ix (anno :< TUnsizedRepeaterF)) (anno :< TVarF i) !! c
+    Just (i, _) -> pure $ anno :< TVarF i
+    _ -> fail $ "undefined identifier " <> n
+  ff n = \case
+    (_, Open n') | n' == n -> True
+    (_, Closed n') | n' == n -> True
+    (_, LetBinding _ n') | n' == n -> True
+    _ -> False
+
+
 rewriteOuterTag :: anno -> Cofree a anno -> Cofree a anno
 rewriteOuterTag anno (_ :< x) = anno :< x
 
@@ -285,11 +324,7 @@ splitExpr' = \case
   (anno :< TZeroF) -> pure (anno :< ZeroFragF)
   (anno :< TPairF a b) -> rewriteOuterTag anno <$> pairF (splitExpr' a) (splitExpr' b)
   (anno :< TVarF n) -> pure . tag anno $ varNF n
-  (anno :< TAppF (_ :< TLimitedRecursionF t r b) (_ :< TUnsizedRepeaterF)) -> do
-    tok <- nextBreakToken
-    rewriteOuterTag anno <$> appF (unsizedRecursionWrapper anno tok (splitExpr' t) (splitExpr' r) (splitExpr' b)) (unsizedRepeater anno tok)
-  (anno :< TAppF c i) ->
-    rewriteOuterTag anno <$> appF (splitExpr' c) (splitExpr' i)
+  (anno :< TAppF c i) -> rewriteOuterTag anno <$> appF (splitExpr' c) (splitExpr' i)
   (anno :< TCheckF tc c) -> (\tc' c' -> anno :< AuxFragF (CheckingWrapper anno (FragExprUR tc') (FragExprUR c'))) <$> splitExpr' tc <*> splitExpr' c
   (anno :< TITEF i t e) -> rewriteOuterTag anno <$> setEnvF (pairF (gateF (splitExpr' e) (splitExpr' t)) (splitExpr' i))
   (anno :< TLeftF x) -> (anno :<) . LeftFragF <$> splitExpr' x
@@ -298,6 +333,8 @@ splitExpr' = \case
   (anno :< TLamF (Open ()) x) -> rewriteOuterTag anno <$> lamF (splitExpr' x)
   (anno :< TLamF (Closed ()) x) -> rewriteOuterTag anno <$> clamF (splitExpr' x)
   (anno :< TChurchF n) -> i2cF anno n
+  (anno :< TLimitedRecursionF t r b) -> unsizedRecursionWrapper anno (splitExpr' t) (splitExpr' r) (splitExpr' b)
+  (anno :< TUnsizedRepeaterF) -> nextBreakToken >>= unsizedRepeater anno
 
 newtype FragExprUR' =
   FragExprUR' { unFragExprUR' :: FragExpr (RecursionSimulationPieces FragExprUR')
@@ -310,15 +347,11 @@ splitExpr :: Term2 -> Term3
 splitExpr t = let (bf, (_,_,m)) = State.runState (splitExpr' t) (toEnum 0, FragIndex 1, Map.empty)
               in Term3 . Map.map FragExprUR $ Map.insert (FragIndex 0) bf m
 
--- |`makeLambda ps vl t1` makes a `TLam` around `t1` with `vl` as arguments.
--- Automatic recognition of Close or Open type of `TLam`.
-makeLambda :: String                            -- ^Variable name
-           -> Term1                             -- ^Lambda body
-           -> Term1
-makeLambda str term1@(anno :< _) =
-  if unbound == Set.empty then anno :< TLamF (Closed str) term1 else anno :< TLamF (Open str) term1
-  where v = varsTerm1 term1
-        unbound = v \\ Set.singleton str
+openLambda :: String -> Term1 -> Term1
+openLambda name body@(anno :< _) = anno :< TLamF (Open name) body
+
+closedLambda :: String -> Term1 -> Term1
+closedLambda name body@(anno :< _) = anno :< TLamF (Closed name) body
 
 -- |Transformation from `AnnotatedUPT` to `Term1` validating and inlining `VarUP`s
 validateVariables :: AnnotatedUPT
@@ -411,7 +444,7 @@ validateVariables term =
           State.modify (Map.insert v (anno :< TVarF v))
           result <- validateWithEnvironment x
           State.put oldState
-          pure $ makeLambda v result
+          pure $ openLambda v result
         anno :< VarUPF n -> do
           definitionsMap <- State.get
           case Map.lookup n definitionsMap of
@@ -441,6 +474,25 @@ validateVariables term =
         anno :< HashUPF x -> (\y -> anno :< THashF y) <$> validateWithEnvironment x
   in State.evalStateT (validateWithEnvironment term) Map.empty
 
+annotateUnsizedCount :: AnnotatedUPT -> Cofree UnprocessedParsedTermF (LocTag, Int)
+annotateUnsizedCount = capTop . flip evalStateT 0 . cata f where
+  f :: CofreeF UnprocessedParsedTermF LocTag (StateT Int ((,) (Set Int)) (Cofree UnprocessedParsedTermF (LocTag, Int)))
+       -> StateT Int ((,) (Set Int)) (Cofree UnprocessedParsedTermF (LocTag, Int))
+  f = \case
+    anno CofreeT.:< x -> case x of
+      ur@(UnsizedRecursionUPF _ _ _) -> sequence ur >>= \nur -> do
+        n <- State.get
+        State.put (n + 1)
+        lift (Set.singleton n, (anno, 0) :< AppUPF ((anno, 0) :< nur) ((anno, 0) :< VarUPF (':' : show n)))
+      LetUPF bindings inner -> (\b i -> (anno, 0) :< LetUPF b i) <$> traverse rebind bindings <*> inner
+      x -> ((anno, 0) :<) <$> sequence x
+  rebind (n, x) = cap n $ evalStateT x 0
+  cap n (vs, x@((anno, _) :< _)) = debugTrace ("annotateUnsizedCount cap with size "<> show (length vs)) lift (Set.empty, (n, foldr (\v b -> (anno, length vs) :< LamUPF (':' : show v) b) x vs))
+  -- HACK vars are just placehorders for next step
+  capTop (vs, x@((anno, _) :< _)) =
+    foldr (\v b -> (anno, length vs) :< AppUPF ((anno, 0) :< LamUPF (':' : show v) b) ((anno, 0) :< VarUPF (':' : show v))) x vs
+
+
 -- convert let bindings to nested lambda/app brackets
 letsToApps :: AnnotatedUPT -> Either ResolverError Term1
 letsToApps term =
@@ -449,7 +501,7 @@ letsToApps term =
       topologicalSort names deps = go [] Set.empty names
         where
           go :: [String] -> Set String -> [String] -> Either ResolverError [String]
-          go result _ [] = Right (reverse result)
+          go result _ [] = Right result
           go result inProgress remaining =
             case find (canProcess remaining inProgress) remaining of
               Nothing ->
@@ -479,12 +531,15 @@ letsToApps term =
       makeBindingsAsoc (name, def) = case runWriterT def of
         Left s           -> Left s
         Right (nx, refs) -> pure (name, (nx,refs))
-      buildRefs :: CofreeF UnprocessedParsedTermF LocTag (WriterT (Set String) (Either ResolverError) Term1)
-                   -> WriterT (Set String) (Either ResolverError) Term1
-      buildRefs (anno CofreeT.:< upf) = case upf of
-        VarUPF n -> writer (anno :< TVarF n, Set.singleton n)
+      -- f algebra builds Term1 wrapped with metadata (WriterT) of unbound refs (Set String) or ResolverError
+      buildRefs :: CofreeF UnprocessedParsedTermF (LocTag, Int) (WriterT (Set String) (Either ResolverError) (Cofree (ParserTermF String String) (LocTag, Int)))
+                   -> WriterT (Set String) (Either ResolverError) (Cofree (ParserTermF String String) (LocTag, Int))
+      buildRefs ((anno, urC) CofreeT.:< upf) = case upf of
+        VarUPF n -> writer ((anno, urC) :< TVarF n, Set.singleton n)
         LamUPF v x -> f (runWriterT x) where
-          f (Right (nx, refs)) = writer (makeLambda v nx, Set.delete v refs)
+          f (Right (nx, refs)) = let nrefs = Set.delete v refs in if null nrefs && urC == 0
+            then writer ((anno, urC) :< TLamF (Closed v) nx, nrefs)
+            else writer ((anno, urC) :< TLamF (Open v) nx, nrefs)
           f (Left s)           = lift $ Left s
         LetUPF bindings inner -> case runWriterT inner of
           Left s -> lift $ Left s
@@ -493,26 +548,27 @@ letsToApps term =
             nBindings <- traverse makeBindingsAsoc bindings
             let originalOrder = fmap fst bindings
                 dependencies = Map.fromList $ fmap (second snd) nBindings
-                sortedBindings :: Either ResolverError [(String, Term1)]
+                sortedBindings :: Either ResolverError [(String, Cofree (ParserTermF String String) (LocTag, Int))]
                 sortedBindings =
                   case topologicalSort originalOrder dependencies of
                     Left cycle -> Left cycle
                     Right sortedNames ->
-                      pure [(name, def) | name <- sortedNames,
-                            (name', (def, _)) <- nBindings, name == name']
-                makeBinding (n,d) inner = anno :< TAppF (makeLambda n inner) d
+                      pure [(name, def) | name <- sortedNames, (name', (def, _)) <- nBindings, name == name']
+                makeBinding (n,d@((_, c) :< _)) inner@(a :< _) = a :< TAppF (a :< TLamF (LetBinding c n) inner) d
             sortedBindings >>= \sb -> let trans = getTransitive' dependencies refs
-                                          sb' = [x | x <- sb, fst x `elem` trans]
-                                      in pure (foldr makeBinding nInner sb', Set.difference trans (Set.fromList $ fmap fst sb'))
-        x -> WriterT . fmap (first ((anno :<) . brt)) . runWriterT $ sequence x where
+                                          sb' = [(n,t) | (n,t) <- sb,  n `elem` trans]
+                                          fst' (x,_,_) = x
+                                          newRefs = Set.difference trans (Set.fromList $ fmap fst sb')
+                                      in pure (foldr makeBinding nInner $ reverse sb', newRefs)
+        x -> WriterT . fmap (first (((anno, urC) :<) . brt)) . runWriterT $ sequence x where
           brt = \case
             ITEUPF i t e -> TITEF i t e
-            IntUPF n -> unwrap $ i2t anno n
-            StringUPF s -> unwrap $ s2t anno s
+            IntUPF n -> unwrap $ i2t (anno, urC) n
+            StringUPF s -> unwrap $ s2t (anno, urC) s
             PairUPF a b -> TPairF a b
-            ListUPF l -> unwrap $ foldr (\x y -> anno :< TPairF x y) (anno :< TZeroF) l
+            ListUPF l -> unwrap $ foldr (\x y -> (anno, urC) :< TPairF x y) ((anno, urC) :< TZeroF) l
             AppUPF f x -> TAppF f x
-            UnsizedRecursionUPF t r b -> TAppF (anno :< TLimitedRecursionF t r b) (anno :< TUnsizedRepeaterF)
+            UnsizedRecursionUPF t r b -> TLimitedRecursionF t r b
             ChurchUPF n -> TChurchF n
             LeftUPF x -> TLeftF x
             RightUPF x -> TRightF x
@@ -521,21 +577,20 @@ letsToApps term =
             HashUPF x -> THashF x
       cleanup = \case
         Left s -> Left s
-        Right (t, refs) -> if null refs
-          then pure t
-          else Left . MissingDefinitions $ Set.toList refs
-  in cleanup . runWriterT $ cata buildRefs term
+        Right (x, refs) -> forgetURCount <$> addRepeaters refs x
+      -- HACK extended from annotateUnsizedCount
+      addRepeaters refs = if null refs
+        then pure
+        else \case
+        a :< TAppF x (_ :< TVarF v) -> case Set.partition (== v) refs of
+          (found, rest) | length found == 1 -> (\c i -> a :< TAppF c i) <$> addRepeaters rest x <*> pure (a :< TUnsizedRepeaterF)
+          _ -> Left . MissingDefinitions $ Set.toList refs
+        _ -> Left . MissingDefinitions $ Set.toList refs
 
--- |Collect all free variable names in a `Term1` expresion
-varsTerm1 :: Term1 -> Set String
-varsTerm1 = cata alg where
-  alg :: CofreeF (ParserTermF String String) a (Set String) -> Set String
-  alg (_ C.:< (TVarF n))          = Set.singleton n
-  alg (_ C.:< TLamF (Open n) x)   = del n x
-  alg (_ C.:< TLamF (Closed n) x) = del n x
-  alg e                           = F.fold e
-  del :: String -> Set String -> Set String
-  del n x = if Set.member n x then Set.delete n x else x
+      forgetURCount :: Cofree (ParserTermF String String) (LocTag, Int) -> Term1
+      forgetURCount = cata f where
+        f ((a,c) CofreeT.:< x) = a :< x
+  in cleanup . runWriterT . cata buildRefs $ annotateUnsizedCount term
 
 optimizeBuiltinFunctions :: AnnotatedUPT -> AnnotatedUPT
 optimizeBuiltinFunctions = transform optimize where
@@ -590,7 +645,7 @@ process upt = (\dt -> debugTrace ("Resolver process term:\n" <> prettyPrint dt) 
 
 processWlet :: AnnotatedUPT -> Either ResolverError Term3
 processWlet = fmap (splitExpr . (\dt -> debugTrace ("Resolver processWlet before split:\n" <> pt dt) dt)) . process2Term2let where
-  pt x = show $ fg x
+  pt x = prettyPrint $ fg x
   fg :: Term2 -> Fix (ParserTermF () Int)
   fg = forget
 
@@ -605,7 +660,7 @@ process2Term2 = fmap generateAllHashes
 
 process2Term2let :: AnnotatedUPT -> Either ResolverError Term2
 process2Term2let = fmap generateAllHashes
-                 . debruijinize [] <=< fmap tf . letsToApps
+                 . debruijinizeApp <=< fmap tf . letsToApps
                  . removeCaseUPs
                  . optimizeBuiltinFunctions
                  . addBuiltins
