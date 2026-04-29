@@ -41,10 +41,10 @@ import Telomare.Parser (AnnotatedUPT, parseModule, parseOneExprOrTopLevelDefs,
                         parsePrelude)
 import Telomare.Possible (abortExprToTerm4, abortPossibilities, appB,
                           deferB, evalStaticCheck, getSizesM,
-                          sizeTermM, term3ToUnsizedExpr, term4toAbortExpr, evalStaticCheck)
+                          sizeTermM, term3ToUnsizedExpr, term4toAbortExpr, evalStaticCheck, SizingSettings (..))
 import Telomare.Possible (abortExprToTerm4, abortPossibilities, appB, deferB,
                           evalStaticCheck, getSizesM, sizeTermM,
-                          term3ToUnsizedExpr, term4toAbortExpr)
+                          term3ToUnsizedExpr, term4toAbortExpr, SizingSettings (SizingSettings))
 import Telomare.PossibleData (AbortExpr, CompiledExpr (..), SizedRecursion (..),
                               VoidF, envB, leftB, pairB, pattern AbortFW,
                               rightB, setEnvB)
@@ -103,12 +103,14 @@ data SizingOption
   = NoSizing
   | UnitTestSizing
   | MainSizing
+  | DebugSizing SizingSettings
 
 findChurchSizeD :: SizingOption -> Term3 -> Either EvalError Term4
 findChurchSizeD so t3 = case so of
   NoSizing -> pure (convertPT (const 255) t3)
-  UnitTestSizing -> calculateRecursionLimits False t3
-  MainSizing -> calculateRecursionLimits True t3
+  UnitTestSizing -> calculateRecursionLimits (SizingSettings True True 255 False) t3
+  MainSizing -> calculateRecursionLimits (SizingSettings True True 255 True) t3
+  DebugSizing ss -> calculateRecursionLimits ss t3
 
 -- rather than remove checks, we should extract them so that they can be run separately, if that gives a performance benefit
 {-
@@ -142,8 +144,8 @@ compileMain modules term = do
     _      -> first RE (main2Term3let modules term) >>= compile MainSizing pure
 
 -- for testing
-compileMain' :: Term3 -> Either EvalError CompiledExpr
-compileMain' = compile MainSizing pure
+compileMain' :: SizingSettings -> Term3 -> Either EvalError CompiledExpr
+compileMain' ss = compile (DebugSizing ss) pure
 
 compileUnitTest :: Term3 -> Either EvalError CompiledExpr
 compileUnitTest = compile UnitTestSizing runStaticChecks
@@ -274,12 +276,12 @@ evalLoop_ iexpr = evalLoopCore iexpr printAcc "" []
                        then pure out
                        else pure (acc <> "\n" <> out)
 
-calculateRecursionLimits :: Bool -> Term3 -> Either EvalError Term4
-calculateRecursionLimits doCap t3 =
+calculateRecursionLimits :: SizingSettings -> Term3 -> Either EvalError Term4
+calculateRecursionLimits sizingSettings t3 =
   let abortExprToTerm4' :: AbortExpr -> Either IExpr Term4
       abortExprToTerm4' = abortExprToTerm4
       limitSize = 256
-  in case fmap abortExprToTerm4' . sizeTermM limitSize doCap $ term3ToUnsizedExpr limitSize t3 of
+  in case fmap abortExprToTerm4' . sizeTermM sizingSettings $ term3ToUnsizedExpr limitSize t3 of
     Left urt -> Left $ RecursionLimitError urt
     Right t  -> case t of
       Left a  -> Left . StaticCheckError . convertAbortMessage $ a

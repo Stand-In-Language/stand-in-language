@@ -71,6 +71,8 @@ import Test.QuickCheck.Gen (sized)
 -- import           Telomare.TypeChecker
 -- import Data.SBV.RegExp (everything)
 import Telomare.RunTime (hvmEval)
+import Control.Exception (Exception)
+import Control.Exception.Base (throw)
 
 debug :: Bool
 debug = False
@@ -199,7 +201,7 @@ stuckStepDebugM :: forall a f m j. (Base a ~ f, Traversable f, StuckBase f, Basi
                    , Gennable a ~ j, GenValid j, Eq j)
   => (f a -> m a) -> f a -> m a
 stuckStepDebugM handleOther x = f x where
-  interestingIds = []
+  interestingIds = [-5, 33, 32, 31, 29]
   f = \case
     ff@(FillFunction (StuckEE (DeferSF fid d)) e) -> db $ transformNoDeferM runStuck d' where
       runStuck = basicStepM (stuckStepDebugM handleOther) . replaceEnv
@@ -263,9 +265,9 @@ gateIndexedResult handleOther = \case
   IndexedEE (IVarF n) -> GateResult True True Nothing
   x -> handleOther x
 
-mergeShallow :: (Base g ~ f, SuperBase f, ShallowEq1 f, Recursive g, Corecursive g) => Maybe Integer -> g -> g -> g
+mergeShallow :: (Base g ~ f, SuperBase f, ShallowEq1 f, Recursive g, Corecursive g, PrettyPrintable g) => Maybe Integer -> g -> g -> g
 mergeShallow n a b = if shallowEq1 (project a) (project b)
-  then a
+  then debugTrace ("mergeShallow found same pair\n" <> prettyPrint a <> "\nand\n" <> prettyPrint b) a
   else superEE $ EitherPF n a b
 
 foldGateResult :: forall g f. (Base g ~ f, SuperBase f, Recursive g, Corecursive g) => Maybe Integer -> g -> g -> GateResult g -> g
@@ -318,7 +320,7 @@ superUnsizedStep :: forall a f. (Base a ~ f, Traversable f, BasicBase f, SuperBa
 superUnsizedStep gateResult step handleOther =
   let filterLeft :: Maybe Integer -> f a -> a
       filterLeft n = \case
-        SuperFW (EitherPF nt a _) | nt == n -> a
+        SuperFW (EitherPF nt a _) | nt == n -> error "TODO make like superStepM" a
         x -> embed x
       filterRight :: Maybe Integer -> f a -> a
       filterRight n = \case
@@ -342,70 +344,44 @@ superUnsizedStep gateResult step handleOther =
     x@(SuperFW (EitherPF _ _ _)) -> embed x
     x -> handleOther x
 
+data SizingSettings = SizingSettings
+  { doFilterBefore :: Bool
+  , doFilterAfter :: Bool
+  , maxSizingSize :: Int
+  , doCap :: Bool
+  } deriving (Eq, Ord, Show)
+
 superStepM :: forall a f m. (Base a ~ f, Traversable f, BasicBase f, SuperBase f, ShallowEq1 f, Recursive a, Corecursive a, PrettyPrintable a, Monad m)
-  => (a -> GateResult a) -> (f a -> m a) -> (f a -> m a) -> f a -> m a
-superStepM gateResult step handleOther x = f x where
+  => SizingSettings -> (a -> GateResult a) -> (f a -> m a) -> (f a -> m a) -> f a -> m a
+superStepM (SizingSettings dfb dfa _ _)  gateResult step handleOther x = f x where
   pbStep bf = step . embedB . bf
   filterLeft :: Maybe Integer -> f a -> a
   filterLeft n = \case
-        SuperFW (EitherPF nt a _) | nt == n -> a
+        s@(SuperFW (EitherPF nt a _)) | (decendant <$> nt <*> n) == Just True -> a
         x -> embed x
   filterRight :: Maybe Integer -> f a -> a
   filterRight n = \case
-        SuperFW (EitherPF nt _ b) | nt == n -> b
+        s@(SuperFW (EitherPF nt _ b)) | (decendant <$> n <*> nt) == Just True -> b
         x -> embed x
   f = \case
-    BasicFW (LeftSF (SuperEE (EitherPF n a b))) -> mergeShallow n <$> pbStep LeftSF a <*> pbStep LeftSF b
-    BasicFW (RightSF (SuperEE (EitherPF n a b))) -> mergeShallow n <$> pbStep RightSF a <*> pbStep RightSF b
+    BasicFW (LeftSF (SuperEE (EitherPF n a b))) ->  mergeShallow n <$> pbStep LeftSF a <*> pbStep LeftSF b
+    BasicFW (RightSF (SuperEE (EitherPF n a b))) ->  mergeShallow n <$> pbStep RightSF a <*> pbStep RightSF b
     BasicFW (SetEnvSF (SuperEE (EitherPF n a b))) -> mergeShallow n <$> pbStep SetEnvSF a <*> pbStep SetEnvSF b
     GateSwitch l r x@(SuperEE (EitherPF n _ _)) -> pure . foldGateResult n l r $ gateResult x
-    FillFunction (SuperEE (EitherPF n sca scb)) e -> mergeShallow n
-       <$> (pbStep SetEnvSF . basicEE . PairSF sca $ if null n then e else cata (filterLeft n) e)
-       <*> (pbStep SetEnvSF . basicEE . PairSF scb $ if null n then e else cata (filterRight n) e)
+    FillFunction (SuperEE (EitherPF n sca scb)) e ->
+      let fl = if null n then id else cata (filterLeft n)
+          fr = if null n then id else cata (filterRight n)
+          (flb, frb) = if dfb then (fl, fr) else (id, id)
+          (fla, fra) = if dfa then (fmap fl, fmap fr) else (id, id)
+      in mergeShallow n
+       <$> fla (pbStep SetEnvSF . basicEE . PairSF sca $ flb e)
+       <*> fra (pbStep SetEnvSF . basicEE . PairSF scb $ frb e)
     -- stuck values
     x@(SuperFW (EitherPF _ _ _)) -> pure $ embed x
 
     _ -> handleOther x
 
--- just for debugging
-superStepM' :: forall a f m. (Base a ~ f, Traversable f, BasicBase f, SuperBase f, ShallowEq1 f, Recursive a, Corecursive a, PrettyPrintable a, Show a, Monad m)
-  => (a -> GateResult a) -> (f a -> m a) -> (f a -> m a) -> f a -> m a
-superStepM' gateResult step handleOther x = f x where
-  pbStep bf = step . embedB . bf
-  filterLeft :: Maybe Integer -> f a -> a
-  filterLeft n = \case
-        SuperFW (EitherPF nt a _) | nt == n -> a
-        x -> embed x
-  filterRight :: Maybe Integer -> f a -> a
-  filterRight n = \case
-        SuperFW (EitherPF nt _ b) | nt == n -> b
-        x -> embed x
-  -- traceSwitch x = debugTrace ("super switch:\n" <> prettyPrint x <> "\nswitch gateResult: " <> show (gateResult x)) x
-  traceSwitch x = x
-  -- tsf x = debugTrace ("super switch fold result:\n" <> prettyPrint x) x
-  tsf x = x
-  -- dtff x y = debugTrace ("superStep fillFunction\n" <> prettyPrint (embed x) <> "\n-- result\n" <> prettyPrint y) y
-  dtff x y = y
-  {-
-  dtfl e x = debugTrace ("superStep ff filter left before\n" <> prettyPrint e <> "\nafter filter\n" <> prettyPrint x) x
-  dtfr e x = debugTrace ("superStep ff filter right before\n" <> prettyPrint e <> "\nafter filter\n" <> prettyPrint x) x
--}
-  dtfl e = id
-  dtfr e = id
-  f = \case
-    BasicFW (LeftSF (SuperEE (EitherPF n a b))) -> mergeShallow n <$> pbStep LeftSF a <*> pbStep LeftSF b
-    BasicFW (RightSF (SuperEE (EitherPF n a b))) -> mergeShallow n <$> pbStep RightSF a <*> pbStep RightSF b
-    BasicFW (SetEnvSF (SuperEE (EitherPF n a b))) -> mergeShallow n <$> pbStep SetEnvSF a <*> pbStep SetEnvSF b
-    GateSwitch l r x@(SuperEE (EitherPF n _ _)) -> pure . tsf . foldGateResult n l r . gateResult $ traceSwitch x
-    ff@(FillFunction (SuperEE (EitherPF n sca scb)) e) -> (\nl nr -> dtff ff $ mergeShallow n nl nr)
-       <$> (pbStep SetEnvSF . basicEE . PairSF sca $ if null n then e else dtfl e (cata (filterLeft n) e))
-       <*> (pbStep SetEnvSF . basicEE . PairSF scb $ if null n then e else dtfr e (cata (filterRight n) e))
-    -- stuck values
-    x@(SuperFW (EitherPF _ _ _)) -> pure $ embed x
-
-    _ -> handleOther x
-
-superAbortStep :: (Base g ~ f, Traversable f, BasicBase f, SuperBase f, AbortBase f, ShallowEq1 f, Recursive g, Corecursive g)
+superAbortStep :: (Base g ~ f, Traversable f, BasicBase f, SuperBase f, AbortBase f, ShallowEq1 f, Recursive g, Corecursive g, PrettyPrintable g)
   => (f g -> g) -> (f g -> g) -> f g -> g
 superAbortStep step handleOther x = f x where
   pbStep bf = step . project . bf
@@ -414,7 +390,7 @@ superAbortStep step handleOther x = f x where
       mergeShallow n (pbStep (fillFunction (abortEE AbortF)) a) (pbStep (fillFunction (abortEE AbortF)) b)
     _ -> handleOther x
 
-superAbortStepM :: (Base g ~ f, Traversable f, BasicBase f, SuperBase f, AbortBase f, ShallowEq1 f, Recursive g, Corecursive g, Monad m)
+superAbortStepM :: (Base g ~ f, Traversable f, BasicBase f, SuperBase f, AbortBase f, ShallowEq1 f, Recursive g, Corecursive g, PrettyPrintable g, Monad m)
   => (f g -> m g) -> (f g -> m g) -> f g -> m g
 superAbortStepM step handleOther x = f x where
   pbStep bf = step . project . bf
@@ -462,7 +438,7 @@ fuzzyStepM merge step handleOther x = sequence x >>= f where
       rl <- mapM (liftStep SetEnvSF . basicEE . flip PairSF e) l
       case rl of
         (x:xs) -> pure $ foldl' merge x xs
-        _      -> error "superStepM fill functionlist, unexpected empty list"
+        _      -> error "fuzzyStepM fill functionlist, unexpected empty list"
     -- stuck values
     x@(FuzzyFW _) -> pure $ embed x
     _ -> handleOther x
@@ -549,7 +525,7 @@ unsizedTestIndexed zeroes handleOther ri = \case
     else iv
   x -> handleOther ri x
 
-unsizedTestSuper :: (Base g ~ f, SuperBase f, AbortBase f, Recursive g, Corecursive g)
+unsizedTestSuper :: (Base g ~ f, SuperBase f, AbortBase f, Recursive g, Corecursive g, PrettyPrintable g)
   => (g -> g) -> (UnsizedRecursionToken -> g -> g) -> UnsizedRecursionToken -> g -> g
 unsizedTestSuper reTest handleOther ri = \case
   SuperEE (EitherPF n a b) -> let getAU = \case
@@ -642,7 +618,7 @@ unsizedStepM''' maxSize zeros recursionTest handleOther x = f x where
   -- dbtse = unsizedEE . TraceF "sss else path"
   dbtse = id
   dbtw tok uwe = debugTrace ("inside sizing wrapper " <> show tok <> ":\n" <> prettyPrint uwe)
-  dbrt x = x -- debugTrace ("unsized test value:\n" <> prettyPrint x) x
+  dbrt x = debugTrace ("unsized test value:\n" <> prettyPrint x) x
   -- dbtisss = unsizedEE . TraceF "inside expanded sss"
   dbtisss = id
   -- argTOne = leftB . unsizedEE $ TraceF "env inside sss" envB
@@ -840,6 +816,14 @@ isUnbounded s n = f s where
     | Set.member n s' = False
     | otherwise = (f . Set.map (flip div 2 . pred)) $ Set.filter (>= n) s'
 
+
+-- NOTE this considers a node to be its own decendant
+decendant :: Integer -> Integer -> Bool
+decendant x d = case compare x d of
+  GT -> decendant (flip div 2 $ pred x) d
+  EQ -> True
+  LT -> False
+
 extractZeroes :: InputSizingExpr -> Set Integer
 extractZeroes = cleanup . f Nothing where
   f expected = f' expected . project
@@ -1017,6 +1001,13 @@ isClosure = \case
   BasicEE (PairSF (StuckEE (DeferSF _ _)) _) -> True
   _                                          -> False
 
+data UnexpectedGrammarException = UGException String
+
+instance Show UnexpectedGrammarException where
+  show (UGException e) = "UnexpectedGrammarException: " <> e
+
+instance Exception UnexpectedGrammarException
+
 sizeTerm :: Int -> UnsizedExpr -> Either UnsizedRecursionToken AbortExpr
 sizeTerm maxSize x = tidyUp . foldAborted . debugResult . transformNoDefer evalStep $ peTerm where
   failConvert x = error $ "sizeTerm convert, unhandled:\n" <> prettyPrint x
@@ -1088,26 +1079,27 @@ sizeTerm maxSize x = tidyUp . foldAborted . debugResult . transformNoDefer evalS
 
 
 
-sizeTermM :: Int -> Bool -> UnsizedExpr -> Either UnsizedRecursionToken AbortExpr
-sizeTermM maxSize doCap x = tidyUp . ($ []) . runReaderT . transformNoDeferM evalStep $ cm where
+sizeTermM :: SizingSettings -> UnsizedExpr -> Either UnsizedRecursionToken AbortExpr
+sizeTermM sizingSettings x = tidyUp . ($ []) . runReaderT . transformNoDeferM evalStep $ cm where
   failConvert x = error $ "sizeTermM convert, unhandled:\n" <> prettyPrint x
   forceType :: StuckExpr -> StuckExpr
   forceType = id
   showZeros z = "\nsizeTermM zeros are: " <> show z <> "\nzeros are:\n" <> concatMap ((<> "\n") . prettyPrint . forceType . zeroToBranch) z
   -- zeros = (\x -> debugTrace ("sizeTerm zeros are " <> show x) x) $ getInputLimits x
-  zeros = (\x -> debugTrace ("sizeTermM inital term is\n" <> prettyPrint cm <> showZeros x) x) $ getInputLimits cm'
-  -- zeros = getInputLimits x
+  -- zeros = (\x -> debugTrace ("sizeTermM inital term is\n" <> prettyPrint cm <> showZeros x) x) $ getInputLimits cm'
+  zeros = (\x -> trace ("sizeTermM zeros are\n" <> show x) x) $ getInputLimits cm'
+  -- zeros = getInputLimits cm'
   dtt :: UnsizedExpr -> UnsizedExpr
   -- dtt t = debugTrace ("sizeTermM initial term is\n" <> prettyPrint t <> "\n...and result should be\n" <> prettyPrint (regularEval t)) t
   dtt t = debugTrace ("sizeTermM initial term is\n" <> prettyPrint t) t
-  cm' = dtt $ if doCap
+  cm' = dtt $ if doCap sizingSettings
     then capMain (indexedEE $ IVarF 0) x
     else x
   cm = removeRefinementWrappers cm'
   tidyUp (StrictAccum (SizedRecursion sm) r) = debugTrace ("sizes are: " <> show sm <> "\nand result is:\n" <> prettyPrint r) $ case foldAborted r of
     Just (UnsizableSR i) -> debugTrace "sizeTermM hit unsizable" Left i
     _ -> let sized = setSizes sm cm
-         in debugTrace "sizeTermM found all sizes" pure . clean $ if doCap
+         in debugTrace "sizeTermM found all sizes" pure . clean $ if doCap sizingSettings
             then uncap sized
             else sized
       where uncap = \case
@@ -1134,10 +1126,12 @@ sizeTermM maxSize doCap x = tidyUp . ($ []) . runReaderT . transformNoDeferM eva
   unsizedTest :: UnsizedRecursionToken -> UnsizedExpr -> UnsizedExpr
   unsizedTest ri = unsizedTestIndexed zeros (unsizedTestSuper (unsizedTest ri) (const id)) ri
   -- unsizedTest' ri = (\x -> debugTrace ("unsizedTest value of\n" <> prettyPrint x) x) . unsizedTest ri
-  unsizedTest' ri = unsizedTest ri . (\x -> debugTrace ("unsizedTest value of\n" <> prettyPrint x) x)
-  unhandledError x = error ("sizeTerm unhandled case\n" <> prettyPrint x)
+  -- unsizedTest' ri = unsizedTest ri . (\x -> debugTrace ("unsizedTest value of\n" <> prettyPrint x) x)
+  unsizedTest' ri = (\x -> debugTrace ("unsizedTest evaluated to value of\n" <> prettyPrint x) x) . unsizedTest ri
+  -- unhandledError x = error ("sizeTerm unhandled case\n" <> prettyPrint x)
+  unhandledError x = throw $ UGException ("sizeTermM unhandled case\n" <> prettyPrint x)
   -- evalStep = basicStepM (stuckStepWithTrace (abortStepM (indexedAbortStepM (indexedInputStepM zeros (indexedSuperStepM (superStepM gateResult evalStep (superAbortStepM evalStep (unsizedStepM maxSize unsizedTest failAndPrintStack))))))))
-  evalStep = basicStepM (stuckStepDebugM (abortStepM (indexedAbortStepM (indexedInputStepM zeros (indexedSuperStepM (superStepM gateResult evalStep (superAbortStepM evalStep (unsizedStepM''' maxSize zeros unsizedTest unhandledError))))))))
+  evalStep = basicStepM (stuckStepDebugM (abortStepM (indexedAbortStepM (indexedInputStepM zeros (indexedSuperStepM (superStepM sizingSettings gateResult evalStep (superAbortStepM evalStep (unsizedStepM''' (maxSizingSize sizingSettings) zeros unsizedTest' unhandledError))))))))
   -- evalStep = basicStepM (stuckStepWithTrace (abortStepM (indexedAbortStepM (indexedInputStepM zeros (indexedSuperStepM (superStepM gateResult evalStep (superAbortStepM evalStep (unsizedStepM''' maxSize zeros unsizedTest failAndPrintStack))))))))
 
 {-
@@ -1155,6 +1149,7 @@ evalTrace x = debugTrace ("evalTrace:\n" <> prettyPrint (transformNoDefer evalSt
 -- inputtest zero: 59 L - 60 L actual
 abortPossibilities :: Int -> UnsizedExpr -> Set IExpr
 abortPossibilities maxSize x = tidyUp . ($ []) . runReaderT . transformNoDeferM evalStep $ cm where
+  sizingSettings = SizingSettings True True 255 True
   failConvert x = error $ "abortPossibilities convert, unhandled:\n" <> prettyPrint x
   -- zeros = (\x -> debugTrace ("sizeTerm zeros are " <> show x) x) $ getInputLimits x
   forceType :: StuckExpr -> StuckExpr
@@ -1187,10 +1182,11 @@ abortPossibilities maxSize x = tidyUp . ($ []) . runReaderT . transformNoDeferM 
   unhandledError x = error ("abortPossibilities unhandled case\n" <> prettyPrint x)
   -- evalStep = basicStepM (stuckStepWithTrace (abortStepM (indexedAbortStepM (indexedInputStepM zeros (indexedSuperStepM (superStepM gateResult evalStep (superAbortStepM evalStep (unsizedStepM maxSize unsizedTest failAndPrintStack))))))))
   -- evalStep = basicStepM (stuckStepDebugM (abortStepM (indexedAbortStepM (indexedInputStepM zeros (indexedSuperStepM (superStepM gateResult evalStep (superAbortStepM evalStep (unsizedStepM''' maxSize zeros unsizedTest unhandledError))))))))
-  evalStep = basicStepM (stuckStepWithTrace (abortStepM (indexedAbortStepM (indexedInputStepM zeros (indexedSuperStepM (superStepM gateResult evalStep (superAbortStepM evalStep (unsizedStepM''' maxSize zeros unsizedTest failAndPrintStack))))))))
+  evalStep = basicStepM (stuckStepWithTrace (abortStepM (indexedAbortStepM (indexedInputStepM zeros (indexedSuperStepM (superStepM sizingSettings gateResult evalStep (superAbortStepM evalStep (unsizedStepM''' maxSize zeros unsizedTest failAndPrintStack))))))))
 
 getSizesM :: Int -> UnsizedExpr -> Either UnsizedRecursionToken SizedRecursion
 getSizesM maxSize x = tidyUp . ($ []) . runReaderT . transformNoDeferM evalStep $ cm where
+  sizingSettings = SizingSettings True True 255 True
   failConvert x = error $ "getSizesM convert, unhandled:\n" <> prettyPrint x
   -- zeros = (\x -> debugTrace ("sizeTerm zeros are " <> show x) x) $ getInputLimits x
   -- zeros = (\x -> debugTrace ("sizeTerm inital term is\n" <> prettyPrint cm <> "\nsizeTerm zeros are " <> show x) x) $ getInputLimits x
@@ -1215,7 +1211,7 @@ getSizesM maxSize x = tidyUp . ($ []) . runReaderT . transformNoDeferM evalStep 
   unhandledError x = error ("getSizesM unhandled case\n" <> prettyPrint x)
   -- evalStep = basicStepM (stuckStepWithTrace (abortStepM (indexedAbortStepM (indexedInputStepM zeros (indexedSuperStepM (superStepM gateResult evalStep (superAbortStepM evalStep (unsizedStepM maxSize unsizedTest failAndPrintStack))))))))
   -- evalStep = basicStepM (stuckStepDebugM (abortStepM (indexedAbortStepM (indexedInputStepM zeros (indexedSuperStepM (superStepM' gateResult evalStep (superAbortStepM evalStep (unsizedStepM''' maxSize zeros unsizedTest unhandledError))))))))
-  evalStep = basicStepM (stuckStepWithTrace (abortStepM (indexedAbortStepM (indexedInputStepM zeros (indexedSuperStepM (superStepM gateResult evalStep (superAbortStepM evalStep (unsizedStepM''' maxSize zeros unsizedTest' failAndPrintStack))))))))
+  evalStep = basicStepM (stuckStepWithTrace (abortStepM (indexedAbortStepM (indexedInputStepM zeros (indexedSuperStepM (superStepM sizingSettings gateResult evalStep (superAbortStepM evalStep (unsizedStepM''' maxSize zeros unsizedTest' failAndPrintStack))))))))
 
 removeRefinementWrappers :: (Base g ~ f, BasicBase f, StuckBase f, AbortBase f, UnsizedBase f, Recursive g, Corecursive g) => g -> g
 removeRefinementWrappers = cata f where

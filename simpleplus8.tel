@@ -1,0 +1,13 @@
+import Prelude
+
+validDigit = \x -> and ($47 left x) (not ($57 left x)) -- does not work
+-- validDigit = \x -> not ($57 left x) -- works
+
+validInput = \x -> assert (validDigit (left x))
+                          "!"
+
+main = \input -> let inString : validInput = left input
+                     x = left inString
+                 in if not input
+                    then ("?", 1)
+                    else (if d2c x left 50 then "A" else "B", 0)

@@ -487,7 +487,7 @@ annotateUnsizedCount = capTop . flip evalStateT 0 . cata f where
       LetUPF bindings inner -> (\b i -> (anno, 0) :< LetUPF b i) <$> traverse rebind bindings <*> inner
       x -> ((anno, 0) :<) <$> sequence x
   rebind (n, x) = cap n $ evalStateT x 0
-  cap n (vs, x@((anno, _) :< _)) = debugTrace ("annotateUnsizedCount cap with size "<> show (length vs)) lift (Set.empty, (n, foldr (\v b -> (anno, length vs) :< LamUPF (':' : show v) b) x vs))
+  cap n (vs, x@((anno, _) :< _)) = lift (Set.empty, (n, foldr (\v b -> (anno, length vs) :< LamUPF (':' : show v) b) x vs))
   -- HACK vars are just placehorders for next step
   capTop (vs, x@((anno, _) :< _)) =
     foldr (\v b -> (anno, length vs) :< AppUPF ((anno, 0) :< LamUPF (':' : show v) b) ((anno, 0) :< VarUPF (':' : show v))) x vs
