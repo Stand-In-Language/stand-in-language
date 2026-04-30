@@ -824,10 +824,20 @@ decendant x d = case compare x d of
   EQ -> True
   LT -> False
 
-extractZeroes :: InputSizingExpr -> Set Integer
-extractZeroes = cleanup . f Nothing where
+data InputRestrictions
+  = InputRestrictions {zeroes :: Set Integer, pairs :: Set Integer}
+  deriving Show
+
+instance Semigroup InputRestrictions where
+  (<>) (InputRestrictions za pa) (InputRestrictions zb pb) = InputRestrictions (za <> zb) (pa <> pb)
+instance Monoid InputRestrictions where
+  mempty = InputRestrictions mempty mempty
+
+extractInputRestrictions :: InputSizingExpr -> InputRestrictions
+extractInputRestrictions = cleanup . f Nothing where
   f expected = f' expected . project
-  f' :: Maybe Bool -> InputSizingExprF InputSizingExpr -> Maybe (StrictAccum (Set Integer) InputSizingExpr)
+  irIntersection (InputRestrictions za pa) (InputRestrictions zb pb) = InputRestrictions (za <> zb) (pa <> pb)
+  f' :: Maybe Bool -> InputSizingExprF InputSizingExpr -> Maybe (StrictAccum InputRestrictions InputSizingExpr)
   f' expected = \case
     z@(BasicFW ZeroSF) -> case expected of
       Just True -> Nothing
@@ -835,11 +845,10 @@ extractZeroes = cleanup . f Nothing where
     p@(BasicFW (PairSF _ _)) -> case expected of
       Just False -> Nothing
       _          -> pure . pure $ embed p
-    -- IndexedFW (IVarF n) -> debugTrace ("extractZeroes hit ivar of " <> show n) $ case expected of
     IndexedFW (IVarF n) -> case expected of
-      Just False -> Just (StrictAccum (Set.singleton n) $ basicEE ZeroSF)
-      Just True  -> Just (StrictAccum Set.empty $ pairB zeroB zeroB)
-      _          -> Just (StrictAccum Set.empty zeroB)
+      Just False -> Just (StrictAccum (InputRestrictions (Set.singleton n) mempty) zeroB)
+      Just True  -> Just (StrictAccum (InputRestrictions mempty (Set.singleton n)) $ pairB zeroB zeroB)
+      _          -> Just (StrictAccum mempty zeroB) -- is this ok?
     -- FillFunction (AbortEE AbortF) i -> debugTrace ("extractZeroes hit abort with:\n" <> prettyPrint i) $ f (Just False) i
     FillFunction (AbortEE AbortF) i -> f (Just False) i
     GateSwitch l r s ->
@@ -853,7 +862,7 @@ extractZeroes = cleanup . f Nothing where
         (Nothing, Nothing) -> debugTrace "extractZeroes gate nothing" Nothing
         (Just (StrictAccum sta x), Just (StrictAccum stb _)) -> debugTrace "extractZeroes gate both" $ case f Nothing s of
           Nothing -> Nothing
-          Just (StrictAccum st _) -> pure $ StrictAccum (st <> Set.intersection sta stb) x
+          Just (StrictAccum st _) -> pure $ StrictAccum (st <> irIntersection sta stb) x
         (Just (StrictAccum sta x), _) -> case f (Just False) s of
           Nothing                  -> Nothing
           Just (StrictAccum stb _) -> pure $ StrictAccum (sta <> stb) x
@@ -863,7 +872,7 @@ extractZeroes = cleanup . f Nothing where
     _ -> Nothing
   cleanup = \case
     Just (StrictAccum s _) -> s
-    _ -> Set.empty
+    _ -> mempty
 
 zeroToBranch :: (Base a ~ f, BasicBase f, Corecursive a) => Integer -> a
 {-
@@ -921,8 +930,8 @@ pathToBranch n = g n id where
    `abcd
 -}
 
-findInputLimitStepM :: (InputSizingExprF InputSizingExpr -> StrictAccum (Set Integer) InputSizingExpr)
-  -> InputSizingExprF InputSizingExpr -> StrictAccum (Set Integer) InputSizingExpr
+findInputLimitStepM :: (InputSizingExprF InputSizingExpr -> StrictAccum InputRestrictions InputSizingExpr)
+  -> InputSizingExprF InputSizingExpr -> StrictAccum InputRestrictions InputSizingExpr
 findInputLimitStepM handleOther x = f x where
   f = \case
     UnsizedFW (RefinementWrapperF lt tc c) ->
@@ -951,7 +960,7 @@ findInputLimitStepM handleOther x = f x where
           -- dtit x = debugTrace ("findInputLimitStepM eval with test zero is:\n" <> prettyPrint (transformNoDefer evalStepT (convertIL x))) x
           -- dtt x = debugTrace ("findInputLimitStepM tc test is:\n" <> prettyPrint x) x
           dtt = id
-          s = extractZeroes . cata stripBarrier . dtt . transformNoDefer evalStep . dtit $ performTC
+          s = extractInputRestrictions . cata stripBarrier . dtt . transformNoDefer evalStep . dtit $ performTC
           -- s = extractZeroes . cata stripBarrier . dtt . transformNoDefer evalStep . dtit . setEnvB $ pairB performTC (pairB tc c)
       in StrictAccum s c
     _ -> handleOther x
@@ -980,7 +989,7 @@ term3ToUnsizedExpr maxSize (Term3 termMap) =
 
 -- get simple input limits derived from refinements
 -- returns a set of guaranteed Zeros, where the Integer is the encoded path from root of intput
-getInputLimits :: UnsizedExpr -> Set Integer
+getInputLimits :: UnsizedExpr -> InputRestrictions
 getInputLimits = getAccum . transformNoDeferM evalStep . convertIS where
   convertU = \case
     UnsizedFW (UnsizedStubF _ _) -> indexedEE AnyF
@@ -1013,9 +1022,9 @@ sizeTerm maxSize x = tidyUp . foldAborted . debugResult . transformNoDefer evalS
   failConvert x = error $ "sizeTerm convert, unhandled:\n" <> prettyPrint x
   forceType :: StuckExpr -> StuckExpr
   forceType = id
-  showZeros z = debugTrace ("sizeTerm zeros are: " <> show z <> "\nzeros are:\n" <> concatMap (prettyPrint . forceType . zeroToBranch) z)
+  -- showZeros z = debugTrace ("sizeTerm zeros are: " <> show z <> "\nzeros are:\n" <> concatMap (prettyPrint . forceType . zeroToBranch) z)
   --zeros = (\x -> debugTrace ("sizeTerm zeros are " <> show x) x) $ getInputLimits x
-  zeros = (\z -> showZeros z z) $ getInputLimits x
+  zeros = zeroes $ getInputLimits x
   debugResult r = debugTrace ("sizeTerm result is\n" <> prettyPrint r) r
   {-
   convertForPartial :: UnsizedExpr -> InputSizingExpr
@@ -1059,10 +1068,12 @@ sizeTerm maxSize x = tidyUp . foldAborted . debugResult . transformNoDefer evalS
       AbortFW (AbortedF (AbortUnsizeable t)) -> (Just . UnsizableSR . toEnum . g2i $ t, mempty)
       UnsizedFW (SizeStageF sm x) -> (Nothing, sm) <> x
       x                                 -> Data.Foldable.fold x
+  {-
   nextPartialSizing (SizedRecursion sm, expr) = debugTrace ("partialSizes setting " <> show sm) $
     if not (null sm)
     then let nexpr = setSomeSizes sm expr in (evalPartialUnsized zeros nexpr, nexpr)
     else (evalPartialUnsized zeros expr, expr)
+-}
   hasSizes (SizedRecursion sm, _) = not . null $ Map.filter (not . null) sm
   {-
   peTerm = snd . head . dropWhile hasSizes . tail
@@ -1077,17 +1088,22 @@ sizeTerm maxSize x = tidyUp . foldAborted . debugResult . transformNoDefer evalS
   evalStep = basicStep (stuckStep (abortStep (indexedAbortStep (indexedInputStep zeros (indexedSuperStep (superUnsizedStep gateResult evalStep (superAbortStep evalStep (unsizedStep maxSize unsizedTest evalStep unhandledError))))))))
   unhandledError x = error ("sizeTerm unhandled case\n" <> prettyPrint x)
 
-
+initialInput :: (Base a ~ f, BasicBase f, IndexedInputBase f, Recursive a, Corecursive a) => InputRestrictions -> a
+initialInput irs = f 0 where
+  f n = if any (`decendant` n) $ pairs irs
+    then pairB (f $ n * 2 + 1) (f $ n * 2 + 2)
+    else indexedEE $ IVarF n
 
 sizeTermM :: SizingSettings -> UnsizedExpr -> Either UnsizedRecursionToken AbortExpr
-sizeTermM sizingSettings x = tidyUp . ($ []) . runReaderT . transformNoDeferM evalStep $ cm where
+sizeTermM sizingSettings x = tidyUp . ($ []) . runReaderT . transformNoDeferM evalStep $ mx where
   failConvert x = error $ "sizeTermM convert, unhandled:\n" <> prettyPrint x
   forceType :: StuckExpr -> StuckExpr
   forceType = id
   showZeros z = "\nsizeTermM zeros are: " <> show z <> "\nzeros are:\n" <> concatMap ((<> "\n") . prettyPrint . forceType . zeroToBranch) z
   -- zeros = (\x -> debugTrace ("sizeTerm zeros are " <> show x) x) $ getInputLimits x
   -- zeros = (\x -> debugTrace ("sizeTermM inital term is\n" <> prettyPrint cm <> showZeros x) x) $ getInputLimits cm'
-  zeros = (\x -> trace ("sizeTermM zeros are\n" <> show x) x) $ getInputLimits cm'
+  inputRestrictions = (\x -> trace ("sizeTermM zeros are\n" <> show x) x) $ getInputLimits cm'
+  zeros = zeroes inputRestrictions
   -- zeros = getInputLimits cm'
   dtt :: UnsizedExpr -> UnsizedExpr
   -- dtt t = debugTrace ("sizeTermM initial term is\n" <> prettyPrint t <> "\n...and result should be\n" <> prettyPrint (regularEval t)) t
@@ -1096,6 +1112,9 @@ sizeTermM sizingSettings x = tidyUp . ($ []) . runReaderT . transformNoDeferM ev
     then capMain (indexedEE $ IVarF 0) x
     else x
   cm = removeRefinementWrappers cm'
+  mx = removeRefinementWrappers $ if doCap sizingSettings
+    then capMain (initialInput inputRestrictions) x
+    else x
   tidyUp (StrictAccum (SizedRecursion sm) r) = debugTrace ("sizes are: " <> show sm <> "\nand result is:\n" <> prettyPrint r) $ case foldAborted r of
     Just (UnsizableSR i) -> debugTrace "sizeTermM hit unsizable" Left i
     _ -> let sized = setSizes sm cm
@@ -1156,9 +1175,10 @@ abortPossibilities maxSize x = tidyUp . ($ []) . runReaderT . transformNoDeferM 
   forceType = id
   showZeros z = "\nabortPossibilities zeros are: " <> show z <> "\nzeros are:\n" <> concatMap (prettyPrint . forceType . zeroToBranch) z
   -- zeros = (\x -> debugTrace ("sizeTerm inital term is\n" <> prettyPrint cm <> showZeros x) x) $ getInputLimits x
-  zeros = getInputLimits x
+  inputRestrictions = getInputLimits x
+  zeros = zeroes inputRestrictions
   -- cm = removeRefinementWrappers . evalTrace $ capMain (indexedEE $ IVarF 0) x -- traceRefinement
-  cm = removeRefinementWrappers $ capMain (indexedEE $ IVarF 0) x
+  cm = removeRefinementWrappers $ capMain (initialInput inputRestrictions) x
   tidyUp (StrictAccum (SizedRecursion sm) r) = debugTrace ("sizes are: " <> show sm <> "\nand result is:\n" <> prettyPrint r) $ foldAborted r
   clean :: UnsizedExpr -> AbortExpr
   clean = cata (convertBasic (convertStuck (convertAbort failConvert)))
@@ -1190,8 +1210,9 @@ getSizesM maxSize x = tidyUp . ($ []) . runReaderT . transformNoDeferM evalStep 
   failConvert x = error $ "getSizesM convert, unhandled:\n" <> prettyPrint x
   -- zeros = (\x -> debugTrace ("sizeTerm zeros are " <> show x) x) $ getInputLimits x
   -- zeros = (\x -> debugTrace ("sizeTerm inital term is\n" <> prettyPrint cm <> "\nsizeTerm zeros are " <> show x) x) $ getInputLimits x
-  zeros = getInputLimits x
-  cm = removeRefinementWrappers $ capMain (indexedEE $ IVarF 0) x
+  inputRestrictions = getInputLimits x
+  zeros = zeroes inputRestrictions
+  cm = removeRefinementWrappers $ capMain (initialInput inputRestrictions) x
   tidyUp (StrictAccum sr@(SizedRecursion sm) r) = debugTrace ("sizes are: " <> show sm <> "\nand result is:\n" <> prettyPrint r) $ case foldAborted r of
     Just (UnsizableSR i) -> Left i
     _                    -> pure sr
