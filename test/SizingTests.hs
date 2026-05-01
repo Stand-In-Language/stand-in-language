@@ -1,7 +1,8 @@
+{-# LANGUAGE LambdaCase #-}
 module SizingTests where
 
 import Control.Applicative (liftA2)
-import Control.Exception (SomeException, evaluate, try)
+import Control.Exception (SomeException (SomeException), evaluate, try)
 import Control.Monad.IO.Class
 import Control.Monad.Reader (Reader, runReader)
 import qualified Control.Monad.State as State
@@ -20,7 +21,8 @@ import Telomare.Decompiler
 import Telomare.Eval
 import Telomare.Optimizer
 import Telomare.Parser
-import Telomare.Possible (evalBU, evalBU')
+import Telomare.Possible (evalBU, evalBU', appB, SizingSettings (SizingSettings), UnexpectedGrammarException)
+import Telomare.PossibleData (zeroB)
 import Telomare.Resolver
 import Telomare.RunTime
 import Telomare.TypeChecker
@@ -32,31 +34,57 @@ import Test.QuickCheck
 import Common
 
 
-
-{- works for now!
--- | Creates a simplified version of the test defined in Spec.hs that fails when
--- | using sizing but passes when using a fixed size of 255
-createMinimalSizingTest :: Spec
-createMinimalSizingTest = do
-
-  describe "tests highlight divergence of sizing behavior" $ do
+twoFailedApproaches :: Spec
+twoFailedApproaches =
+  describe "I wish something like this worked" $ do
     -- Minimal test content
+    preludeFile <- runIO $ Strict.readFile "Prelude.tel"
     testContent <- runIO $ Strict.readFile "tc.tel"
-    parsedContent <- runIO $ parsePreludeWithFile "Prelude.tel" testContent
-    let eval s i = (\g -> sizingFunWrap evalBU g i) <$> compileWithSizing s parsedContent
-
-    -- Test using sizing (throws exception that is caught by test)
-    result <- runIO . try @SomeException . evaluate $ eval True (Just ("A", Zero))
-    it "Test with sizing (should fail)" $ case result of
-        Left _ -> pure () -- Expected to fail with an exception
-        Right r -> expectationFailure ("Expected compilation to fail but it succeeded with result:\n" <> show r)
-
-    -- Test using fixed size (should pass)
-    result <- runIO . try @SomeException . evaluate $ eval False (Just ("A", Zero))
-    it "Test with fixed size (should pass)" $ case result of
-        Left e -> expectationFailure ("Exception hit:\n" <> show e)
-        Right r -> r `shouldBe` (Right ("R O", Just Zero))
+    testContent2 <- runIO $ Strict.readFile "simpleplus.tel"
+    testContent3 <- runIO $ Strict.readFile "simpleplus8.tel"
+    -- let try' :: IO a -> IO (Either SomeException a)
+    let try' :: IO a -> IO (Either UnexpectedGrammarException a)
+        try' = try
+        prelude' = case parsePrelude preludeFile of
+          Right p -> p
+          Left pe -> error $ show pe
+        prelude :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
+        prelude = [("Prelude", Right <$> prelude')]
+        parseAuxModule :: String -> (String, [Either AnnotatedUPT (String, AnnotatedUPT)])
+        parseAuxModule str =
+          case sequence ("AuxModule", parseModule ("import Prelude\n" <> str)) of
+            Left e    -> error $ show e
+            Right pam -> pam
+        parse :: Bool -> String -> Either String Term3
+        parse appLet str = if appLet
+          then first show $ main2Term3let (parseAuxModule str:prelude) "AuxModule"
+          else first show $ main2Term3 (parseAuxModule str:prelude) "AuxModule"
+        sizingSettingss = do
+          doLeftFilter <- [True] -- [False, True]
+          doFilterBefore <- [True] -- [False, True]
+          pure $ SizingSettings doLeftFilter doFilterBefore 255 True
+        buildMainTest ss s = case fmap (compileMain' ss) (parse True s) of
+          Right (Right g) -> let eval = funWrap g appB
+                                 mi i = "main input " <> i <> " and SizingSettings " <> show ss
+                             -- in pure $ \s i e -> it ("main input " <> i) $ eval (Just (i, s)) `shouldBe` e
+                             in pure $ \s i e -> runIO (try' . evaluate . eval $ Just (i, s)) >>=
+                                                 \case
+                                                   Left z -> runIO $ expectationFailure (mi i <> " threw exception " <> show z)
+                                                   Right r' -> it (mi i) $ r' `shouldBe` e
+          z -> pure $ \ss i e -> runIO . expectationFailure $ "failed to compile main:\n" <> show s <> "\nbecause:\n" <> show z
+    -- unitTestMain <- buildMainTest testContent
+    -- unitTestMain Zero "A" ("O", Right zeroB)
+    {-
+    unitTestMains <- mapM (`buildMainTest` testContent) sizingSettingss
+    mapM_ (\f -> f Zero "A" ("R O", Right zeroB)) unitTestMains
 -}
+    {-
+    unitTestMain2 <- buildMainTest (SizingSettings True True 255 True) testContent2
+    unitTestMain2 Zero "9 9" ("9 plus 9 is 18", Right zeroB)
+-}
+    unitTestMain3 <- buildMainTest (SizingSettings True True 255 True) testContent3
+    unitTestMain3 Zero "2" ("C", Right zeroB)
+    -- unitTestMain3 Zero "1" ("C", Right zeroB)
 
 -- | Helper function to parse prelude with a file
 -- parsePrelude :: String -> Either String [(String, AnnotatedUPT)]

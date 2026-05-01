@@ -1,0 +1,31 @@
+id = \x -> x
+
+succ2 = \x -> (x,0)
+
+not2 = \x -> if x then 0 else 1
+
+assert2 = \t s -> if not2 t then (1, s) else 0
+
+d2c2 = \n f b -> { id
+                 , \recur i  -> f (recur (left i))
+                 , \i -> b
+                 } n
+
+---
+
+validDigit = \x -> not2 ($57 left x)
+
+validInput = \x -> assert2 (validDigit (left x)) "!"
+
+toI = \x -> $48 left x
+
+-- testf = \x -> if d2c2 x left 4
+--   then "A"
+--   else "B"
+testf = \x -> $48 succ2 (d2c2 3 left 4)
+
+main = \input -> let inString : validInput = left input
+                     x = left inString
+                 in if not2 input
+                    then ("?", 1)
+                    else (testf (toI x), 0)

@@ -124,6 +124,7 @@ getA (TraceA a)    = a
 data LamType l
   = Open l
   | Closed l
+  | LetBinding Int l
   deriving (Eq, Show, Ord)
 
 {-
@@ -706,12 +707,11 @@ i2cF l n = appF (repeatFunctionF l) . clamF . pure . tag l . LeftFrag . RightFra
   $ iterate SetEnvFrag EnvFrag !! n
 
 unsizedRecursionWrapper :: LocTag
-                        -> UnsizedRecursionToken
                         -> BreakState' RecursionPieceFrag UnsizedRecursionToken
                         -> BreakState' RecursionPieceFrag UnsizedRecursionToken
                         -> BreakState' RecursionPieceFrag UnsizedRecursionToken
                         -> BreakState' RecursionPieceFrag UnsizedRecursionToken
-unsizedRecursionWrapper loc urToken t r b =
+unsizedRecursionWrapper loc t r b =
   let firstArgF = pure . tag loc $ LeftFrag EnvFrag
       secondArgF = pure . tag loc $ LeftFrag (RightFrag EnvFrag)
       thirdArgF = pure . tag loc . LeftFrag . RightFrag . RightFrag $ EnvFrag

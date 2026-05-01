@@ -24,7 +24,7 @@ import Telomare.Decompiler
 import Telomare.Eval
 import Telomare.Optimizer
 import Telomare.Parser
-import Telomare.Possible (appB, deferB, evalBU, evalBU')
+import Telomare.Possible (appB, deferB, evalBU, evalBU', SizingSettings (SizingSettings))
 import Telomare.PossibleData (CompiledExpr (..), pairB, setEnvB, zeroB)
 import Telomare.Resolver
 import Telomare.RunTime
@@ -457,7 +457,7 @@ unitTests_ parse = do
       -- decompileExample = IExprWrapper (SetEnv (SetEnv (Pair (Defer (Pair (Gate Env Env) (Pair Zero Zero))) (SetEnv (SetEnv (SetEnv (PLeft (Pair (Pair (Defer (Pair (Defer (Pair (Defer Zero) Env)) Env)) Zero) Zero))))))))
       -- decompileExample = IExprWrapper (SetEnv (SetEnv (Pair (Defer (Pair (Gate Env Env) (Pair Zero Zero))) Zero)))
       decompileExample = IExprWrapper (SetEnv (SetEnv (Pair (Defer (Pair (Gate Env Env) (Pair Zero (Pair Zero Zero)))) Zero)))
-      buildMainTest s = case fmap compileMain' (parse True s) of
+      buildMainTest s = case fmap (compileMain' (SizingSettings True True 255 True)) (parse True s) of
         Right (Right g) -> let eval = funWrap g appB
                            in pure $ \s i e -> it ("main input " <> i) $ eval (Just (i, s)) `shouldBe` e
         z -> pure $ \s i e -> runIO . expectationFailure $ "failed to compile main:\n" <> show s <> "\nbecause:\n" <> show z
@@ -512,104 +512,37 @@ unitTests_ parse = do
   unitTest "map" "(2,(3,5))" $ app (app map_ (lam (pair (varN 0) zero)))
                                     (ints2g [1,2,3])
 -}
-  -- describe "bottom up eval" $ do
-  describe "main function tests" $ do
+  describe "bottom up eval" $ do
+    {-
+    testMain <- runIO $ Strict.readFile "simpleplus8.tel"
+    unitTestMain <- buildMainTest testMain
+    unitTestMain Zero "2" ("C", Right zeroB)
+-}
+    {-
     testMain <- runIO $ Strict.readFile "testchar.tel"
     unitTestMain <- buildMainTest testMain
     unitTestMain Zero "A" ("ascii value of first char is odd", Right zeroB)
-    -- unitTest2 "main = plus $3 $2 succ 0" "5"
-    -- unitTest2 "main = d2c 3 succ 0" "3"
-    {-
-    it "test SBV" . liftIO $ do
-      testSBV' == pure 3
 -}
-    -- unitTest2 "main = if concat [] [] then 2 else 3" "3"
-    -- unitTest2 "main = if concat [] then 2 else 3" "3"
-    {- works with lazy ite
-    unitTest2 "main = if (\\f -> makeRecur $3 id (\\r l accum -> f (left l) (r (right l) accum)) (\\l a -> a)) listPlus 0 [] then 2 else 3" "3"
-    unitTest2 "main = if (\\f -> makeRecur $4 id (\\r l accum -> f (left l) (r (right l) accum)) (\\l a -> a)) listPlus 0 [] then 2 else 3" "3"
-    unitTest2 "main = if foldr ((\\f a b -> makeRecur $3 id (\\r l accum -> f (left l) (r (right l) accum)) (\\l a -> a) b a) (\\x l -> (x,l))) 0 [] then 2 else 3" "3"
-    unitTest2 "main = if foldr ((\\f a b -> makeRecur $4 id (\\r l accum -> f (left l) (r (right l) accum)) (\\l a -> a) b a) (\\x l -> (x,l))) 0 [] then 2 else 3" "3"
--}
-    {-
-    describe "main function tests" $ do
-      testMain <- runIO $ Strict.readFile "simpleplus.tel"
-      case fmap compileMain (parse testMain) of
-        Right (Right g) ->
-          let eval = funWrap' evalBU g
-              unitTestMain s i e = it ("main input " <> i) $ eval (Just (i, s)) `shouldBe` e
-          in do
-          -- unitTestMain Zero "0 0" ("0 plus 0 is 0", Just Zero)
-          unitTestMain Zero "9 9" ("9 plus 9 is 18", Just Zero)
-        z -> runIO . expectationFailure $ "failed to compile simpleplus.tel: " <> show z
-      testSBV''
--}
-  {-
-    unitTest2 "main = plus $3 $2 succ 0" "5"
-    unitTest2 "main = 0" "0"
-    unitTest2 fiveApp "5"
-    unitTest2 "main = plus $3 $2 succ 0" "5"
-    unitTest2 "main = times $3 $2 succ 0" "6"
--}
-    -- unitTest2 "main = listEqual \"hey\" \"hey\"" "1"
-    -- unitTest2 "main = listEqual \"hey\" \"he\"" "0"
-    -- unitTest2 "main = listEqual \"hey\" \"hel\"" "0"
-    -- unitTest2 "main = d2c 2 succ 0" "2"
-    -- unitTestStaticChecks "main : (\\x -> assert 1 \"A\") = 1" (not . null)
-    -- unitTest2 "main = d2c 3 succ 0" "3"
-  {-
-    preludeFile <- runIO $ Strict.readFile "Prelude.tel"
-    -- testMain <- runIO $ Strict.readFile "simpleplus2.tel"
-    testMain <- runIO $ Strict.readFile "simpleplus4.tel"
-    runIO . putStrLn $ showSizingInSource preludeFile testMain
-    runIO . putStrLn $ showFunctionIndexesInSource preludeFile testMain
-    case fmap compileMain (parse testMain) of
-      Right (Right g) ->
-        let eval = funWrap g appB
-            unitTestMain s i e = it ("main input " <> i) $ eval (Just (i, s)) `shouldBe` e
-        in do
-        -- unitTestMain Zero "0 0" ("0 plus 0 is 0", Just Zero)
-        unitTestMain Zero "9 9" ("18", Right zeroB)
-      z -> runIO . expectationFailure $ "failed to compile simpleplus.tel: " <> show z
--}
-  {-     testing harness for finding refinement zeros. Needs a bit of work
-    preludeFile <- runIO $ Strict.readFile "Prelude.tel"
-    testMain <- runIO $ Strict.readFile "inputtest.tel"
-    runIO . putStrLn $ showFunctionIndexesInSource preludeFile testMain
-    it "inputtest shouldn't abort on input" $ getAbortPossibilities' preludeFile testMain `shouldBe` Set.empty
--}
-  {-
-  describe "main function tests" $ do
     testMain <- runIO $ Strict.readFile "tc.tel"
-    case fmap compileMain (parse testMain) of
-      Right (Right g) ->
-        let eval = funWrap' evalBU g
-            unitTestMain s i e = it ("main input " <> i) $ eval (Just (i, s)) `shouldBe` e
-        in do
-        unitTestMain Zero "A" ("R O", Just Zero)
-        unitTestMain Zero "B" ("R EV", Just Zero)
-      z -> runIO . expectationFailure $ "failed to compile main: " <> show z
+    unitTestMain <- buildMainTest testMain
+    unitTestMain Zero "A" ("O", Right zeroB)
+    -- unitTestMain Zero "B" ("ascii value of first char is even", Right zeroB)
+  {-
+    testMain <- runIO $ Strict.readFile "simpleplus.tel"
+    unitTestMain <- buildMainTest testMain
+    unitTestMain Zero "0 0" ("0 plus 0 is 0", Right zeroB)
+    unitTestMain Zero "9 9" ("9 plus 9 is 18", Right zeroB)
+    unitTestMain Zero "9 a" ("runtime error:\nAborted, user abort: invalid input", Left (AbortRunTime (AbortUser $ s2g "invalid input")))
+-}
+    {-
+    testMain <- runIO $ Strict.readFile "simpleplus.tel"
+    unitTestMain <- buildMainTest testMain
 -}
   {-
-  describe "main function tests" $ do
-    testMain <- runIO $ Strict.readFile "minimal.tel"
-    case fmap compileMain (parse testMain) of
-      Right (Right g) ->
-        let eval = funWrap' evalBU g
-            unitTestMain s i e = it ("main input " <> i) $ eval (Just (i, s)) `shouldBe` e
-        in do
-        unitTestMain Zero " " ("#", Just Zero)
-        -- unitTestMain Zero "B" ("ascii value of first char is odd", Just Zero)
-      z -> runIO . expectationFailure $ "failed to compile main: " <> show z
+    unitTestMain Zero "2 2" ("2 plus 2 is 4", Right zeroB)
+    unitTestMain Zero "1 1" ("1 plus 1 is 2", Right zeroB) -- pass
 -}
-    -- unitTest2 "main = d2c 3 succ 0" "3"
-    -- unitTestStaticChecks "main : (\\x -> assert (not ($2 left x)) \"A\") = 3" (== Left (StaticCheckError "user abort: X"))
-    -- unitTest2 "main = map left [1,2]" "(0,2)" -- test "left" as a function rather than builtin requiring argument
-    -- unitTest2 "main = listLength []" "0"
-    -- unitTest2 "main = listLength [1,2,3]" "3"
-    -- unitTest2 "main = foldr (\\a b -> plus (d2c a) (d2c b) succ 0) 1 [2,4,6]" "13"
-    -- unitTest2 "main = d2c 3 succ 0" "3"
-    -- unitTest2 "main = foldr (\\a b -> plus (d2c a) (d2c b) succ 0) 1 [2,4,6]" "13"
+    -- unitTestMain Zero "1 2" ("1 plus 2 is 3", Right zeroB)
   {-
     unitTest2 "main = dEqual 0 0" "1"
     unitTest2 "main = dEqual 1 0" "0"
@@ -628,7 +561,13 @@ unitTests_ parse = do
     unitTest2 "main = listPlus [1] 0" "2"
     unitTest2 "main = map left [1,2]" "(0,2)" -- test "left" as a function rather than builtin requiring argument
     unitTest2 "main = concat [\"a\",\"b\",\"c\"]" "(97,(98,100))"
+    unitTest2 nestedNamedFunctionsIssue "2"
+    unitTest2 "main = take $0 [1,2,3]" "0"
+    unitTest2 "main = take $1 [1,2,3]" "2"
+    unitTest2 "main = take $5 [1,2,3]" "(1,(2,4))"
+    unitTest2 "main = c2d (minus $4 $3)" "1"
 -}
+    -- unitTest2 "main = succ 0" "1"
 
 c2dApp = "main = (c2dG $4 3) $2 succ 0"
 
@@ -654,7 +593,7 @@ unitTests parse = do
   let unitTestType = unitTestType' (parse False)
       unitTest2 = unitTest2' (parse True)
       unitTestStaticChecks = unitTestStaticChecks' (parse True)
-      buildMainTest s = case fmap compileMain' (parse True s) of
+      buildMainTest s = case fmap (compileMain' (SizingSettings True True 255 True)) (parse True s) of
         Right (Right g) -> let eval = funWrap g appB
                            in pure $ \s i e -> it ("main input " <> i) $ eval (Just (i, s)) `shouldBe` e
         z -> pure $ \s i e -> runIO . expectationFailure $ "failed to compile main:\n" <> show s <> "\nbecause:\n" <> show z
