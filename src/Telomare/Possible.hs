@@ -1102,7 +1102,7 @@ sizeTermM sizingSettings x = tidyUp . ($ []) . runReaderT . transformNoDeferM ev
   showZeros z = "\nsizeTermM zeros are: " <> show z <> "\nzeros are:\n" <> concatMap ((<> "\n") . prettyPrint . forceType . zeroToBranch) z
   -- zeros = (\x -> debugTrace ("sizeTerm zeros are " <> show x) x) $ getInputLimits x
   -- zeros = (\x -> debugTrace ("sizeTermM inital term is\n" <> prettyPrint cm <> showZeros x) x) $ getInputLimits cm'
-  inputRestrictions = (\x -> trace ("sizeTermM zeros are\n" <> show x) x) $ getInputLimits cm'
+  inputRestrictions = (\x -> debugTrace ("sizeTermM zeros are\n" <> show x) x) $ getInputLimits cm'
   zeros = zeroes inputRestrictions
   -- zeros = getInputLimits cm'
   dtt :: UnsizedExpr -> UnsizedExpr

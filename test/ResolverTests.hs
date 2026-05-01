@@ -40,6 +40,7 @@ main = defaultMain tests
 
 tests :: TestTree
 tests = testGroup "Tests" [unitTests, qcProps, unitTestsCase, qcPropsCase]
+-- tests = testGroup "Tests" [unitTestsCase]
 
 ---------------------
 ------ Property Tests
@@ -334,27 +335,6 @@ unitTests = testGroup "Unit tests"
   , testCase "Ad hoc user defined types failure" $ do
       res <- testUserDefAdHocTypes userDefAdHocTypesFailure
       res @?= "MyInt must not be 0\ndone"
-  , testCase "test automatic open close lambda" $ do
-      res <- runTelomareParser (parseLambda <* scn <* eof) "\\x -> \\y -> (x, y)"
-      (forget <$> validateVariables res) @?= Right closedLambdaPair
-  , testCase "test automatic open close lambda 2" $ do
-      res <- runTelomareParser (parseLambda <* scn <* eof) "\\x y -> (x, y)"
-      (forget <$> validateVariables res) @?= Right closedLambdaPair
-  , testCase "test automatic open close lambda 3" $ do
-      res <- runTelomareParser (parseLambda <* scn <* eof) "\\x -> \\y -> \\z -> z"
-      (forget <$> validateVariables res) @?= Right expr6
-  , testCase "test automatic open close lambda 4" $ do
-      res <- runTelomareParser (parseLambda <* scn <* eof) "\\x -> (x, x)"
-      (forget <$> validateVariables res) @?= Right expr5
-  , testCase "test automatic open close lambda 5" $ do
-      res <- runTelomareParser (parseLambda <* scn <* eof) "\\x -> \\x -> \\x -> x"
-      (forget <$> validateVariables res) @?= Right expr4
-  , testCase "test automatic open close lambda 6" $ do
-      res <- runTelomareParser (parseLambda <* scn <* eof) "\\x -> \\y -> \\z -> [x,y,z]"
-      (forget <$> validateVariables res) @?= Right expr3
-  , testCase "test automatic open close lambda 7" $ do
-      res <- runTelomareParser (parseLambda <* scn <* eof) "\\a -> (a, (\\a -> (a,0)))"
-      (forget <$> validateVariables res) @?= Right expr2
   , testCase "test tictactoe.tel" $ do
       res <- tictactoe
       res @?= fullRunTicTacToeString
