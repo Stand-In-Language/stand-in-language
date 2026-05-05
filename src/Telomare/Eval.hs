@@ -243,7 +243,7 @@ evalLoopCore expr accumFn initAcc manualInput =
         let (out, nextState) = wrappedEval s
         newAcc <- accumFn acc out
         case toTelomare <$> nextState of
-          Left _ -> pure acc
+          Left e -> pure $ newAcc <> "\n" <> show e
           Right Nothing -> pure $ newAcc <> "\ndone"
           Right (Just Zero) -> pure $ newAcc <> "\n" <> "done"
           Right (Just ns) -> do

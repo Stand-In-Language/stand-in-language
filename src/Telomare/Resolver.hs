@@ -334,7 +334,7 @@ splitExpr' = \case
   (anno :< TLamF (Closed ()) x) -> rewriteOuterTag anno <$> clamF (splitExpr' x)
   (anno :< TChurchF n) -> i2cF anno n
   (anno :< TLimitedRecursionF t r b) -> unsizedRecursionWrapper anno (splitExpr' t) (splitExpr' r) (splitExpr' b)
-  (anno :< TUnsizedRepeaterF) -> nextBreakToken >>= unsizedRepeater anno
+  (anno :< TUnsizedRepeaterF) -> nextBreakToken >>= repeaterAndAbort anno
 
 newtype FragExprUR' =
   FragExprUR' { unFragExprUR' :: FragExpr (RecursionSimulationPieces FragExprUR')

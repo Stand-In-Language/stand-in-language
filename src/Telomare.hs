@@ -700,12 +700,24 @@ unsizedRepeater :: LocTag -> UnsizedRecursionToken -> BreakState' RecursionPiece
 unsizedRepeater l tok = clamF . pure . tag l . LeftFrag . RightFrag . RightFrag . RightFrag
   . AuxFrag $ NestedSetEnvs tok
 
+repeaterAndAbort :: LocTag -> UnsizedRecursionToken -> BreakState' RecursionPieceFrag UnsizedRecursionToken
+repeaterAndAbort l tok = pairF (unsizedRepeater l tok) abrt where
+  -- args are (i, (b, ...)) since trb is on the stack
+  abrt = deferF . setEnvF $ pairF (setEnvF (pairF abortFragF abortToken))
+                                  (appF secondArgF firstArgF)
+  abortFragF = pure $ l :< AbortFragF
+  abortToken = (\t -> l :< PairFragF (l :< ZeroFragF) t) <$> i2gF l (fromEnum tok)
+  firstArgF = pure . tag l $ LeftFrag EnvFrag
+  secondArgF = pure . tag l $ LeftFrag (RightFrag EnvFrag)
+
 -- to construct a church numeral (\f x -> f ... (f x))
 -- the core is nested setenvs around an env, where the number of setenvs is magnitude of church numeral
 i2cF :: (Show a, Show b, Enum b) => LocTag -> Int -> BreakState' a b
 i2cF l n = appF (repeatFunctionF l) . clamF . pure . tag l . LeftFrag . RightFrag . RightFrag . RightFrag
   $ iterate SetEnvFrag EnvFrag !! n
 
+
+-- function is called with (r,a), where r is the repeating function, and a is the abort function
 unsizedRecursionWrapper :: LocTag
                         -> BreakState' RecursionPieceFrag UnsizedRecursionToken
                         -> BreakState' RecursionPieceFrag UnsizedRecursionToken
@@ -717,13 +729,10 @@ unsizedRecursionWrapper loc t r b =
       thirdArgF = pure . tag loc . LeftFrag . RightFrag . RightFrag $ EnvFrag
       fourthArgF = pure . tag loc . LeftFrag . RightFrag . RightFrag . RightFrag $ EnvFrag
       fifthArgF = pure . tag loc . LeftFrag . RightFrag . RightFrag . RightFrag . RightFrag $ EnvFrag
-      abortToken = pure . tag loc $ PairFrag ZeroFrag ZeroFrag
-      abortFragF = pure $ loc :< AbortFragF
+      repeater = pure . tag loc . LeftFrag $ LeftFrag EnvFrag
+      abrt = pairF (pure . tag loc . RightFrag $ LeftFrag EnvFrag) . pure $ loc :< EnvFragF
       -- drop first arg (repeater)
       nsLamF x = pairF (deferF x) . pure . tag loc $ RightFrag EnvFrag
-      -- b is on the stack when this is called, so args are (i, (b, ...))
-      abrt = nsLamF (setEnvF $ pairF (setEnvF (pairF abortFragF abortToken))
-                                   (appF secondArgF firstArgF))
       -- \t r b r' i -> if t i then r r' i else b i -- t r b are already on the stack when this is evaluated
       rWrap = nsLamF . lamF $ iteF (appF fifthArgF firstArgF)
                                  (appF (appF fourthArgF secondArgF) firstArgF)
@@ -731,7 +740,7 @@ unsizedRecursionWrapper loc t r b =
       -- hack to make sure recursion test wrapper can be put in a definite place when sizing
       tWrap = pairF (deferF $ appF secondArgF firstArgF) (pairF t . pure $ loc :< ZeroFragF)
       trb = pairF b (pairF r (pairF tWrap (pure . tag loc $ ZeroFrag)))
-  in pairF (deferF $ appF (appF (appF (repeatFunctionF loc) firstArgF) rWrap) abrt) trb
+  in pairF (deferF $ appF (appF (appF (repeatFunctionF loc) repeater) rWrap) abrt) trb
 
 nextBreakToken :: (Enum b, Show b) => BreakState a b b
 nextBreakToken = do
