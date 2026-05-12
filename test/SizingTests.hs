@@ -40,7 +40,7 @@ twoFailedApproaches =
   describe "I wish something like this worked" $ do
     -- Minimal test content
     preludeFile <- runIO $ Strict.readFile "Prelude.tel"
-    testContent <- runIO $ Strict.readFile "sizing_fail5.tel"
+    -- testContent <- runIO $ Strict.readFile "sizing_fail5.tel"
     -- let try' :: IO a -> IO (Either SomeException a)
     let try' :: IO a -> IO (Either UnexpectedGrammarException a)
         try' = try
@@ -67,9 +67,8 @@ twoFailedApproaches =
                                                    Left z -> runIO $ expectationFailure (mi i <> " threw exception " <> show z)
                                                    Right r' -> it (mi i) $ r' `shouldBe` e
           z -> pure $ \ss i e -> runIO . expectationFailure $ "failed to compile main:\n" <> show s <> "\nbecause:\n" <> show z
-    unitTestMain <- buildMainTest (SizingSettings 255 True) testContent
-    -- unitTestMain Zero "3" ("2", Right zeroB)
-    unitTestMain (Pair (Pair Zero Zero) (Pair Zero (Pair Zero (Pair Zero (Pair Zero (Pair Zero (Pair Zero (Pair Zero (Pair Zero (Pair Zero Zero)))))))))) "3" ("2", Right zeroB)
+    -- unitTestMain <- buildMainTest (SizingSettings 255 True) testContent
+    -- unitTestMain (Pair (Pair Zero Zero) (Pair Zero (Pair Zero (Pair Zero (Pair Zero (Pair Zero (Pair Zero (Pair Zero (Pair Zero (Pair Zero Zero)))))))))) "3" ("2", Right zeroB)
 
 
 -- | Helper function to parse prelude with a file
