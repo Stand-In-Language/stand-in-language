@@ -272,18 +272,10 @@ mergeShallow n a b = if shallowEq1 (project a) (project b)
 
 foldGateResult :: forall g f. (Base g ~ f, SuperBase f, Recursive g, Corecursive g) => Maybe Integer -> g -> g -> GateResult g -> g
 foldGateResult n l r (GateResult doL doR o) =
-  let filterLeft = \case
-        SuperFW (EitherPF nt a _) | nt == n -> a
-        x -> embed x
-      filterRight = \case
-        SuperFW (EitherPF nt _ b) | nt == n -> b
-        x -> embed x
-      fl = if null n then l else cata filterLeft l
-      fr = if null n then r else cata filterRight r
-      branchPart = case (doL, doR) of
-        (True, True) -> pure . superEE $ EitherPF n fl fr
-        (True, _)    -> pure fl
-        (_, True)    -> pure fr
+  let branchPart = case (doL, doR) of
+        (True, True) -> pure . superEE $ EitherPF n l r
+        (True, _)    -> pure l
+        (_, True)    -> pure r
         _            -> Nothing
   in case (o, branchPart) of
     (Just o', Just bp) -> superEE $ EitherPF Nothing o' bp
@@ -306,7 +298,6 @@ superStep gateResult step handleOther =
     BasicFW (LeftSF (SuperEE (EitherPF n a b))) -> mergeShallow n (step . embedB . LeftSF $ a) (step . embedB . LeftSF $ b)
     BasicFW (RightSF (SuperEE (EitherPF n a b))) -> mergeShallow n (step . embedB . RightSF $ a) (step . embedB . RightSF $ b)
     BasicFW (SetEnvSF (SuperEE (EitherPF n a b))) -> mergeShallow n (step . embedB . SetEnvSF $ a) (step . embedB . SetEnvSF $ b)
-    -- GateSwitch l r x@(SuperEE (EitherPF n _ _)) -> (\dx -> debugTrace ("superStep gateSwitch\n" <> prettyPrint dx) dx) . foldGateResult n l r $ gateResult x
     GateSwitch l r x@(SuperEE (EitherPF n _ _)) -> foldGateResult n l r $ gateResult x
     (FillFunction (SuperEE (EitherPF n sca scb)) e) -> mergeShallow n
       (step . embedB . SetEnvSF . basicEE . PairSF sca $ if null n then e else cata (filterLeft n) e)

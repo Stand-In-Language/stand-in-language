@@ -39,9 +39,7 @@ twoFailedApproaches =
   describe "I wish something like this worked" $ do
     -- Minimal test content
     preludeFile <- runIO $ Strict.readFile "Prelude.tel"
-    testContent <- runIO $ Strict.readFile "tc.tel"
-    testContent2 <- runIO $ Strict.readFile "simpleplus.tel"
-    testContent3 <- runIO $ Strict.readFile "simpleplus8.tel"
+    testContent <- runIO $ Strict.readFile "sizing_fail5.tel"
     -- let try' :: IO a -> IO (Either SomeException a)
     let try' :: IO a -> IO (Either UnexpectedGrammarException a)
         try' = try
@@ -59,10 +57,6 @@ twoFailedApproaches =
         parse appLet str = if appLet
           then first show $ main2Term3let (parseAuxModule str:prelude) "AuxModule"
           else first show $ main2Term3 (parseAuxModule str:prelude) "AuxModule"
-        sizingSettingss = do
-          doLeftFilter <- [True] -- [False, True]
-          doFilterBefore <- [True] -- [False, True]
-          pure $ SizingSettings doLeftFilter doFilterBefore 255 True
         buildMainTest ss s = case fmap (compileMain' ss) (parse True s) of
           Right (Right g) -> let eval = funWrap g appB
                                  mi i = "main input " <> i <> " and SizingSettings " <> show ss
@@ -72,19 +66,10 @@ twoFailedApproaches =
                                                    Left z -> runIO $ expectationFailure (mi i <> " threw exception " <> show z)
                                                    Right r' -> it (mi i) $ r' `shouldBe` e
           z -> pure $ \ss i e -> runIO . expectationFailure $ "failed to compile main:\n" <> show s <> "\nbecause:\n" <> show z
-    -- unitTestMain <- buildMainTest testContent
-    -- unitTestMain Zero "A" ("O", Right zeroB)
-    {-
-    unitTestMains <- mapM (`buildMainTest` testContent) sizingSettingss
-    mapM_ (\f -> f Zero "A" ("R O", Right zeroB)) unitTestMains
--}
-    {-
-    unitTestMain2 <- buildMainTest (SizingSettings True True 255 True) testContent2
-    unitTestMain2 Zero "9 9" ("9 plus 9 is 18", Right zeroB)
--}
-    unitTestMain3 <- buildMainTest (SizingSettings True True 255 True) testContent3
-    unitTestMain3 Zero "2" ("C", Right zeroB)
-    -- unitTestMain3 Zero "1" ("C", Right zeroB)
+    unitTestMain <- buildMainTest (SizingSettings True True 255 True) testContent
+    -- unitTestMain Zero "3" ("2", Right zeroB)
+    unitTestMain (Pair (Pair Zero Zero) (Pair Zero (Pair Zero (Pair Zero (Pair Zero (Pair Zero (Pair Zero (Pair Zero (Pair Zero (Pair Zero Zero)))))))))) "3" ("2", Right zeroB)
+
 
 -- | Helper function to parse prelude with a file
 -- parsePrelude :: String -> Either String [(String, AnnotatedUPT)]
