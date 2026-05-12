@@ -69,6 +69,7 @@ twoFailedApproaches =
           z -> pure $ \ss i e -> runIO . expectationFailure $ "failed to compile main:\n" <> show s <> "\nbecause:\n" <> show z
     -- unitTestMain <- buildMainTest (SizingSettings 255 True) testContent
     -- unitTestMain (Pair (Pair Zero Zero) (Pair Zero (Pair Zero (Pair Zero (Pair Zero (Pair Zero (Pair Zero (Pair Zero (Pair Zero (Pair Zero Zero)))))))))) "3" ("2", Right zeroB)
+    pure ()
 
 
 -- | Helper function to parse prelude with a file
