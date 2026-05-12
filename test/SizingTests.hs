@@ -21,7 +21,8 @@ import Telomare.Decompiler
 import Telomare.Eval
 import Telomare.Optimizer
 import Telomare.Parser
-import Telomare.Possible (evalBU, evalBU', appB, SizingSettings (SizingSettings), UnexpectedGrammarException)
+import Telomare.Possible (SizingSettings (SizingSettings),
+                          UnexpectedGrammarException, appB, evalBU, evalBU')
 import Telomare.PossibleData (zeroB)
 import Telomare.Resolver
 import Telomare.RunTime

@@ -24,7 +24,8 @@ import Telomare.Decompiler
 import Telomare.Eval
 import Telomare.Optimizer
 import Telomare.Parser
-import Telomare.Possible (appB, deferB, evalBU, evalBU', SizingSettings (SizingSettings))
+import Telomare.Possible (SizingSettings (SizingSettings), appB, deferB, evalBU,
+                          evalBU')
 import Telomare.PossibleData (CompiledExpr (..), pairB, setEnvB, zeroB)
 import Telomare.Resolver
 import Telomare.RunTime

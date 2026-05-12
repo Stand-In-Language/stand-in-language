@@ -40,6 +40,8 @@ import Data.Monoid
 -- import qualified Data.SBV as SBV
 -- import qualified Data.SBV.Control as SBVC
 import Control.Comonad.Trans.Cofree (CofreeF, headF)
+import Control.Exception (Exception)
+import Control.Exception.Base (throw)
 import Control.Monad.Reader.Class
 import Data.GenValidity
 import Data.GenValidity.Map
@@ -66,11 +68,9 @@ import Telomare (AbstractRunTime (..), BreakState' (..), FragExpr (..),
                  pattern AbortUnsizeable, pattern AbortUser, rootFrag, s2g,
                  sindent, toPartialType)
 import Telomare.PossibleData
+import Telomare.RunTime (hvmEval)
 import Test.QuickCheck (Arbitrary (..), Gen, oneof)
 import Test.QuickCheck.Gen (sized)
-import Telomare.RunTime (hvmEval)
-import Control.Exception (Exception)
-import Control.Exception.Base (throw)
 
 debug :: Bool
 debug = False
@@ -333,7 +333,7 @@ superUnsizedStep gateResult step handleOther =
 
 data SizingSettings = SizingSettings
   { maxSizingSize :: Int
-  , doCap :: Bool
+  , doCap         :: Bool
   } deriving (Eq, Ord, Show)
 
 superStepM :: forall a f m. (Base a ~ f, Traversable f, BasicBase f, SuperBase f, ShallowEq1 f, Recursive a, Corecursive a, PrettyPrintable a, Monad m)
@@ -610,7 +610,7 @@ unsizedStepM''' maxSize zeros recursionTest handleOther x = f x where
           in pure result
     UnsizedFW (SizeStepStubF tok n e@(BasicEE (PairSF _ es))) ->
       let dbti = id
-      in pure $ pairB (deferB unsizedStepMrfa $ (iteB (dbti $ appB argFour argOne)
+      in pure $ pairB (deferB unsizedStepMrfa (iteB (dbti $ appB argFour argOne)
                                                 (appB (appB argThree (unsizedEE $ SizeStepStubF tok (n + 1) e)) argOne)
                                                 (unsizedEE . SizeStageF (SizedRecursion . Map.singleton tok $ pure (n + 1)) $ appB argTwo argOne))) es
     UnsizedFW (RecursionTestF ri x) -> pure . recursionTest ri $ x
@@ -935,7 +935,7 @@ isClosure = \case
   BasicEE (PairSF (StuckEE (DeferSF _ _)) _) -> True
   _                                          -> False
 
-data UnexpectedGrammarException = UGException String
+newtype UnexpectedGrammarException = UGException String
 
 instance Show UnexpectedGrammarException where
   show (UGException e) = "UnexpectedGrammarException: " <> e

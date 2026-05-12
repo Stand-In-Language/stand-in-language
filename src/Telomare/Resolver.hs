@@ -11,9 +11,13 @@ import qualified Control.Comonad.Trans.Cofree as C
 import qualified Control.Comonad.Trans.Cofree as CofreeT
 import Control.Lens.Combinators (transform)
 import Control.Monad (forM, forM_, (<=<))
+import Control.Monad.Identity (Identity (..))
+import Control.Monad.Reader (MonadReader (ask), reader, runReaderT)
+import Control.Monad.State (StateT, evalStateT)
 import qualified Control.Monad.State as State
 import Control.Monad.Trans (lift)
-import Control.Monad.Trans.Writer.Strict (WriterT (..), writer, tell)
+import Control.Monad.Trans.Reader (ReaderT, local)
+import Control.Monad.Trans.Writer.Strict (WriterT (..), tell, writer)
 import Crypto.Hash (Digest, SHA256, hash)
 import Data.Bifunctor (Bifunctor (first, second), bimap)
 import qualified Data.ByteArray as BA
@@ -22,11 +26,13 @@ import qualified Data.ByteString as BS
 import Data.Char (ord)
 import Data.Fix (Fix)
 import qualified Data.Foldable as F
-import Data.Functor.Foldable (Base, Corecursive (ana, apo, embed), Recursive (cata))
+import Data.Functor.Foldable (Base, Corecursive (ana, apo, embed),
+                              Recursive (cata))
 import Data.List (delete, elem, elemIndex, find, foldl', intercalate, nubBy,
                   zip4)
 import qualified Data.Map as Map
 import Data.Map.Strict (Map, fromList, keys)
+import Data.Monoid (Sum (..))
 import Data.Set (Set, (\\))
 import qualified Data.Set as Set
 import Debug.Trace (trace, traceShow, traceShowId)
@@ -34,12 +40,6 @@ import PrettyPrint (TypeDebugInfo (..), prettyPrint, showTypeDebugInfo)
 import Telomare
 import Telomare.Parser (AnnotatedUPT, TelomareParser, identifier)
 import Text.Megaparsec (errorBundlePretty, runParser)
-import Data.Monoid (Sum (..))
-import Control.Monad.Reader (runReaderT, MonadReader (ask))
-import Control.Monad.Trans.Reader (local, ReaderT)
-import Control.Monad.Reader (reader)
-import Control.Monad.Identity (Identity(..))
-import Control.Monad.State (StateT, evalStateT)
 
 debug :: Bool
 debug = False
@@ -286,8 +286,8 @@ debruijinizeApp = fmap closeLams . ($ []) . runReaderT . cata f where
   f = \case
     anno CofreeT.:< x -> case x of
       TLamF lt ix -> (\lx -> anno :< TLamF (convLam lt) lx) <$> local (lt:) ix
-      TVarF n -> ask >>= \vl -> lift $ findElem anno n vl
-      x -> fmap (anno :<) . sequence $ conv x
+      TVarF n     -> ask >>= \vl -> lift $ findElem anno n vl
+      x           -> fmap (anno :<) . sequence $ conv x
   conv = \case
     TZeroF -> TZeroF
     TPairF a b -> TPairF a b

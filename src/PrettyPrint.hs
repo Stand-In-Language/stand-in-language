@@ -20,10 +20,10 @@ import qualified Control.Monad.State as State
 import qualified Data.Map as Map
 
 import Control.Comonad.Cofree
+import Data.Fix (Fix)
 import Data.Functor.Foldable
 import Data.List (elemIndex)
 import Text.Read (readMaybe)
-import Data.Fix (Fix)
 -- import Data.SBV (sFPHalf)
 
 

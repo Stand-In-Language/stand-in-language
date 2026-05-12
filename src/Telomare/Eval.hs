@@ -39,12 +39,10 @@ import Telomare (AbstractRunTime, BreakState, BreakState', EvalError (..),
                  tag, unFragExprUR)
 import Telomare.Parser (AnnotatedUPT, parseModule, parseOneExprOrTopLevelDefs,
                         parsePrelude)
-import Telomare.Possible (abortExprToTerm4, abortPossibilities, appB,
-                          deferB, evalStaticCheck, getSizesM,
-                          sizeTermM, term3ToUnsizedExpr, term4toAbortExpr, evalStaticCheck, SizingSettings (..))
-import Telomare.Possible (abortExprToTerm4, abortPossibilities, appB, deferB,
-                          evalStaticCheck, getSizesM, sizeTermM,
-                          term3ToUnsizedExpr, term4toAbortExpr, SizingSettings (SizingSettings))
+import Telomare.Possible (SizingSettings (SizingSettings), abortExprToTerm4,
+                          abortPossibilities, appB, deferB, evalStaticCheck,
+                          getSizesM, sizeTermM, term3ToUnsizedExpr,
+                          term4toAbortExpr)
 import Telomare.PossibleData (AbortExpr, CompiledExpr (..), SizedRecursion (..),
                               VoidF, envB, leftB, pairB, pattern AbortFW,
                               rightB, setEnvB)
@@ -107,9 +105,9 @@ data SizingOption
 
 findChurchSizeD :: SizingOption -> Term3 -> Either EvalError Term4
 findChurchSizeD so t3 = case so of
-  NoSizing -> pure (convertPT (const 255) t3)
+  NoSizing       -> pure (convertPT (const 255) t3)
   UnitTestSizing -> calculateRecursionLimits (SizingSettings 255 False) t3
-  MainSizing -> calculateRecursionLimits (SizingSettings 255 True) t3
+  MainSizing     -> calculateRecursionLimits (SizingSettings 255 True) t3
   DebugSizing ss -> calculateRecursionLimits ss t3
 
 -- rather than remove checks, we should extract them so that they can be run separately, if that gives a performance benefit
