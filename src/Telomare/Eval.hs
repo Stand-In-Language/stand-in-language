@@ -108,8 +108,8 @@ data SizingOption
 findChurchSizeD :: SizingOption -> Term3 -> Either EvalError Term4
 findChurchSizeD so t3 = case so of
   NoSizing -> pure (convertPT (const 255) t3)
-  UnitTestSizing -> calculateRecursionLimits (SizingSettings True True 255 False) t3
-  MainSizing -> calculateRecursionLimits (SizingSettings True True 255 True) t3
+  UnitTestSizing -> calculateRecursionLimits (SizingSettings 255 False) t3
+  MainSizing -> calculateRecursionLimits (SizingSettings 255 True) t3
   DebugSizing ss -> calculateRecursionLimits ss t3
 
 -- rather than remove checks, we should extract them so that they can be run separately, if that gives a performance benefit

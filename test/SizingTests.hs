@@ -66,7 +66,7 @@ twoFailedApproaches =
                                                    Left z -> runIO $ expectationFailure (mi i <> " threw exception " <> show z)
                                                    Right r' -> it (mi i) $ r' `shouldBe` e
           z -> pure $ \ss i e -> runIO . expectationFailure $ "failed to compile main:\n" <> show s <> "\nbecause:\n" <> show z
-    unitTestMain <- buildMainTest (SizingSettings True True 255 True) testContent
+    unitTestMain <- buildMainTest (SizingSettings 255 True) testContent
     -- unitTestMain Zero "3" ("2", Right zeroB)
     unitTestMain (Pair (Pair Zero Zero) (Pair Zero (Pair Zero (Pair Zero (Pair Zero (Pair Zero (Pair Zero (Pair Zero (Pair Zero (Pair Zero Zero)))))))))) "3" ("2", Right zeroB)
 

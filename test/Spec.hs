@@ -457,7 +457,7 @@ unitTests_ parse = do
       -- decompileExample = IExprWrapper (SetEnv (SetEnv (Pair (Defer (Pair (Gate Env Env) (Pair Zero Zero))) (SetEnv (SetEnv (SetEnv (PLeft (Pair (Pair (Defer (Pair (Defer (Pair (Defer Zero) Env)) Env)) Zero) Zero))))))))
       -- decompileExample = IExprWrapper (SetEnv (SetEnv (Pair (Defer (Pair (Gate Env Env) (Pair Zero Zero))) Zero)))
       decompileExample = IExprWrapper (SetEnv (SetEnv (Pair (Defer (Pair (Gate Env Env) (Pair Zero (Pair Zero Zero)))) Zero)))
-      buildMainTest s = case fmap (compileMain' (SizingSettings True True 255 True)) (parse True s) of
+      buildMainTest s = case fmap (compileMain' (SizingSettings 255 True)) (parse True s) of
         Right (Right g) -> let eval = funWrap g appB
                            in pure $ \s i e -> it ("main input " <> i) $ eval (Just (i, s)) `shouldBe` e
         z -> pure $ \s i e -> runIO . expectationFailure $ "failed to compile main:\n" <> show s <> "\nbecause:\n" <> show z
@@ -593,7 +593,7 @@ unitTests parse = do
   let unitTestType = unitTestType' (parse False)
       unitTest2 = unitTest2' (parse True)
       unitTestStaticChecks = unitTestStaticChecks' (parse True)
-      buildMainTest s = case fmap (compileMain' (SizingSettings True True 255 True)) (parse True s) of
+      buildMainTest s = case fmap (compileMain' (SizingSettings 255 True)) (parse True s) of
         Right (Right g) -> let eval = funWrap g appB
                            in pure $ \s i e -> it ("main input " <> i) $ eval (Just (i, s)) `shouldBe` e
         z -> pure $ \s i e -> runIO . expectationFailure $ "failed to compile main:\n" <> show s <> "\nbecause:\n" <> show z
