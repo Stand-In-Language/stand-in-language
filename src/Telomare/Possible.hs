@@ -1005,6 +1005,9 @@ sizeTermM sizingSettings x = tidyUp . ($ []) . runReaderT . transformNoDeferM ev
   forceType = id
   inputRestrictions = (\x -> debugTrace ("sizeTermM zeros are\n" <> show x) x) $ getInputLimits cm'
   zeros = zeroes inputRestrictions
+  convertNakedEnvs = \case
+    BasicFW EnvSF -> zeroB
+    x -> embed x
   dtt :: UnsizedExpr -> UnsizedExpr
   dtt t = debugTrace ("sizeTermM initial term is\n" <> prettyPrint t) t
   cm' = dtt $ if doCap sizingSettings
@@ -1013,7 +1016,7 @@ sizeTermM sizingSettings x = tidyUp . ($ []) . runReaderT . transformNoDeferM ev
   cm = removeRefinementWrappers cm'
   mx = removeRefinementWrappers $ if doCap sizingSettings
     then capMain (initialInput inputRestrictions) x
-    else x
+    else transformNoDefer convertNakedEnvs x
   tidyUp (StrictAccum (SizedRecursion sm) r) = debugTrace ("sizes are: " <> show sm <> "\nand result is:\n" <> prettyPrint r) $ case foldAborted r of
     Just (UnsizableSR i) -> debugTrace "sizeTermM hit unsizable" Left i
     _ -> let sized = setSizes sm cm
