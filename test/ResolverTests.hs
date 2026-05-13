@@ -25,6 +25,7 @@ import System.Posix.Types
 import Telomare
 import Telomare.Eval
 import Telomare.Parser
+import Telomare.Possible (SizingSettings (SizingSettings))
 import Telomare.Resolver
 import Telomare.RunTime
 import Test.Tasty
@@ -543,7 +544,7 @@ showAllTransformations input = do
       diff = getGroupedDiff str5 str4
   section "splitExpr" . ppShow $ splitExprVar
   section "Diff splitExpr" $ ppDiff diff
-  let Right (Just toTelomareVar) = fmap toTelomare . findChurchSizeD NoSizing $ splitExprVar
+  let Right (Just toTelomareVar) = fmap toTelomare . findChurchSizeD (DebugSizing (SizingSettings 255 False)) $ splitExprVar
       str6 = lines . show $ toTelomareVar
       diff = getGroupedDiff str6 str5
   section "toTelomare" . show $ toTelomareVar

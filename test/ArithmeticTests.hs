@@ -19,6 +19,7 @@ import Telomare.Eval (SizingOption (..), compile, compileUnitTest,
                       compileUnitTestNoAbort, runStaticChecks)
 import Telomare.Parser (AnnotatedUPT, TelomareParser, parseLongExpr,
                         parsePrelude)
+import Telomare.Possible (SizingSettings (SizingSettings))
 import Telomare.PossibleData (CompiledExpr)
 import Telomare.Resolver (process)
 import Telomare.RunTime (simpleEval)
@@ -62,7 +63,7 @@ evalExprString input = do
     Right aupt -> do
       let term = DummyLoc :< LetUPF preludeBindings aupt
           compile' :: Term3 -> Either EvalError CompiledExpr
-          compile' = compile NoSizing pure
+          compile' = compile (DebugSizing (SizingSettings 255 False)) runStaticChecks
       case first RE (process term) >>= compile' of
         Left err -> pure $ Left (show err)
         Right iexpr -> case eval iexpr of

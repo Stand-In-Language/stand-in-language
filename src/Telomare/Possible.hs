@@ -608,6 +608,7 @@ unsizedStepM''' maxSize zeros recursionTest handleOther x = f x where
                                           (unsizedEE . SizeStageF (SizedRecursion . Map.singleton tok $ pure 1) $ appB argTwo argOne))
               result = pairB zeroB (pairB zeroB (pairB zeroB (pairB (pairB rf trb) zeroB)))
           in pure result
+    UnsizedFW (SizeStepStubF tok n _) | n > maxSize -> pure . abortEE . AbortedF . AbortRecursion $ i2g n
     UnsizedFW (SizeStepStubF tok n e@(BasicEE (PairSF _ es))) ->
       let dbti = id
       in pure $ pairB (deferB unsizedStepMrfa (iteB (dbti $ appB argFour argOne)
@@ -1037,7 +1038,7 @@ sizeTermM sizingSettings x = tidyUp . ($ []) . runReaderT . transformNoDeferM ev
     x -> embed x
   foldAborted = cata f where
     f = \case
-      AbortFW (AbortedF (AbortRecursion i)) -> error $ "sizeTermM AbortRecursion hit, which should never happen, for token " <> show (g2i i)
+      AbortFW (AbortedF (AbortRecursion i)) -> Just . UnsizableSR . toEnum . g2i $ i
       AbortFW (AbortedF AbortAny) -> error "sizeTermM AbortAny hit"
       AbortFW (AbortedF (AbortUnsizeable t)) -> Just . UnsizableSR . toEnum . g2i $ t
       x                                 -> Data.Foldable.fold x

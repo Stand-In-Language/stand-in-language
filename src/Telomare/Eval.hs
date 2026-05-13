@@ -98,16 +98,16 @@ convertPT ll (Term3 termMap) =
   in Term4 $ fmap (hoistCofree changeType) newMap
 
 data SizingOption
-  = NoSizing
+  = NoSizing -- deprecated
   | UnitTestSizing
   | MainSizing
   | DebugSizing SizingSettings
 
 findChurchSizeD :: SizingOption -> Term3 -> Either EvalError Term4
-findChurchSizeD so t3 = case so of
-  NoSizing       -> pure (convertPT (const 255) t3)
-  UnitTestSizing -> calculateRecursionLimits (SizingSettings 255 False) t3
-  MainSizing     -> calculateRecursionLimits (SizingSettings 255 True) t3
+findChurchSizeD so t3 = let reallyBigNum = 65536 in case so of
+  NoSizing       -> pure (convertPT (const reallyBigNum) t3)
+  UnitTestSizing -> calculateRecursionLimits (SizingSettings reallyBigNum False) t3
+  MainSizing     -> calculateRecursionLimits (SizingSettings reallyBigNum True) t3
   DebugSizing ss -> calculateRecursionLimits ss t3
 
 -- rather than remove checks, we should extract them so that they can be run separately, if that gives a performance benefit
