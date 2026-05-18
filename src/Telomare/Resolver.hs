@@ -73,9 +73,10 @@ findInts anno = cata alg where
   alg :: Base Pattern [AnnotatedUPT -> AnnotatedUPT]
       -> [AnnotatedUPT -> AnnotatedUPT]
   alg = \case
-    PatternPairF x y -> ((. (anno :< ) . LeftUPF) <$> x) <> ((. (anno :< ) . RightUPF) <$> y)
-    PatternIntF x    -> [id]
-    _                -> []
+    PatternPairF x y      -> ((. (anno :< ) . LeftUPF) <$> x) <> ((. (anno :< ) . RightUPF) <$> y)
+    PatternIntF x         -> [id]
+    PatternAnnotatedF x _ -> x
+    _                     -> []
 
 -- | Finds all PatternString leaves returning "directions" to these leaves through pairs
 -- in the form of a combination of RightUP and LeftUP from the root
@@ -86,9 +87,10 @@ findStrings anno = cata alg where
   alg :: Base Pattern [AnnotatedUPT -> AnnotatedUPT]
       -> [AnnotatedUPT -> AnnotatedUPT]
   alg = \case
-    PatternPairF x y -> ((. (anno :< ) . LeftUPF) <$> x) <> ((. (anno :< ) . RightUPF) <$> y)
-    PatternStringF x -> [id]
-    _                -> []
+    PatternPairF x y      -> ((. (anno :< ) . LeftUPF) <$> x) <> ((. (anno :< ) . RightUPF) <$> y)
+    PatternStringF x      -> [id]
+    PatternAnnotatedF x _ -> x
+    _                     -> []
 
 fitPatternVarsToCasedUPT :: Pattern -> AnnotatedUPT -> AnnotatedUPT
 fitPatternVarsToCasedUPT p aupt@(anno :< _) = applyVars2UPT varsOnUPT $ pattern2UPT anno p where
@@ -128,9 +130,10 @@ findPatternVars anno = cata alg where
   alg :: Base Pattern (Map String (AnnotatedUPT -> AnnotatedUPT))
       -> Map String (AnnotatedUPT -> AnnotatedUPT)
   alg = \case
-    PatternPairF x y -> ((. (anno :< ). LeftUPF) <$> x) <> ((. (anno :< ). RightUPF) <$> y)
-    PatternVarF str  -> Map.singleton str id
-    _                -> Map.empty
+    PatternPairF x y      -> ((. (anno :< ). LeftUPF) <$> x) <> ((. (anno :< ). RightUPF) <$> y)
+    PatternVarF str       -> Map.singleton str id
+    PatternAnnotatedF x _ -> x
+    _                     -> Map.empty
 
 -- TODO: Annotate without so much fuzz
 pairStructureCheck :: Pattern -> UnprocessedParsedTerm -> UnprocessedParsedTerm
@@ -145,8 +148,9 @@ pairRoute2Dirs = cata alg where
   alg :: Base Pattern [UnprocessedParsedTerm -> UnprocessedParsedTerm]
       -> [UnprocessedParsedTerm -> UnprocessedParsedTerm]
   alg = \case
-    PatternPairF x y -> [id] <> ((. LeftUP) <$> x) <> ((. RightUP) <$> y)
-    _                -> []
+    PatternPairF x y      -> [id] <> ((. LeftUP) <$> x) <> ((. RightUP) <$> y)
+    PatternAnnotatedF x _ -> x
+    _                     -> []
 
 pattern2UPT :: LocTag -> Pattern -> AnnotatedUPT
 pattern2UPT anno = tag anno . cata alg where

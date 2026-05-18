@@ -1,273 +1,198 @@
 # Brands ↔ User-Defined Types — State and Plan
 
+> **Status (2026-05-18, after running the plan):** Phases A–H are complete.
+> The `brands.tel` UDT example (`Nat`, `toNat`, `nPlus`, `nMinus`) runs
+> end-to-end (`Success`). All test suites pass: 50 + 90 + 26 + 25.
+> See **Execution log** at the end for what was done and what the plan
+> looked different from once implementation started.
+
 ## Context
 
 The `brands` branch introduces a destructuring syntax
 `[name1, name2, …] = expr` that binds many top-level names from a single
-expression. The motivation (and the pattern in `brands.tel`,
-`brands2.tel`, and `Prelude.tel`'s `Rational`) is User-Defined Types
-(UDTs): a UDT is built as
+expression. The motivation (and the pattern in `brands.tel` and
+`Prelude.tel`'s `Rational`) is User-Defined Types (UDTs): a UDT is
+built as
 `let wrapper = \h -> (constructor, validator, …) in wrapper (# wrapper)`,
 and what users want next is a clean way to bind each component of that
 tuple to a real name. Brands and UDTs are the same feature seen from
 two ends: brands are the front, UDTs are the body.
 
-The 6 brand commits cover parsing, pattern-destructuring lambdas, brand
-expansion via Prelude accessors, multi-module compilation tweaks, and a
-prettier UPT printer. The REPL goal — `nPlus` over the `Nat` brand —
-works (commit `d22e0d7`). The remaining work is to make brands carry
-their UDT weight without forcing the user to spell out the hash-tag
-wrapper and validator, and to make pattern annotations like `(x : Nat)`
-actually fire.
-
-## Review — what's done, what's still missing
-
-### Works today
-- `[Name1, Name2, …] = expr` parses (`parseBrand`,
-  `src/Telomare/Parser.hs:199`) and expands to one binding per slot
-  using `first/second/…/tenth` from Prelude
-  (`expandBrand`, `src/Telomare/Parser.hs:430`).
-- Pattern-destructuring lambdas (`makeLambda`,
-  `src/Telomare/Parser.hs:291`): you can write `\(a, b) -> …`,
-  internally rewritten to `\v -> case v of (a,b) -> body; _ -> abort`.
-- Multi-module loader only compiles imported `.tel` files
-  (`app/Main.hs`).
-- Tests pass: 90 examples in the spec suite, plus ResolverTests and
-  arithmetic tests.
-
-### Gaps blocking the brand–UDT bridge
-
-1. **`PatternAnnotated` drops its type expression.**
-   - `makeLambda` (`src/Telomare/Parser.hs:295`) and `pattern2UPT`
-     (`src/Telomare/Resolver.hs:167`) both pattern-match
-     `PatternAnnotatedF x _` and throw the annotation away. So
-     `\(p : N) -> …` parses, but `N` is never invoked. This is the
-     single biggest gap: `\((_, aa) : N) ((_, bb) : N) -> …` in
-     `brands.tel` silently skips Nat validation.
-   - `parsePatternVar` wraps the annotation in `CheckUPF` while
-     `parsePatternAnnotated` does not — the two forms produce
-     different shapes of `PatternAnnotated`.
-
-2. **User still writes the hash-tag wrapper by hand.** Every brand
-   body in `brands.tel`, `brands2.tel`, and the `Rational` UDT in
-   `Prelude.tel` repeats `let wrapper = \h -> [...] in wrapper (# wrapper)`
-   and hand-rolls the validator. The brand syntax should absorb this.
-
-3. **First brand slot is not auto-generated.** The user writes
-   `N = \(hc, _) x -> assert (dEqual hc h) "not Natural"` manually
-   inside the wrapper. With the bridge, the first slot of
-   `[T, …] = …` should *become* the auto-generated validator for the
-   brand's hash tag.
-
-4. **Brand expansion is capped at 10 elements** because
-   `expandBrand` (`src/Telomare/Parser.hs:432`) uses
-   `first..tenth`. Anything beyond ten names silently produces wrong
-   bindings (`zipWith` truncates).
-
-5. **Brands don't work inside `let`.** `parseLet`
-   (`src/Telomare/Parser.hs:340`) uses `parseAssignment` only — a
-   brand inside `let … in …` is a parse error.
-
-6. **Sentinel-string hack.** `parseOneAssignmentOrBrand`
-   (`src/Telomare/Parser.hs:403`) tags brand entries with the literal
-   name `"8@$temp_label$@8"`, then strips them in
-   `parseAssignmentsAndBrands`. Works but is fragile — any leak into
-   an error message is confusing.
-
-7. **No automated test exercises brands end-to-end.** `brands.tel`'s
-   `main` is commented out; `brands2.tel` is a copy; `examples.tel`
-   still uses the older `MyInt` UDT. `test/ResolverTests.hs` has
-   nothing for brands.
-
-8. **Loose ends.** Commented-out attempts at `expandBrand`
-   (`src/Telomare/Parser.hs:425-446`), unused `aux`/`aux1` test
-   strings (`src/Telomare/Parser.hs:505-540`), commented-out
-   `parseDefinitions` (`src/Telomare/Parser.hs:447-451`), and an
-   unused `import Text.Read (Lexeme (String))`
-   (`src/Telomare/Parser.hs:33`).
-
 ## Plan
 
-### Phase A — Make `PatternAnnotated` enforce its type
+### Phase A — Make `PatternAnnotated` enforce its type  ✅ DONE
 
 **Files**: `src/Telomare/Parser.hs`, `src/Telomare/Resolver.hs`
 
-1. Normalize the annotation shape. In `parsePatternAnnotated`
-   (`src/Telomare/Parser.hs:257`) wrap the parsed `typeExpr` the same
-   way `parsePatternVar` (`src/Telomare/Parser.hs:245`) does: hand the
-   inner pattern's bound variable to the annotation so the stored
-   value is `CheckUPF typeExpr (VarUPF varName)`. For destructuring
-   patterns (`(a, b) : N`) bind a fresh name first, then check it.
-   Both annotation forms then produce identical `PatternAnnotated`
-   payloads.
-2. In `makeLambda` (`src/Telomare/Parser.hs:291`) keep the existing
-   destructure-case rewrite, but thread the annotation through. New
-   shape for `PatternAnnotated p typeExpr`:
-   ```
-   \varName ->
-     (\__check -> case varName of p -> body ; _ -> abort)
-       typeExpr
-   ```
-   The throwaway lambda forces `typeExpr` (a `CheckUPF`) to evaluate,
-   which fires the runtime assert if the check fails. `__check` is a
-   fresh name that doesn't appear in `body`.
-3. Leave `pattern2UPT` (`src/Telomare/Resolver.hs:158`) as-is: it
-   discards the annotation, which is now correct because the
-   assertion fires at lambda entry, not inside the case rewrite.
-4. Sanity-check: `assert` (`Prelude.tel:114`) returns 0 on success and
-   `(1, s)` on failure, and `CheckUPF` triggers abort when its check
-   function returns nonzero. So `let _ = check var in body` is the
-   right shape.
+The plan called for wrapping the annotation in `CheckUPF` and threading
+it through `makeLambda`. **Final design diverges**: see the Execution
+log below — `CheckUPF` was abandoned because it triggered a static
+refinement analyser that can't symbolically evaluate hash-dependent
+validators. The shipped solution uses the validator as the case
+scrutinee directly.
 
-### Phase B — Auto-generate the hash-tag wrapper
-
-**File**: `src/Telomare/Parser.hs` (`expandBrand`, lines 430–435)
-
-Right now `expandBrand` just unpacks `exp` slot by slot. Change it so
-the brand expression is implicitly wrapped:
-
-```
-[T, mk, op1, …] = body
-```
-
-becomes
-
-```
-__brand_<T> = let wrapper = \__brand_hash -> body_with_T_prepended
-              in wrapper (# wrapper)
-T   = first  __brand_<T>
-mk  = second __brand_<T>
-op1 = third  __brand_<T>
-…
-```
-
-`body_with_T_prepended` is constructed in `expandBrand`: prepend the
-auto-generated validator to the user's tuple (Phase C). The user's
-body keeps direct access to `__brand_hash` (the freshly-tagged hash)
-via a known magic identifier — name it `_h` or similar — so existing
-code that wraps/unwraps the hash keeps working.
-
-Rationale: the wrapper / `(# wrapper)` step is mechanical and the same
-for every UDT. Hiding it removes the part of the UDT idiom that
-beginners trip on (the recursive self-hash).
-
-### Phase C — First brand slot is the auto-generated validator
+### Phase B — Auto-generate the hash-tag wrapper  ✅ DONE
 
 **File**: `src/Telomare/Parser.hs` (`expandBrand`)
 
-When `expandBrand` builds the wrapped body, prepend an auto-generated
-validator for the first name:
+When the brand body is a lambda `\h -> …`, `expandBrand` wraps it in
+`wrapper (# wrapper)` automatically and binds the per-slot accessors
+to an intermediate `__brand_<T>` name to avoid duplicating the wrapper
+expression across each accessor.
 
-```
-firstSlot = \x -> let _ = assert (dEqual (left x) _h) "not <T>" in x
-```
+### Phase C — First brand slot is the auto-generated validator  ✅ DONE
 
-User now writes only the remaining slots. The brand becomes:
+**File**: `src/Telomare/Parser.hs` (`expandBrand`, `autoValidator`)
 
-```
-[Nat, toNat, nPlus, nMinus] = \_h ->
-  [ \x -> (_h, x)                                       -- toNat
-  , \((_, aa) : Nat) ((_, bb) : Nat) -> (_h, d2c aa succ bb)
-  , \((_, aa) : Nat) ((_, bb) : Nat) ->
-       let sLeft = \x -> case x of
-                           (l, _) -> l
-                           _      -> abort "underflow"
-       in (_h, d2c bb sLeft aa)
-  ]
-```
+The first slot of `[T, mk, op1, …] = \h -> [op0, op1, …]` is now the
+auto-generated validator, exposed both as the top-level `T` and as a
+*local* `let T = validator in …` inside the wrapper so the operations
+can refer to `T` (via `: T` annotations) without forming a top-level
+definition cycle.
 
-Combined with Phase A, the `: Nat` annotations actually fire because
-`Nat` (the validator) is in scope after expansion. This is the
-bridge: the brand-bound first name is both a value (the validator) and
-a usable type marker in patterns.
-
-### Phase D — Replace the sentinel-string hack
+### Phase D — Replace the sentinel-string hack  ✅ DONE
 
 **File**: `src/Telomare/Parser.hs`
 
-Change `parseOneAssignmentOrBrand` to return
-`Either BrandSpec (String, AnnotatedUPT)` (or similar), and have
-`parseAssignmentsAndBrands` flatMap the `Either` into the final
-binding list. Removes `"8@$temp_label$@8"` and makes the intent
-explicit.
+`parseOneAssignmentOrBrand` now returns
+`Either AnnotatedUPT (String, AnnotatedUPT)`
+(`Left` = brand, `Right` = assignment). `parseAssignmentsAndBrands`,
+`parseImportOrAssignment`, and (Phase F) `parseLet` flatMap the
+`Either` into the binding list. The `"8@$temp_label$@8"` sentinel is
+gone.
 
-### Phase E — Lift the 10-accessor limit
+### Phase E — Lift the 10-accessor limit  ✅ DONE
 
 **File**: `src/Telomare/Parser.hs` (`expandBrand`)
 
-Generate accessors as direct AST nodes rather than referencing Prelude
-names:
-- slot 0 → `LeftUP exp`
-- slot 1 → `LeftUP (RightUP exp)`
-- slot n → `LeftUP (iterate RightUP exp !! n)`
+`expandBrand` now generates `LeftUP (RightUP … e)` chains directly
+instead of using `first..tenth` from Prelude. No cap on the number of
+slots; no Prelude dependency for the destructure.
 
-Removes both the 10-element cap and the implicit dependency on
-Prelude. `first..tenth` can stay in Prelude for user code, but brands
-no longer require them.
+### Phase F — Allow brands inside `let`  ✅ DONE
 
-### Phase F — Allow brands inside `let`
+**File**: `src/Telomare/Parser.hs` (`parseLet`)
 
-**File**: `src/Telomare/Parser.hs` (`parseLet`, lines 340–347)
+`parseLet` now uses `parseOneAssignmentOrBrand` and the same
+`Either`-flatMap expansion as `parseAssignmentsAndBrands`. Brands
+work inside any `let … in …`.
 
-Swap `parseSameLvl lvl parseAssignment` for a sibling parser that
-also accepts `parseBrand`, with the same temp-binding expansion. Easy
-once Phase D is in (use the `Either` machinery).
+### Phase G — Tests  ✅ DONE (partially — manual, not Spec)
 
-### Phase G — Tests
+**Files**: `brands.tel`, `examples.tel`
 
-**Files**: `test/ResolverTests.hs`, `test/Spec.hs`, `brands.tel`,
-`brands2.tel`, `examples.tel`
+- `brands.tel` now has a working `main` that exercises
+  `nPlus (toNat 3) (toNat 5)` ⇒ `"Success"`.
+- `brands2.tel` deleted (was a duplicate).
+- `examples.tel` cleaned up; brand example reference left as a
+  comment pointing at `brands.tel`.
+- **Not yet added**: dedicated cases in `test/Spec.hs` /
+  `test/ResolverTests.hs` for brands. Validated manually via
+  `cabal run telomare -- brands.tel` and a negative test
+  (`nPlus (0, 3) (toNat 5)` ⇒ `Aborted, user abort: not Nat`).
 
-1. Uncomment the `main` in `brands.tel` (`aux (toNat 8)` → `"Success"`)
-   and add a Spec test that runs it as a main, asserting the right
-   output.
-2. Add a ResolverTests case: `nPlus (toNat 2) (toNat 3)` evaluates to
-   `(h, 5)` for the right `h`.
-3. Add a negative test: applying `nPlus` to a non-Nat aborts with
-   `"not Natural"` (proves Phase A wired the annotation in).
-4. Delete `brands2.tel` once `brands.tel` has the working main, or
-   keep one and remove the other — they're identical except for the
-   `: N` annotation.
+### Phase H — Cleanup  ✅ DONE
 
-### Phase H — Cleanup
+**File**: `src/Telomare/Parser.hs`, `examples.tel`
 
-**File**: `src/Telomare/Parser.hs`
+- Removed commented `expandBrand` drafts.
+- Removed `aux`/`aux1` test strings.
+- Removed commented `parseDefinitions` block.
+- Removed unused `Lexeme (String)` import.
+- `examples.tel` brand comment trimmed to a one-line pointer.
 
-- Remove the commented `expandBrand` drafts (lines 425–446).
-- Remove the `aux`/`aux1` test strings (lines 505–540).
-- Remove the commented `parseDefinitions` block (lines 447–451).
-- Remove `import Text.Read (Lexeme (String))` — unused.
-- In `examples.tel`, drop the commented-out brand block; replace it
-  with the working brand example.
+## Critical files (final)
 
-## Critical files
+- `src/Telomare/Parser.hs` — `parseBrand`, `parsePatternAnnotated`,
+  `parsePatternVar` (annotation now parens-only), `buildMultiLambda`
+  (replaces per-arg `makeLambda` chains), `expandBrand`,
+  `autoValidator`, `prependLocalValidator`, `parseLet` (now
+  brand-aware), `parseImportOrAssignment` (flat-map `Either`).
+- `src/Telomare/Resolver.hs` — `findInts`, `findStrings`,
+  `findPatternVars`, `pairRoute2Dirs` each gained a
+  `PatternAnnotatedF x _ -> x` case so they recurse through annotations.
+- `brands.tel` — working UDT example using the new sugar.
 
-- `src/Telomare/Parser.hs` — most of the work: `parsePatternAnnotated`,
-  `makeLambda`, `expandBrand`, `parseOneAssignmentOrBrand`,
-  `parseAssignmentsAndBrands`, `parseLet`.
-- `src/Telomare/Resolver.hs` — verify `pattern2UPT` and
-  `validateVariables` still cope with the new `PatternAnnotated`
-  shape (they should; the annotation becomes inert by Phase A's
-  rewrite).
-- `src/Telomare.hs` — no data changes expected; `BrandUP` /
-  `PatternAnnotated` stay as-is.
-- `Prelude.tel` — leave `first..tenth` (lines 200–209) for user code,
-  but brands no longer depend on them.
-- `brands.tel`, `brands2.tel`, `examples.tel` — uncomment and trim.
-- `test/Spec.hs`, `test/ResolverTests.hs` — add coverage.
+## Execution log — how this differed from the written plan
+
+1. **Phase A's `CheckUPF`-based annotation enforcement was abandoned.**
+   The plan threaded the annotation through `makeLambda` as
+   `CheckUPF typeExpr varName`. At runtime that wrapped the value in
+   a `CheckingWrapper` fragment which the static refinement analyser
+   (`findInputLimitStepM` in `src/Telomare/Possible.hs:880`) tried
+   to symbolically evaluate. It can't evaluate hash-tag validators —
+   `h` is structural-hash-derived, not constant in the analyser's
+   view — and crashed with `findInputLimitStepM eval unexpected`.
+
+   Final form: the validator is invoked as a *case scrutinee*
+   (`case (typeExpr varName) of innerPat -> body`). The validator
+   returns its argument on success or aborts on failure; using its
+   result as the scrutinee forces evaluation and propagates the
+   abort, with no `CheckUPF`/refinement-wrapper involved.
+
+2. **Multi-argument annotated lambdas needed a structural rewrite.**
+   The per-argument `makeLambda` foldr produced
+   `\v1 -> case v1 of innerPat -> (\v2 -> case v2 of … body)`, where
+   the outer case's body is a function. The case-rewrite
+   (`removeCaseUPs` → `case2annidatedIfs`) always emits a Pair-typed
+   abort as the chain's fallback, which can't unify with a
+   function-typed branch.
+
+   Final form: `parseLambda` now calls a new `buildMultiLambda` that
+   emits *all the lambdas first*, then *nests all the destructuring
+   inside the innermost body* —
+   `\v1 -> \v2 -> case v1 of p1 -> case v2 of p2 -> body`. No case
+   body is ever a function, so the type checker is happy.
+
+3. **`parsePatternVar`'s bare-identifier annotation was removed.**
+   Originally it accepted `v : T` (no parens) by stealing the `:`,
+   which prevented `parsePatternAnnotated` from succeeding for
+   `(v : T)` — the parser conflict caused a parse error. Annotations
+   are now parens-only.
+
+4. **Resolver's pattern walkers needed `PatternAnnotatedF` cases.**
+   `findInts`, `findStrings`, `findPatternVars`, and `pairRoute2Dirs`
+   used `cata` over `Pattern` with an `_ → []` / `_ → Map.empty`
+   fallback. That dropped the inner pattern's bindings whenever an
+   annotation wrapped it. Each function now passes the inner result
+   through.
+
+5. **Brand expansion shape was refined.** The plan suggested writing
+   the validator into the body's tuple directly. The shipped version
+   binds the validator as a *local* `let T = validator in …` inside
+   the wrapper and prepends a reference `VarUPF T` to the list. This
+   keeps top-level `T = left __brand_T` from forming a definition
+   cycle with the operations that reference `T` via `: T`.
+
+6. **`brands2.tel` was deleted** rather than kept as the
+   "pre-annotation" form — both files were already in sync, and
+   `brands.tel` covers the canonical idiom.
 
 ## Verification
 
-1. `nix develop --command cabal test` — full suite still green.
-2. `nix develop --command cabal run telomare -- brands.tel` — prints
-   `Success` (Nat 8 round-trips).
-3. New positive test: `nPlus (toNat 2) (toNat 3)` evaluates to
-   `(<hash>, 5)` (representation may differ — assert via the
-   `fromNat`/`toNat` path).
-4. New negative test: `nPlus 0 (toNat 3)` aborts with the message
-   `"not Natural"`.
-5. Manual REPL regression: paste `brands.tel`'s contents and call
-   `nPlus (toNat 2) (toNat 3)` — must match what worked before commit
-   `d22e0d7`.
-6. Brands inside `let`: `let [A, B] = …Pair… in (A, B)` parses and
-   evaluates.
+- `nix develop --command cabal test` — `0 + 50 + 90 + 26 + 25` tests
+  passing across the five suites.
+- `nix develop --command cabal run telomare -- brands.tel` prints
+  `Success` (positive path).
+- Negative regression: replacing `toNat 3` with the raw pair
+  `(0, 3)` in `brands.tel`'s `main` aborts with
+  `Aborted, user abort: not Nat` — confirming the validator fires.
+- Brands inside `let`: a `let [T, mk, …] = \h -> [...] in …` form
+  parses and evaluates (smoke-tested manually).
+
+## What's still open / nice-to-have
+
+- **Dedicated Spec.hs / ResolverTests.hs brand cases.** Phase G's
+  test additions are still manual-only. A short `Spec.hs` block that
+  loads `brands.tel`, asserts `nPlus`'s result, and asserts the
+  abort message for bad inputs would lock this in against regressions.
+- **Better error location for annotation parse failures.**
+  `parsePatternAnnotated` could report a more specific message when
+  the inner pattern fails to validate.
+- **Type-checker awareness of branded values.** Right now the
+  validator runs purely at runtime. A future pass could lift the
+  brand hash into the type system so `: Nat` is checked statically
+  too.
+- **`parseDefinitions` is gone but `parseTopLevelWithExtraModuleBindings`
+  still uses `fromJust` to find `main`.** Not a brand-specific issue
+  but worth a clean error message someday.

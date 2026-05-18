@@ -1,20 +1,20 @@
--- import Prelude
+import Prelude
 
-[Nat, toNat, nPlus, nMinus]
-  = let wrapper = \h ->
-        let N = \(hc, _) x -> assert (dEqual hc h) "not Natural"
-        in [ N
-           , \x -> (h, x)
-           , \((_, aa) : N) ((_, bb) : N) -> (h, d2c aa succ bb)
-           , \((_, aa) : N) ((_, bb) : N) ->
-               let sLeft = \x -> case x of
-                                   (l, _) -> l
-                                   y -> abort "can't subtract larger number from smaller one"
-               in (h, d2c bb sLeft aa)
-           ]
-    in wrapper (# wrapper)
+-- Brand-style UDT. `Nat` is the auto-generated validator (first slot);
+-- `toNat`, `nPlus`, `nMinus` are the user-defined operations. The hash
+-- parameter `h` is bound implicitly by the brand mechanism via the
+-- `wrapper (# wrapper)` trick that `expandBrand` injects.
+[Nat, toNat, nPlus, nMinus] = \h ->
+  [ \x -> (h, x)
+  , \((_, aa) : Nat) ((_, bb) : Nat) -> (h, d2c aa succ bb)
+  , \((_, aa) : Nat) ((_, bb) : Nat) ->
+      let sLeft = \x -> case x of
+                          (l, _) -> l
+                          y      -> abort "can't subtract larger number from smaller one"
+      in (h, d2c bb sLeft aa)
+  ]
 
--- aux = \x -> if dEqual x 8 then "Success" else "Failure"
--- main = \i -> (aux ((left Nat) 8), 0)
+aux = \x -> if dEqual x 8 then "Success" else "Failure"
 
--- main = \i -> ("hello", 0)
+-- nPlus (toNat 3) (toNat 5) ~> (h, 8); `right` extracts the 8.
+main = \i -> (aux (right (nPlus (toNat 3) (toNat 5))), 0)
