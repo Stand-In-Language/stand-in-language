@@ -196,3 +196,14 @@ rDiv = \a b ->
       num = dTimes n1 d2
       den = dTimes d1 n2
   in fromRational num den
+
+first = left
+second = \x -> left (right x)
+third = \x -> left (right (right x))
+fourth = \x -> left (right (right (right x)))
+fifth = \x -> left (right (right (right (right x))))
+sixth = \x -> left (right (right (right (right (right x)))))
+seventh = \x -> left (right (right (right (right (right (right x))))))
+eighth = \x -> left (right (right (right (right (right (right (right x)))))))
+ninth = \x -> left (right (right (right (right (right (right (right (right x))))))))
+tenth = \x -> left (right (right (right (right (right (right (right (right (right x)))))))))

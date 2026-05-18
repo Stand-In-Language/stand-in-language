@@ -152,11 +152,12 @@ pattern2UPT :: LocTag -> Pattern -> AnnotatedUPT
 pattern2UPT anno = tag anno . cata alg where
   alg :: Base Pattern UnprocessedParsedTerm -> UnprocessedParsedTerm
   alg = \case
-    PatternPairF x y   -> PairUP x y
-    PatternIntF i      -> IntUP i
-    PatternStringF str -> StringUP str
-    PatternVarF str    -> IntUP 0
-    PatternIgnoreF     -> IntUP 0
+    PatternPairF x y       -> PairUP x y
+    PatternIntF i          -> IntUP i
+    PatternStringF str     -> StringUP str
+    PatternVarF str        -> IntUP 0
+    PatternIgnoreF         -> IntUP 0
+    PatternAnnotatedF x _  -> x
       -- Note that "__ignore" is a special variable name and not accessible to users because
       -- parsing of VarUPs doesn't allow variable names to start with `_`
 
@@ -369,15 +370,21 @@ validateVariables term =
                 [(name, Set.fromList $ getDirectDeps def) | (name, def) <- preludeMap]
 
               -- Get direct variable dependencies (only those defined in this let block)
+              -- Uses Set to properly handle lambda-bound variable shadowing
+              letBindingNames = Set.fromList (fmap fst preludeMap)
               getDirectDeps :: AnnotatedUPT -> [String]
-              getDirectDeps = cata alg where
-                alg :: CofreeF UnprocessedParsedTermF LocTag [String] -> [String]
+              getDirectDeps = Set.toList . cata alg where
+                alg :: CofreeF UnprocessedParsedTermF LocTag (Set String) -> Set String
                 alg = \case
-                    (_ C.:< VarUPF n) -> [n | any ((== n) . fst) preludeMap]
-                    (_ C.:< LamUPF _ body) -> body
+                    (_ C.:< VarUPF n) -> if Set.member n letBindingNames then Set.singleton n else Set.empty
+                    (_ C.:< LamUPF v body) -> Set.delete v body
+                    (_ C.:< LetUPF binds body) ->
+                      let boundNames = Set.fromList (fmap fst binds)
+                          bindDeps = foldMap snd binds
+                      in Set.union (bindDeps Set.\\ boundNames) (body Set.\\ boundNames)
                     (_ C.:< ITEUPF i t e) -> i <> t <> e
                     (_ C.:< PairUPF a b) -> a <> b
-                    (_ C.:< ListUPF l) -> concat l
+                    (_ C.:< ListUPF l) -> foldMap id l
                     (_ C.:< AppUPF f x) -> f <> x
                     (_ C.:< UnsizedRecursionUPF t r b) -> t <> r <> b
                     (_ C.:< LeftUPF x) -> x
@@ -385,7 +392,7 @@ validateVariables term =
                     (_ C.:< TraceUPF x) -> x
                     (_ C.:< CheckUPF cf x) -> cf <> x
                     (_ C.:< HashUPF x) -> x
-                    _ -> []
+                    _ -> Set.empty
 
           -- Check if original order works (no forward references)
           let originalOrder = fmap fst preludeMap

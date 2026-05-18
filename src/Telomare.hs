@@ -1046,12 +1046,12 @@ convertAbortMessage = \case
 -- |AST for patterns in `case` expressions
 data Pattern
   = PatternVar String
+  | PatternAnnotated Pattern UnprocessedParsedTerm
   | PatternInt Int
   | PatternString String
   | PatternIgnore
   | PatternPair Pattern Pattern
   deriving (Show, Eq, Ord)
-makeBaseFunctor ''Pattern
 
 -- |Firstly parsed AST sans location annotations
 data UnprocessedParsedTerm
@@ -1071,6 +1071,7 @@ data UnprocessedParsedTerm
   | TraceUP UnprocessedParsedTerm
   | CheckUP UnprocessedParsedTerm UnprocessedParsedTerm
   | HashUP UnprocessedParsedTerm -- ^ On ad hoc user defined types, this term will be substitued to a unique Int.
+  | BrandUP [String] UnprocessedParsedTerm
   | CaseUP UnprocessedParsedTerm [(Pattern, UnprocessedParsedTerm)]
   -- TODO: check if adding this doesn't create partial functions
   | ImportQualifiedUP String String
@@ -1078,6 +1079,8 @@ data UnprocessedParsedTerm
   deriving (Eq, Ord, Show)
 makeBaseFunctor ''UnprocessedParsedTerm -- Functorial version UnprocessedParsedTerm
 makePrisms ''UnprocessedParsedTerm
+
+makeBaseFunctor ''Pattern
 
 instance Eq a => Eq (UnprocessedParsedTermF a) where
   (==) = eq1
@@ -1123,7 +1126,6 @@ instance Eq1 UnprocessedParsedTermF where
     mod1 == mod2
   liftEq _ _ _ = False
 
-
 instance (Show a) => Show (UnprocessedParsedTermF a) where
   show (VarUPF s) = "VarUPF " <> show s
   show (ITEUPF c t e) = "ITEUPF " <> show c <> " " <> show t <> " " <> show e
@@ -1141,7 +1143,10 @@ instance (Show a) => Show (UnprocessedParsedTermF a) where
   show (TraceUPF x) = "TraceUPF " <> show x
   show (CheckUPF a b) = "CheckUPF " <> show a <> " " <> show b
   show (HashUPF x) = "HashUPF " <> show x
+  show (BrandUPF ss x) = "BrandUPF " <> show ss <> " " <> show x
   show (CaseUPF scrutinee patterns) = "CaseUPF " <> show scrutinee <> " " <> show patterns
+  show (ImportQualifiedUPF s1 s2) = "ImportQualifiedUPF " <> show s1 <> " " <> show s2
+  show (ImportUPF s) = "ImportUPF " <> show s
 
 instance Show1 UnprocessedParsedTermF where
   liftShowsPrec showsPrecFunc showList d term = case term of
@@ -1179,6 +1184,7 @@ instance Show1 UnprocessedParsedTermF where
     CheckUPF a b -> showString "CheckUPF " . showsPrecFunc 11 a . showChar ' '
                     . showsPrecFunc 11 b
     HashUPF x -> showString "HashUPF " . showsPrecFunc 11 x
+    BrandUPF ss x -> showString "BrandUPF " . shows ss . showChar ' ' . showsPrecFunc 11 x
     CaseUPF scrutinee patterns ->
       let showPattern (pat, x) = showChar '(' . shows pat . showString ", "
                                 . showsPrecFunc 11 x . showChar ')'

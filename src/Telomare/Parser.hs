@@ -1,12 +1,13 @@
 {-# LANGUAGE LambdaCase          #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections       #-}
 {-# LANGUAGE TypeFamilies        #-}
 
 module Telomare.Parser where
 
 import Control.Comonad.Cofree (Cofree (..), unwrap)
 import Control.Lens.Plated (Plated (..))
-import Control.Monad (void)
+import Control.Monad (join, void)
 import Control.Monad.State (State)
 import Data.Bifunctor (Bifunctor (first, second), bimap)
 import Data.Functor (($>))
@@ -29,7 +30,7 @@ import Text.Megaparsec.Char (alphaNumChar, char, letterChar, space1, string)
 import qualified Text.Megaparsec.Char.Lexer as L
 import Text.Megaparsec.Debug (dbg)
 import Text.Megaparsec.Pos (Pos)
-import Text.Read (readMaybe)
+import Text.Read (readMaybe, Lexeme (String))
 import Text.Show.Deriving (deriveShow1)
 
 type AnnotatedUPT = Cofree UnprocessedParsedTermF LocTag
@@ -195,6 +196,14 @@ parseHash = do
   upt <- parseSingleExpr
   pure $ x :< HashUPF upt
 
+parseBrand :: TelomareParser AnnotatedUPT
+parseBrand = do
+  x <- getLineColumn
+  brandElements :: [String] <- scn *> brackets (commaSep (scn *> identifier <*scn)) <* scn
+  scn *> symbol "=" <?> "brand assignment ="
+  expr <- scn *> parseLongExpr <* scn
+  pure $ x :< BrandUPF brandElements expr
+
 parseCase :: TelomareParser AnnotatedUPT
 parseCase = do
   x <- getLineColumn
@@ -214,6 +223,7 @@ parseSingleCase = do
 parsePattern :: TelomareParser Pattern
 parsePattern = choice $ try <$> [ parsePatternIgnore
                                 , parsePatternVar
+                                , parsePatternAnnotated
                                 , parsePatternString
                                 , parsePatternInt
                                 , parsePatternPair
@@ -233,10 +243,23 @@ parsePatternString :: TelomareParser Pattern
 parsePatternString = PatternString <$> (char '"' >> manyTill L.charLiteral (char '"'))
 
 parsePatternVar :: TelomareParser Pattern
-parsePatternVar = PatternVar <$> identifier
+parsePatternVar = do
+  var <- identifier <* scn
+  annotation <- optional . try $ parseRefinementCheck
+  case annotation of
+    Just annot -> pure $ PatternAnnotated (PatternVar var) (forget . annot $ DummyLoc :< VarUPF var)
+    _          -> pure $ PatternVar var
+
 
 parsePatternIgnore :: TelomareParser Pattern
 parsePatternIgnore = symbol "_" >> pure PatternIgnore
+
+parsePatternAnnotated :: TelomareParser Pattern
+parsePatternAnnotated = parens $ do
+  p <- scn *> parsePattern <* scn
+  symbol ":" <* scn
+  typeExpr <- parseLongExpr <* scn
+  pure $ PatternAnnotated p (forget typeExpr)
 
 -- |Parse a single expression.
 parseSingleExpr :: TelomareParser AnnotatedUPT
@@ -262,16 +285,50 @@ parseApplied = do
       pure $ foldl (\a b -> x :< AppUPF a b) f args
     _ -> fail "expected expression"
 
+-- parseLambdaArgs :: TelomareParser [Pattern]
+-- parseLambdaArgs = some parsePattern <* scn
+
+makeLambda :: LocTag -> Pattern -> AnnotatedUPT -> AnnotatedUPT
+makeLambda lt p body =
+  case p of
+    PatternVar str -> lt :< LamUPF str body
+    PatternAnnotated innerPat _typeExpr ->
+      lt :< LamUPF varName
+        (lt :< CaseUPF (lt :< VarUPF varName)
+          [ (innerPat, body)
+          , (PatternIgnore, abort)
+          ])
+    _ -> lt :< LamUPF varName
+          (lt :< CaseUPF (lt :< VarUPF varName)
+            [ (p, body)
+            , (PatternIgnore, abort)
+            ])
+  where
+    varName = genPatternVarName p
+    abort = lt :< AppUPF
+              (lt :< VarUPF "abort")
+              (lt :< StringUPF "makeLambda: pattern not reached")
+
+genPatternVarName :: Pattern -> String
+genPatternVarName = ("generatedVar" <>)
+                  . filter (\x -> x /= '\"'
+                               && x /= ' '
+                               && x /= '('
+                               && x /= ')'
+                               && x /= '['
+                               && x /= ']')
+                  . show
+
 -- |Parse lambda expression.
 parseLambda :: TelomareParser AnnotatedUPT
 parseLambda = do
   x <- getLineColumn
   symbol "\\" <* scn
-  variables <- some identifier <* scn
+  variables <- some parsePattern <* scn
+  -- variables <- some identifier <* scn
   symbol "->" <* scn
-  -- TODO make sure lambda names don't collide with bound names
   term1expr <- parseLongExpr <* scn
-  pure $ foldr (\str upt -> x :< LamUPF str upt) term1expr variables
+  pure $ foldr (\p upt -> makeLambda x p upt) term1expr variables
 
 -- |Parser that fails if indent level is not `pos`.
 parseSameLvl :: Pos -> TelomareParser a -> TelomareParser a
@@ -343,19 +400,54 @@ parseImportQualified = do
   qualifier <- identifier <* scn
   pure $ x :< ImportQualifiedUPF qualifier m
 
+parseOneAssignmentOrBrand :: TelomareParser (String, AnnotatedUPT)
+parseOneAssignmentOrBrand =
+  parseAssignment
+    <|> (("8@$temp_label$@8",) <$> parseBrand)
+
+-- |Parse assignment or Brands, and add adding binding to ParserState.
+parseAssignmentsAndBrands :: TelomareParser [(String, AnnotatedUPT)]
+parseAssignmentsAndBrands = do
+  tempBindingList :: [(String, AnnotatedUPT)] <- scn *> many parseOneAssignmentOrBrand <* eof
+  let removeBrands = \case
+        ("8@$temp_label$@8", exp) -> expandBrand exp
+        x -> [x]
+  pure (removeBrands =<< tempBindingList)
+
 -- |Parse top level expressions.
 parseTopLevelWithExtraModuleBindings :: [(String, AnnotatedUPT)]
                                      -> TelomareParser AnnotatedUPT
 parseTopLevelWithExtraModuleBindings lst = do
   x <- getLineColumn
-  bindingList <- scn *> many parseAssignment <* eof
+  bindingList <- parseAssignmentsAndBrands
   pure $ x :< LetUPF (lst <> bindingList) (fromJust $ lookup "main" bindingList)
 
-parseDefinitions :: TelomareParser (AnnotatedUPT -> AnnotatedUPT)
-parseDefinitions = do
-  x <- getLineColumn
-  bindingList <- scn *> many parseAssignment <* eof
-  pure $ \y -> x :< LetUPF bindingList y
+-- expandBrand :: UnprocessedParsedTerm -> [(String, UnprocessedParsedTerm)]
+-- expandBrand = \case
+--   BrandUP l exp -> undefined
+--   _ -> []
+
+expandBrand :: AnnotatedUPT -> [(String, AnnotatedUPT)]
+expandBrand (loc :< term) = case term of
+  BrandUPF l exp -> zipWith (\name accessor -> (name, loc :< AppUPF (loc :< VarUPF accessor) exp)) l accessors
+    where
+      accessors = ["first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth"]
+  _ -> []
+
+-- expandBrand :: AnnotatedUPT -> [(String, AnnotatedUPT)]
+-- expandBrand = \case
+--   (_ :< BrandUPF l exp) -> undefined
+--   _ -> []
+-- expandBrand = undefined where
+--   interim :: AnnotatedUPT -> AnnotatedUPT
+--   interim = \case
+--     (anno :< BrandUPF l exp) -> undefined
+
+-- parseDefinitions :: TelomareParser (AnnotatedUPT -> AnnotatedUPT)
+-- parseDefinitions = do
+--   x <- getLineColumn
+--   bindingList <- scn *> many parseAssignment <* eof
+--   pure $ \y -> x :< LetUPF bindingList y
 
 -- |Helper function to test parsers without a result.
 runTelomareParser_ :: Show a => TelomareParser a -> String -> IO ()
@@ -386,7 +478,7 @@ runParseLongExpr str = bimap errorBundlePretty forget' $ runParser parseLongExpr
     forget' = forget
 
 parsePrelude :: String -> Either String [(String, AnnotatedUPT)]
-parsePrelude str = let result = runParser (scn *> many parseAssignment <* eof) "" str
+parsePrelude str = let result = runParser parseAssignmentsAndBrands "" str
                     in first errorBundlePretty result
 
 parseImportOrAssignment :: TelomareParser (Either AnnotatedUPT (String, AnnotatedUPT))
@@ -395,7 +487,7 @@ parseImportOrAssignment = do
   maybeImport <- optional $ scn *> (try parseImportQualified <|> try parseImport) <* scn
   case maybeImport of
     Nothing -> do
-      maybeAssignment <- optional $ scn *> try parseAssignment <* scn
+      maybeAssignment <- optional $ scn *> try parseOneAssignmentOrBrand <* scn
       case maybeAssignment of
         Nothing -> fail "Expected either an import statement or an assignment"
         Just a  -> pure $ Right a
@@ -409,6 +501,40 @@ parseWithPrelude prelude str = first errorBundlePretty $ runParser (parseTopLeve
 parseModule :: String -> Either String [Either AnnotatedUPT (String, AnnotatedUPT)]
 parseModule str = let result = runParser (scn *> many parseImportOrAssignment <* eof) "" str
                   in first errorBundlePretty result
+
+aux :: String
+aux = unlines
+  [ "[Nat, toNat, nPlus, nMinus]"
+  , "  = let wrapper = \\h ->"
+  , "        let N = \\(hc, _) x -> assert (dEqual hc h) \"not Natural\""
+  , "        in [ N"
+  , "           , \\x -> (h, x)"
+  , "           , \\((_, aa) : N) ((_, bb) : N) -> (h, d2c aa succ bb)"
+  , "           , \\((_, aa) : N) ((_, bb) : N) ->"
+  , "               let sLeft = \\x -> case x of"
+  , "                                   (l, _) -> l"
+  , "                                   y -> abort \"can't subtract larger number from smaller one\""
+  , "               in (h, d2c bb sLeft aa)"
+  , "           ]"
+  , "    in wrapper (# wrapper)"
+  ]
+
+aux1 :: String
+aux1 = unlines
+  [ "let wrapper = \\h ->"
+  , "    let N = \\(hc, _) x -> assert (dEqual hc h) \"not Natural\""
+  , "    in [ N"
+  , "       , \\x -> (h, x)"
+  , "       , \\((_, aa) : N) ((_, bb) : N) -> (h, d2c aa succ bb)"
+  , "       , \\((_, aa) : N) ((_, bb) : N) ->"
+  , "           let sLeft = \\x -> case x of"
+  , "                               (l, _) -> l"
+  , "                               y -> abort \"can't subtract larger number from smaller one\""
+  , "           in (h, d2c bb sLeft aa)"
+  , "       ]"
+  , "in wrapper (# wrapper)"
+  ]
+
 
 -- |Parse either a single expression or top level definitions defaulting to the `main` definition.
 --  This function was made for telomare-evaluare
