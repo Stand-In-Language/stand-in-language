@@ -1,9 +1,10 @@
 import Prelude
 
--- Brand-style UDT. `Nat` is the auto-generated validator (first slot);
--- `toNat`, `nPlus`, `nMinus` are the user-defined operations. The hash
--- parameter `h` is bound implicitly by the brand mechanism via the
--- `wrapper (# wrapper)` trick that `expandBrand` injects.
+-- User-defined type `Nat`. The first slot is the auto-generated
+-- validator; `toNat`, `nPlus`, `nMinus` are the user-defined
+-- operations. The hash parameter `h` is bound implicitly by the
+-- UDT mechanism via the `wrapper (# wrapper)` trick that
+-- `expandUDT` injects.
 [Nat, toNat, nPlus, nMinus] = \h ->
   [ \x -> (h, x)
   , \((_, aa) : Nat) ((_, bb) : Nat) -> (h, d2c aa succ bb)

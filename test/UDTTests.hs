@@ -8,6 +8,7 @@ module Main where
 import Common
 import Control.Comonad.Cofree (Cofree ((:<)))
 import Control.Monad (unless)
+import NatUDTTests (natUDTTests)
 import Data.Bifunctor (Bifunctor (first))
 import Data.List (isInfixOf)
 import Data.Ratio
@@ -33,11 +34,12 @@ main :: IO ()
 main = defaultMain tests
 
 tests :: TestTree
-tests = testGroup "Arithmetic Tests" [ unitTestsNatArithmetic
-                                     , unitTestsRatArithmetic
-                                     , qcPropsNatArithmetic
-                                     , qcPropsRatArithmetic
-                                     ]
+tests = testGroup "UDT Tests" [ unitTestsNatArithmetic
+                              , unitTestsRatArithmetic
+                              , qcPropsNatArithmetic
+                              , qcPropsRatArithmetic
+                              , natUDTTests
+                              ]
 
 maybeToRight :: Maybe a -> Either EvalError a
 maybeToRight (Just x) = Right x

@@ -394,7 +394,7 @@ instance Show MultiLineShowUPT where
                           "  " <> ind x <> "\n" <>
                           concatMap (\(p,v) -> "  , (" <> show p <> ",\n    " <> ind v <> ")\n") ls <>
                           "  ]"
-      (BrandUPF ss x) -> "BrandUP " <> show ss <> "\n" <>
+      (UDTUPF ss x) -> "UDTUP " <> show ss <> "\n" <>
                         "  " <> ind x
       (ImportUPF s) -> "ImportUP " <> show s
       (ImportQualifiedUPF s1 s2) -> "ImportQualifiedUP " <> show s1 <> " " <> show s2

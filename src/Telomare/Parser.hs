@@ -196,13 +196,14 @@ parseHash = do
   upt <- parseSingleExpr
   pure $ x :< HashUPF upt
 
-parseBrand :: TelomareParser AnnotatedUPT
-parseBrand = do
+parseUDT :: TelomareParser AnnotatedUPT
+parseUDT = do
   x <- getLineColumn
-  brandElements :: [String] <- scn *> brackets (commaSep (scn *> identifier <*scn)) <* scn
-  scn *> symbol "=" <?> "brand assignment ="
-  expr <- scn *> parseLongExpr <* scn
-  pure $ x :< BrandUPF brandElements expr
+  udtElements :: [String] <- (scn *> brackets (commaSep (scn *> identifier <* scn)) <* scn)
+                              <?> "UDT name list"
+  (scn *> symbol "=") <?> "UDT assignment ="
+  expr <- (scn *> parseLongExpr <* scn) <?> "UDT body"
+  pure $ x :< UDTUPF udtElements expr
 
 parseCase :: TelomareParser AnnotatedUPT
 parseCase = do
@@ -257,11 +258,13 @@ parsePatternIgnore = symbol "_" >> pure PatternIgnore
 -- e.g. @((_, aa) : Nat)@. The stored typeExpr is the raw check function;
 -- 'makeLambda' applies it to the bound value as a 'CheckUPF'.
 parsePatternAnnotated :: TelomareParser Pattern
-parsePatternAnnotated = parens $ do
-  p <- scn *> parsePattern <* scn
-  symbol ":" <* scn
-  typeExpr <- parseLongExpr <* scn
-  pure $ PatternAnnotated p (forget typeExpr)
+parsePatternAnnotated = (parens body) <?> "annotated pattern"
+  where
+    body = do
+      p <- (scn *> parsePattern <* scn) <?> "pattern before ':'"
+      symbol ":" <* scn
+      typeExpr <- (parseLongExpr <* scn) <?> "type expression after ':'"
+      pure $ PatternAnnotated p (forget typeExpr)
 
 -- |Parse a single expression.
 parseSingleExpr :: TelomareParser AnnotatedUPT
@@ -368,17 +371,17 @@ parseSameLvl pos parser = do
   if pos == lvl then parser else fail "Expected same indentation."
 
 -- |Parse let expression. Accepts both plain @name = value@ assignments
--- and brand destructurings @[n1, n2, ...] = value@; each brand expands
--- into its per-slot bindings via 'expandBrand'.
+-- and UDT destructurings @[n1, n2, ...] = value@; each UDT expands
+-- into its per-slot bindings via 'expandUDT'.
 parseLet :: TelomareParser AnnotatedUPT
 parseLet = do
   x <- getLineColumn
   reserved "let" <* scn
   lvl <- L.indentLevel
-  entries <- manyTill (parseSameLvl lvl parseOneAssignmentOrBrand) (reserved "in") <* scn
+  entries <- manyTill (parseSameLvl lvl parseOneAssignmentOrUDT) (reserved "in") <* scn
   expr <- parseLongExpr <* scn
   let bindingsList = entries >>= \case
-        Left brand   -> expandBrand brand
+        Left udt     -> expandUDT udt
         Right assign -> [assign]
   pure $ x :< LetUPF bindingsList expr
 
@@ -436,86 +439,70 @@ parseImportQualified = do
   qualifier <- identifier <* scn
   pure $ x :< ImportQualifiedUPF qualifier m
 
--- |A single top-level entry is either a name=value assignment or a brand
--- destructuring `[n1, n2, …] = expr`. Brands carry their full AST so the
+-- |A single top-level entry is either a name=value assignment or a UDT
+-- destructuring `[n1, n2, …] = expr`. UDTs carry their full AST so the
 -- expansion happens after collection.
-parseOneAssignmentOrBrand :: TelomareParser (Either AnnotatedUPT (String, AnnotatedUPT))
-parseOneAssignmentOrBrand =
+parseOneAssignmentOrUDT :: TelomareParser (Either AnnotatedUPT (String, AnnotatedUPT))
+parseOneAssignmentOrUDT =
   (Right <$> parseAssignment)
-    <|> (Left <$> parseBrand)
+    <|> (Left <$> parseUDT)
 
--- |Parse assignments and Brands, expanding brands into their per-slot bindings.
-parseAssignmentsAndBrands :: TelomareParser [(String, AnnotatedUPT)]
-parseAssignmentsAndBrands = do
-  entries <- scn *> many parseOneAssignmentOrBrand <* eof
+-- |Parse assignments and UDTs, expanding UDTs into their per-slot bindings.
+parseAssignmentsAndUDTs :: TelomareParser [(String, AnnotatedUPT)]
+parseAssignmentsAndUDTs = do
+  entries <- scn *> many parseOneAssignmentOrUDT <* eof
   let resolve = \case
-        Left brand     -> expandBrand brand
-        Right assign   -> [assign]
+        Left udt     -> expandUDT udt
+        Right assign -> [assign]
   pure (resolve =<< entries)
 
--- |Parse top level expressions.
+-- |Parse top level expressions. Fails with a megaparsec error if the
+-- module has no @main@ definition, instead of crashing with 'fromJust'.
 parseTopLevelWithExtraModuleBindings :: [(String, AnnotatedUPT)]
                                      -> TelomareParser AnnotatedUPT
 parseTopLevelWithExtraModuleBindings lst = do
   x <- getLineColumn
-  bindingList <- parseAssignmentsAndBrands
-  pure $ x :< LetUPF (lst <> bindingList) (fromJust $ lookup "main" bindingList)
+  bindingList <- parseAssignmentsAndUDTs
+  case lookup "main" bindingList of
+    Just m  -> pure $ x :< LetUPF (lst <> bindingList) m
+    Nothing -> fail "missing 'main' definition"
 
--- |Expand a brand declaration into a list of top-level bindings.
+-- |Expand a UDT declaration into a list of top-level bindings.
 --
--- If the brand body is a lambda @\\h -> ...@ (the UDT idiom), the
--- expansion automatically wraps the body with the hash-tag mechanism
--- (@wrapper (# wrapper)@) and prepends an auto-generated validator as the
--- first slot. The user writes only the operations:
---
--- > [T, mk, op1, ...] = \\h -> [ op0, op1, ... ]
---
--- becomes:
---
--- > __brand_T = wrapper (# wrapper)
--- >   where wrapper = \\h -> [validator_T h, op0, op1, ...]
--- > T   = left  __brand_T   -- the validator, usable as `(x : T)`
--- > mk  = left (right __brand_T)
--- > ...
---
--- If the brand body is not a lambda, the old behaviour applies: the body
--- is treated as a plain n-tuple and bindings are made by direct
--- left/right accessor chains.
--- |Expand a brand declaration into a list of top-level bindings.
---
--- If the brand body is a lambda @\\h -> ...@ (the UDT idiom), the
--- expansion automatically wraps the body with the hash-tag mechanism
--- (@wrapper (# wrapper)@), prepends an auto-generated validator as the
--- first slot, and exposes the validator as a *local* let binding inside
--- the wrapper so the operations can refer to it (e.g. via @: T@
--- annotations) without forming a top-level definition cycle.
+-- If the UDT body is a lambda @\\h -> ...@ (the canonical UDT idiom),
+-- the expansion automatically wraps the body with the hash-tag
+-- mechanism (@wrapper (# wrapper)@), prepends an auto-generated
+-- validator as the first slot, and exposes the validator as a *local*
+-- let binding inside the wrapper so the operations can refer to it
+-- (e.g. via @: T@ annotations) without forming a top-level definition
+-- cycle.
 --
 -- > [T, mk, op1, ...] = \\h -> [ op0, op1, ... ]
 --
 -- becomes (conceptually):
 --
--- > __brand_T = wrapper (# wrapper)
+-- > __udt_T = wrapper (# wrapper)
 -- >   where wrapper = \\h -> let T = validatorFor T h in [T, op0, op1, ...]
--- > T   = left  __brand_T   -- the validator, usable as `(x : T)` outside
--- > mk  = left (right __brand_T)
+-- > T   = left  __udt_T   -- the validator, usable as `(x : T)` outside
+-- > mk  = left (right __udt_T)
 -- > ...
 --
--- If the brand body is not a lambda, the body is treated as a plain
+-- If the UDT body is not a lambda, the body is treated as a plain
 -- n-tuple and bindings are made by direct left/right accessor chains
 -- (backwards-compatible).
-expandBrand :: AnnotatedUPT -> [(String, AnnotatedUPT)]
-expandBrand (loc :< BrandUPF names@(tname:_) body) =
+expandUDT :: AnnotatedUPT -> [(String, AnnotatedUPT)]
+expandUDT (loc :< UDTUPF names@(tname:_) body) =
   case body of
     (_ :< LamUPF hParam inner) ->
-      let validator   = autoValidator loc tname hParam
+      let validator    = autoValidator loc tname hParam
           wrappedInner = loc :< LetUPF [(tname, validator)]
                            (prependLocalValidator loc tname inner)
           wrapper      = loc :< LamUPF hParam wrappedInner
-          brandTuple   = loc :< AppUPF wrapper (loc :< HashUPF wrapper)
-          intermediate = "__brand_" <> tname
+          udtTuple     = loc :< AppUPF wrapper (loc :< HashUPF wrapper)
+          intermediate = "__udt_" <> tname
           mkAccessorBinding idx name =
             (name, accessAt idx (loc :< VarUPF intermediate))
-      in (intermediate, brandTuple)
+      in (intermediate, udtTuple)
        : zipWith mkAccessorBinding [0 ..] names
     _ ->
       zipWith (\name idx -> (name, accessAt idx body)) names [0 ..]
@@ -523,9 +510,9 @@ expandBrand (loc :< BrandUPF names@(tname:_) body) =
     accessAt :: Int -> AnnotatedUPT -> AnnotatedUPT
     accessAt 0 e = loc :< LeftUPF e
     accessAt n e = loc :< LeftUPF (iterate (\x -> loc :< RightUPF x) e !! n)
-expandBrand _ = []
+expandUDT _ = []
 
--- |Walk through let-bindings inside a brand's lambda body and prepend
+-- |Walk through let-bindings inside a UDT's lambda body and prepend
 -- a reference to the locally-bound validator as the first element of
 -- the eventual list literal.
 prependLocalValidator :: LocTag -> String -> AnnotatedUPT -> AnnotatedUPT
@@ -533,7 +520,7 @@ prependLocalValidator loc tname = go where
   go (l :< ListUPF xs)         = l :< ListUPF ((loc :< VarUPF tname) : xs)
   go (l :< LetUPF binds inner) = l :< LetUPF binds (go inner)
   go (_ :< other)              = error
-    $ "expandBrand: brand body for [" <> tname
+    $ "expandUDT: UDT body for [" <> tname
     <> "] must reduce to a list literal; got: " <> show (() <$ other)
 
 -- |Auto-generated validator: @\\v -> if dEqual (left v) <h> then v else abort \"not <T>\"@.
@@ -542,14 +529,14 @@ prependLocalValidator loc tname = go where
 -- the destructure works on a validated value without an extra ITE.
 autoValidator :: LocTag -> String -> String -> AnnotatedUPT
 autoValidator loc tname hParam =
-  loc :< LamUPF "__brand_v"
+  loc :< LamUPF "__udt_v"
     (loc :< ITEUPF
        (loc :< AppUPF
           (loc :< AppUPF
              (loc :< VarUPF "dEqual")
-             (loc :< LeftUPF (loc :< VarUPF "__brand_v")))
+             (loc :< LeftUPF (loc :< VarUPF "__udt_v")))
           (loc :< VarUPF hParam))
-       (loc :< VarUPF "__brand_v")
+       (loc :< VarUPF "__udt_v")
        (loc :< AppUPF
           (loc :< VarUPF "abort")
           (loc :< StringUPF ("not " <> tname))))
@@ -583,20 +570,20 @@ runParseLongExpr str = bimap errorBundlePretty forget' $ runParser parseLongExpr
     forget' = forget
 
 parsePrelude :: String -> Either String [(String, AnnotatedUPT)]
-parsePrelude str = let result = runParser parseAssignmentsAndBrands "" str
+parsePrelude str = let result = runParser parseAssignmentsAndUDTs "" str
                     in first errorBundlePretty result
 
--- |One parser step inside a module: returns a list because a brand expands
+-- |One parser step inside a module: returns a list because a UDT expands
 -- into multiple (name, value) bindings.
 parseImportOrAssignment :: TelomareParser [Either AnnotatedUPT (String, AnnotatedUPT)]
 parseImportOrAssignment = do
   maybeImport <- optional $ scn *> (try parseImportQualified <|> try parseImport) <* scn
   case maybeImport of
     Nothing -> do
-      maybeEntry <- optional $ scn *> try parseOneAssignmentOrBrand <* scn
+      maybeEntry <- optional $ scn *> try parseOneAssignmentOrUDT <* scn
       case maybeEntry of
         Nothing             -> fail "Expected either an import statement or an assignment"
-        Just (Left brand)   -> pure (Right <$> expandBrand brand)
+        Just (Left udt)     -> pure (Right <$> expandUDT udt)
         Just (Right assign) -> pure [Right assign]
     Just imp -> pure [Left imp]
 

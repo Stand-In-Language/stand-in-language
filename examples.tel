@@ -28,7 +28,7 @@ MyInt = let wrapper = \h -> ( \i -> if not i
 aux = \x -> if dEqual x 8 then "Success" else "Failure"
 main = \i -> (aux ((left MyInt) 8), 0)
 
--- Brand-style UDT example (see brands.tel for the live version):
+-- User-defined type example (see udt.tel for the live version):
 --   [Nat, toNat, nPlus, nMinus] = \h ->
 --     [ \x -> (h, x)
 --     , \((_, aa) : Nat) ((_, bb) : Nat) -> (h, d2c aa succ bb)
