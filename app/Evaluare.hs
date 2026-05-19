@@ -166,16 +166,29 @@ nodify = removeExtraNumbers . fmap go . allNodes 0 where
 loadModules :: [String] -> IO [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
 loadModules filenames = do
   filesStrings :: [String] <- mapM Strict.readFile filenames
-  case sequence $ parseModule <$> filesStrings of
+  case mapM parseModule filesStrings of
     Right p -> pure $ zip filesStrings p
     Left pe -> error pe
+
+mainWidgetInit
+  :: (forall t m.
+       ( MonadVtyApp t m
+       , HasImageWriter t m
+       , MonadNodeId m
+       , HasDisplayRegion t m
+       , HasFocusReader t m
+       , HasTheme t m
+       , HasInput t m
+       ) => Layout t (Focus t m) (Event t ()))
+  -> IO ()
+mainWidgetInit w = mainWidget (initManager_ w)
 
 main :: IO ()
 main = do
   modules :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] <- getArgs >>= loadModules
   let go :: Text -> IO ()
       go textErr =
-        mainWidget $ initManager_ $ do
+        mainWidgetInit $ do
           let cfg = def
                 { _textInputConfig_initialValue = TZ.fromText . T.pack . unlines $
                     [ "-- Example:"
@@ -187,14 +200,14 @@ main = do
               escOrCtrlcQuit :: (Monad m, HasInput t m, Reflex t) => m (Event t ())
               escOrCtrlcQuit = do
                 inp <- input
-                pure $ fforMaybe inp $ \case
+                pure . fforMaybe inp $ \case
                   V.EvKey (V.KChar 'c') [V.MCtrl] -> Just ()
                   V.EvKey V.KEsc []               -> Just ()
                   _                               -> Nothing
           getout <- escOrCtrlcQuit
           tile flex . box (pure roundedBoxStyle) . row $ do
             rec
-              eEitherIExpr :: Event t (Either String IExpr) <- grout flex $ col $ do
+              eEitherIExpr :: Event t (Either String IExpr) <- grout flex . col $ do
                 telomareTextInput :: TextInput t <- grout flex textBox
                 pure . updated $ TE.eval2IExpr modules . T.unpack <$> _textInput_value telomareTextInput
               grout (fixed 2) . col . text $ ""

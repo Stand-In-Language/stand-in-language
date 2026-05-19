@@ -2,10 +2,10 @@
 
 module Main where
 
-import           Data.Maybe              (mapMaybe)
-import qualified Options.Applicative     as O
-import           System.FilePath         (takeBaseName)
-import           Telomare.Eval           (runMain)
+import Data.Maybe (mapMaybe)
+import qualified Options.Applicative as O
+import System.FilePath (takeBaseName)
+import Telomare.Eval (runMain)
 
 newtype TelomareOpts
   = TelomareOpts {telomareFile :: String}
@@ -21,12 +21,12 @@ getModulesFor entryModule = go [entryModule] []
   where
     go [] loaded = return loaded
     go (m:queue) loaded
-      | m `elem` map fst loaded = go queue loaded
+      | m `elem` fmap fst loaded = go queue loaded
       | otherwise = do
           let filePath = m <> ".tel"
           content <- readFile filePath
           let imports = extractImports content
-          go (queue ++ imports) ((m, content) : loaded)
+          go (queue <> imports) ((m, content) : loaded)
 
     extractImports :: String -> [String]
     extractImports = mapMaybe parseImportLine . lines
