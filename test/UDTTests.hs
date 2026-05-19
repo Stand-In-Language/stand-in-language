@@ -12,6 +12,7 @@ import Data.Bifunctor (Bifunctor (first))
 import Data.List (isInfixOf)
 import Data.Ratio
 import Debug.Trace
+import NatUDTTests (natUDTTests)
 import PrettyPrint
 import qualified System.IO.Strict as Strict
 import Telomare
@@ -33,11 +34,12 @@ main :: IO ()
 main = defaultMain tests
 
 tests :: TestTree
-tests = testGroup "Arithmetic Tests" [ unitTestsNatArithmetic
-                                     , unitTestsRatArithmetic
-                                     , qcPropsNatArithmetic
-                                     , qcPropsRatArithmetic
-                                     ]
+tests = testGroup "UDT Tests" [ unitTestsNatArithmetic
+                              , unitTestsRatArithmetic
+                              , qcPropsNatArithmetic
+                              , qcPropsRatArithmetic
+                              , natUDTTests
+                              ]
 
 maybeToRight :: Maybe a -> Either EvalError a
 maybeToRight (Just x) = Right x

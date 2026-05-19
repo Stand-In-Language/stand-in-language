@@ -2,11 +2,10 @@
 
 module Main where
 
-import qualified Options.Applicative as O
-import System.Directory (listDirectory)
-import System.FilePath (takeBaseName, takeExtension)
-import qualified System.IO.Strict as Strict
-import Telomare.Eval (runMain)
+import           Data.Maybe              (mapMaybe)
+import qualified Options.Applicative     as O
+import           System.FilePath         (takeBaseName)
+import           Telomare.Eval           (runMain)
 
 newtype TelomareOpts
   = TelomareOpts {telomareFile :: String}
@@ -16,15 +15,27 @@ telomareOpts :: O.Parser TelomareOpts
 telomareOpts = TelomareOpts
   <$> O.argument O.str (O.metavar "TELOMARE-FILE")
 
-getAllModules :: IO [(String, String)]
-getAllModules = do
-  allEntries <- listDirectory "."
-  let telFiles = filter (\f -> takeExtension f == ".tel") allEntries
-      readTelFile :: FilePath -> IO (String, String)
-      readTelFile file = do
-          content <- readFile file
-          return (takeBaseName file, content)
-  mapM readTelFile telFiles
+-- | Recursively load only the modules reachable from the entry file.
+getModulesFor :: String -> IO [(String, String)]
+getModulesFor entryModule = go [entryModule] []
+  where
+    go [] loaded = return loaded
+    go (m:queue) loaded
+      | m `elem` map fst loaded = go queue loaded
+      | otherwise = do
+          let filePath = m <> ".tel"
+          content <- readFile filePath
+          let imports = extractImports content
+          go (queue ++ imports) ((m, content) : loaded)
+
+    extractImports :: String -> [String]
+    extractImports = mapMaybe parseImportLine . lines
+
+    parseImportLine :: String -> Maybe String
+    parseImportLine line = case words line of
+      ("import":"qualified":name:_) -> Just name
+      ("import":name:_)             -> Just name
+      _                             -> Nothing
 
 main :: IO ()
 main = do
@@ -32,5 +43,6 @@ main = do
         ( O.fullDesc
           <> O.progDesc "A simple but robust virtual machine" )
   topts <- O.execParser opts
-  allModules :: [(String, String)] <- getAllModules
-  runMain allModules . takeBaseName . telomareFile $ topts
+  let entryModule = takeBaseName (telomareFile topts)
+  allModules <- getModulesFor entryModule
+  runMain allModules entryModule

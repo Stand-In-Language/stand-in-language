@@ -20,6 +20,7 @@ data-files:          bench/MemoryBench/cases
                    , examples.tel
                    , simpleplus.tel
                    , testchar.tel
+                   , udt.tel
 
 library
   hs-source-dirs:      src
@@ -281,11 +282,12 @@ test-suite telomare-sizing-test
   ghc-options:         -threaded -rtsopts -with-rtsopts=-N
   default-language:    Haskell2010
 
-test-suite telomare-arithmetic-test
+test-suite telomare-udt-test
   type:                exitcode-stdio-1.0
   hs-source-dirs:      test
-  main-is:             ArithmeticTests.hs
+  main-is:             UDTTests.hs
   other-modules:       Common
+                     , NatUDTTests
   build-depends:       base
                      , containers
                      , free

@@ -1,3 +1,5 @@
+{-# LANGUAGE RecursiveDo #-}
+
 module Main where
 
 import Control.Comonad.Cofree (Cofree ((:<)))

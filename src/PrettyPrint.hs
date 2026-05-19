@@ -348,61 +348,56 @@ newtype MultiLineShowUPT = MultiLineShowUPT UnprocessedParsedTerm
 instance Show MultiLineShowUPT where
   show (MultiLineShowUPT upt) = cata alg upt where
     alg :: Base UnprocessedParsedTerm String -> String
+    ind = indentSansFirstLine 2
     alg = \case
       IntUPF i -> "IntUP " <> show i
       VarUPF str -> "VarUP " <> str
-      StringUPF str -> "StringUP" <> str
-      PairUPF x y -> "PairUP" <> "\n" <>
-                        "  (" <> indentSansFirstLine 3 x <> ")\n" <>
-                        "  (" <> indentSansFirstLine 3 y <> ")"
-      (ITEUPF x y z) -> "ITEUP" <> "\n" <>
-                        "  (" <> indentSansFirstLine 3 x <> ")\n" <>
-                        "  (" <> indentSansFirstLine 3 x <> ")\n" <>
-                        "  (" <> indentSansFirstLine 3 z <> ")"
-      (AppUPF x y) -> "AppUP" <> "\n" <>
-                        "  (" <> indentSansFirstLine 3 x <> ")\n" <>
-                        "  (" <> indentSansFirstLine 3 y <> ")"
+      StringUPF str -> "StringUP " <> show str
+      PairUPF x y -> "PairUP\n" <>
+                        "  " <> ind x <> "\n" <>
+                        "  " <> ind y
+      (ITEUPF x y z) -> "ITEUP\n" <>
+                        "  " <> ind x <> "\n" <>
+                        "  " <> ind y <> "\n" <>
+                        "  " <> ind z
+      (AppUPF x y) -> "AppUP\n" <>
+                        "  " <> ind x <> "\n" <>
+                        "  " <> ind y
       (LamUPF str y) -> "LamUP " <> str <> "\n" <>
-                        "  (" <> indentSansFirstLine 3 y <> ")"
+                        "  " <> ind y
       (ChurchUPF x) -> "ChurchUP " <> show x
-      (LeftUPF x) -> "LeftUP \n" <>
-                       "  (" <> indentSansFirstLine 3 x <> ")"
-      (RightUPF x) -> "RightUP \n" <>
-                        "  (" <> indentSansFirstLine 3 x <> ")"
-      (TraceUPF x) -> "TraceUP \n" <>
-                        "  (" <> indentSansFirstLine 3 x <> ")"
-      (UnsizedRecursionUPF x y z) -> "UnsizedRecursionUP" <> "\n" <>
-                        "  (" <> indentSansFirstLine 3 x <> ")\n" <>
-                        "  (" <> indentSansFirstLine 3 x <> ")\n" <>
-                        "  (" <> indentSansFirstLine 3 z <> ")"
-      (HashUPF x) -> "HashUP \n" <>
-                       "  (" <> indentSansFirstLine 3 x <> ")"
-      (CheckUPF x y) -> "CheckUP" <> "\n" <>
-                        "  (" <> indentSansFirstLine 3 x <> ")\n" <>
-                        "  (" <> indentSansFirstLine 3 y <> ")"
+      (LeftUPF x) -> "LeftUP\n" <>
+                       "  " <> ind x
+      (RightUPF x) -> "RightUP\n" <>
+                        "  " <> ind x
+      (TraceUPF x) -> "TraceUP\n" <>
+                        "  " <> ind x
+      (UnsizedRecursionUPF x y z) -> "UnsizedRecursionUP\n" <>
+                        "  " <> ind x <> "\n" <>
+                        "  " <> ind y <> "\n" <>
+                        "  " <> ind z
+      (HashUPF x) -> "HashUP\n" <>
+                       "  " <> ind x
+      (CheckUPF x y) -> "CheckUP\n" <>
+                        "  " <> ind x <> "\n" <>
+                        "  " <> ind y
       (ListUPF []) -> "ListUP []"
       (ListUPF [x]) -> "ListUP [" <> x <> "]"
       (ListUPF ls) -> "ListUP\n" <>
-                        "  [" <> drop 3 (unlines (("  " <>) . indentSansFirstLine 4 . (", " <>) <$> ls)) <>
+                        concatMap (\x -> "  , " <> ind x <> "\n") ls <>
                         "  ]"
       (LetUPF ls x) -> "LetUP\n" <>
-                         "  [ " <> drop 4 (unlines ( ("  " <>)
-                                                   . indentSansFirstLine 3
-                                                   . (", " <>)
-                                                   . (\(x,y) -> "(" <> x <> ", " <> indentSansFirstLine (length x + 4) y <> ")")
-                                                   <$> ls
-                                                   )) <>
+                         concatMap (\(n,v) -> "  , (" <> n <> ", " <> ind v <> ")\n") ls <>
                          "  ]\n" <>
-                         "  (" <> indentSansFirstLine 3 x <> ")"
+                         "  " <> ind x
       (CaseUPF x ls) -> "CaseUP\n" <>
-                          "  (" <> indentSansFirstLine 3 x <> ")\n" <>
-                          "  [" <> drop 3 (unlines ( ("  " <>)
-                                                   . indentSansFirstLine 3
-                                                   . (", " <>)
-                                                   . (\(x,y) -> "(" <> show x <> ", " <> indentSansFirstLine ((length . show $ x) + 4) y <> ")")
-                                                   <$> ls
-                                                   )) <>
-                          "  ]\n"
+                          "  " <> ind x <> "\n" <>
+                          concatMap (\(p,v) -> "  , (" <> show p <> ",\n    " <> ind v <> ")\n") ls <>
+                          "  ]"
+      (UDTUPF ss x) -> "UDTUP " <> show ss <> "\n" <>
+                        "  " <> ind x
+      (ImportUPF s) -> "ImportUP " <> show s
+      (ImportQualifiedUPF s1 s2) -> "ImportQualifiedUP " <> show s1 <> " " <> show s2
 
 newtype PrettyUPT = PrettyUPT UnprocessedParsedTerm
 
