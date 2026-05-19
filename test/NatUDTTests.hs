@@ -19,7 +19,7 @@ import Telomare.Eval (SizingOption (..), compile, runStaticChecks)
 import Telomare.Parser (AnnotatedUPT, parseLongExpr, parsePrelude)
 import Telomare.Possible (SizingSettings (SizingSettings))
 import Telomare.PossibleData (CompiledExpr)
-import Telomare.Resolver (process)
+import Telomare.Resolver (process, pruneBindings)
 import Test.Tasty
 import Test.Tasty.HUnit
 import Text.Megaparsec (eof, errorBundlePretty, runParser)
@@ -46,7 +46,7 @@ evalUDTExpr input = do
   case runParser (parseLongExpr <* eof) "" input of
     Left err -> pure $ Left (errorBundlePretty err)
     Right aupt -> do
-      let term = DummyLoc :< LetUPF allBindings aupt
+      let term = DummyLoc :< LetUPF (pruneBindings aupt allBindings) aupt
           compile' :: Term3 -> Either EvalError CompiledExpr
           compile' = compile (DebugSizing (SizingSettings 255 False)) runStaticChecks
       case first RE (process term) >>= compile' of

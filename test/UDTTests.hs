@@ -22,7 +22,7 @@ import Telomare.Parser (AnnotatedUPT, TelomareParser, parseLongExpr,
                         parsePrelude)
 import Telomare.Possible (SizingSettings (SizingSettings))
 import Telomare.PossibleData (CompiledExpr)
-import Telomare.Resolver (process)
+import Telomare.Resolver (process, pruneBindings)
 import Telomare.RunTime (simpleEval)
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -63,7 +63,7 @@ evalExprString input = do
   case parseResult of
     Left err -> pure $ Left (errorBundlePretty err)
     Right aupt -> do
-      let term = DummyLoc :< LetUPF preludeBindings aupt
+      let term = DummyLoc :< LetUPF (pruneBindings aupt preludeBindings) aupt
           compile' :: Term3 -> Either EvalError CompiledExpr
           compile' = compile (DebugSizing (SizingSettings 255 False)) runStaticChecks
       case first RE (process term) >>= compile' of
