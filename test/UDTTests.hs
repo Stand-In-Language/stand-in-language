@@ -8,11 +8,11 @@ module Main where
 import Common
 import Control.Comonad.Cofree (Cofree ((:<)))
 import Control.Monad (unless)
-import NatUDTTests (natUDTTests)
 import Data.Bifunctor (Bifunctor (first))
 import Data.List (isInfixOf)
 import Data.Ratio
 import Debug.Trace
+import NatUDTTests (natUDTTests)
 import PrettyPrint
 import qualified System.IO.Strict as Strict
 import Telomare

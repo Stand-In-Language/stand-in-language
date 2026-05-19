@@ -20,6 +20,7 @@ data-files:          bench/MemoryBench/cases
                    , examples.tel
                    , simpleplus.tel
                    , testchar.tel
+                   , udt.tel
 
 library
   hs-source-dirs:      src

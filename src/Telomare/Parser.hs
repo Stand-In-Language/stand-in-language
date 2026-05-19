@@ -1,6 +1,5 @@
 {-# LANGUAGE LambdaCase          #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TupleSections       #-}
 {-# LANGUAGE TypeFamilies        #-}
 
 module Telomare.Parser where
@@ -258,7 +257,7 @@ parsePatternIgnore = symbol "_" >> pure PatternIgnore
 -- e.g. @((_, aa) : Nat)@. The stored typeExpr is the raw check function;
 -- 'makeLambda' applies it to the bound value as a 'CheckUPF'.
 parsePatternAnnotated :: TelomareParser Pattern
-parsePatternAnnotated = (parens body) <?> "annotated pattern"
+parsePatternAnnotated = parens body <?> "annotated pattern"
   where
     body = do
       p <- (scn *> parsePattern <* scn) <?> "pattern before ':'"
@@ -352,7 +351,7 @@ buildMultiLambda lt patterns body =
 -- Kept as a thin wrapper around 'buildMultiLambda' so existing callers
 -- that work pattern-at-a-time continue to function.
 makeLambda :: LocTag -> Pattern -> AnnotatedUPT -> AnnotatedUPT
-makeLambda lt p body = buildMultiLambda lt [p] body
+makeLambda lt p = buildMultiLambda lt [p]
 
 -- |Parse lambda expression.
 parseLambda :: TelomareParser AnnotatedUPT
@@ -521,7 +520,7 @@ prependLocalValidator loc tname = go where
   go (l :< LetUPF binds inner) = l :< LetUPF binds (go inner)
   go (_ :< other)              = error
     $ "expandUDT: UDT body for [" <> tname
-    <> "] must reduce to a list literal; got: " <> show (() <$ other)
+    <> "] must reduce to a list literal; got: " <> show (void other)
 
 -- |Auto-generated validator: @\\v -> if dEqual (left v) <h> then v else abort \"not <T>\"@.
 -- Returns the validated value on success; aborts on failure.

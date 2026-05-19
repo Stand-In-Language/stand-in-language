@@ -388,7 +388,7 @@ validateVariables term =
                       in Set.union (bindDeps Set.\\ boundNames) (body Set.\\ boundNames)
                     (_ C.:< ITEUPF i t e) -> i <> t <> e
                     (_ C.:< PairUPF a b) -> a <> b
-                    (_ C.:< ListUPF l) -> foldMap id l
+                    (_ C.:< ListUPF l) -> fold l
                     (_ C.:< AppUPF f x) -> f <> x
                     (_ C.:< UnsizedRecursionUPF t r b) -> t <> r <> b
                     (_ C.:< LeftUPF x) -> x
