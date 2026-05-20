@@ -16,19 +16,17 @@ import Prelude
 
 -- Ad hoc user defined types example:
 
-MyInt = let wrapper = \h -> ( \i -> if not i
-                                    then abort "MyInt cannot be 0"
-                                    else  i
-                            , \i -> if dEqual (left i) h
-                                    then 0
-                                    else abort "Not a MyInt"
-                            )
-        in wrapper (# wrapper)
+[MyInt, mkMyInt, unMyInt] = \h ->
+  [ \i -> if not i
+          then abort "MyInt cannot be 0"
+          else (h, i)
+  , \((_, i) : MyInt) -> i
+  ]
 
 aux = \x -> if dEqual x 8 then "Success" else "Failure"
-main = \i -> (aux ((left MyInt) 8), 0)
+main = \i -> (aux (unMyInt (mkMyInt 8)), 0)
 
--- User-defined type example (see udt.tel for the live version):
+-- User-defined type example used by the test suite:
 --   [Nat, toNat, nPlus, nMinus] = \h ->
 --     [ \x -> (h, x)
 --     , \((_, aa) : Nat) ((_, bb) : Nat) -> (h, d2c aa succ bb)

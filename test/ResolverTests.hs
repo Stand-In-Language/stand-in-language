@@ -465,28 +465,24 @@ testUserDefAdHocTypes input = do
 
 userDefAdHocTypesSuccess = unlines
   [ "import Prelude"
-  , "MyInt = let wrapper = \\h -> ( \\i -> if not i"
-  , "                                      then \"MyInt must not be 0\""
-  , "                                      else  i"
-  , "                             , \\i -> if dEqual (left i) h"
-  , "                                      then 0"
-  , "                                      else \"expecting MyInt\""
-  , "                             )"
-  , "        in wrapper (# wrapper)"
-  , "main = \\i -> ((left MyInt) 8, 0)"
+  , "[MyInt, mkMyInt, unMyInt] = \\h ->"
+  , "  [ \\i -> if not i"
+  , "          then \"MyInt must not be 0\""
+  , "          else (h, i)"
+  , "  , \\((_, i) : MyInt) -> i"
+  , "  ]"
+  , "main = \\i -> (unMyInt (mkMyInt 8), 0)"
   ]
 
 userDefAdHocTypesFailure = unlines
   [ "import Prelude"
-  , "MyInt = let wrapper = \\h -> ( \\i -> if not i"
-  , "                                      then \"MyInt must not be 0\""
-  , "                                      else  i"
-  , "                             , \\i -> if dEqual (left i) h"
-  , "                                      then 0"
-  , "                                      else \"expecting MyInt\""
-  , "                             )"
-  , "        in wrapper (# wrapper)"
-  , "main = \\i -> ((left MyInt) 0, 0)"
+  , "[MyInt, mkMyInt, unMyInt] = \\h ->"
+  , "  [ \\i -> if not i"
+  , "          then \"MyInt must not be 0\""
+  , "          else (h, i)"
+  , "  , \\((_, i) : MyInt) -> i"
+  , "  ]"
+  , "main = \\i -> (mkMyInt 0, 0)"
   ]
 
 hashtest0 = unlines ["let wrapper = 2",

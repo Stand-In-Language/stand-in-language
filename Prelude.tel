@@ -142,68 +142,45 @@ gcd = \a b ->
 
 lcm = \a b -> dDiv (dTimes a b) (gcd a b)
 
-Rational =
-  let wrapper = \h -> (
-        \n d -> if dEqual d 0
-                then abort "Denominator cannot be zero"
-                else
-                  let g   = gcd n d
-                      num = dDiv n g
-                      den = dDiv d g
-                  in (h, (num, den))
-      , \i -> if dEqual (left i) h
-              then right i
-              else abort "Not a Rational"
-      )
-  in wrapper (# wrapper)
-
-toRational = right Rational
-
-fromRational = left Rational
-
-rPlus = \a b ->
-  let n1 = left (right a)
-      d1 = right (right a)
-      n2 = left (right b)
-      d2 = right (right b)
-      num = dPlus (dTimes n1 d2) (dTimes n2 d1)
-      den = dTimes d1 d2
-  in fromRational num den
-
-rTimes = \a b ->
-  let n1 = left (right a)
-      d1 = right (right a)
-      n2 = left (right b)
-      d2 = right (right b)
-      num = dTimes n1 n2
-      den = dTimes d1 d2
-  in fromRational num den
-
-rMinus = \a b ->
-  let n1 = left (right a)
-      d1 = right (right a)
-      n2 = left (right b)
-      d2 = right (right b)
-      num = dMinus (dTimes n1 d2) (dTimes n2 d1)
-      den = dTimes d1 d2
-  in fromRational num den
-
-rDiv = \a b ->
-  let n1 = left (right a)
-      d1 = right (right a)
-      n2 = left (right b)
-      d2 = right (right b)
-      num = dTimes n1 d2
-      den = dTimes d1 n2
-  in fromRational num den
-
-first = left
-second = \x -> left (right x)
-third = \x -> left (right (right x))
-fourth = \x -> left (right (right (right x)))
-fifth = \x -> left (right (right (right (right x))))
-sixth = \x -> left (right (right (right (right (right x)))))
-seventh = \x -> left (right (right (right (right (right (right x))))))
-eighth = \x -> left (right (right (right (right (right (right (right x)))))))
-ninth = \x -> left (right (right (right (right (right (right (right (right x))))))))
-tenth = \x -> left (right (right (right (right (right (right (right (right (right x)))))))))
+[Rational, fromRational, toRational, rPlus, rTimes, rMinus, rDiv] = \h ->
+  [ \n d -> if dEqual d 0
+            then abort "Denominator cannot be zero"
+            else
+              let g   = gcd n d
+                  num = dDiv n g
+                  den = dDiv d g
+              in (h, (num, den))
+  , \i -> right (Rational i)
+  , \a b ->
+      let n1 = left (right a)
+          d1 = right (right a)
+          n2 = left (right b)
+          d2 = right (right b)
+          num = dPlus (dTimes n1 d2) (dTimes n2 d1)
+          den = dTimes d1 d2
+      in fromRational num den
+  , \a b ->
+      let n1 = left (right a)
+          d1 = right (right a)
+          n2 = left (right b)
+          d2 = right (right b)
+          num = dTimes n1 n2
+          den = dTimes d1 d2
+      in fromRational num den
+  , \a b ->
+      let n1 = left (right a)
+          d1 = right (right a)
+          n2 = left (right b)
+          d2 = right (right b)
+          num = dMinus (dTimes n1 d2) (dTimes n2 d1)
+          den = dTimes d1 d2
+      in fromRational num den
+  , \a b ->
+      let n1 = left (right a)
+          d1 = right (right a)
+          n2 = left (right b)
+          d2 = right (right b)
+          num = dTimes n1 d2
+          den = dTimes d1 n2
+      in fromRational num den
+  ]

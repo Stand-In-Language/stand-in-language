@@ -255,7 +255,8 @@ parsePatternIgnore = symbol "_" >> pure PatternIgnore
 
 -- |Parse a parenthesised pattern with a type/refinement annotation,
 -- e.g. @((_, aa) : Nat)@. The stored typeExpr is the raw check function;
--- 'makeLambda' applies it to the bound value as a 'CheckUPF'.
+-- 'buildMultiLambda' applies it to the bound value and uses the result as
+-- the case scrutinee, forcing runtime validation before destructuring.
 parsePatternAnnotated :: TelomareParser Pattern
 parsePatternAnnotated = parens body <?> "annotated pattern"
   where
@@ -338,7 +339,9 @@ buildMultiLambda lt patterns body =
       in case p of
            PatternVar _ -> inner
            PatternAnnotated innerPat typeExpr ->
-             -- case (typeExpr varName) of innerPat -> inner
+             -- Use the validator result as the case scrutinee instead of
+             -- CheckUPF: hash-based UDT validators are runtime values that
+             -- the static refinement analyzer cannot symbolically evaluate.
              let tyApplied = lt :< AppUPF (tag lt typeExpr) bound
              in lt :< CaseUPF tyApplied [(innerPat, inner)]
            _ ->
@@ -469,22 +472,24 @@ parseTopLevelWithExtraModuleBindings lst = do
 -- |Expand a UDT declaration into a list of top-level bindings.
 --
 -- If the UDT body is a lambda @\\h -> ...@ (the canonical UDT idiom),
--- the expansion automatically wraps the body with the hash-tag
--- mechanism (@wrapper (# wrapper)@), prepends an auto-generated
--- validator as the first slot, and exposes the validator as a *local*
--- let binding inside the wrapper so the operations can refer to it
--- (e.g. via @: T@ annotations) without forming a top-level definition
--- cycle.
+-- the expansion automatically wraps the core type representation with
+-- the hash-tag mechanism (@wrapper (# wrapper)@). The shared core tuple
+-- contains only the generated hash, the auto-generated validator, and
+-- the first two user slots (constructor/extractor by convention).
+-- Remaining slots are hoisted to normal top-level bindings so using a
+-- constructor or extractor does not force every operation through sizing.
 --
--- > [T, mk, op1, ...] = \\h -> [ op0, op1, ... ]
+-- > [T, mk, unT, op1, ...] = \\h -> [ mkBody, unTBody, op1Body, ... ]
 --
 -- becomes (conceptually):
 --
 -- > __udt_T = wrapper (# wrapper)
--- >   where wrapper = \\h -> let T = validatorFor T h in [T, op0, op1, ...]
--- > T   = left  __udt_T   -- the validator, usable as `(x : T)` outside
--- > mk  = left (right __udt_T)
--- > ...
+-- >   where wrapper = \\h -> let T = validatorFor T h in [h, T, mkBody, unTBody]
+-- > __udt_T_hash = left __udt_T
+-- > T   = left (right __udt_T)   -- validator, usable as `(x : T)` outside
+-- > mk  = left (right (right __udt_T))
+-- > unT = left (right (right (right __udt_T)))
+-- > op1 = let h = __udt_T_hash; T = validatorFor T h in op1Body
 --
 -- If the UDT body is not a lambda, the body is treated as a plain
 -- n-tuple and bindings are made by direct left/right accessor chains
@@ -493,16 +498,34 @@ expandUDT :: AnnotatedUPT -> [(String, AnnotatedUPT)]
 expandUDT (loc :< UDTUPF names@(tname:_) body) =
   case body of
     (_ :< LamUPF hParam inner) ->
-      let validator    = autoValidator loc tname hParam
-          wrappedInner = loc :< LetUPF [(tname, validator)]
-                           (prependLocalValidator loc tname inner)
+      let (slots, wrapBody) = udtSlots tname inner
+          (coreSlots, hoistedSlots) = splitAt 2 slots
+          coreNames = take (1 + length coreSlots) names
+          hoistedNames = drop (1 + length coreSlots) names
+          validator    = autoValidator loc tname hParam
+          intermediate = "__udt_" <> tname
+          hashName     = intermediate <> "_hash"
+          hashVar      = loc :< VarUPF hashName
+          coreList     = loc :< ListUPF ((loc :< VarUPF hParam)
+                                      : (loc :< VarUPF tname)
+                                      : coreSlots)
+          wrappedInner = loc :< LetUPF [(tname, validator)] (wrapBody coreList)
           wrapper      = loc :< LamUPF hParam wrappedInner
           udtTuple     = loc :< AppUPF wrapper (loc :< HashUPF wrapper)
-          intermediate = "__udt_" <> tname
+          hashBinding  = (hashName, accessAt 0 (loc :< VarUPF intermediate))
           mkAccessorBinding idx name =
             (name, accessAt idx (loc :< VarUPF intermediate))
+          mkHoistedBinding name slot =
+            ( name
+            , loc :< LetUPF [ (hParam, hashVar)
+                            , (tname, validator)
+                            ]
+                (wrapBody slot)
+            )
       in (intermediate, udtTuple)
-       : zipWith mkAccessorBinding [0 ..] names
+       : hashBinding
+       : zipWith mkAccessorBinding [1 ..] coreNames
+      <> zipWith mkHoistedBinding hoistedNames hoistedSlots
     _ ->
       zipWith (\name idx -> (name, accessAt idx body)) names [0 ..]
   where
@@ -511,21 +534,24 @@ expandUDT (loc :< UDTUPF names@(tname:_) body) =
     accessAt n e = loc :< LeftUPF (iterate (\x -> loc :< RightUPF x) e !! n)
 expandUDT _ = []
 
--- |Walk through let-bindings inside a UDT's lambda body and prepend
--- a reference to the locally-bound validator as the first element of
--- the eventual list literal.
-prependLocalValidator :: LocTag -> String -> AnnotatedUPT -> AnnotatedUPT
-prependLocalValidator loc tname = go where
-  go (l :< ListUPF xs)         = l :< ListUPF ((loc :< VarUPF tname) : xs)
-  go (l :< LetUPF binds inner) = l :< LetUPF binds (go inner)
-  go (_ :< other)              = error
+-- |Find the final list literal in a UDT body and return a wrapper that
+-- reapplies any surrounding lets. Hoisted methods get the same let
+-- context as the core tuple, but not the sibling method bodies.
+udtSlots :: String -> AnnotatedUPT -> ([AnnotatedUPT], AnnotatedUPT -> AnnotatedUPT)
+udtSlots tname = go where
+  go (l :< ListUPF xs) = (xs, id)
+  go (l :< LetUPF binds inner) =
+    let (xs, wrapBody) = go inner
+    in (xs, \expr -> l :< LetUPF binds (wrapBody expr))
+  go (_ :< other) = error
     $ "expandUDT: UDT body for [" <> tname
     <> "] must reduce to a list literal; got: " <> show (void other)
 
 -- |Auto-generated validator: @\\v -> if dEqual (left v) <h> then v else abort \"not <T>\"@.
 -- Returns the validated value on success; aborts on failure.
--- 'makeLambda' uses the validator's result as the case scrutinee, so
--- the destructure works on a validated value without an extra ITE.
+-- Annotated pattern lambdas use the validator's result as the case
+-- scrutinee, so destructuring works on a validated value without an
+-- extra ITE.
 autoValidator :: LocTag -> String -> String -> AnnotatedUPT
 autoValidator loc tname hParam =
   loc :< LamUPF "__udt_v"

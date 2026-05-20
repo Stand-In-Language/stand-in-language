@@ -4,14 +4,14 @@
 {-# LANGUAGE ScopedTypeVariables   #-}
 
 -- | Dedicated tests for the user-defined-type sugar
--- @[T, op1, op2, …] = \\h -> [ … ]@ exercised through the @Nat@ UDT
--- defined in @udt.tel@.
+-- @[T, op1, op2, ...] = \\h -> [ ... ]@ exercised through an embedded
+-- @Nat@ UDT fixture.
 module NatUDTTests (natUDTTests) where
 
 import Control.Comonad.Cofree (Cofree ((:<)))
 import Control.Monad (unless)
 import Data.Bifunctor (Bifunctor (first))
-import Data.List (isInfixOf, isPrefixOf)
+import Data.List (isInfixOf)
 import PrettyPrint
 import qualified System.IO.Strict as Strict
 import Telomare
@@ -24,24 +24,36 @@ import Test.Tasty
 import Test.Tasty.HUnit
 import Text.Megaparsec (eof, errorBundlePretty, runParser)
 
--- |Strip a leading @import Prelude@ line from a .tel file so the
--- remaining bindings can be fed to 'parsePrelude' (which handles
--- assignments and UDTs but not @import@ directives).
-stripImports :: String -> String
-stripImports = unlines . filter (not . ("import " `isPrefixOf`)) . lines
+natUDTSource :: String
+natUDTSource = unlines
+  [ "[Nat, toNat, fromNat, nPlus, nMinus] = \\h ->"
+  , "  [ \\x -> (h, x)"
+  , "  , \\((_, x) : Nat) -> x"
+  , "  , \\((_, aa) : Nat) ((_, bb) : Nat) -> (h, d2c aa succ bb)"
+  , "  , \\((_, aa) : Nat) ((_, bb) : Nat) ->"
+  , "      let sLeft = \\x -> case x of"
+  , "                          (l, _) -> l"
+  , "                          y      -> abort \"can't subtract larger number from smaller one\""
+  , "      in (h, d2c bb sLeft aa)"
+  , "  ]"
+  ]
+
+parseBindings :: String -> String -> IO [(String, AnnotatedUPT)]
+parseBindings name raw =
+  case parsePrelude raw of
+    Left err -> error $ "parseBindings: " <> name <> ": " <> err
+    Right bs -> pure bs
 
 loadBindings :: FilePath -> IO [(String, AnnotatedUPT)]
 loadBindings path = do
   raw <- Strict.readFile path
-  case parsePrelude (stripImports raw) of
-    Left err -> error $ "loadBindings: " <> path <> ": " <> err
-    Right bs -> pure bs
+  parseBindings path raw
 
--- |Evaluate @expr@ in the scope of @Prelude.tel@ + @udt.tel@.
+-- |Evaluate @expr@ in the scope of @Prelude.tel@ + the embedded Nat UDT.
 evalUDTExpr :: String -> IO (Either String String)
 evalUDTExpr input = do
   preludeBindings <- loadBindings "Prelude.tel"
-  udtBindings     <- loadBindings "udt.tel"
+  udtBindings     <- parseBindings "Nat UDT fixture" natUDTSource
   let allBindings = preludeBindings <> udtBindings
   case runParser (parseLongExpr <* eof) "" input of
     Left err -> pure $ Left (errorBundlePretty err)
@@ -79,10 +91,12 @@ assertAborts input msgFragment = do
         <> "' but evaluation succeeded with: " <> val
 
 natUDTTests :: TestTree
-natUDTTests = testGroup "User-defined-type sugar (Nat UDT from udt.tel)"
+natUDTTests = testGroup "User-defined-type sugar (embedded Nat UDT)"
   [ testGroup "Unit tests"
       [ testCase "toNat then right round-trips the value" $
           assertEvalEquals "right (toNat 8)" "8"
+      , testCase "fromNat extracts a Nat payload" $
+          assertEvalEquals "fromNat (toNat 8)" "8"
       , testCase "nPlus on two valid Nats returns the sum" $
           assertEvalEquals "right (nPlus (toNat 3) (toNat 5))" "8"
       , testCase "nMinus on two valid Nats returns the difference" $
@@ -107,7 +121,7 @@ natUDTTests = testGroup "User-defined-type sugar (Nat UDT from udt.tel)"
             "7"
       ]
   -- NOTE: QuickCheck property tests for nPlus/nMinus were omitted
-  -- because each evalUDTExpr call recompiles Prelude+udt.tel+the
+  -- because each evalUDTExpr call recompiles Prelude+the embedded UDT+the
   -- expression from scratch, which currently takes 5–6 minutes per
   -- compile (Prelude is big; nPlus pulls in the d2c recursion which
   -- triggers sizing). The unit tests above cover the same behaviour.

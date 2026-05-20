@@ -255,7 +255,7 @@ Mechanical renames; nothing should change semantically.
   (`unitTestsNatArithmetic`, `qcPropsNatArithmetic`) and rational
   groups (`unitTestsRatArithmetic`, `qcPropsRatArithmetic`), and
   pulls in a new `NatUDTTests.natUDTTests` group.
-- New `test/NatUDTTests.hs` loads `udt.tel` + `Prelude.tel` and
+- New `test/NatUDTTests.hs` loads `Prelude.tel` plus an embedded Nat UDT fixture and
   asserts:
   - `right (toNat 8) == 8`
   - `right (nPlus (toNat 3) (toNat 5)) == 8`
@@ -336,10 +336,10 @@ limitation here.
 1. `nix develop --command cabal build` clean after each phase.
 2. `nix develop --command cabal test` — all five suites pass,
    including the renamed `telomare-udt-test`.
-3. `nix develop --command cabal run telomare -- udt.tel` prints
-   `Success`.
+3. The embedded Nat UDT fixture in `test/NatUDTTests.hs` evaluates
+   `nPlus (toNat 3) (toNat 5)` to `8`.
 4. Negative regression: replacing `toNat 3` with `(0, 3)` in
-   `udt.tel`'s `main` aborts with `not Nat`.
+   the Nat UDT tests aborts with `not Nat`.
 5. After Phase 5: non-UDT value into a UDT-expecting argument fails
    compile-time with `InconsistentTypes`.
 6. `grep -rIn "brand\|Brand\|BRAND" src/ app/ test/ *.tel *.md
@@ -373,17 +373,16 @@ limitation here.
 - `test/ArithmeticTests.hs` renamed to `test/UDTTests.hs`; the
   `tests` group's label is now `"UDT Tests"`; pulls in
   `NatUDTTests.natUDTTests` as a new top-level group.
-- New `test/NatUDTTests.hs` exercises the Nat UDT from `udt.tel`:
-  loads Prelude + udt.tel (stripping the `import Prelude` line),
+- New `test/NatUDTTests.hs` exercises an embedded Nat UDT fixture:
+  loads Prelude + the fixture,
   evaluates expressions, asserts results / aborts.
-- Final suite runs **33 tests, all passing** in
+- Final suite runs **34 tests, all passing** in
   `telomare-udt-test`. The other four suites
   (`telomare-test`, `telomare-parser-test`,
-  `telomare-resolver-test`, `telomare-sizing-test`) also pass —
-  total 165 tests across the five suites.
+  `telomare-resolver-test`, `telomare-sizing-test`) also pass.
 - **Divergence from plan**: dropped the QuickCheck property tests
   originally outlined for `nPlus`/`nMinus`. Each `evalUDTExpr`
-  call recompiles Prelude + udt.tel + the expression from
+  call recompiles Prelude + the embedded UDT + the expression from
   scratch, which currently costs ~3–6 minutes (sizing of the
   `nPlus`-pulled `d2c` recursion dominates). 16 QC runs per
   property would push the suite past an hour. The eight unit
@@ -406,6 +405,18 @@ limitation here.
   `Nothing`, so a module without `main` reports a megaparsec
   error rather than a partial-pattern crash.
 
+### Follow-up — Split UDT core from hoisted operations ✅ DONE
+- `expandUDT` now treats the first two user slots after the type name
+  as the hash-backed core representation: constructor and extractor by
+  convention.
+- Later slots are emitted as top-level bindings that locally recover
+  the generated hash and validator. This lets source keep the natural
+  UDT shape (`[T, mk, unT, op1, ...]`) without forcing constructor-only
+  uses to size every operation body.
+- The UDT hash is based on the core representation rather than the
+  operation implementations. Changing `op1` should not change what
+  counts as a `T`.
+
 ### Phase 5 — Type-checker awareness of UDTs ⏸ HOLD
 - Per user direction, Phase 5 will not start without explicit
   confirmation. The carrier sketch
@@ -419,13 +430,12 @@ limitation here.
   references are gone from the codebase. The user-facing term is
   **UDT**.
 - A new dedicated test file `test/NatUDTTests.hs` covers the Nat
-  example end-to-end (constructor, two operations, negative
+  example end-to-end (constructor, extractor, two operations, negative
   cases, and `let`-scope destructuring).
 - `telomare-udt-test` is the renamed suite; it contains the
   natural-arithmetic groups, the rational-arithmetic groups, and
-  the new UDT group — 33 tests, all passing.
+  the new UDT group — 34 tests, all passing.
 - Parser error reporting is more informative for annotated
   patterns and UDT declarations.
 - `parseTopLevelWithExtraModuleBindings` no longer crashes on a
   missing `main`.
-
