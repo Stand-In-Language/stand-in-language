@@ -83,6 +83,45 @@
         type = "app";
         program = "${self.packages.${system}.telomare}/bin/telomare-lsp";
       };
+      apps.format-lint = {
+        type = "app";
+        program = "${pkgs.writeShellApplication {
+          name = "telomare-format-lint-check";
+          runtimeInputs = [
+            pkgs.diffutils
+            pkgs.git
+            pkgs.haskellPackages.hlint
+            pkgs.haskellPackages.stylish-haskell
+          ];
+          text = ''
+            mapfile -t hs_files < <(git ls-files '*.hs')
+            tmp_dir="$(mktemp -d)"
+            trap 'rm -rf "$tmp_dir"' EXIT
+
+            format_status=0
+            if [ "''${#hs_files[@]}" -gt 0 ]; then
+              for hs_file in "''${hs_files[@]}"; do
+                formatted_file="$tmp_dir/$(basename "$hs_file")"
+                stylish-haskell "$hs_file" > "$formatted_file"
+
+                if ! cmp -s "$hs_file" "$formatted_file"; then
+                  printf '%s needs formatting. Suggested diff:\n' "$hs_file"
+                  diff -u "$hs_file" "$formatted_file" || true
+                  format_status=1
+                fi
+              done
+            fi
+
+            if [ "$format_status" -ne 0 ]; then
+              exit "$format_status"
+            fi
+
+            hlint .
+
+            printf 'Formatting and linting are OK\n'
+          '';
+        }}/bin/telomare-format-lint-check";
+      };
 
       checks = self'.packages;
     };
