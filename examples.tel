@@ -16,6 +16,10 @@ import Prelude
 
 -- Ad hoc user defined types example:
 
+-- Plain list assignments bind multiple names from a list-shaped value:
+-- [leftName, rightName] = ["left", "right"]
+-- [keep, drop] = \x -> [\_ -> x, \z -> z]
+
 [MyInt, mkMyInt, unMyInt] = \h ->
   [ \i -> if not i
           then abort "MyInt cannot be 0"

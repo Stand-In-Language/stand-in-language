@@ -8,10 +8,10 @@
 
 ## Context
 
-The `brands` branch introduces a destructuring syntax
-`[name1, name2, …] = expr` that binds many top-level names from a single
-expression. The motivation (and the pattern in `brands.tel` and
-`Prelude.tel`'s `Rational`) is User-Defined Types (UDTs): a UDT is
+The `brands` branch now treats `[name1, name2, …] = expr` as a general
+list-assignment form that binds many names from one list-shaped expression.
+When the first name is uppercase and the right-hand side is a lambda, the
+same syntax is interpreted as the User-Defined Type (UDT) convention: a UDT is
 built as
 `let wrapper = \h -> (constructor, validator, …) in wrapper (# wrapper)`,
 and what users want next is a clean way to bind each component of that

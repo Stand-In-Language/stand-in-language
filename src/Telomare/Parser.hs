@@ -9,6 +9,7 @@ import Control.Lens.Plated (Plated (..))
 import Control.Monad (join, void)
 import Control.Monad.State (State)
 import Data.Bifunctor (Bifunctor (first, second), bimap)
+import Data.Char (isUpper)
 import Data.Functor (($>))
 import Data.Functor.Foldable (Base, cata, para)
 import Data.Functor.Foldable.TH (MakeBaseFunctor (makeBaseFunctor))
@@ -33,6 +34,10 @@ import Text.Read (readMaybe)
 import Text.Show.Deriving (deriveShow1)
 
 type AnnotatedUPT = Cofree UnprocessedParsedTermF LocTag
+
+data AssignmentEntry
+  = SingleAssignment String AnnotatedUPT
+  | ListAssignment LocTag [String] AnnotatedUPT
 
 instance Plated UnprocessedParsedTerm where
   plate f = \case
@@ -195,14 +200,14 @@ parseHash = do
   upt <- parseSingleExpr
   pure $ x :< HashUPF upt
 
-parseUDT :: TelomareParser AnnotatedUPT
-parseUDT = do
+parseListAssignment :: TelomareParser AssignmentEntry
+parseListAssignment = do
   x <- getLineColumn
-  udtElements :: [String] <- (scn *> brackets (commaSep (scn *> identifier <* scn)) <* scn)
-                              <?> "UDT name list"
-  (scn *> symbol "=") <?> "UDT assignment ="
-  expr <- (scn *> parseLongExpr <* scn) <?> "UDT body"
-  pure $ x :< UDTUPF udtElements expr
+  names :: [String] <- (brackets (commaSep (scn *> identifier <* scn)) <* scn)
+                       <?> "list assignment names"
+  (scn *> symbol "=") <?> "list assignment ="
+  expr <- (scn *> parseLongExpr <* scn) <?> "list assignment body"
+  pure $ ListAssignment x names expr
 
 parseCase :: TelomareParser AnnotatedUPT
 parseCase = do
@@ -373,18 +378,16 @@ parseSameLvl pos parser = do
   if pos == lvl then parser else fail "Expected same indentation."
 
 -- |Parse let expression. Accepts both plain @name = value@ assignments
--- and UDT destructurings @[n1, n2, ...] = value@; each UDT expands
--- into its per-slot bindings via 'expandUDT'.
+-- and list assignments @[n1, n2, ...] = value@. UDT declarations are
+-- a specialized list-assignment convention.
 parseLet :: TelomareParser AnnotatedUPT
 parseLet = do
   x <- getLineColumn
   reserved "let" <* scn
   lvl <- L.indentLevel
-  entries <- manyTill (parseSameLvl lvl parseOneAssignmentOrUDT) (reserved "in") <* scn
+  entries <- manyTill (parseSameLvl lvl parseAssignmentEntry) (reserved "in") <* scn
   expr <- parseLongExpr <* scn
-  let bindingsList = entries >>= \case
-        Left udt     -> expandUDT udt
-        Right assign -> [assign]
+  let bindingsList = entries >>= expandAssignmentEntry
   pure $ x :< LetUPF bindingsList expr
 
 -- |Parse long expression.
@@ -441,22 +444,19 @@ parseImportQualified = do
   qualifier <- identifier <* scn
   pure $ x :< ImportQualifiedUPF qualifier m
 
--- |A single top-level entry is either a name=value assignment or a UDT
--- destructuring `[n1, n2, …] = expr`. UDTs carry their full AST so the
--- expansion happens after collection.
-parseOneAssignmentOrUDT :: TelomareParser (Either AnnotatedUPT (String, AnnotatedUPT))
-parseOneAssignmentOrUDT =
-  (Right <$> parseAssignment)
-    <|> (Left <$> parseUDT)
+-- |A single top-level entry is either a name=value assignment or a list
+-- assignment `[n1, n2, …] = expr`. UDTs are recognized as a specialized
+-- uppercase-lambda list assignment during expansion.
+parseAssignmentEntry :: TelomareParser AssignmentEntry
+parseAssignmentEntry =
+  (uncurry SingleAssignment <$> parseAssignment)
+    <|> parseListAssignment
 
--- |Parse assignments and UDTs, expanding UDTs into their per-slot bindings.
-parseAssignmentsAndUDTs :: TelomareParser [(String, AnnotatedUPT)]
-parseAssignmentsAndUDTs = do
-  entries <- scn *> many parseOneAssignmentOrUDT <* eof
-  let resolve = \case
-        Left udt     -> expandUDT udt
-        Right assign -> [assign]
-  pure (resolve =<< entries)
+-- |Parse assignments, expanding list assignments into their per-slot bindings.
+parseAssignmentEntries :: TelomareParser [(String, AnnotatedUPT)]
+parseAssignmentEntries = do
+  entries <- scn *> many parseAssignmentEntry <* eof
+  pure (expandAssignmentEntry =<< entries)
 
 -- |Parse top level expressions. Fails with a megaparsec error if the
 -- module has no @main@ definition, instead of crashing with 'fromJust'.
@@ -464,10 +464,60 @@ parseTopLevelWithExtraModuleBindings :: [(String, AnnotatedUPT)]
                                      -> TelomareParser AnnotatedUPT
 parseTopLevelWithExtraModuleBindings lst = do
   x <- getLineColumn
-  bindingList <- parseAssignmentsAndUDTs
+  bindingList <- parseAssignmentEntries
   case lookup "main" bindingList of
     Just m  -> pure $ x :< LetUPF (lst <> bindingList) m
     Nothing -> fail "missing 'main' definition"
+
+expandAssignmentEntry :: AssignmentEntry -> [(String, AnnotatedUPT)]
+expandAssignmentEntry = \case
+  SingleAssignment name body -> [(name, body)]
+  ListAssignment loc names body
+    | isUDTAssignment names body -> expandUDT (loc :< UDTUPF names body)
+    | otherwise                 -> expandPlainListAssignment loc names body
+
+isUDTAssignment :: [String] -> AnnotatedUPT -> Bool
+isUDTAssignment (name:_) (_ :< LamUPF _ _) = case name of
+  firstChar:_ -> isUpper firstChar
+  _           -> False
+isUDTAssignment _ _ = False
+
+expandPlainListAssignment :: LocTag -> [String] -> AnnotatedUPT -> [(String, AnnotatedUPT)]
+expandPlainListAssignment loc names body =
+  case listAssignmentSlots body of
+    Just (slots, wrapBody)
+      | length names == length slots -> zip names (wrapBody <$> slots)
+      | otherwise -> error
+        $ "list assignment arity mismatch: " <> show (length names)
+        <> " names for " <> show (length slots) <> " values"
+    Nothing ->
+      let intermediate = listAssignmentIntermediate loc
+          source = loc :< VarUPF intermediate
+          mkAccessorBinding idx name = (name, accessAt loc idx source)
+      in (intermediate, body) : zipWith mkAccessorBinding [0 ..] names
+
+-- |Find a final list literal in a plain list assignment, preserving lambdas
+-- and lets around each extracted slot. This lets `[f, g] = \x -> [...]`
+-- bind `f` and `g` as functions rather than trying to project from a lambda.
+listAssignmentSlots :: AnnotatedUPT -> Maybe ([AnnotatedUPT], AnnotatedUPT -> AnnotatedUPT)
+listAssignmentSlots = go where
+  go (l :< ListUPF xs) = Just (xs, id)
+  go (l :< LetUPF binds inner) = do
+    (xs, wrapBody) <- go inner
+    pure (xs, \expr -> l :< LetUPF binds (wrapBody expr))
+  go (l :< LamUPF var inner) = do
+    (xs, wrapBody) <- go inner
+    pure (xs, \expr -> l :< LamUPF var (wrapBody expr))
+  go _ = Nothing
+
+listAssignmentIntermediate :: LocTag -> String
+listAssignmentIntermediate = \case
+  Loc line column -> "__list_assignment_" <> show line <> "_" <> show column
+  DummyLoc        -> "__list_assignment"
+
+accessAt :: LocTag -> Int -> AnnotatedUPT -> AnnotatedUPT
+accessAt loc 0 e = loc :< LeftUPF e
+accessAt loc n e = loc :< LeftUPF (iterate (\x -> loc :< RightUPF x) e !! n)
 
 -- |Expand a UDT declaration into a list of top-level bindings.
 --
@@ -491,9 +541,8 @@ parseTopLevelWithExtraModuleBindings lst = do
 -- > unT = left (right (right (right __udt_T)))
 -- > op1 = let h = __udt_T_hash; T = validatorFor T h in op1Body
 --
--- If the UDT body is not a lambda, the body is treated as a plain
--- n-tuple and bindings are made by direct left/right accessor chains
--- (backwards-compatible).
+-- Non-lambda list assignments use 'expandPlainListAssignment' instead;
+-- this fallback is kept for direct/internal callers of 'expandUDT'.
 expandUDT :: AnnotatedUPT -> [(String, AnnotatedUPT)]
 expandUDT (loc :< UDTUPF names@(tname:_) body) =
   case body of
@@ -512,9 +561,9 @@ expandUDT (loc :< UDTUPF names@(tname:_) body) =
           wrappedInner = loc :< LetUPF [(tname, validator)] (wrapBody coreList)
           wrapper      = loc :< LamUPF hParam wrappedInner
           udtTuple     = loc :< AppUPF wrapper (loc :< HashUPF wrapper)
-          hashBinding  = (hashName, accessAt 0 (loc :< VarUPF intermediate))
+          hashBinding  = (hashName, accessAt loc 0 (loc :< VarUPF intermediate))
           mkAccessorBinding idx name =
-            (name, accessAt idx (loc :< VarUPF intermediate))
+            (name, accessAt loc idx (loc :< VarUPF intermediate))
           mkHoistedBinding name slot =
             ( name
             , loc :< LetUPF [ (hParam, hashVar)
@@ -527,11 +576,7 @@ expandUDT (loc :< UDTUPF names@(tname:_) body) =
        : zipWith mkAccessorBinding [1 ..] coreNames
       <> zipWith mkHoistedBinding hoistedNames hoistedSlots
     _ ->
-      zipWith (\name idx -> (name, accessAt idx body)) names [0 ..]
-  where
-    accessAt :: Int -> AnnotatedUPT -> AnnotatedUPT
-    accessAt 0 e = loc :< LeftUPF e
-    accessAt n e = loc :< LeftUPF (iterate (\x -> loc :< RightUPF x) e !! n)
+      zipWith (\name idx -> (name, accessAt loc idx body)) names [0 ..]
 expandUDT _ = []
 
 -- |Find the final list literal in a UDT body and return a wrapper that
@@ -595,21 +640,20 @@ runParseLongExpr str = bimap errorBundlePretty forget' $ runParser parseLongExpr
     forget' = forget
 
 parsePrelude :: String -> Either String [(String, AnnotatedUPT)]
-parsePrelude str = let result = runParser parseAssignmentsAndUDTs "" str
+parsePrelude str = let result = runParser parseAssignmentEntries "" str
                     in first errorBundlePretty result
 
--- |One parser step inside a module: returns a list because a UDT expands
--- into multiple (name, value) bindings.
+-- |One parser step inside a module: returns a list because list assignments
+-- expand into multiple (name, value) bindings.
 parseImportOrAssignment :: TelomareParser [Either AnnotatedUPT (String, AnnotatedUPT)]
 parseImportOrAssignment = do
   maybeImport <- optional $ scn *> (try parseImportQualified <|> try parseImport) <* scn
   case maybeImport of
     Nothing -> do
-      maybeEntry <- optional $ scn *> try parseOneAssignmentOrUDT <* scn
+      maybeEntry <- optional $ scn *> try parseAssignmentEntry <* scn
       case maybeEntry of
-        Nothing             -> fail "Expected either an import statement or an assignment"
-        Just (Left udt)     -> pure (Right <$> expandUDT udt)
-        Just (Right assign) -> pure [Right assign]
+        Nothing    -> fail "Expected either an import statement or an assignment"
+        Just entry -> pure (Right <$> expandAssignmentEntry entry)
     Just imp -> pure [Left imp]
 
 parseWithPrelude :: [(String, AnnotatedUPT)]   -- ^Prelude

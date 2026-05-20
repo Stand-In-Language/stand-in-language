@@ -119,6 +119,10 @@ natUDTTests = testGroup "User-defined-type sugar (embedded Nat UDT)"
               <> "[ \\c -> (h, c), (h, 7) ] "
               <> "in right defaultColor" )
             "7"
+      , testCase "plain list assignment works inside let" $
+          assertEvalEquals
+            "let [a, b, c] = [1, 2, 3] in b"
+            "2"
       ]
   -- NOTE: QuickCheck property tests for nPlus/nMinus were omitted
   -- because each evalUDTExpr call recompiles Prelude+the embedded UDT+the

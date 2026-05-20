@@ -336,6 +336,12 @@ unitTests = testGroup "Unit tests"
   , testCase "Ad hoc user defined types failure" $ do
       res <- testUserDefAdHocTypes userDefAdHocTypesFailure
       res @?= "MyInt must not be 0\ndone"
+  , testCase "plain top-level list assignment" $ do
+      res <- testUserDefAdHocTypes topLevelListAssignment
+      res @?= "right\ndone"
+  , testCase "lowercase lambda list assignment is not a UDT" $ do
+      res <- testUserDefAdHocTypes lambdaListAssignment
+      res @?= "kept\ndone"
   , testCase "test tictactoe.tel" $ do
       res <- tictactoe
       res @?= fullRunTicTacToeString
@@ -483,6 +489,18 @@ userDefAdHocTypesFailure = unlines
   , "  , \\(i : MyInt) -> i"
   , "  ]"
   , "main = \\i -> (mkMyInt 0, 0)"
+  ]
+
+topLevelListAssignment = unlines
+  [ "import Prelude"
+  , "[a, b] = [\"left\", \"right\"]"
+  , "main = \\i -> (b, 0)"
+  ]
+
+lambdaListAssignment = unlines
+  [ "import Prelude"
+  , "[f, g] = \\x -> [\\y -> x, \\z -> z]"
+  , "main = \\i -> (f \"kept\" 0, 0)"
   ]
 
 hashtest0 = unlines ["let wrapper = 2",
