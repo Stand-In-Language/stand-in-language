@@ -126,7 +126,7 @@ work inside any `let … in …`.
 
    Final form: the validator is invoked as a *case scrutinee*
    (`case (typeExpr varName) of innerPat -> body`). The validator
-   returns its argument on success or aborts on failure; using its
+   returns the payload on success or aborts on failure; using its
    result as the scrutinee forces evaluation and propagates the
    abort, with no `CheckUPF`/refinement-wrapper involved.
 

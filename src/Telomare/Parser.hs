@@ -254,7 +254,7 @@ parsePatternIgnore :: TelomareParser Pattern
 parsePatternIgnore = symbol "_" >> pure PatternIgnore
 
 -- |Parse a parenthesised pattern with a type/refinement annotation,
--- e.g. @((_, aa) : Nat)@. The stored typeExpr is the raw check function;
+-- e.g. @(aa : Nat)@. The stored typeExpr is the raw check function;
 -- 'buildMultiLambda' applies it to the bound value and uses the result as
 -- the case scrutinee, forcing runtime validation before destructuring.
 parsePatternAnnotated :: TelomareParser Pattern
@@ -547,8 +547,8 @@ udtSlots tname = go where
     $ "expandUDT: UDT body for [" <> tname
     <> "] must reduce to a list literal; got: " <> show (void other)
 
--- |Auto-generated validator: @\\v -> if dEqual (left v) <h> then v else abort \"not <T>\"@.
--- Returns the validated value on success; aborts on failure.
+-- |Auto-generated validator: @\\v -> if dEqual (left v) <h> then right v else abort \"not <T>\"@.
+-- Returns the validated payload on success; aborts on failure.
 -- Annotated pattern lambdas use the validator's result as the case
 -- scrutinee, so destructuring works on a validated value without an
 -- extra ITE.
@@ -561,10 +561,10 @@ autoValidator loc tname hParam =
              (loc :< VarUPF "dEqual")
              (loc :< LeftUPF (loc :< VarUPF "__udt_v")))
           (loc :< VarUPF hParam))
-       (loc :< VarUPF "__udt_v")
-       (loc :< AppUPF
-          (loc :< VarUPF "abort")
-          (loc :< StringUPF ("not " <> tname))))
+       (loc :< RightUPF (loc :< VarUPF "__udt_v"))
+        (loc :< AppUPF
+           (loc :< VarUPF "abort")
+           (loc :< StringUPF ("not " <> tname))))
 
 -- |Helper function to test parsers without a result.
 runTelomareParser_ :: Show a => TelomareParser a -> String -> IO ()

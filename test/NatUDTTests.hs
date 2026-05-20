@@ -28,9 +28,9 @@ natUDTSource :: String
 natUDTSource = unlines
   [ "[Nat, toNat, fromNat, nPlus, nMinus] = \\h ->"
   , "  [ \\x -> (h, x)"
-  , "  , \\((_, x) : Nat) -> x"
-  , "  , \\((_, aa) : Nat) ((_, bb) : Nat) -> (h, d2c aa succ bb)"
-  , "  , \\((_, aa) : Nat) ((_, bb) : Nat) ->"
+  , "  , \\(x : Nat) -> x"
+  , "  , \\(aa : Nat) (bb : Nat) -> (h, d2c aa succ bb)"
+  , "  , \\(aa : Nat) (bb : Nat) ->"
   , "      let sLeft = \\x -> case x of"
   , "                          (l, _) -> l"
   , "                          y      -> abort \"can't subtract larger number from smaller one\""

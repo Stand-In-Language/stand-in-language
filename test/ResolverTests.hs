@@ -469,7 +469,7 @@ userDefAdHocTypesSuccess = unlines
   , "  [ \\i -> if not i"
   , "          then \"MyInt must not be 0\""
   , "          else (h, i)"
-  , "  , \\((_, i) : MyInt) -> i"
+  , "  , \\(i : MyInt) -> i"
   , "  ]"
   , "main = \\i -> (unMyInt (mkMyInt 8), 0)"
   ]
@@ -480,7 +480,7 @@ userDefAdHocTypesFailure = unlines
   , "  [ \\i -> if not i"
   , "          then \"MyInt must not be 0\""
   , "          else (h, i)"
-  , "  , \\((_, i) : MyInt) -> i"
+  , "  , \\(i : MyInt) -> i"
   , "  ]"
   , "main = \\i -> (mkMyInt 0, 0)"
   ]

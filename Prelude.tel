@@ -150,7 +150,7 @@ lcm = \a b -> dDiv (dTimes a b) (gcd a b)
                   num = dDiv n g
                   den = dDiv d g
               in (h, (num, den))
-  , \i -> right (Rational i)
+  , \i -> Rational i
   , \a b ->
       let n1 = left (right a)
           d1 = right (right a)
