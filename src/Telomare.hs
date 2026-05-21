@@ -423,13 +423,48 @@ data RecursionSimulationPieces a
   | CheckingWrapper LocTag a a
   deriving (Eq, Ord, Show, NFData, Generic, Functor)
 
+data SourcePosition = SourcePosition
+  { sourcePositionLine   :: Int
+  , sourcePositionColumn :: Int
+  , sourcePositionOffset :: Int
+  }
+  deriving (Eq, Show, Ord, Generic, NFData)
+
+instance Validity SourcePosition
+instance GenValid SourcePosition
+
+data SourceSpan = SourceSpan
+  { sourceSpanFile  :: Maybe FilePath
+  , sourceSpanStart :: SourcePosition
+  , sourceSpanEnd   :: SourcePosition
+  }
+  deriving (Eq, Show, Ord, Generic, NFData)
+
+instance Validity SourceSpan
+instance GenValid SourceSpan
+
 data LocTag
   = DummyLoc
   | Loc Int Int
+  | SourceLoc SourceSpan
+  | GeneratedLoc String (Maybe LocTag)
+  | BuiltinLoc String
+  | RuntimeLoc
+  | DecompiledLoc
+  | UnknownLoc
   deriving (Eq, Show, Ord, Generic, NFData)
 
 instance Validity LocTag
 instance GenValid LocTag
+
+locStartLineColumn :: LocTag -> Maybe (Int, Int)
+locStartLineColumn = \case
+  Loc line column -> Just (line, column)
+  SourceLoc span ->
+    let start = sourceSpanStart span
+    in Just (sourcePositionLine start, sourcePositionColumn start)
+  GeneratedLoc _ parent -> parent >>= locStartLineColumn
+  _ -> Nothing
 
 newtype FragExprUR =
   FragExprUR { unFragExprUR :: Cofree (FragExprF (RecursionSimulationPieces FragExprUR))
@@ -1192,4 +1227,3 @@ instance Show1 UnprocessedParsedTermF where
                            (fmap showPattern patterns) . showChar ']'
       in showString "CaseUPF " . showsPrecFunc 11 scrutinee . showChar ' '
          . showPatterns patterns
-

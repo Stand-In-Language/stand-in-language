@@ -511,9 +511,9 @@ listAssignmentSlots = go where
   go _ = Nothing
 
 listAssignmentIntermediate :: LocTag -> String
-listAssignmentIntermediate = \case
-  Loc line column -> "__list_assignment_" <> show line <> "_" <> show column
-  DummyLoc        -> "__list_assignment"
+listAssignmentIntermediate loc = case locStartLineColumn loc of
+  Just (line, column) -> "__list_assignment_" <> show line <> "_" <> show column
+  Nothing             -> "__list_assignment"
 
 accessAt :: LocTag -> Int -> AnnotatedUPT -> AnnotatedUPT
 accessAt loc 0 e = loc :< LeftUPF e

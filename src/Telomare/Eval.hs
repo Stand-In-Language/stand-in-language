@@ -35,8 +35,8 @@ import Telomare (AbstractRunTime, BreakState, BreakState', EvalError (..),
                  Term4 (Term4), UnprocessedParsedTerm (..),
                  UnprocessedParsedTermF (..), UnsizedRecursionToken (..), app,
                  appF, convertAbortMessage, deferF, eval, forget, g2s,
-                 innerChurchF, insertAndGetKey, pairF, rootFrag, s2g, setEnvF,
-                 tag, unFragExprUR)
+                 innerChurchF, insertAndGetKey, locStartLineColumn, pairF,
+                 rootFrag, s2g, setEnvF, tag, unFragExprUR)
 import Telomare.Parser (AnnotatedUPT, parseModule, parseOneExprOrTopLevelDefs,
                         parsePrelude)
 import Telomare.Possible (SizingSettings (SizingSettings), abortExprToTerm4,
@@ -300,9 +300,9 @@ showSizingInSource prelude s
         -- orphanList = map ((<> " ") . show . fst) orphanLocs
         -- orphans = "unsized with no location: " <> foldMap ((<> " ") . show . fst) orphanLocs
         orphans = error "TODO showSizingInSource thing"
-        fromEnum' = \case
-          Loc x _ -> x
-          _ -> error "unexpected DummyLoc"
+        fromEnum' loc = case locStartLineColumn loc of
+          Just (line, _) -> line
+          Nothing        -> error "unexpected source-less location"
         lookupSize x = case sizedRecursion of
           Right (SizedRecursion sm) -> case Map.lookup x sm of
             Just (Just v) -> show v
@@ -327,9 +327,9 @@ showFunctionIndexesInSource prelude s
         sizeLocs = second (unAss . unFragExprUR) <$> Map.toAscList funMap
         (orphanLocs, lineLocs) = partition ((== DummyLoc) . snd) sizeLocs
         orphans = "functions with no location: " <> foldMap ((<> " ") . show . fst) orphanLocs
-        fromEnum' = \case
-          Loc x _ -> x
-          _ -> 0 -- error "unexpected DummyLoc"
+        fromEnum' loc = case locStartLineColumn loc of
+          Just (line, _) -> line
+          Nothing        -> 0 -- source-less generated/runtime location
         getFunMatchingLine x = case filter ((== x) . fromEnum' . snd) lineLocs of
           [] -> ""
           -- l -> ("   # " <>) $ foldMap ((\s -> show (fromEnum s) <> ":" <> lookupSize s <> " ") . fst) l
@@ -551,4 +551,3 @@ tagUPTwithIExpr prelude upt = evalState (para alg upt) 0 where
       x' <- x
       y' <- y
       pure $ (i, upt2iexpr $ PairUP upt1 upt2) :< PairUPF x' y'
-

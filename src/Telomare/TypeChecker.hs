@@ -127,7 +127,10 @@ initState (Term3 termMap) =
   let startVariable = case Set.maxView (Map.keysSet termMap) of
         Nothing               -> 0
         Just (FragIndex i, _) -> (i + 1) * 2
-  in (TypeVariable DummyLoc 0, Set.empty, startVariable)
+      rootLoc = case Map.lookup (FragIndex 0) termMap of
+        Just (FragExprUR (anno :< _)) -> GeneratedLoc "typechecker.root" (Just anno)
+        Nothing                       -> GeneratedLoc "typechecker.root" Nothing
+  in (TypeVariable rootLoc 0, Set.empty, startVariable)
 
 getFragType :: LocTag -> FragIndex -> PartialType
 getFragType anno (FragIndex i) = ArrTypeP (TypeVariable anno $ i * 2) (TypeVariable anno $ i * 2 + 1)
@@ -171,7 +174,10 @@ annotate (Term3 termMap) =
       associateOutType :: LocTag -> FragIndex -> PartialType -> AnnotateState ()
       associateOutType anno fi ot = let (ArrTypeP _ ot2) = getFragType anno fi in associateVar ot ot2
       rootType anno = initInputType anno (FragIndex 0) >> annotate' (unFragExprUR $ rootFrag termMap)
-  in sequence_ (Map.mapWithKey (\k v -> initInputType DummyLoc k >> annotate' (unFragExprUR v) >>= associateOutType DummyLoc k) termMap) >> rootType DummyLoc
+      fragLoc (FragExprUR (anno :< _)) = GeneratedLoc "typechecker.fragment" (Just anno)
+      rootLoc = case rootFrag termMap of
+        FragExprUR (anno :< _) -> GeneratedLoc "typechecker.root" (Just anno)
+  in sequence_ (Map.mapWithKey (\k v -> let loc = fragLoc v in initInputType loc k >> annotate' (unFragExprUR v) >>= associateOutType loc k) termMap) >> rootType rootLoc
 
 partiallyAnnotate :: Term3 -> Either TypeCheckError (PartialType, Int -> Maybe PartialType)
 partiallyAnnotate term =
@@ -188,7 +194,7 @@ typeCheck :: PartialType -> Term3 -> Maybe TypeCheckError
 typeCheck t tm@(Term3 typeMap) = convert (partiallyAnnotate tm >>= associate) where
   associate (ty, resolver) = debugTrace ("COMPARING TYPES " <> show (t, fullyResolve resolver ty) <> "\n" <> debugMap ty resolver)
     . traceAgain $ makeAssociations (fullyResolve resolver ty) t
-  debugMap ty resolver = showTypeDebugInfo (TypeDebugInfo tm (fullyResolve resolver . getFragType DummyLoc)
+  debugMap ty resolver = showTypeDebugInfo (TypeDebugInfo tm (fullyResolve resolver . getFragType (GeneratedLoc "typechecker.debug" Nothing))
                                             (fullyResolve resolver ty))
   traceAgain s = debugTrace ("Resulting thing " <> show s) s
   convert = \case

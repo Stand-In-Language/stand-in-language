@@ -673,15 +673,17 @@ generateAllHashes x@(anno :< _) = transform interm x where
     x                      -> x
 
 addBuiltins :: AnnotatedUPT -> AnnotatedUPT
-addBuiltins aupt = DummyLoc :< LetUPF
-  [ ("zero", DummyLoc :< IntUPF 0)
-  , ("left", DummyLoc :< LamUPF "x" (DummyLoc :< LeftUPF (DummyLoc :< VarUPF "x")))
-  , ("right", DummyLoc :< LamUPF "x" (DummyLoc :< RightUPF (DummyLoc :< VarUPF "x")))
-  , ("trace", DummyLoc :< LamUPF "x" (DummyLoc :< TraceUPF (DummyLoc :< VarUPF "x")))
-  , ("pair", DummyLoc :< LamUPF "x" (DummyLoc :< LamUPF "y" (DummyLoc :< PairUPF (DummyLoc :< VarUPF "x") (DummyLoc :< VarUPF "y"))))
-  , ("app", DummyLoc :< LamUPF "x" (DummyLoc :< LamUPF "y" (DummyLoc :< AppUPF (DummyLoc :< VarUPF "x") (DummyLoc :< VarUPF "y"))))
+addBuiltins aupt = GeneratedLoc "addBuiltins" Nothing :< LetUPF
+  [ ("zero", builtin "zero" :< IntUPF 0)
+  , ("left", builtin "left" :< LamUPF "x" (builtin "left" :< LeftUPF (builtin "left" :< VarUPF "x")))
+  , ("right", builtin "right" :< LamUPF "x" (builtin "right" :< RightUPF (builtin "right" :< VarUPF "x")))
+  , ("trace", builtin "trace" :< LamUPF "x" (builtin "trace" :< TraceUPF (builtin "trace" :< VarUPF "x")))
+  , ("pair", builtin "pair" :< LamUPF "x" (builtin "pair" :< LamUPF "y" (builtin "pair" :< PairUPF (builtin "pair" :< VarUPF "x") (builtin "pair" :< VarUPF "y"))))
+  , ("app", builtin "app" :< LamUPF "x" (builtin "app" :< LamUPF "y" (builtin "app" :< AppUPF (builtin "app" :< VarUPF "x") (builtin "app" :< VarUPF "y"))))
   ]
   aupt
+  where
+    builtin = BuiltinLoc
 
 -- |Process an `AnnotatedUPT` to a `Term3` with failing capability.
 process :: AnnotatedUPT
@@ -779,7 +781,10 @@ resolveMain allModules mainModule = case lookup mainModule allModules of
                   maybeMain = lookup "main" resolved
               in case maybeMain of
                    Nothing -> Left $ NoMainFunction mainModule
-                   Just x  -> Right $ DummyLoc :< LetUPF (pruneBindings x resolved) x
+                   Just x ->
+                     let loc = case x of
+                           loc' :< _ -> loc'
+                     in Right $ GeneratedLoc "resolveMain" (Just loc) :< LetUPF (pruneBindings x resolved) x
 
 main2Term3 :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -- ^Modules: [(ModuleName, [Either Import (VariableName, BindedUPT)])]
            -> String -- ^Module name with main
