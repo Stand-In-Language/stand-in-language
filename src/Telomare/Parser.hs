@@ -20,8 +20,8 @@ import PrettyPrint (indentSansFirstLine)
 import qualified System.IO.Strict as Strict
 import Telomare
 import Telomare.TypeChecker (typeCheck)
-import Text.Megaparsec (MonadParsec (eof, notFollowedBy, try), Parsec, Pos,
-                        PosState (pstateSourcePos),
+import Text.Megaparsec (MonadParsec (eof, notFollowedBy, try), ParseErrorBundle,
+                        Parsec, Pos, PosState (pstateSourcePos),
                         SourcePos (sourceColumn, sourceLine),
                         State (statePosState), between, choice,
                         errorBundlePretty, getParserState, many, manyTill,
@@ -662,8 +662,10 @@ parseWithPrelude :: [(String, AnnotatedUPT)]   -- ^Prelude
 parseWithPrelude prelude str = first errorBundlePretty $ runParser (parseTopLevelWithExtraModuleBindings prelude) "" str
 
 parseModule :: String -> Either String [Either AnnotatedUPT (String, AnnotatedUPT)]
-parseModule str = let result = runParser (concat <$> (scn *> many parseImportOrAssignment <* eof)) "" str
-                  in first errorBundlePretty result
+parseModule str = first errorBundlePretty $ parseModuleDetailed str
+
+parseModuleDetailed :: String -> Either (ParseErrorBundle String Void) [Either AnnotatedUPT (String, AnnotatedUPT)]
+parseModuleDetailed = runParser (concat <$> (scn *> many parseImportOrAssignment <* eof)) ""
 
 -- |Parse either a single expression or top level definitions defaulting to the `main` definition.
 --  This function was made for telomare-evaluare

@@ -174,8 +174,7 @@ executable telomare-lsp
                      , lens
                      , lsp
                      , lsp-types
-                     , mtl
-                     , filepath
+                     , megaparsec
                      , stm
                      , telomare
                      , text

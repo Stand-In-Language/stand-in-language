@@ -494,7 +494,7 @@ validateVariables term =
           definitionsMap <- State.get
           case Map.lookup n definitionsMap of
             Just v -> pure v
-            _      -> State.lift . Left $ MissingDefinitions [n]
+            _      -> State.lift . Left $ MissingDefinitionAt anno n
 
         anno :< ITEUPF i t e -> (\a b c -> anno :< TITEF a b c) <$> validateWithEnvironment i
                                                                 <*> validateWithEnvironment t

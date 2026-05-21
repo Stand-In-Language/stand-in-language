@@ -9,14 +9,15 @@ module Main where
 
 import Control.Concurrent.STM
 import Control.Exception (IOException, try)
-import Control.Monad (forM, void)
+import Control.Monad (void)
 import Control.Monad.IO.Class (MonadIO (liftIO))
+import Data.Bifunctor (first)
 import Data.Char (isAsciiLower, isAsciiUpper, isDigit)
-import Data.Either (isRight)
 import Data.List (sortOn)
+import qualified Data.List.NonEmpty as NE
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
-import System.FilePath ((</>))
+import Data.Void (Void)
 
 import Control.Lens ((^.))
 import qualified Data.Aeson as JSON
@@ -24,13 +25,17 @@ import qualified Language.LSP.Protocol.Lens as LSP
 import Language.LSP.Protocol.Message (SMethod (..))
 import qualified Language.LSP.Protocol.Message as LSPMsg
 import Language.LSP.Protocol.Types (NormalizedUri, Position (..), Range (..),
-                                    UInt, toNormalizedUri, type (|?))
+                                    UInt, toNormalizedUri)
 import qualified Language.LSP.Protocol.Types as LSPTypes
 import Language.LSP.Server
 
-import Telomare (IExpr)
+import Telomare (LocTag, ResolverError (..), locStartLineColumn,
+                 renderResolverError)
 import Telomare.Eval (eval2IExpr)
-import Telomare.Parser (AnnotatedUPT, parseModule)
+import Telomare.Parser (AnnotatedUPT, parseModule, parseModuleDetailed)
+import Telomare.Resolver (main2Term3)
+import Text.Megaparsec.Error (ParseErrorBundle (..), errorBundlePretty,
+                              errorOffset)
 
 --------------------------------------------------------------------------------
 -- Document state tracking
@@ -43,9 +48,10 @@ type ParseResult = [Either AnnotatedUPT (String, AnnotatedUPT)]
 type ModuleBindings = [(String, ParseResult)]
 
 data DocState = DocState
-  { docText    :: T.Text
-  , docVersion :: Int
-  , docParse   :: Either String ParseResult
+  { docText        :: T.Text
+  , docVersion     :: Int
+  , docParse       :: Either String ParseResult
+  , docDiagnostics :: [LSPTypes.Diagnostic]
   } deriving (Show)
 
 type DocStore = TVar (Map.Map NormalizedUri DocState)
@@ -144,8 +150,8 @@ tokType     = 7    -- "type"
 handlers :: GlobalState -> Handlers (LspM ())
 handlers gState = mconcat
   [ notificationHandler SMethod_Initialized                   $ \_ -> pure ()
-  , notificationHandler SMethod_TextDocumentDidOpen           $ didOpenHandler (docStore gState)
-  , notificationHandler SMethod_TextDocumentDidChange         $ didChangeHandler (docStore gState)
+  , notificationHandler SMethod_TextDocumentDidOpen           $ didOpenHandler gState
+  , notificationHandler SMethod_TextDocumentDidChange         $ didChangeHandler gState
   , notificationHandler SMethod_TextDocumentDidClose          $ didCloseHandler (docStore gState)
   , requestHandler     SMethod_TextDocumentSemanticTokensFull  $ semanticTokensFullHandler (docStore gState)
   , requestHandler     SMethod_TextDocumentSemanticTokensRange $ semanticTokensRangeHandler (docStore gState)
@@ -193,34 +199,43 @@ executeCommandHandler gState req respond = do
 parseTelomareModule :: T.Text -> Either String ParseResult
 parseTelomareModule = parseModule . T.unpack
 
+parseTelomareModuleDetailed :: T.Text -> Either (ParseErrorBundle String Void) ParseResult
+parseTelomareModuleDetailed = parseModuleDetailed . T.unpack
+
 storeParsedDoc
-  :: DocStore
+  :: GlobalState
   -> LSPTypes.Uri
   -> Int
   -> T.Text
   -> LspM () ()
-storeParsedDoc docStore' uri version text = do
-  let parseRes = parseTelomareModule text
-  liftIO . atomically . modifyTVar' docStore' $
-    Map.insert (toNormalizedUri uri) (DocState text version parseRes)
+storeParsedDoc gState uri version text = do
+  modules <- liftIO $ readTVarIO (moduleBindings gState)
+  let detailedParse = parseTelomareModuleDetailed text
+      parseRes = first errorBundlePretty detailedParse
+      diagnostics = case detailedParse of
+        Left err     -> parseDiagnostics text err
+        Right parsed -> resolverDiagnostics modules parsed
+  liftIO . atomically . modifyTVar' (docStore gState) $
+    Map.insert (toNormalizedUri uri) (DocState text version parseRes diagnostics)
+  publishDocumentDiagnostics uri version diagnostics
 
 --------------------------------------------------------------------------------
 -- Document lifecycle handlers
 
-didOpenHandler :: DocStore
+didOpenHandler :: GlobalState
                -> LSPMsg.TNotificationMessage 'LSPMsg.Method_TextDocumentDidOpen
                -> LspM () ()
-didOpenHandler docStore' notification = do
+didOpenHandler gState notification = do
   let doc     = notification ^. LSP.params . LSP.textDocument
       uri     = doc ^. LSP.uri
       version = fromIntegral (doc ^. LSP.version)
       text    = doc ^. LSP.text
-  storeParsedDoc docStore' uri version text
+  storeParsedDoc gState uri version text
 
-didChangeHandler :: DocStore
-                 -> LSPMsg.TNotificationMessage 'LSPMsg.Method_TextDocumentDidChange
-                 -> LspM () ()
-didChangeHandler docStore' notification = do
+didChangeHandler :: GlobalState
+                  -> LSPMsg.TNotificationMessage 'LSPMsg.Method_TextDocumentDidChange
+                  -> LspM () ()
+didChangeHandler gState notification = do
   let doc     = notification ^. LSP.params . LSP.textDocument
       uri     = doc ^. LSP.uri
       version = fromIntegral (doc ^. LSP.version)
@@ -230,9 +245,9 @@ didChangeHandler docStore' notification = do
     (LSPTypes.TextDocumentContentChangeEvent changeData : _) -> do
       -- Extract text from union (partial vs whole)
       let newText = case changeData of
-                      LSPTypes.InL partial -> partial ^. LSP.text
-                      LSPTypes.InR whole   -> whole   ^. LSP.text
-      storeParsedDoc docStore' uri version newText
+            LSPTypes.InL partial -> partial ^. LSP.text
+            LSPTypes.InR whole   -> whole   ^. LSP.text
+      storeParsedDoc gState uri version newText
 
 didCloseHandler :: DocStore
                 -> LSPMsg.TNotificationMessage 'LSPMsg.Method_TextDocumentDidClose
@@ -240,10 +255,82 @@ didCloseHandler :: DocStore
 didCloseHandler docStore' notification = do
   let uri = notification ^. LSP.params . LSP.textDocument . LSP.uri
   liftIO . atomically . modifyTVar' docStore' $ Map.delete (toNormalizedUri uri)
+  publishDocumentDiagnostics uri 0 []
+
+publishDocumentDiagnostics :: LSPTypes.Uri -> Int -> [LSPTypes.Diagnostic] -> LspM () ()
+publishDocumentDiagnostics uri version diagnostics =
+  sendNotification SMethod_TextDocumentPublishDiagnostics $
+    LSPTypes.PublishDiagnosticsParams uri (Just $ fromIntegral version) diagnostics
+
+parseDiagnostics :: T.Text -> ParseErrorBundle String Void -> [LSPTypes.Diagnostic]
+parseDiagnostics text bundle =
+  [ mkDiagnostic (offsetToRange text . errorOffset . NE.head $ bundleErrors bundle)
+      "parser"
+      (T.pack . diagnosticFirstLine $ errorBundlePretty bundle)
+  ]
+
+resolverDiagnostics :: ModuleBindings -> ParseResult -> [LSPTypes.Diagnostic]
+resolverDiagnostics modules parsed =
+  case main2Term3 (("Current", parsed) : modules) "Current" of
+    Left NoMainFunction{} -> []
+    Left err              -> resolverErrorDiagnostics err
+    Right _               -> []
+
+resolverErrorDiagnostics :: ResolverError -> [LSPTypes.Diagnostic]
+resolverErrorDiagnostics err =
+  case err of
+    MissingDefinitionAt loc _ ->
+      [mkDiagnostic (locTagToRange loc) "resolver" (T.pack $ renderResolverError err)]
+    _ ->
+      [mkDiagnostic fallbackRange "resolver" (T.pack $ renderResolverError err)]
+
+mkDiagnostic :: Range -> T.Text -> T.Text -> LSPTypes.Diagnostic
+mkDiagnostic range source message =
+  LSPTypes.Diagnostic
+    range
+    (Just LSPTypes.DiagnosticSeverity_Error)
+    Nothing
+    Nothing
+    (Just source)
+    message
+    Nothing
+    Nothing
+    Nothing
+
+locTagToRange :: LocTag -> Range
+locTagToRange loc = case locStartLineColumn loc of
+  Just (line, column) -> pointRange (line - 1) (column - 1)
+  Nothing             -> fallbackRange
+
+offsetToRange :: T.Text -> Int -> Range
+offsetToRange text offset =
+  let prefix = T.take offset text
+      line = T.count "\n" prefix
+      column = T.length . last $ T.splitOn "\n" prefix
+  in pointRange line column
+
+pointRange :: Int -> Int -> Range
+pointRange line column =
+  let line' = max 0 line
+      column' = max 0 column
+  in Range (Position (fromIntegral line') (fromIntegral column'))
+           (Position (fromIntegral line') (fromIntegral $ column' + 1))
+
+fallbackRange :: Range
+fallbackRange = pointRange 0 0
+
+diagnosticFirstLine :: String -> String
+diagnosticFirstLine = takeWhile (/= '\n')
 
 --------------------------------------------------------------------------------
 -- Semantic tokens (kept using the simple lexer for now)
 
+semanticTokensFullHandler :: DocStore
+                          -> LSPMsg.TRequestMessage LSPMsg.Method_TextDocumentSemanticTokensFull
+                          -> (Either (LSPMsg.TResponseError LSPMsg.Method_TextDocumentSemanticTokensFull)
+                                   (LSPTypes.SemanticTokens LSPTypes.|? LSPTypes.Null)
+                             -> LspM () ())
+                          -> LspM () ()
 semanticTokensFullHandler docStore' req respond = do
   let uri = req ^. LSP.params . LSP.textDocument . LSP.uri
   mDoc <- liftIO . atomically $ Map.lookup (toNormalizedUri uri) <$> readTVar docStore'
@@ -254,6 +341,12 @@ semanticTokensFullHandler docStore' req respond = do
           encoded = tokensToLSP tokens
       respond . Right . LSPTypes.InL $ LSPTypes.SemanticTokens Nothing encoded
 
+semanticTokensRangeHandler :: DocStore
+                           -> LSPMsg.TRequestMessage LSPMsg.Method_TextDocumentSemanticTokensRange
+                           -> (Either (LSPMsg.TResponseError LSPMsg.Method_TextDocumentSemanticTokensRange)
+                                    (LSPTypes.SemanticTokens LSPTypes.|? LSPTypes.Null)
+                              -> LspM () ())
+                           -> LspM () ()
 semanticTokensRangeHandler docStore' req respond = do
   let uri   = req ^. LSP.params . LSP.textDocument . LSP.uri
       range = req ^. LSP.params . LSP.range
@@ -277,15 +370,14 @@ codeActionHandler :: GlobalState
 codeActionHandler gState req respond = do
   let uri = req ^. LSP.params . LSP.textDocument . LSP.uri
       range = req ^. LSP.params . LSP.range
-      context = req ^. LSP.params . LSP.context
 
   mDoc <- liftIO . atomically $ Map.lookup (toNormalizedUri uri) <$> readTVar (docStore gState)
   case mDoc of
     Nothing -> respond . Right . LSPTypes.InL $ []
     Just docState -> do
       case docParse docState of
-        Left err -> respond . Right . LSPTypes.InL $ []
-        Right parsedDoc -> do
+        Left _ -> respond . Right . LSPTypes.InL $ []
+        Right _ -> do
           -- Get the selected text
           let text = docText docState
               selectedText = getTextInRange text range
@@ -322,7 +414,7 @@ codeActionResolveHandler :: GlobalState
                                   LSPTypes.CodeAction
                             -> LspM () ())
                          -> LspM () ()
-codeActionResolveHandler gState req respond = do
+codeActionResolveHandler _ req respond = do
   -- For now, just return the action as-is since we're using commands
   -- The request body should contain a CodeAction
   let codeAction = req ^. LSP.params
@@ -330,7 +422,7 @@ codeActionResolveHandler gState req respond = do
 
 -- Execute partial evaluation and show result
 executePartialEvaluation :: GlobalState -> LSPTypes.Uri -> Range -> T.Text -> LspM () ()
-executePartialEvaluation gState uri range exprText = do
+executePartialEvaluation gState _ _ exprText = do
   bindings <- liftIO $ readTVarIO (moduleBindings gState)
   let evaluationResult = evaluateExpression bindings exprText
       message = case evaluationResult of

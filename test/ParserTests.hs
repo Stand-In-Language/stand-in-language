@@ -15,6 +15,7 @@ import Data.Bifunctor
 import Data.Either (fromRight)
 import Data.Functor.Foldable
 import Data.List
+import qualified Data.List.NonEmpty as NE
 import Data.Map (Map, fromList, toList)
 import qualified Data.Map as Map
 import Data.Ord
@@ -47,6 +48,12 @@ unitTests = testGroup "Unit tests"
   [ testCase "parse uniqueUP" $ do
       res <- parseSuccessful parseHash "# (\\x -> x)"
       res @?= True
+  , testCase "parseModuleDetailed exposes parse error offsets for diagnostics" $ do
+      case parseModuleDetailed "main = if 0 then 1" of
+        Left bundle -> do
+          errorOffset (NE.head $ bundleErrors bundle) >= 0 @?= True
+          null (errorBundlePretty bundle) @?= False
+        Right _     -> assertFailure "expected parse error"
   , testCase "test function applied to a string that has whitespaces in both sides inside a structure" $ do
       res1 <- parseSuccessful parseLongExpr "(foo \"woops\" , 0)"
       res2 <- parseSuccessful parseLongExpr "(foo \"woops\" )"

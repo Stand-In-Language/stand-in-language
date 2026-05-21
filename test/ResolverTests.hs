@@ -310,6 +310,15 @@ unitTests = testGroup "Unit tests"
       let recursiveRandomLet = wrapRecursiveRandomLet recursiveLet shuffleInt
       res <- testUserDefAdHocTypes recursiveRandomLet
       res @?= "whattt\ndone"
+  , testCase "missing definition error reports source location" $ do
+      case parseWithPrelude [] "main = foo 0" of
+        Left err -> assertFailure err
+        Right term -> case process term of
+          Left err -> do
+            let rendered = renderResolverError err
+            rendered @?= "missing definition \"foo\" at line 1, column 8"
+            show err @?= rendered
+          Right _ -> assertFailure "expected missing definition error"
   , testCase "test backward cycle let" $ do
       let backwardCycleLet = wrapRecursiveBackwardLet cycleLet
       result <- try ( testUserDefAdHocTypes backwardCycleLet ) :: IO (Either SomeException String)
