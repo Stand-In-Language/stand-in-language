@@ -1,19 +1,22 @@
 {-# LANGUAGE DataKinds           #-}
 {-# LANGUAGE FlexibleContexts    #-}
 {-# LANGUAGE KindSignatures      #-}
+{-# LANGUAGE LambdaCase          #-}
 {-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeOperators       #-}
 
 module Main where
 
+import Control.Applicative ((<|>))
+import Control.Comonad.Cofree (Cofree ((:<)))
 import Control.Concurrent.STM
 import Control.Exception (IOException, try)
 import Control.Monad (void)
 import Control.Monad.IO.Class (MonadIO (liftIO))
 import Data.Bifunctor (first)
 import Data.Char (isAsciiLower, isAsciiUpper, isDigit)
-import Data.List (sortOn)
+import Data.List (find, sortOn)
 import qualified Data.List.NonEmpty as NE
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
@@ -29,7 +32,9 @@ import Language.LSP.Protocol.Types (NormalizedUri, Position (..), Range (..),
 import qualified Language.LSP.Protocol.Types as LSPTypes
 import Language.LSP.Server
 
-import Telomare (LocTag, ResolverError (..), locStartLineColumn,
+import Telomare (LocTag (..), Pattern (..), ResolverError (..),
+                 SourcePosition (..), SourceSpan (..),
+                 UnprocessedParsedTermF (..), locStartLineColumn,
                  renderResolverError)
 import Telomare.Eval (eval2IExpr)
 import Telomare.Parser (AnnotatedUPT, parseModule, parseModuleDetailed)
@@ -55,6 +60,11 @@ data DocState = DocState
   } deriving (Show)
 
 type DocStore = TVar (Map.Map NormalizedUri DocState)
+
+data SymbolIndex = SymbolIndex
+  { symbolDefinitions :: Map.Map T.Text Range
+  , symbolReferences  :: Map.Map T.Text [Range]
+  } deriving (Eq, Show)
 
 -- Global state for prelude and other module bindings
 data GlobalState = GlobalState
@@ -155,6 +165,8 @@ handlers gState = mconcat
   , notificationHandler SMethod_TextDocumentDidClose          $ didCloseHandler (docStore gState)
   , requestHandler     SMethod_TextDocumentSemanticTokensFull  $ semanticTokensFullHandler (docStore gState)
   , requestHandler     SMethod_TextDocumentSemanticTokensRange $ semanticTokensRangeHandler (docStore gState)
+  , requestHandler     SMethod_TextDocumentDefinition          $ definitionHandler (docStore gState)
+  , requestHandler     SMethod_TextDocumentReferences          $ referencesHandler (docStore gState)
   , requestHandler     SMethod_TextDocumentCodeAction          $ codeActionHandler gState
   , requestHandler     SMethod_CodeActionResolve               $ codeActionResolveHandler gState
   ]
@@ -298,9 +310,26 @@ mkDiagnostic range source message =
     Nothing
 
 locTagToRange :: LocTag -> Range
-locTagToRange loc = case locStartLineColumn loc of
+locTagToRange loc = case loc of
+  SourceLoc sourceSpan -> sourceSpanToRange sourceSpan
+  _                    -> locTagStartToRange loc
+
+locTagStartToRange :: LocTag -> Range
+locTagStartToRange loc = case locStartLineColumn loc of
   Just (line, column) -> pointRange (line - 1) (column - 1)
   Nothing             -> fallbackRange
+
+sourceSpanToRange :: SourceSpan -> Range
+sourceSpanToRange sourceSpan =
+  Range
+    (sourcePositionToLSP $ sourceSpanStart sourceSpan)
+    (sourcePositionToLSP $ sourceSpanEnd sourceSpan)
+
+sourcePositionToLSP :: SourcePosition -> Position
+sourcePositionToLSP pos =
+  Position
+    (fromIntegral . max 0 $ sourcePositionLine pos - 1)
+    (fromIntegral . max 0 $ sourcePositionColumn pos - 1)
 
 offsetToRange :: T.Text -> Int -> Range
 offsetToRange text offset =
@@ -321,6 +350,162 @@ fallbackRange = pointRange 0 0
 
 diagnosticFirstLine :: String -> String
 diagnosticFirstLine = takeWhile (/= '\n')
+
+definitionHandler :: DocStore
+                  -> LSPMsg.TRequestMessage LSPMsg.Method_TextDocumentDefinition
+                  -> (Either (LSPMsg.TResponseError LSPMsg.Method_TextDocumentDefinition)
+                           (LSPTypes.Definition LSPTypes.|? ([LSPTypes.DefinitionLink] LSPTypes.|? LSPTypes.Null))
+                      -> LspM () ())
+                  -> LspM () ()
+definitionHandler docStore' req respond = do
+  let uri = req ^. LSP.params . LSP.textDocument . LSP.uri
+      position = req ^. LSP.params . LSP.position
+  mDoc <- liftIO . atomically $ Map.lookup (toNormalizedUri uri) <$> readTVar docStore'
+  case definitionAt uri position =<< mDoc of
+    Just location -> respond . Right . LSPTypes.InL . LSPTypes.Definition . LSPTypes.InL $ location
+    Nothing       -> respond . Right . LSPTypes.InR . LSPTypes.InR $ LSPTypes.Null
+
+referencesHandler :: DocStore
+                  -> LSPMsg.TRequestMessage LSPMsg.Method_TextDocumentReferences
+                  -> (Either (LSPMsg.TResponseError LSPMsg.Method_TextDocumentReferences)
+                           ([LSPTypes.Location] LSPTypes.|? LSPTypes.Null)
+                      -> LspM () ())
+                  -> LspM () ()
+referencesHandler docStore' req respond = do
+  let uri = req ^. LSP.params . LSP.textDocument . LSP.uri
+      position = req ^. LSP.params . LSP.position
+      includeDeclaration = req ^. LSP.params . LSP.context . LSP.includeDeclaration
+  mDoc <- liftIO . atomically $ Map.lookup (toNormalizedUri uri) <$> readTVar docStore'
+  let locations = foldMap (referencesAt uri includeDeclaration position) mDoc
+  case locations of
+    [] -> respond . Right $ LSPTypes.InR LSPTypes.Null
+    _  -> respond . Right . LSPTypes.InL $ locations
+
+--------------------------------------------------------------------------------
+-- Source index for definition/reference requests
+
+definitionAt :: LSPTypes.Uri -> Position -> DocState -> Maybe LSPTypes.Location
+definitionAt uri position docState = do
+  parsed <- either (const Nothing) Just $ docParse docState
+  let index = buildSymbolIndex (docText docState) parsed
+  symbol <- symbolAtPosition position index
+  defRange <- Map.lookup symbol $ symbolDefinitions index
+  pure $ LSPTypes.Location uri defRange
+
+referencesAt :: LSPTypes.Uri -> Bool -> Position -> DocState -> [LSPTypes.Location]
+referencesAt uri includeDeclaration position docState =
+  case docParse docState of
+    Left _ -> []
+    Right parsed ->
+      let index = buildSymbolIndex (docText docState) parsed
+          symbol = symbolAtPosition position index
+      in case symbol of
+        Nothing -> []
+        Just name ->
+          let refs = Map.findWithDefault [] name (symbolReferences index)
+              defs = foldMap pure $ Map.lookup name (symbolDefinitions index)
+              ranges = if includeDeclaration then defs <> refs else refs
+          in LSPTypes.Location uri <$> ranges
+
+symbolAtPosition :: Position -> SymbolIndex -> Maybe T.Text
+symbolAtPosition position index =
+  locatedDefinition <|> locatedReference
+  where
+    locatedDefinition = fst <$> find (positionInRange position . snd) (Map.toList $ symbolDefinitions index)
+    locatedReference = fst <$> find (any (positionInRange position) . snd) (Map.toList $ symbolReferences index)
+
+buildSymbolIndex :: T.Text -> ParseResult -> SymbolIndex
+buildSymbolIndex text parsed = SymbolIndex definitions references
+  where
+    definitions = topLevelDefinitions text parsed
+    references = Map.fromListWith (<>)
+      [ (T.pack name, [range])
+      | Right (_, term) <- parsed
+      , (name, range) <- termReferences [] term
+      ]
+
+topLevelDefinitions :: T.Text -> ParseResult -> Map.Map T.Text Range
+topLevelDefinitions text parsed = Map.fromList
+  [ (T.pack name, range)
+  | Right (name, _) <- parsed
+  , Just range <- [findTopLevelDefinition text (T.pack name)]
+  ]
+
+findTopLevelDefinition :: T.Text -> T.Text -> Maybe Range
+findTopLevelDefinition text name =
+  let indexedLines = zip [0..] $ T.lines text
+  in do
+    (line, lineText) <- find (hasTopLevelAssignment . snd) indexedLines
+    column <- findIdentifierInLhs name lineText
+    pure $ textRange line column (T.length name)
+
+hasTopLevelAssignment :: T.Text -> Bool
+hasTopLevelAssignment lineText =
+  not (T.null lineText)
+    && notElem (T.head lineText) [' ', '\t']
+    && T.isInfixOf "=" lineText
+
+findIdentifierInLhs :: T.Text -> T.Text -> Maybe Int
+findIdentifierInLhs name lineText = go 0 lhs
+  where
+    lhs = T.takeWhile (/= '=') lineText
+    go column remaining
+      | T.null remaining = Nothing
+      | T.isPrefixOf name remaining && beforeBoundary column && afterBoundary remaining = Just column
+      | otherwise = go (column + 1) (T.tail remaining)
+    beforeBoundary column =
+      column == 0 || not (lspIdentChar . T.last $ T.take column lhs)
+    afterBoundary remaining =
+      let afterName = T.drop (T.length name) remaining
+      in T.null afterName || not (lspIdentChar $ T.head afterName)
+
+termReferences :: [String] -> AnnotatedUPT -> [(String, Range)]
+termReferences bound (loc :< term) =
+  let children = case term of
+        VarUPF name
+          | name `elem` bound -> []
+          | otherwise         -> [(name, locTagToRange loc)]
+        ITEUPF i t e -> termReferences bound i <> termReferences bound t <> termReferences bound e
+        LetUPF bindings body ->
+          let localNames = fst <$> bindings
+              bound' = localNames <> bound
+          in concatMap (termReferences bound' . snd) bindings <> termReferences bound' body
+        ListUPF items -> concatMap (termReferences bound) items
+        PairUPF a b -> termReferences bound a <> termReferences bound b
+        AppUPF f x -> termReferences bound f <> termReferences bound x
+        LamUPF var body -> termReferences (var : bound) body
+        LeftUPF x -> termReferences bound x
+        RightUPF x -> termReferences bound x
+        TraceUPF x -> termReferences bound x
+        CheckUPF checkExpr body -> termReferences bound checkExpr <> termReferences bound body
+        HashUPF x -> termReferences bound x
+        UDTUPF names body -> termReferences (names <> bound) body
+        CaseUPF scrutinee cases -> termReferences bound scrutinee <> concatMap caseReferences cases
+        _ -> []
+  in children
+  where
+    caseReferences (pat, body) = termReferences (patternBoundNames pat <> bound) body
+
+patternBoundNames :: Pattern -> [String]
+patternBoundNames = \case
+  PatternVar name -> [name]
+  PatternAnnotated pat _ -> patternBoundNames pat
+  PatternPair left right -> patternBoundNames left <> patternBoundNames right
+  _ -> []
+
+lspIdentChar :: Char -> Bool
+lspIdentChar c = isAsciiLower c || isAsciiUpper c || isDigit c || c == '_' || c == '.' || c == '\''
+
+textRange :: Int -> Int -> Int -> Range
+textRange line column len =
+  Range
+    (Position (fromIntegral line) (fromIntegral column))
+    (Position (fromIntegral line) (fromIntegral $ column + len))
+
+positionInRange :: Position -> Range -> Bool
+positionInRange (Position line char) (Range (Position startLine startChar) (Position endLine endChar)) =
+  (line > startLine || line == startLine && char >= startChar)
+    && (line < endLine || line == endLine && char < endChar)
 
 --------------------------------------------------------------------------------
 -- Semantic tokens (kept using the simple lexer for now)

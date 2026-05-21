@@ -48,12 +48,16 @@ unitTests = testGroup "Unit tests"
   [ testCase "parse uniqueUP" $ do
       res <- parseSuccessful parseHash "# (\\x -> x)"
       res @?= True
+    -- Keep structured Megaparsec errors available for LSP ranges while
+    -- preserving pretty text for CLI-style diagnostics.
   , testCase "parseModuleDetailed exposes parse error offsets for diagnostics" $ do
       case parseModuleDetailed "main = if 0 then 1" of
         Left bundle -> do
           errorOffset (NE.head $ bundleErrors bundle) >= 0 @?= True
           null (errorBundlePretty bundle) @?= False
         Right _     -> assertFailure "expected parse error"
+    -- Source spans must cover only the token, not whitespace consumed by
+    -- lexeme wrappers, otherwise editor diagnostics underline too much.
   , testCase "variable source spans exclude trailing whitespace" $ do
       case runParser parseVariable "" "foo   0" of
         Left err -> assertFailure $ errorBundlePretty err

@@ -125,16 +125,44 @@ Finished the local LSP cleanup and reran checks.
 
 Plan note: The introduced LSP lint issue and signature warnings are resolved. The route is now final diff inspection, then commit the diagnostics/LSP slice if the diff contains only intended changes.
 
+### 2026-05-21: LSP Definition And Reference Index
+
+Added an LSP source index over the annotated parsed document.
+
+- Registered `textDocument/definition` and `textDocument/references` handlers in `app/LSP.hs`.
+- Changed `locTagToRange` to use full `SourceLoc SourceSpan` ranges when available instead of always reducing locations to one-character point ranges.
+- Built a per-document `SymbolIndex` from parsed top-level definitions plus `VarUPF` references collected from source-annotated AST nodes.
+- Definition requests now jump from an indexed reference or definition name to the matching top-level definition in the same document.
+- Reference requests now return indexed AST reference ranges, and include the top-level definition range when the client asks for declarations.
+- Reference collection excludes locally-bound lambda, let, UDT, and case-pattern variables so local names do not incorrectly jump to top-level symbols.
+- Added `free` to the `telomare-lsp` executable dependencies because the LSP now directly traverses `Cofree` AST annotations.
+
+Plan note: This is correct for top-level definitions in the current document. Fully precise local-definition jumps still need binder source spans in the AST, because lambda parameters, let binders, and pattern binders are still stored as plain strings rather than source-annotated binder nodes.
+
+### 2026-05-21: LSP Navigation Verification
+
+Verified the LSP definition/reference slice.
+
+- `nix develop -c stylish-haskell -i app/LSP.hs test/ParserTests.hs test/ResolverTests.hs` completed.
+- `nix develop -c cabal build telomare-lsp` passed.
+- `nix develop -c cabal test telomare-parser-test telomare-resolver-test` passed.
+- `nix develop -c cabal test all` passed.
+- `nix build .#checks.x86_64-linux.default` passed.
+- `git diff --check` passed.
+- `nix run .#format-lint` reports only the known 9 pre-existing HLint hints.
+
+Plan note: The LSP now has a source-facing top-level navigation index. The next route for navigation quality is to annotate binders directly, then extend the index from top-level symbols to local scopes without scanning source text for binder names.
+
 ## Current Plan
 
 1. Inspect the final diff.
-2. Commit the legacy-location removal slice with a detailed multi-line commit message if the diff contains only intended changes.
-3. Continue composite parser span work in a follow-up slice.
+2. Commit the LSP navigation slice with a detailed multi-line commit message if the diff contains only intended changes.
+3. Continue binder-span and composite parser span work in follow-up slices.
 
 ## Deferred Work
 
 - Continue applying raw-parser plus lexeme-wrapper source capture to composite parser forms so all `SourceLoc SourceSpan` ranges exclude trailing whitespace.
-- Add binder spans and a source-facing LSP index for hover, definition, and completion.
+- Add binder spans for precise local go-to-definition, rename, hover, and completion.
 - Add typechecker diagnostics only after deciding how to choose primary and related source locations for type errors.
 
 ## Verification Notes

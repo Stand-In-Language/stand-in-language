@@ -310,6 +310,8 @@ unitTests = testGroup "Unit tests"
       let recursiveRandomLet = wrapRecursiveRandomLet recursiveLet shuffleInt
       res <- testUserDefAdHocTypes recursiveRandomLet
       res @?= "whattt\ndone"
+    -- Missing definitions should point at the unresolved variable so CLI
+    -- messages and LSP diagnostics can direct users to the real source site.
   , testCase "missing definition error reports source location" $ do
       case parseWithPrelude [] "main = foo 0" of
         Left err -> assertFailure err
