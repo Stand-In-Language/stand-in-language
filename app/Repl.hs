@@ -90,7 +90,7 @@ resolveBinding' :: String
                 -> Maybe Term3
 resolveBinding' name bindings = lookup name taggedBindings >>= (rightToMaybe . process)
   where
-    taggedBindings = (fmap . fmap) (tag DummyLoc) bindings
+    taggedBindings = (fmap . fmap) (tag UnknownLoc) bindings
 
 -- |Obtain expression from the bindings and transform them maybe into a IExpr.
 resolveBinding :: String -> [(String, UnprocessedParsedTerm)] -> Maybe CompiledExpr
@@ -105,7 +105,7 @@ printLastExpr :: (IExpr -> Either RunTimeError IExpr) -- ^Telomare backend
               -> [(String, UnprocessedParsedTerm)]
               -> IO ()
 printLastExpr eval bindings = do
-  let bindings' = (fmap . fmap) (tag DummyLoc) bindings
+  let bindings' = (fmap . fmap) (tag UnknownLoc) bindings
   res :: Either Exception.SomeException () <- Exception.try $
     case lookup "_tmp_" bindings' of
       Nothing -> putStrLn "Could not find _tmp_ in bindings"
@@ -116,7 +116,7 @@ printLastExpr eval bindings = do
                            Right r  -> case toTelomare r of
                              Just te -> pure $ fromTelomare te
                              _ -> Left . RTE . ResultConversionError $ "conversion error from compiled expr:\n" <> prettyPrint r
-        case compile' =<< first RE (process (DummyLoc :< LetUPF bindings' upt)) of
+        case compile' =<< first RE (process (UnknownLoc :< LetUPF bindings' upt)) of
           Left err -> print err
           Right iexpr' -> case eval iexpr' of
               Left e      -> putStrLn $ "error: " <> show e

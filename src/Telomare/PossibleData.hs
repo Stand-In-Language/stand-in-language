@@ -909,8 +909,8 @@ data TypeCheckError
 newPartialType :: AnnotateState PartialType
 newPartialType = do
   (env, typeMap, v) <- State.get
-  State.put (TypeVariable DummyLoc v, typeMap, v + 1)
-  pure $ TypeVariable DummyLoc v
+  State.put (TypeVariable RuntimeLoc v, typeMap, v + 1)
+  pure $ TypeVariable RuntimeLoc v
 
 makeAssociations :: PartialType -> PartialType -> Either TypeCheckError (Set TypeAssociation)
 makeAssociations ta tb = case (ta, tb) of
@@ -971,10 +971,10 @@ instance Annotatable1 PartExprF where
 withNewEnv :: AnnotateState a -> AnnotateState (PartialType, a)
 withNewEnv action = do
   (env, typeMap, v) <- State.get
-  State.put (TypeVariable DummyLoc v, typeMap, v + 1)
+  State.put (TypeVariable RuntimeLoc v, typeMap, v + 1)
   result <- action
   State.modify $ \(_, typeMap, v) -> (env, typeMap, v)
-  pure (TypeVariable DummyLoc v, result)
+  pure (TypeVariable RuntimeLoc v, result)
 
 instance Annotatable1 StuckF where
   liftAnno anno = \case

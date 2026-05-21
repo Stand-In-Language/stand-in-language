@@ -16,6 +16,7 @@ import Data.Foldable (fold)
 import Data.List (partition)
 import Data.Map (Map)
 import qualified Data.Map as Map
+import Data.Maybe (isNothing)
 import Data.Semigroup (Max (..), Min (..))
 import Data.Set (Set)
 import qualified Data.Set as Set
@@ -119,8 +120,8 @@ removeChecks (Term4 m) =
         x                  -> x
       (ind, newM) = State.runState builder m
       builder = do
-        envDefer <- insertAndGetKey $ DummyLoc :< EnvFragF
-        insertAndGetKey $ DummyLoc :< DeferFragF envDefer
+        envDefer <- insertAndGetKey $ GeneratedLoc "removeChecks" Nothing :< EnvFragF
+        insertAndGetKey $ GeneratedLoc "removeChecks" Nothing :< DeferFragF envDefer
   in Term4 $ Map.map (transform f) newM
 -}
 removeChecks :: Term4 -> Term4
@@ -293,10 +294,10 @@ showSizingInSource prelude s
         unsizedExpr = term3ToUnsizedExpr 256 <$> first RE parsed
         sizedRecursion = unsizedExpr >>= (first RecursionLimitError . getSizesM 256)
         sizeLocs = error "TODO showSizingInSource implement sizeLocs" --Map.toAscList . buildUnsizedLocMap <$> unsizedExpr
-        -- (orphanLocs, lineLocs) = partition ((== DummyLoc) . snd) sizeLocs
+        -- (orphanLocs, lineLocs) = partition (isNothing . locStartLineColumn . snd) sizeLocs
         (orphanLocs, lineLocs) = case sizeLocs of
           Left e   -> error "uh" -- ("Could not size: " <> show e)
-          Right sl -> partition ((== DummyLoc) . snd) sl
+          Right sl -> partition (isNothing . locStartLineColumn . snd) sl
         -- orphanList = map ((<> " ") . show . fst) orphanLocs
         -- orphans = "unsized with no location: " <> foldMap ((<> " ") . show . fst) orphanLocs
         orphans = error "TODO showSizingInSource thing"
@@ -325,7 +326,7 @@ showFunctionIndexesInSource prelude s
         -- sizeLocs = (\(fi, t) -> (fi))
         reduceL (a CofreeT.:< x) = let l = fromEnum' a in (Min l, Max l) <> fold x
         sizeLocs = second (unAss . unFragExprUR) <$> Map.toAscList funMap
-        (orphanLocs, lineLocs) = partition ((== DummyLoc) . snd) sizeLocs
+        (orphanLocs, lineLocs) = partition (isNothing . locStartLineColumn . snd) sizeLocs
         orphans = "functions with no location: " <> foldMap ((<> " ") . show . fst) orphanLocs
         fromEnum' loc = case locStartLineColumn loc of
           Just (line, _) -> line
@@ -377,7 +378,7 @@ eval2IExpr extraModuleBindings str =
         Right x -> case toTelomare x of
           Just ie -> pure ie
           _ -> Left $ "eval2IExpr conversion error back to iexpr:\n" <> prettyPrint x
-      aux = (\str -> Left (DummyLoc :< ImportQualifiedUPF str str)) . fst <$> extraModuleBindings
+      aux = (\str -> Left (GeneratedLoc "eval2IExpr.import" Nothing :< ImportQualifiedUPF str str)) . fst <$> extraModuleBindings
       resolved = resolveAllImports extraModuleBindings aux
 
 tagIExprWithEval :: IExpr -> Cofree IExprF (Int, IExpr)
@@ -434,7 +435,7 @@ tagUPTwithIExpr :: [(String, AnnotatedUPT)]
                 -> Cofree UnprocessedParsedTermF (Int, Either String IExpr)
 tagUPTwithIExpr prelude upt = evalState (para alg upt) 0 where
   upt2iexpr :: UnprocessedParsedTerm -> Either String IExpr
-  upt2iexpr u = first show (process (tag DummyLoc u)) >>= tt . first show . compileUnitTest
+  upt2iexpr u = first show (process (tag UnknownLoc u)) >>= tt . first show . compileUnitTest
   tt = \case
     Left e -> Left e
     Right x -> case toTelomare x of

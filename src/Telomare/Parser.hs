@@ -21,11 +21,10 @@ import qualified System.IO.Strict as Strict
 import Telomare
 import Telomare.TypeChecker (typeCheck)
 import Text.Megaparsec (MonadParsec (eof, notFollowedBy, try), ParseErrorBundle,
-                        Parsec, Pos, PosState (pstateSourcePos),
-                        SourcePos (sourceColumn, sourceLine),
-                        State (statePosState), between, choice,
-                        errorBundlePretty, getParserState, many, manyTill,
-                        optional, runParser, sepBy, some, unPos, (<?>), (<|>))
+                        Parsec, Pos, SourcePos (sourceColumn, sourceLine),
+                        between, choice, errorBundlePretty, getOffset,
+                        getSourcePos, many, manyTill, optional, runParser,
+                        sepBy, some, unPos, (<?>), (<|>))
 import Text.Megaparsec.Char (alphaNumChar, char, letterChar, space1, string)
 import qualified Text.Megaparsec.Char.Lexer as L
 import Text.Megaparsec.Debug (dbg)
@@ -62,10 +61,8 @@ type TelomareParser = Parsec Void String
 -- |Parse a variable.
 parseVariable :: TelomareParser AnnotatedUPT
 parseVariable = do
-  s <- getParserState
-  let line = unPos . sourceLine . pstateSourcePos . statePosState $ s
-      column = unPos . sourceColumn . pstateSourcePos . statePosState $ s
-  (\str -> Loc line column :< VarUPF str) <$> identifier
+  (loc, str) <- withSourceSpan identifierRaw
+  pure $ loc :< VarUPF str
 
 -- |Line comments start with "--".
 lineComment :: TelomareParser ()
@@ -108,7 +105,10 @@ rws = ["let", "in", "if", "then", "else", "case", "of", "import"]
 -- |Variable identifiers can consist of alphanumeric characters, underscore,
 -- and must start with an English alphabet letter
 identifier :: TelomareParser String
-identifier = lexeme . try $ p >>= check
+identifier = lexeme identifierRaw
+
+identifierRaw :: TelomareParser String
+identifierRaw = try $ p >>= check
   where
     p = (:) <$> letterChar <*> many (alphaNumChar <|> char '_' <|> char '.' <?> "variable")
     check x = if x `elem` rws
@@ -133,30 +133,57 @@ commaSep p = p `sepBy` symbol ","
 
 -- |Integer TelomareParser used by `parseNumber` and `parseChurch`
 integer :: TelomareParser Integer
-integer = toInteger <$> lexeme L.decimal
+integer = lexeme integerRaw
 
-getLineColumn = do
-  s <- getParserState
-  let line = unPos . sourceLine . pstateSourcePos . statePosState $ s
-      column = unPos . sourceColumn . pstateSourcePos . statePosState $ s
-  pure $ Loc line column
+integerRaw :: TelomareParser Integer
+integerRaw = toInteger <$> L.decimal
+
+sourcePositionFromPos :: Int -> SourcePos -> SourcePosition
+sourcePositionFromPos offset pos = SourcePosition
+  { sourcePositionLine = unPos $ sourceLine pos
+  , sourcePositionColumn = unPos $ sourceColumn pos
+  , sourcePositionOffset = offset
+  }
+
+sourceLocFromPositions :: (Int, SourcePos) -> (Int, SourcePos) -> LocTag
+sourceLocFromPositions (startOffset, start) (endOffset, end) = SourceLoc SourceSpan
+  { sourceSpanFile = Nothing
+  , sourceSpanStart = sourcePositionFromPos startOffset start
+  , sourceSpanEnd = sourcePositionFromPos endOffset end
+  }
+
+withSourceSpan :: TelomareParser a -> TelomareParser (LocTag, a)
+withSourceSpan parser = do
+  startOffset <- getOffset
+  start <- getSourcePos
+  x <- parser
+  endOffset <- getOffset
+  end <- getSourcePos
+  sc
+  pure (sourceLocFromPositions (startOffset, start) (endOffset, end), x)
+
+getSourceLoc :: TelomareParser LocTag
+getSourceLoc = do
+  offset <- getOffset
+  pos <- getSourcePos
+  pure $ sourceLocFromPositions (offset, pos) (offset, pos)
 
 -- |Parse string literal.
 parseString :: TelomareParser AnnotatedUPT
 parseString = do
-  x <- getLineColumn
-  (\str -> x :< StringUPF str) <$> (char '"' >> manyTill L.charLiteral (char '"' <* sc))
+  (x, str) <- withSourceSpan (char '"' >> manyTill L.charLiteral (char '"'))
+  pure $ x :< StringUPF str
 
 -- |Parse number (Integer).
 parseNumber :: TelomareParser AnnotatedUPT
 parseNumber = do
-  x <- getLineColumn
-  (\i -> x :< (IntUPF . fromInteger $ i)) <$> integer
+  (x, i) <- withSourceSpan integerRaw
+  pure $ x :< (IntUPF . fromInteger $ i)
 
 -- |Parse a pair.
 parsePair :: TelomareParser AnnotatedUPT
 parsePair = parens $ do
-  x <- getLineColumn
+  x <- getSourceLoc
   a <- scn *> parseLongExpr <* scn
   _ <- symbol "," <* scn
   b <- parseLongExpr <* scn
@@ -165,7 +192,7 @@ parsePair = parens $ do
 -- |Parse unsized recursion triple
 parseUnsizedRecursion :: TelomareParser AnnotatedUPT
 parseUnsizedRecursion = curlies $ do
-  x <- getLineColumn
+  x <- getSourceLoc
   a <- scn *> parseLongExpr <* scn
   _ <- symbol "," <* scn
   b <- parseLongExpr <* scn
@@ -176,7 +203,7 @@ parseUnsizedRecursion = curlies $ do
 -- |Parse a list.
 parseList :: TelomareParser AnnotatedUPT
 parseList = do
-  x <- getLineColumn
+  x <- getSourceLoc
   exprs <- brackets (commaSep (scn *> parseLongExpr <*scn))
   pure $ x :< ListUPF exprs
 
@@ -184,7 +211,7 @@ parseList = do
 -- |Parse ITE (which stands for "if then else").
 parseITE :: TelomareParser AnnotatedUPT
 parseITE = do
-  x <- getLineColumn
+  x <- getSourceLoc
   reserved "if" <* scn
   cond <- (parseLongExpr <|> parseSingleExpr) <* scn
   reserved "then" <* scn
@@ -195,14 +222,14 @@ parseITE = do
 
 parseHash :: TelomareParser AnnotatedUPT
 parseHash = do
-  x <- getLineColumn
+  x <- getSourceLoc
   symbol "#" <* scn
   upt <- parseSingleExpr
   pure $ x :< HashUPF upt
 
 parseListAssignment :: TelomareParser AssignmentEntry
 parseListAssignment = do
-  x <- getLineColumn
+  x <- getSourceLoc
   names :: [String] <- (brackets (commaSep (scn *> identifier <* scn)) <* scn)
                        <?> "list assignment names"
   (scn *> symbol "=") <?> "list assignment ="
@@ -211,7 +238,7 @@ parseListAssignment = do
 
 parseCase :: TelomareParser AnnotatedUPT
 parseCase = do
-  x <- getLineColumn
+  x <- getSourceLoc
   reserved "case" <* scn
   iexpr <- parseLongExpr <* scn
   reserved "of" <* scn
@@ -287,7 +314,7 @@ parseSingleExpr = choice $ try <$> [ parseHash
 -- |Parse application of functions.
 parseApplied :: TelomareParser AnnotatedUPT
 parseApplied = do
-  x <- getLineColumn
+  x <- getSourceLoc
   fargs <- L.lineFold scn $ \sc' ->
     parseSingleExpr `sepBy` try sc'
   case fargs of
@@ -364,7 +391,7 @@ makeLambda lt p = buildMultiLambda lt [p]
 -- |Parse lambda expression.
 parseLambda :: TelomareParser AnnotatedUPT
 parseLambda = do
-  x <- getLineColumn
+  x <- getSourceLoc
   symbol "\\" <* scn
   variables <- some parsePattern <* scn
   symbol "->" <* scn
@@ -382,7 +409,7 @@ parseSameLvl pos parser = do
 -- a specialized list-assignment convention.
 parseLet :: TelomareParser AnnotatedUPT
 parseLet = do
-  x <- getLineColumn
+  x <- getSourceLoc
   reserved "let" <* scn
   lvl <- L.indentLevel
   entries <- manyTill (parseSameLvl lvl parseAssignmentEntry) (reserved "in") <* scn
@@ -403,13 +430,13 @@ parseLongExpr = choice $ try <$> [ parseLet
 -- |Parse church numerals (church numerals are a "$" appended to an integer, without any whitespace separation).
 parseChurch :: TelomareParser AnnotatedUPT
 parseChurch = do
-  x <- getLineColumn
-  (\upt -> x :< ChurchUPF upt) . fromInteger <$> (symbol "$" *> integer)
+  (x, upt) <- withSourceSpan (char '$' *> integerRaw)
+  pure . (x :<) . ChurchUPF $ fromInteger upt
 
 -- |Parse refinement check.
 parseRefinementCheck :: TelomareParser (AnnotatedUPT -> AnnotatedUPT)
 parseRefinementCheck = do
-  x <- getLineColumn
+  x <- getSourceLoc
   (\a b -> x :< CheckUPF a b) <$> (symbol ":" *> parseLongExpr)
 
 -- |Parse assignment add adding binding to ParserState.
@@ -429,14 +456,14 @@ parseTopLevel = parseTopLevelWithExtraModuleBindings []
 
 parseImport :: TelomareParser AnnotatedUPT
 parseImport = do
-  x <- getLineColumn
+  x <- getSourceLoc
   reserved "import" <* scn
   var <- identifier <* scn
   pure $ x :< ImportUPF var
 
 parseImportQualified :: TelomareParser AnnotatedUPT
 parseImportQualified = do
-  x <- getLineColumn
+  x <- getSourceLoc
   reserved "import" <* scn
   reserved "qualified" <* scn
   m <- identifier <* scn
@@ -463,7 +490,7 @@ parseAssignmentEntries = do
 parseTopLevelWithExtraModuleBindings :: [(String, AnnotatedUPT)]
                                      -> TelomareParser AnnotatedUPT
 parseTopLevelWithExtraModuleBindings lst = do
-  x <- getLineColumn
+  x <- getSourceLoc
   bindingList <- parseAssignmentEntries
   case lookup "main" bindingList of
     Just m  -> pure $ x :< LetUPF (lst <> bindingList) m

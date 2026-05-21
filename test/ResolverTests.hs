@@ -244,7 +244,7 @@ containsTHash = \case
 onlyHashUPsChanged :: Term2' -> Bool
 onlyHashUPsChanged term2 = all (isHash . fst) diffList where
   diffList :: [(Term2', Term2')]
-  diffList = diffTerm2 (term2, forget . generateAllHashes . tag DummyLoc $ term2)
+  diffList = diffTerm2 (term2, forget . generateAllHashes . tag UnknownLoc $ term2)
   isHash :: Term2' -> Bool
   isHash = \case
     THash _ -> True
@@ -260,7 +260,7 @@ noDups = not . f []
 
 allHashesToTerm2 :: Term2' -> [Term2']
 allHashesToTerm2 term2 =
-  let term2WithoutTHash = forget . generateAllHashes . tag DummyLoc $ term2
+  let term2WithoutTHash = forget . generateAllHashes . tag UnknownLoc $ term2
       interm :: (Term2', Term2') -> [Term2']
       interm = \case
         (THash _ , x) -> [x]

@@ -54,6 +54,15 @@ unitTests = testGroup "Unit tests"
           errorOffset (NE.head $ bundleErrors bundle) >= 0 @?= True
           null (errorBundlePretty bundle) @?= False
         Right _     -> assertFailure "expected parse error"
+  , testCase "variable source spans exclude trailing whitespace" $ do
+      case runParser parseVariable "" "foo   0" of
+        Left err -> assertFailure $ errorBundlePretty err
+        Right (SourceLoc span :< VarUPF "foo") -> do
+          sourcePositionLine (sourceSpanStart span) @?= 1
+          sourcePositionColumn (sourceSpanStart span) @?= 1
+          sourcePositionLine (sourceSpanEnd span) @?= 1
+          sourcePositionColumn (sourceSpanEnd span) @?= 4
+        Right parsed -> assertFailure $ "unexpected parse result: " <> show parsed
   , testCase "test function applied to a string that has whitespaces in both sides inside a structure" $ do
       res1 <- parseSuccessful parseLongExpr "(foo \"woops\" , 0)"
       res2 <- parseSuccessful parseLongExpr "(foo \"woops\" )"

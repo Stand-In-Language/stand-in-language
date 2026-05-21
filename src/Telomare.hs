@@ -444,9 +444,7 @@ instance Validity SourceSpan
 instance GenValid SourceSpan
 
 data LocTag
-  = DummyLoc
-  | Loc Int Int
-  | SourceLoc SourceSpan
+  = SourceLoc SourceSpan
   | GeneratedLoc String (Maybe LocTag)
   | BuiltinLoc String
   | RuntimeLoc
@@ -459,7 +457,6 @@ instance GenValid LocTag
 
 locStartLineColumn :: LocTag -> Maybe (Int, Int)
 locStartLineColumn = \case
-  Loc line column -> Just (line, column)
   SourceLoc span ->
     let start = sourceSpanStart span
     in Just (sourcePositionLine start, sourcePositionColumn start)
@@ -479,7 +476,6 @@ renderLocTagVerbose loc = case (loc, renderLocTag loc) of
   (RuntimeLoc, _)                        -> "runtime value"
   (DecompiledLoc, _)                     -> "decompiled value"
   (UnknownLoc, _)                        -> "unknown location"
-  (DummyLoc, _)                          -> "unknown location"
   (_, Just rendered)                     -> rendered
   (_, Nothing)                           -> "unknown location"
 
@@ -998,20 +994,21 @@ instance TelomareLike (ExprT a) where
 telomareToFragmap :: IExpr -> Map FragIndex (Cofree (FragExprF a) LocTag)
 telomareToFragmap expr = Map.insert (FragIndex 0) bf m where
     (bf, (_,m)) = State.runState (convert expr) (FragIndex 1, Map.empty)
+    runtime = RuntimeLoc
     convert = \case
-      Zero -> pure $ DummyLoc :< ZeroFragF
-      Pair a b -> (\x y -> DummyLoc :< PairFragF x y) <$> convert a <*> convert b
-      Env -> pure $ DummyLoc :< EnvFragF
-      SetEnv x -> (\y -> DummyLoc :< SetEnvFragF y) <$> convert x
+      Zero -> pure $ runtime :< ZeroFragF
+      Pair a b -> (\x y -> runtime :< PairFragF x y) <$> convert a <*> convert b
+      Env -> pure $ runtime :< EnvFragF
+      SetEnv x -> (\y -> runtime :< SetEnvFragF y) <$> convert x
       Defer x -> do
         bx <- convert x
         (fi@(FragIndex i), fragMap) <- State.get
         State.put (FragIndex (i + 1), Map.insert fi bx fragMap)
-        pure $ DummyLoc :< DeferFragF fi
-      Gate l r -> (\x y -> DummyLoc :< GateFragF x y) <$> convert l <*> convert r
-      PLeft x -> (\y -> DummyLoc :< LeftFragF y) <$> convert x
-      PRight x -> (\y -> DummyLoc :< RightFragF y) <$> convert x
-      Trace -> pure $ DummyLoc :< TraceFragF
+        pure $ runtime :< DeferFragF fi
+      Gate l r -> (\x y -> runtime :< GateFragF x y) <$> convert l <*> convert r
+      PLeft x -> (\y -> runtime :< LeftFragF y) <$> convert x
+      PRight x -> (\y -> runtime :< RightFragF y) <$> convert x
+      Trace -> pure $ runtime :< TraceFragF
 
 fragmapToTelomare :: Map FragIndex (FragExpr a) -> Maybe IExpr
 fragmapToTelomare fragMap = convert (rootFrag fragMap) where
