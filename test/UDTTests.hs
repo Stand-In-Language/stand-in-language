@@ -12,6 +12,7 @@ import Data.Bifunctor (Bifunctor (first))
 import Data.List (isInfixOf)
 import Data.Ratio
 import Debug.Trace
+import NatUDTTests (natUDTTests)
 import PrettyPrint
 import qualified System.IO.Strict as Strict
 import Telomare
@@ -21,7 +22,7 @@ import Telomare.Parser (AnnotatedUPT, TelomareParser, parseLongExpr,
                         parsePrelude)
 import Telomare.Possible (SizingSettings (SizingSettings))
 import Telomare.PossibleData (CompiledExpr)
-import Telomare.Resolver (process)
+import Telomare.Resolver (process, pruneBindings)
 import Telomare.RunTime (simpleEval)
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -33,11 +34,12 @@ main :: IO ()
 main = defaultMain tests
 
 tests :: TestTree
-tests = testGroup "Arithmetic Tests" [ unitTestsNatArithmetic
-                                     , unitTestsRatArithmetic
-                                     , qcPropsNatArithmetic
-                                     , qcPropsRatArithmetic
-                                     ]
+tests = testGroup "UDT Tests" [ unitTestsNatArithmetic
+                              , unitTestsRatArithmetic
+                              , qcPropsNatArithmetic
+                              , qcPropsRatArithmetic
+                              , natUDTTests
+                              ]
 
 maybeToRight :: Maybe a -> Either EvalError a
 maybeToRight (Just x) = Right x
@@ -61,7 +63,7 @@ evalExprString input = do
   case parseResult of
     Left err -> pure $ Left (errorBundlePretty err)
     Right aupt -> do
-      let term = DummyLoc :< LetUPF preludeBindings aupt
+      let term = DummyLoc :< LetUPF (pruneBindings aupt preludeBindings) aupt
           compile' :: Term3 -> Either EvalError CompiledExpr
           compile' = compile (DebugSizing (SizingSettings 255 False)) runStaticChecks
       case first RE (process term) >>= compile' of

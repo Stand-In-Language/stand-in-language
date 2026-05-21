@@ -73,9 +73,10 @@ findInts anno = cata alg where
   alg :: Base Pattern [AnnotatedUPT -> AnnotatedUPT]
       -> [AnnotatedUPT -> AnnotatedUPT]
   alg = \case
-    PatternPairF x y -> ((. (anno :< ) . LeftUPF) <$> x) <> ((. (anno :< ) . RightUPF) <$> y)
-    PatternIntF x    -> [id]
-    _                -> []
+    PatternPairF x y      -> ((. (anno :< ) . LeftUPF) <$> x) <> ((. (anno :< ) . RightUPF) <$> y)
+    PatternIntF x         -> [id]
+    PatternAnnotatedF x _ -> x
+    _                     -> []
 
 -- | Finds all PatternString leaves returning "directions" to these leaves through pairs
 -- in the form of a combination of RightUP and LeftUP from the root
@@ -86,9 +87,10 @@ findStrings anno = cata alg where
   alg :: Base Pattern [AnnotatedUPT -> AnnotatedUPT]
       -> [AnnotatedUPT -> AnnotatedUPT]
   alg = \case
-    PatternPairF x y -> ((. (anno :< ) . LeftUPF) <$> x) <> ((. (anno :< ) . RightUPF) <$> y)
-    PatternStringF x -> [id]
-    _                -> []
+    PatternPairF x y      -> ((. (anno :< ) . LeftUPF) <$> x) <> ((. (anno :< ) . RightUPF) <$> y)
+    PatternStringF x      -> [id]
+    PatternAnnotatedF x _ -> x
+    _                     -> []
 
 fitPatternVarsToCasedUPT :: Pattern -> AnnotatedUPT -> AnnotatedUPT
 fitPatternVarsToCasedUPT p aupt@(anno :< _) = applyVars2UPT varsOnUPT $ pattern2UPT anno p where
@@ -114,6 +116,40 @@ varsUPT = cata alg where
   del :: String -> Set String -> Set String
   del n x = if Set.member n x then Set.delete n x else x
 
+-- |Like 'varsUPT' but also descends into 'Pattern' type annotations so that
+-- names referenced via @: T@ patterns (e.g. UDT validators) are included.
+freeVarsDeep :: UnprocessedParsedTerm -> Set String
+freeVarsDeep = cata alg where
+  alg :: Base UnprocessedParsedTerm (Set String) -> Set String
+  alg (VarUPF n)           = Set.singleton n
+  alg (LamUPF n body)      = Set.delete n body
+  alg (CaseUPF scrut alts) = scrut <> foldMap (\(p, body) -> patternRefs p <> body) alts <> caseRefs
+    where
+      caseRefs = Set.fromList ["and", "listEqual", "foldl", "abort"]
+  alg e                    = F.fold e
+
+  patternRefs :: Pattern -> Set String
+  patternRefs = cata palg where
+    palg :: Base Pattern (Set String) -> Set String
+    palg (PatternAnnotatedF inner ty) = inner <> freeVarsDeep ty
+    palg e                            = F.fold e
+
+-- |Keep only bindings transitively reachable from @root@. Unreachable
+-- bindings are skipped by 'process' and 'compile', giving large speedups
+-- when a snippet only uses a small slice of a large Prelude+UDT environment.
+--
+-- 'freeVarsDeep' also accounts for names that 'removeCaseUPs' (called
+-- inside 'process') injects into case alternatives: @and@, @listEqual@,
+-- @foldl@, @abort@. Without these the pruned LetUPF would fail with
+-- MissingDefinitions after case expansion.
+pruneBindings :: AnnotatedUPT -> [(String, AnnotatedUPT)] -> [(String, AnnotatedUPT)]
+pruneBindings root bs = filter ((`Set.member` reachable) . fst) bs
+  where
+    seed      = freeVarsDeep (forget root)
+    bmap      = Map.fromList $ fmap (second (freeVarsDeep . forget)) bs
+    expand r  = r <> F.fold (Map.restrictKeys bmap r)
+    reachable = until (\s -> expand s == s) expand seed
+
 mkLambda4FreeVarUPs :: AnnotatedUPT -> AnnotatedUPT
 mkLambda4FreeVarUPs aupt@(anno :< _) = tag anno $ go upt freeVars where
   upt = forget aupt
@@ -128,9 +164,10 @@ findPatternVars anno = cata alg where
   alg :: Base Pattern (Map String (AnnotatedUPT -> AnnotatedUPT))
       -> Map String (AnnotatedUPT -> AnnotatedUPT)
   alg = \case
-    PatternPairF x y -> ((. (anno :< ). LeftUPF) <$> x) <> ((. (anno :< ). RightUPF) <$> y)
-    PatternVarF str  -> Map.singleton str id
-    _                -> Map.empty
+    PatternPairF x y      -> ((. (anno :< ). LeftUPF) <$> x) <> ((. (anno :< ). RightUPF) <$> y)
+    PatternVarF str       -> Map.singleton str id
+    PatternAnnotatedF x _ -> x
+    _                     -> Map.empty
 
 -- TODO: Annotate without so much fuzz
 pairStructureCheck :: Pattern -> UnprocessedParsedTerm -> UnprocessedParsedTerm
@@ -145,18 +182,20 @@ pairRoute2Dirs = cata alg where
   alg :: Base Pattern [UnprocessedParsedTerm -> UnprocessedParsedTerm]
       -> [UnprocessedParsedTerm -> UnprocessedParsedTerm]
   alg = \case
-    PatternPairF x y -> [id] <> ((. LeftUP) <$> x) <> ((. RightUP) <$> y)
-    _                -> []
+    PatternPairF x y      -> [id] <> ((. LeftUP) <$> x) <> ((. RightUP) <$> y)
+    PatternAnnotatedF x _ -> x
+    _                     -> []
 
 pattern2UPT :: LocTag -> Pattern -> AnnotatedUPT
 pattern2UPT anno = tag anno . cata alg where
   alg :: Base Pattern UnprocessedParsedTerm -> UnprocessedParsedTerm
   alg = \case
-    PatternPairF x y   -> PairUP x y
-    PatternIntF i      -> IntUP i
-    PatternStringF str -> StringUP str
-    PatternVarF str    -> IntUP 0
-    PatternIgnoreF     -> IntUP 0
+    PatternPairF x y       -> PairUP x y
+    PatternIntF i          -> IntUP i
+    PatternStringF str     -> StringUP str
+    PatternVarF str        -> IntUP 0
+    PatternIgnoreF         -> IntUP 0
+    PatternAnnotatedF x _  -> x
       -- Note that "__ignore" is a special variable name and not accessible to users because
       -- parsing of VarUPs doesn't allow variable names to start with `_`
 
@@ -369,15 +408,21 @@ validateVariables term =
                 [(name, Set.fromList $ getDirectDeps def) | (name, def) <- preludeMap]
 
               -- Get direct variable dependencies (only those defined in this let block)
+              -- Uses Set to properly handle lambda-bound variable shadowing
+              letBindingNames = Set.fromList (fmap fst preludeMap)
               getDirectDeps :: AnnotatedUPT -> [String]
-              getDirectDeps = cata alg where
-                alg :: CofreeF UnprocessedParsedTermF LocTag [String] -> [String]
+              getDirectDeps = Set.toList . cata alg where
+                alg :: CofreeF UnprocessedParsedTermF LocTag (Set String) -> Set String
                 alg = \case
-                    (_ C.:< VarUPF n) -> [n | any ((== n) . fst) preludeMap]
-                    (_ C.:< LamUPF _ body) -> body
+                    (_ C.:< VarUPF n) -> if Set.member n letBindingNames then Set.singleton n else Set.empty
+                    (_ C.:< LamUPF v body) -> Set.delete v body
+                    (_ C.:< LetUPF binds body) ->
+                      let boundNames = Set.fromList (fmap fst binds)
+                          bindDeps = foldMap snd binds
+                      in Set.union (bindDeps Set.\\ boundNames) (body Set.\\ boundNames)
                     (_ C.:< ITEUPF i t e) -> i <> t <> e
                     (_ C.:< PairUPF a b) -> a <> b
-                    (_ C.:< ListUPF l) -> concat l
+                    (_ C.:< ListUPF l) -> F.fold l
                     (_ C.:< AppUPF f x) -> f <> x
                     (_ C.:< UnsizedRecursionUPF t r b) -> t <> r <> b
                     (_ C.:< LeftUPF x) -> x
@@ -385,7 +430,7 @@ validateVariables term =
                     (_ C.:< TraceUPF x) -> x
                     (_ C.:< CheckUPF cf x) -> cf <> x
                     (_ C.:< HashUPF x) -> x
-                    _ -> []
+                    _ -> Set.empty
 
           -- Check if original order works (no forward references)
           let originalOrder = fmap fst preludeMap
@@ -734,7 +779,7 @@ resolveMain allModules mainModule = case lookup mainModule allModules of
                   maybeMain = lookup "main" resolved
               in case maybeMain of
                    Nothing -> Left $ NoMainFunction mainModule
-                   Just x  -> Right $ DummyLoc :< LetUPF resolved x
+                   Just x  -> Right $ DummyLoc :< LetUPF (pruneBindings x resolved) x
 
 main2Term3 :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -- ^Modules: [(ModuleName, [Either Import (VariableName, BindedUPT)])]
            -> String -- ^Module name with main

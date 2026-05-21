@@ -6,9 +6,10 @@ module Telomare.Parser where
 
 import Control.Comonad.Cofree (Cofree (..), unwrap)
 import Control.Lens.Plated (Plated (..))
-import Control.Monad (void)
+import Control.Monad (join, void)
 import Control.Monad.State (State)
 import Data.Bifunctor (Bifunctor (first, second), bimap)
+import Data.Char (isUpper)
 import Data.Functor (($>))
 import Data.Functor.Foldable (Base, cata, para)
 import Data.Functor.Foldable.TH (MakeBaseFunctor (makeBaseFunctor))
@@ -33,6 +34,10 @@ import Text.Read (readMaybe)
 import Text.Show.Deriving (deriveShow1)
 
 type AnnotatedUPT = Cofree UnprocessedParsedTermF LocTag
+
+data AssignmentEntry
+  = SingleAssignment String AnnotatedUPT
+  | ListAssignment LocTag [String] AnnotatedUPT
 
 instance Plated UnprocessedParsedTerm where
   plate f = \case
@@ -195,6 +200,15 @@ parseHash = do
   upt <- parseSingleExpr
   pure $ x :< HashUPF upt
 
+parseListAssignment :: TelomareParser AssignmentEntry
+parseListAssignment = do
+  x <- getLineColumn
+  names :: [String] <- (brackets (commaSep (scn *> identifier <* scn)) <* scn)
+                       <?> "list assignment names"
+  (scn *> symbol "=") <?> "list assignment ="
+  expr <- (scn *> parseLongExpr <* scn) <?> "list assignment body"
+  pure $ ListAssignment x names expr
+
 parseCase :: TelomareParser AnnotatedUPT
 parseCase = do
   x <- getLineColumn
@@ -214,6 +228,7 @@ parseSingleCase = do
 parsePattern :: TelomareParser Pattern
 parsePattern = choice $ try <$> [ parsePatternIgnore
                                 , parsePatternVar
+                                , parsePatternAnnotated
                                 , parsePatternString
                                 , parsePatternInt
                                 , parsePatternPair
@@ -233,10 +248,28 @@ parsePatternString :: TelomareParser Pattern
 parsePatternString = PatternString <$> (char '"' >> manyTill L.charLiteral (char '"'))
 
 parsePatternVar :: TelomareParser Pattern
-parsePatternVar = PatternVar <$> identifier
+parsePatternVar = PatternVar <$> (identifier <* scn)
+-- Pattern annotations are only accepted in parenthesised form
+-- (parsePatternAnnotated). Allowing a bare @v : T@ here would shadow
+-- the parenthesised path because parsePatternVar runs first in
+-- parsePattern's @choice@.
+
 
 parsePatternIgnore :: TelomareParser Pattern
 parsePatternIgnore = symbol "_" >> pure PatternIgnore
+
+-- |Parse a parenthesised pattern with a type/refinement annotation,
+-- e.g. @(aa : Nat)@. The stored typeExpr is the raw check function;
+-- 'buildMultiLambda' applies it to the bound value and uses the result as
+-- the case scrutinee, forcing runtime validation before destructuring.
+parsePatternAnnotated :: TelomareParser Pattern
+parsePatternAnnotated = parens body <?> "annotated pattern"
+  where
+    body = do
+      p <- (scn *> parsePattern <* scn) <?> "pattern before ':'"
+      symbol ":" <* scn
+      typeExpr <- (parseLongExpr <* scn) <?> "type expression after ':'"
+      pure $ PatternAnnotated p (forget typeExpr)
 
 -- |Parse a single expression.
 parseSingleExpr :: TelomareParser AnnotatedUPT
@@ -262,16 +295,81 @@ parseApplied = do
       pure $ foldl (\a b -> x :< AppUPF a b) f args
     _ -> fail "expected expression"
 
+-- |Generate a fresh-looking variable name from a pattern's shape, used
+-- as the name of the lambda parameter that 'buildMultiLambda' introduces
+-- before destructuring.
+genPatternVarName :: Pattern -> String
+genPatternVarName = ("generatedVar" <>)
+                  . filter (\x -> x /= '\"'
+                               && x /= ' '
+                               && x /= '('
+                               && x /= ')'
+                               && x /= '['
+                               && x /= ']')
+                  . show
+
+-- |Pick the lambda-bound variable name for a pattern: use the user's name
+-- for a 'PatternVar', otherwise generate one.
+lambdaVarName :: Pattern -> String
+lambdaVarName = \case
+  PatternVar str -> str
+  p              -> genPatternVarName p
+
+-- |Build a multi-argument lambda whose destructuring all happens INSIDE
+-- the innermost lambda body. For @\\p1 p2 p3 -> body@ this emits
+--
+-- > \\v1 -> \\v2 -> \\v3 -> applyDestructure p3 v3
+-- >                                 (applyDestructure p2 v2
+-- >                                   (applyDestructure p1 v1 body))
+--
+-- where @applyDestructure p v body@ is @body@ when @p@ is a 'PatternVar'
+-- (no destructure needed) and a @case v of p -> body@ otherwise.
+--
+-- This avoids putting a function-valued lambda inside a case body, which
+-- would cause the case-rewrite to type-mismatch against the (Pair-typed)
+-- abort fallback.
+buildMultiLambda :: LocTag -> [Pattern] -> AnnotatedUPT -> AnnotatedUPT
+buildMultiLambda lt patterns body =
+  let varNames = lambdaVarName <$> patterns
+      destructured = foldr applyDestructure body (zip patterns varNames)
+      lamWrapped = foldr (\v inner -> lt :< LamUPF v inner) destructured varNames
+  in lamWrapped
+  where
+    applyDestructure :: (Pattern, String) -> AnnotatedUPT -> AnnotatedUPT
+    applyDestructure (p, varName) inner =
+      let bound = lt :< VarUPF varName
+          abort = lt :< AppUPF
+                    (lt :< VarUPF "abort")
+                    (lt :< StringUPF "buildMultiLambda: pattern not reached")
+      in case p of
+           PatternVar _ -> inner
+           PatternAnnotated innerPat typeExpr ->
+             -- Use the validator result as the case scrutinee instead of
+             -- CheckUPF: hash-based UDT validators are runtime values that
+             -- the static refinement analyzer cannot symbolically evaluate.
+             let tyApplied = lt :< AppUPF (tag lt typeExpr) bound
+             in lt :< CaseUPF tyApplied [(innerPat, inner)]
+           _ ->
+             lt :< CaseUPF bound
+               [ (p, inner)
+               , (PatternIgnore, abort)
+               ]
+
+-- |Build a single-argument lambda with optional destructuring.
+-- Kept as a thin wrapper around 'buildMultiLambda' so existing callers
+-- that work pattern-at-a-time continue to function.
+makeLambda :: LocTag -> Pattern -> AnnotatedUPT -> AnnotatedUPT
+makeLambda lt p = buildMultiLambda lt [p]
+
 -- |Parse lambda expression.
 parseLambda :: TelomareParser AnnotatedUPT
 parseLambda = do
   x <- getLineColumn
   symbol "\\" <* scn
-  variables <- some identifier <* scn
+  variables <- some parsePattern <* scn
   symbol "->" <* scn
-  -- TODO make sure lambda names don't collide with bound names
   term1expr <- parseLongExpr <* scn
-  pure $ foldr (\str upt -> x :< LamUPF str upt) term1expr variables
+  pure $ buildMultiLambda x variables term1expr
 
 -- |Parser that fails if indent level is not `pos`.
 parseSameLvl :: Pos -> TelomareParser a -> TelomareParser a
@@ -279,14 +377,17 @@ parseSameLvl pos parser = do
   lvl <- L.indentLevel
   if pos == lvl then parser else fail "Expected same indentation."
 
--- |Parse let expression.
+-- |Parse let expression. Accepts both plain @name = value@ assignments
+-- and list assignments @[n1, n2, ...] = value@. UDT declarations are
+-- a specialized list-assignment convention.
 parseLet :: TelomareParser AnnotatedUPT
 parseLet = do
   x <- getLineColumn
   reserved "let" <* scn
   lvl <- L.indentLevel
-  bindingsList <- manyTill (parseSameLvl lvl parseAssignment) (reserved "in") <* scn
+  entries <- manyTill (parseSameLvl lvl parseAssignmentEntry) (reserved "in") <* scn
   expr <- parseLongExpr <* scn
+  let bindingsList = entries >>= expandAssignmentEntry
   pure $ x :< LetUPF bindingsList expr
 
 -- |Parse long expression.
@@ -343,19 +444,172 @@ parseImportQualified = do
   qualifier <- identifier <* scn
   pure $ x :< ImportQualifiedUPF qualifier m
 
--- |Parse top level expressions.
+-- |A single top-level entry is either a name=value assignment or a list
+-- assignment `[n1, n2, …] = expr`. UDTs are recognized as a specialized
+-- uppercase-lambda list assignment during expansion.
+parseAssignmentEntry :: TelomareParser AssignmentEntry
+parseAssignmentEntry =
+  (uncurry SingleAssignment <$> parseAssignment)
+    <|> parseListAssignment
+
+-- |Parse assignments, expanding list assignments into their per-slot bindings.
+parseAssignmentEntries :: TelomareParser [(String, AnnotatedUPT)]
+parseAssignmentEntries = do
+  entries <- scn *> many parseAssignmentEntry <* eof
+  pure (expandAssignmentEntry =<< entries)
+
+-- |Parse top level expressions. Fails with a megaparsec error if the
+-- module has no @main@ definition, instead of crashing with 'fromJust'.
 parseTopLevelWithExtraModuleBindings :: [(String, AnnotatedUPT)]
                                      -> TelomareParser AnnotatedUPT
 parseTopLevelWithExtraModuleBindings lst = do
   x <- getLineColumn
-  bindingList <- scn *> many parseAssignment <* eof
-  pure $ x :< LetUPF (lst <> bindingList) (fromJust $ lookup "main" bindingList)
+  bindingList <- parseAssignmentEntries
+  case lookup "main" bindingList of
+    Just m  -> pure $ x :< LetUPF (lst <> bindingList) m
+    Nothing -> fail "missing 'main' definition"
 
-parseDefinitions :: TelomareParser (AnnotatedUPT -> AnnotatedUPT)
-parseDefinitions = do
-  x <- getLineColumn
-  bindingList <- scn *> many parseAssignment <* eof
-  pure $ \y -> x :< LetUPF bindingList y
+expandAssignmentEntry :: AssignmentEntry -> [(String, AnnotatedUPT)]
+expandAssignmentEntry = \case
+  SingleAssignment name body -> [(name, body)]
+  ListAssignment loc names body
+    | isUDTAssignment names body -> expandUDT (loc :< UDTUPF names body)
+    | otherwise                 -> expandPlainListAssignment loc names body
+
+isUDTAssignment :: [String] -> AnnotatedUPT -> Bool
+isUDTAssignment (name:_) (_ :< LamUPF _ _) = case name of
+  firstChar:_ -> isUpper firstChar
+  _           -> False
+isUDTAssignment _ _ = False
+
+expandPlainListAssignment :: LocTag -> [String] -> AnnotatedUPT -> [(String, AnnotatedUPT)]
+expandPlainListAssignment loc names body =
+  case listAssignmentSlots body of
+    Just (slots, wrapBody)
+      | length names == length slots -> zip names (wrapBody <$> slots)
+      | otherwise -> error
+        $ "list assignment arity mismatch: " <> show (length names)
+        <> " names for " <> show (length slots) <> " values"
+    Nothing ->
+      let intermediate = listAssignmentIntermediate loc
+          source = loc :< VarUPF intermediate
+          mkAccessorBinding idx name = (name, accessAt loc idx source)
+      in (intermediate, body) : zipWith mkAccessorBinding [0 ..] names
+
+-- |Find a final list literal in a plain list assignment, preserving lambdas
+-- and lets around each extracted slot. This lets `[f, g] = \x -> [...]`
+-- bind `f` and `g` as functions rather than trying to project from a lambda.
+listAssignmentSlots :: AnnotatedUPT -> Maybe ([AnnotatedUPT], AnnotatedUPT -> AnnotatedUPT)
+listAssignmentSlots = go where
+  go (l :< ListUPF xs) = Just (xs, id)
+  go (l :< LetUPF binds inner) = do
+    (xs, wrapBody) <- go inner
+    pure (xs, \expr -> l :< LetUPF binds (wrapBody expr))
+  go (l :< LamUPF var inner) = do
+    (xs, wrapBody) <- go inner
+    pure (xs, \expr -> l :< LamUPF var (wrapBody expr))
+  go _ = Nothing
+
+listAssignmentIntermediate :: LocTag -> String
+listAssignmentIntermediate = \case
+  Loc line column -> "__list_assignment_" <> show line <> "_" <> show column
+  DummyLoc        -> "__list_assignment"
+
+accessAt :: LocTag -> Int -> AnnotatedUPT -> AnnotatedUPT
+accessAt loc 0 e = loc :< LeftUPF e
+accessAt loc n e = loc :< LeftUPF (iterate (\x -> loc :< RightUPF x) e !! n)
+
+-- |Expand a UDT declaration into a list of top-level bindings.
+--
+-- If the UDT body is a lambda @\\h -> ...@ (the canonical UDT idiom),
+-- the expansion automatically wraps the core type representation with
+-- the hash-tag mechanism (@wrapper (# wrapper)@). The shared core tuple
+-- contains only the generated hash, the auto-generated validator, and
+-- the first two user slots (constructor/extractor by convention).
+-- Remaining slots are hoisted to normal top-level bindings so using a
+-- constructor or extractor does not force every operation through sizing.
+--
+-- > [T, mk, unT, op1, ...] = \\h -> [ mkBody, unTBody, op1Body, ... ]
+--
+-- becomes (conceptually):
+--
+-- > __udt_T = wrapper (# wrapper)
+-- >   where wrapper = \\h -> let T = validatorFor T h in [h, T, mkBody, unTBody]
+-- > __udt_T_hash = left __udt_T
+-- > T   = left (right __udt_T)   -- validator, usable as `(x : T)` outside
+-- > mk  = left (right (right __udt_T))
+-- > unT = left (right (right (right __udt_T)))
+-- > op1 = let h = __udt_T_hash; T = validatorFor T h in op1Body
+--
+-- Non-lambda list assignments use 'expandPlainListAssignment' instead;
+-- this fallback is kept for direct/internal callers of 'expandUDT'.
+expandUDT :: AnnotatedUPT -> [(String, AnnotatedUPT)]
+expandUDT (loc :< UDTUPF names@(tname:_) body) =
+  case body of
+    (_ :< LamUPF hParam inner) ->
+      let (slots, wrapBody) = udtSlots tname inner
+          (coreSlots, hoistedSlots) = splitAt 2 slots
+          coreNames = take (1 + length coreSlots) names
+          hoistedNames = drop (1 + length coreSlots) names
+          validator    = autoValidator loc tname hParam
+          intermediate = "__udt_" <> tname
+          hashName     = intermediate <> "_hash"
+          hashVar      = loc :< VarUPF hashName
+          coreList     = loc :< ListUPF ((loc :< VarUPF hParam)
+                                      : (loc :< VarUPF tname)
+                                      : coreSlots)
+          wrappedInner = loc :< LetUPF [(tname, validator)] (wrapBody coreList)
+          wrapper      = loc :< LamUPF hParam wrappedInner
+          udtTuple     = loc :< AppUPF wrapper (loc :< HashUPF wrapper)
+          hashBinding  = (hashName, accessAt loc 0 (loc :< VarUPF intermediate))
+          mkAccessorBinding idx name =
+            (name, accessAt loc idx (loc :< VarUPF intermediate))
+          mkHoistedBinding name slot =
+            ( name
+            , loc :< LetUPF [ (hParam, hashVar)
+                            , (tname, validator)
+                            ]
+                (wrapBody slot)
+            )
+      in (intermediate, udtTuple)
+       : hashBinding
+       : zipWith mkAccessorBinding [1 ..] coreNames
+      <> zipWith mkHoistedBinding hoistedNames hoistedSlots
+    _ ->
+      zipWith (\name idx -> (name, accessAt loc idx body)) names [0 ..]
+expandUDT _ = []
+
+-- |Find the final list literal in a UDT body and return a wrapper that
+-- reapplies any surrounding lets. Hoisted methods get the same let
+-- context as the core tuple, but not the sibling method bodies.
+udtSlots :: String -> AnnotatedUPT -> ([AnnotatedUPT], AnnotatedUPT -> AnnotatedUPT)
+udtSlots tname = go where
+  go (l :< ListUPF xs) = (xs, id)
+  go (l :< LetUPF binds inner) =
+    let (xs, wrapBody) = go inner
+    in (xs, \expr -> l :< LetUPF binds (wrapBody expr))
+  go (_ :< other) = error
+    $ "expandUDT: UDT body for [" <> tname
+    <> "] must reduce to a list literal; got: " <> show (void other)
+
+-- |Auto-generated validator: @\\v -> if dEqual (left v) <h> then right v else abort \"not <T>\"@.
+-- Returns the validated payload on success; aborts on failure.
+-- Annotated pattern lambdas use the validator's result as the case
+-- scrutinee, so destructuring works on a validated value without an
+-- extra ITE.
+autoValidator :: LocTag -> String -> String -> AnnotatedUPT
+autoValidator loc tname hParam =
+  loc :< LamUPF "__udt_v"
+    (loc :< ITEUPF
+       (loc :< AppUPF
+          (loc :< AppUPF
+             (loc :< VarUPF "dEqual")
+             (loc :< LeftUPF (loc :< VarUPF "__udt_v")))
+          (loc :< VarUPF hParam))
+       (loc :< RightUPF (loc :< VarUPF "__udt_v"))
+        (loc :< AppUPF
+           (loc :< VarUPF "abort")
+           (loc :< StringUPF ("not " <> tname))))
 
 -- |Helper function to test parsers without a result.
 runTelomareParser_ :: Show a => TelomareParser a -> String -> IO ()
@@ -386,20 +640,21 @@ runParseLongExpr str = bimap errorBundlePretty forget' $ runParser parseLongExpr
     forget' = forget
 
 parsePrelude :: String -> Either String [(String, AnnotatedUPT)]
-parsePrelude str = let result = runParser (scn *> many parseAssignment <* eof) "" str
+parsePrelude str = let result = runParser parseAssignmentEntries "" str
                     in first errorBundlePretty result
 
-parseImportOrAssignment :: TelomareParser (Either AnnotatedUPT (String, AnnotatedUPT))
+-- |One parser step inside a module: returns a list because list assignments
+-- expand into multiple (name, value) bindings.
+parseImportOrAssignment :: TelomareParser [Either AnnotatedUPT (String, AnnotatedUPT)]
 parseImportOrAssignment = do
-  x <- getLineColumn
   maybeImport <- optional $ scn *> (try parseImportQualified <|> try parseImport) <* scn
   case maybeImport of
     Nothing -> do
-      maybeAssignment <- optional $ scn *> try parseAssignment <* scn
-      case maybeAssignment of
-        Nothing -> fail "Expected either an import statement or an assignment"
-        Just a  -> pure $ Right a
-    Just imp -> pure $ Left imp
+      maybeEntry <- optional $ scn *> try parseAssignmentEntry <* scn
+      case maybeEntry of
+        Nothing    -> fail "Expected either an import statement or an assignment"
+        Just entry -> pure (Right <$> expandAssignmentEntry entry)
+    Just imp -> pure [Left imp]
 
 parseWithPrelude :: [(String, AnnotatedUPT)]   -- ^Prelude
                  -> String                     -- ^Raw string to be parsed
@@ -407,7 +662,7 @@ parseWithPrelude :: [(String, AnnotatedUPT)]   -- ^Prelude
 parseWithPrelude prelude str = first errorBundlePretty $ runParser (parseTopLevelWithExtraModuleBindings prelude) "" str
 
 parseModule :: String -> Either String [Either AnnotatedUPT (String, AnnotatedUPT)]
-parseModule str = let result = runParser (scn *> many parseImportOrAssignment <* eof) "" str
+parseModule str = let result = runParser (concat <$> (scn *> many parseImportOrAssignment <* eof)) "" str
                   in first errorBundlePretty result
 
 -- |Parse either a single expression or top level definitions defaulting to the `main` definition.

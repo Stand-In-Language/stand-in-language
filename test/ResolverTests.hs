@@ -336,6 +336,12 @@ unitTests = testGroup "Unit tests"
   , testCase "Ad hoc user defined types failure" $ do
       res <- testUserDefAdHocTypes userDefAdHocTypesFailure
       res @?= "MyInt must not be 0\ndone"
+  , testCase "plain top-level list assignment" $ do
+      res <- testUserDefAdHocTypes topLevelListAssignment
+      res @?= "right\ndone"
+  , testCase "lowercase lambda list assignment is not a UDT" $ do
+      res <- testUserDefAdHocTypes lambdaListAssignment
+      res @?= "kept\ndone"
   , testCase "test tictactoe.tel" $ do
       res <- tictactoe
       res @?= fullRunTicTacToeString
@@ -465,28 +471,36 @@ testUserDefAdHocTypes input = do
 
 userDefAdHocTypesSuccess = unlines
   [ "import Prelude"
-  , "MyInt = let wrapper = \\h -> ( \\i -> if not i"
-  , "                                      then \"MyInt must not be 0\""
-  , "                                      else  i"
-  , "                             , \\i -> if dEqual (left i) h"
-  , "                                      then 0"
-  , "                                      else \"expecting MyInt\""
-  , "                             )"
-  , "        in wrapper (# wrapper)"
-  , "main = \\i -> ((left MyInt) 8, 0)"
+  , "[MyInt, mkMyInt, unMyInt] = \\h ->"
+  , "  [ \\i -> if not i"
+  , "          then \"MyInt must not be 0\""
+  , "          else (h, i)"
+  , "  , \\(i : MyInt) -> i"
+  , "  ]"
+  , "main = \\i -> (unMyInt (mkMyInt 8), 0)"
   ]
 
 userDefAdHocTypesFailure = unlines
   [ "import Prelude"
-  , "MyInt = let wrapper = \\h -> ( \\i -> if not i"
-  , "                                      then \"MyInt must not be 0\""
-  , "                                      else  i"
-  , "                             , \\i -> if dEqual (left i) h"
-  , "                                      then 0"
-  , "                                      else \"expecting MyInt\""
-  , "                             )"
-  , "        in wrapper (# wrapper)"
-  , "main = \\i -> ((left MyInt) 0, 0)"
+  , "[MyInt, mkMyInt, unMyInt] = \\h ->"
+  , "  [ \\i -> if not i"
+  , "          then \"MyInt must not be 0\""
+  , "          else (h, i)"
+  , "  , \\(i : MyInt) -> i"
+  , "  ]"
+  , "main = \\i -> (mkMyInt 0, 0)"
+  ]
+
+topLevelListAssignment = unlines
+  [ "import Prelude"
+  , "[a, b] = [\"left\", \"right\"]"
+  , "main = \\i -> (b, 0)"
+  ]
+
+lambdaListAssignment = unlines
+  [ "import Prelude"
+  , "[f, g] = \\x -> [\\y -> x, \\z -> z]"
+  , "main = \\i -> (f \"kept\" 0, 0)"
   ]
 
 hashtest0 = unlines ["let wrapper = 2",
