@@ -19,8 +19,11 @@ import Data.Char (isAsciiLower, isAsciiUpper, isDigit)
 import Data.List (find, sortOn)
 import qualified Data.List.NonEmpty as NE
 import qualified Data.Map.Strict as Map
+import Data.Maybe (listToMaybe, mapMaybe)
 import qualified Data.Text as T
 import Data.Void (Void)
+import System.Directory (doesFileExist, makeAbsolute)
+import System.FilePath (takeDirectory, (<.>), (</>))
 
 import Control.Lens ((^.))
 import qualified Data.Aeson as JSON
@@ -62,7 +65,7 @@ data DocState = DocState
 type DocStore = TVar (Map.Map NormalizedUri DocState)
 
 data SymbolIndex = SymbolIndex
-  { symbolDefinitions :: Map.Map T.Text Range
+  { symbolDefinitions :: Map.Map T.Text LSPTypes.Location
   , symbolReferences  :: Map.Map T.Text [Range]
   } deriving (Eq, Show)
 
@@ -165,7 +168,7 @@ handlers gState = mconcat
   , notificationHandler SMethod_TextDocumentDidClose          $ didCloseHandler (docStore gState)
   , requestHandler     SMethod_TextDocumentSemanticTokensFull  $ semanticTokensFullHandler (docStore gState)
   , requestHandler     SMethod_TextDocumentSemanticTokensRange $ semanticTokensRangeHandler (docStore gState)
-  , requestHandler     SMethod_TextDocumentDefinition          $ definitionHandler (docStore gState)
+  , requestHandler     SMethod_TextDocumentDefinition          $ definitionHandler gState
   , requestHandler     SMethod_TextDocumentReferences          $ referencesHandler (docStore gState)
   , requestHandler     SMethod_TextDocumentCodeAction          $ codeActionHandler gState
   , requestHandler     SMethod_CodeActionResolve               $ codeActionResolveHandler gState
@@ -351,17 +354,18 @@ fallbackRange = pointRange 0 0
 diagnosticFirstLine :: String -> String
 diagnosticFirstLine = takeWhile (/= '\n')
 
-definitionHandler :: DocStore
+definitionHandler :: GlobalState
                   -> LSPMsg.TRequestMessage LSPMsg.Method_TextDocumentDefinition
                   -> (Either (LSPMsg.TResponseError LSPMsg.Method_TextDocumentDefinition)
-                           (LSPTypes.Definition LSPTypes.|? ([LSPTypes.DefinitionLink] LSPTypes.|? LSPTypes.Null))
-                      -> LspM () ())
+                            (LSPTypes.Definition LSPTypes.|? ([LSPTypes.DefinitionLink] LSPTypes.|? LSPTypes.Null))
+                       -> LspM () ())
                   -> LspM () ()
-definitionHandler docStore' req respond = do
+definitionHandler gState req respond = do
   let uri = req ^. LSP.params . LSP.textDocument . LSP.uri
       position = req ^. LSP.params . LSP.position
-  mDoc <- liftIO . atomically $ Map.lookup (toNormalizedUri uri) <$> readTVar docStore'
-  case definitionAt uri position =<< mDoc of
+  mDoc <- liftIO . atomically $ Map.lookup (toNormalizedUri uri) <$> readTVar (docStore gState)
+  mDefinition <- liftIO $ maybe (pure Nothing) (definitionAt gState uri position) mDoc
+  case mDefinition of
     Just location -> respond . Right . LSPTypes.InL . LSPTypes.Definition . LSPTypes.InL $ location
     Nothing       -> respond . Right . LSPTypes.InR . LSPTypes.InR $ LSPTypes.Null
 
@@ -384,49 +388,125 @@ referencesHandler docStore' req respond = do
 --------------------------------------------------------------------------------
 -- Source index for definition/reference requests
 
-definitionAt :: LSPTypes.Uri -> Position -> DocState -> Maybe LSPTypes.Location
-definitionAt uri position docState = do
-  parsed <- either (const Nothing) Just $ docParse docState
-  let index = buildSymbolIndex (docText docState) parsed
-  symbol <- symbolAtPosition position index
-  defRange <- Map.lookup symbol $ symbolDefinitions index
-  pure $ LSPTypes.Location uri defRange
+definitionAt :: GlobalState -> LSPTypes.Uri -> Position -> DocState -> IO (Maybe LSPTypes.Location)
+definitionAt gState uri position docState = case docParse docState of
+  Left _ -> pure Nothing
+  Right parsed -> do
+    importedDefinitions <- importedDefinitionIndex gState uri parsed
+    let currentIndex = buildSymbolIndex uri (docText docState) parsed
+        definitions = symbolDefinitions currentIndex <> importedDefinitions
+    pure $ do
+      symbol <- symbolAtPosition position currentIndex
+      Map.lookup symbol definitions
 
 referencesAt :: LSPTypes.Uri -> Bool -> Position -> DocState -> [LSPTypes.Location]
 referencesAt uri includeDeclaration position docState =
   case docParse docState of
     Left _ -> []
     Right parsed ->
-      let index = buildSymbolIndex (docText docState) parsed
+      let index = buildSymbolIndex uri (docText docState) parsed
           symbol = symbolAtPosition position index
       in case symbol of
         Nothing -> []
         Just name ->
           let refs = Map.findWithDefault [] name (symbolReferences index)
-              defs = foldMap pure $ Map.lookup name (symbolDefinitions index)
+              defs = foldMap (pure . locationRange) $ Map.lookup name (symbolDefinitions index)
               ranges = if includeDeclaration then defs <> refs else refs
           in LSPTypes.Location uri <$> ranges
+
+importedDefinitionIndex :: GlobalState -> LSPTypes.Uri -> ParseResult -> IO (Map.Map T.Text LSPTypes.Location)
+importedDefinitionIndex gState currentUri parsed = do
+  imports <- mapM (loadImportedDefinitionIndex gState currentUri) $ moduleImports parsed
+  pure . Map.unions $ imports
+
+loadImportedDefinitionIndex :: GlobalState -> LSPTypes.Uri -> ModuleImport -> IO (Map.Map T.Text LSPTypes.Location)
+loadImportedDefinitionIndex gState currentUri moduleImport = do
+  mModule <- loadImportedModule gState currentUri (importModuleName moduleImport)
+  case mModule of
+    Nothing -> pure Map.empty
+    Just (moduleUri, moduleText, moduleParsed) -> do
+      let definitions = symbolDefinitions $ buildSymbolIndex moduleUri moduleText moduleParsed
+      pure $ qualifyDefinitions moduleImport definitions
+
+qualifyDefinitions :: ModuleImport -> Map.Map T.Text LSPTypes.Location -> Map.Map T.Text LSPTypes.Location
+qualifyDefinitions moduleImport definitions = case importQualifier moduleImport of
+  Nothing        -> definitions
+  Just qualifier -> Map.mapKeys ((T.pack qualifier <> ".") <>) definitions
+
+data ModuleImport = ModuleImport
+  { importModuleName :: String
+  , importQualifier  :: Maybe String
+  } deriving (Eq, Show)
+
+moduleImports :: ParseResult -> [ModuleImport]
+moduleImports = mapMaybe $ \case
+  Left (_ :< ImportUPF moduleName) ->
+    Just $ ModuleImport moduleName Nothing
+  Left (_ :< ImportQualifiedUPF qualifier moduleName) ->
+    Just $ ModuleImport moduleName (Just qualifier)
+  _ -> Nothing
+
+loadImportedModule :: GlobalState -> LSPTypes.Uri -> String -> IO (Maybe (LSPTypes.Uri, T.Text, ParseResult))
+loadImportedModule gState currentUri moduleName = do
+  candidates <- moduleFileCandidates currentUri moduleName
+  mPath <- firstExistingFile candidates
+  case mPath of
+    Nothing -> pure Nothing
+    Just path -> do
+      absolutePath <- makeAbsolute path
+      let moduleUri = LSPTypes.filePathToUri absolutePath
+      openDocs <- readTVarIO $ docStore gState
+      case Map.lookup (toNormalizedUri moduleUri) openDocs of
+        Just docState | Right parsed <- docParse docState ->
+          pure $ Just (moduleUri, docText docState, parsed)
+        _ -> do
+          loaded <- try (readFile absolutePath) :: IO (Either IOException String)
+          pure $ case loaded of
+            Left _ -> Nothing
+            Right content -> case parseTelomareModule (T.pack content) of
+              Left _       -> Nothing
+              Right parsed -> Just (moduleUri, T.pack content, parsed)
+
+moduleFileCandidates :: LSPTypes.Uri -> String -> IO [FilePath]
+moduleFileCandidates currentUri moduleName = do
+  cwdModule <- makeAbsolute moduleFile
+  pure $ maybe [cwdModule, "lib" </> moduleFile]
+               (\currentPath -> [takeDirectory currentPath </> moduleFile, cwdModule, "lib" </> moduleFile])
+               (LSPTypes.uriToFilePath currentUri)
+  where
+    moduleFile = moduleName <.> "tel"
+
+firstExistingFile :: [FilePath] -> IO (Maybe FilePath)
+firstExistingFile [] = pure Nothing
+firstExistingFile (path:paths) = do
+  exists <- doesFileExist path
+  if exists
+    then pure $ Just path
+    else firstExistingFile paths
+
+locationRange :: LSPTypes.Location -> Range
+locationRange (LSPTypes.Location _ range) = range
 
 symbolAtPosition :: Position -> SymbolIndex -> Maybe T.Text
 symbolAtPosition position index =
   locatedDefinition <|> locatedReference
   where
-    locatedDefinition = fst <$> find (positionInRange position . snd) (Map.toList $ symbolDefinitions index)
+    locatedDefinition = fst <$> find (positionInRange position . locationRange . snd) (Map.toList $ symbolDefinitions index)
     locatedReference = fst <$> find (any (positionInRange position) . snd) (Map.toList $ symbolReferences index)
 
-buildSymbolIndex :: T.Text -> ParseResult -> SymbolIndex
-buildSymbolIndex text parsed = SymbolIndex definitions references
+buildSymbolIndex :: LSPTypes.Uri -> T.Text -> ParseResult -> SymbolIndex
+buildSymbolIndex uri text parsed = SymbolIndex definitions references
   where
-    definitions = topLevelDefinitions text parsed
+    definitions = topLevelDefinitions uri text parsed
     references = Map.fromListWith (<>)
       [ (T.pack name, [range])
       | Right (_, term) <- parsed
       , (name, range) <- termReferences [] term
       ]
 
-topLevelDefinitions :: T.Text -> ParseResult -> Map.Map T.Text Range
-topLevelDefinitions text parsed = Map.fromList
-  [ (T.pack name, range)
+topLevelDefinitions :: LSPTypes.Uri -> T.Text -> ParseResult -> Map.Map T.Text LSPTypes.Location
+topLevelDefinitions uri text parsed = Map.fromList
+  [ (T.pack name, LSPTypes.Location uri range)
   | Right (name, _) <- parsed
   , Just range <- [findTopLevelDefinition text (T.pack name)]
   ]
@@ -434,16 +514,25 @@ topLevelDefinitions text parsed = Map.fromList
 findTopLevelDefinition :: T.Text -> T.Text -> Maybe Range
 findTopLevelDefinition text name =
   let indexedLines = zip [0..] $ T.lines text
-  in do
-    (line, lineText) <- find (hasTopLevelAssignment . snd) indexedLines
-    column <- findIdentifierInLhs name lineText
-    pure $ textRange line column (T.length name)
+      matchingLines =
+        [ textRange line column (T.length name)
+        | (line, lineText) <- indexedLines
+        , Just column <- [findTopLevelIdentifier name lineText]
+        ]
+  in listToMaybe matchingLines
 
-hasTopLevelAssignment :: T.Text -> Bool
-hasTopLevelAssignment lineText =
+findTopLevelIdentifier :: T.Text -> T.Text -> Maybe Int
+findTopLevelIdentifier name lineText
+  | not (isTopLevelLine lineText) = Nothing
+  | T.isInfixOf "=" lineText = findIdentifierInLhs name lineText
+  | T.stripEnd lineText == name = Just 0
+  | otherwise = Nothing
+
+isTopLevelLine :: T.Text -> Bool
+isTopLevelLine lineText =
   not (T.null lineText)
     && notElem (T.head lineText) [' ', '\t']
-    && T.isInfixOf "=" lineText
+    && not ("--" `T.isPrefixOf` lineText)
 
 findIdentifierInLhs :: T.Text -> T.Text -> Maybe Int
 findIdentifierInLhs name lineText = go 0 lhs

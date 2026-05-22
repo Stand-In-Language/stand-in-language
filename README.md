@@ -53,7 +53,56 @@ This project is in active development. Do expect bugs and general trouble, and p
    $ cabal run telomare-repl -- --haskell # or nix run .#repl
    ```
 2. Profit!
-   
+
+## Spacemacs LSP
+
+The recommended Spacemacs setup is to load Telomare's Emacs mode from the
+same Telomare flake input that provides the language server. Do not point
+Spacemacs at a random checkout unless you are actively developing the mode;
+make the editor use the same pinned source that NixOS or Home Manager builds.
+
+For a NixOS/Home Manager Spacemacs config, add Telomare as a flake input and
+load the mode file from that input:
+
+```elisp
+(load "${telomare}/emacs-telomare-mode/telomare-mode-spacemacs.el")
+```
+
+The mode auto-detects the surrounding flake source path and starts the LSP with
+`nix run path:<telomare-source>#lsp --`. This matters for Nix store paths:
+`nix run /nix/store/...-source#lsp --` is parsed incorrectly by Nix, while
+`nix run path:/nix/store/...-source#lsp --` is the intended absolute-path flake
+form.
+
+For a manual checkout-based setup, load the mode from this repository and set
+`TELOMARE_ROOT` only if auto-detection cannot find `flake.nix`:
+
+```elisp
+(load "/path/to/telomare/emacs-telomare-mode/telomare-mode-spacemacs.el")
+```
+
+Useful Spacemacs holy-mode bindings once LSP is attached:
+
+```text
+M-.   go to definition
+M-?   find references
+M-,   jump back
+```
+
+If navigation does not work, check the active LSP session with
+`M-x lsp-describe-session`, restart it with `M-x lsp-workspace-restart`, and
+confirm the server command with:
+
+```elisp
+M-: (telomare--lsp-command)
+```
+
+The expected command shape is:
+
+```elisp
+("nix" "run" "path:/nix/store/...-source#lsp" "--")
+```
+
 ## Git Hooks
 
 You can setup your git configuration to automatically format and look for lint suggestions. Just run:

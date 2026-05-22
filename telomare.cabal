@@ -170,16 +170,18 @@ executable telomare-lsp
   hs-source-dirs:      app
 
   build-depends:       base
-                     , containers
-                     , free
-                     , lens
-                     , lsp
-                     , lsp-types
-                     , megaparsec
-                     , stm
-                     , telomare
-                     , text
-                     , aeson
+                      , containers
+                      , directory
+                      , filepath
+                      , free
+                      , lens
+                      , lsp
+                      , lsp-types
+                      , megaparsec
+                      , stm
+                      , telomare
+                      , text
+                      , aeson
 
   default-language:    Haskell2010
   ghc-options:         -Wall
