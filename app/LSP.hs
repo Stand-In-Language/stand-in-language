@@ -19,7 +19,8 @@ import Data.Char (isAsciiLower, isAsciiUpper, isDigit)
 import Data.List (find, sortOn)
 import qualified Data.List.NonEmpty as NE
 import qualified Data.Map.Strict as Map
-import Data.Maybe (listToMaybe, mapMaybe)
+import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
+import qualified Data.Set as Set
 import qualified Data.Text as T
 import Data.Time (defaultTimeLocale, formatTime, parseTimeM, zonedTimeToUTC)
 import Data.Time.LocalTime (ZonedTime)
@@ -262,12 +263,21 @@ storeParsedDoc gState uri version text = do
   modules <- liftIO $ readTVarIO (moduleBindings gState)
   let detailedParse = parseTelomareModuleDetailed text
       parseRes = first errorBundlePretty detailedParse
-      diagnostics = case detailedParse of
-        Left err     -> parseDiagnostics text err
-        Right parsed -> resolverDiagnostics modules parsed
+  diagnostics' <- case detailedParse of
+    Left err -> pure $ parseDiagnostics text err
+    Right parsed -> do
+      importedModules <- liftIO $ concat <$> mapM (loadImportedModuleBinding gState uri) (moduleImports parsed)
+      let modules' = importedModules <> modules
+          importDiagnostics' = importDiagnostics text modules' parsed
+          semanticDiagnostics = undefinedVariableDiagnostics modules' parsed
+      pure . dedupeDiagnostics $ importDiagnostics'
+          <> semanticDiagnostics
+          <> if null importDiagnostics'
+             then resolverDiagnostics modules' parsed
+             else []
   liftIO . atomically . modifyTVar' (docStore gState) $
-    Map.insert (toNormalizedUri uri) (DocState text version parseRes diagnostics)
-  publishDocumentDiagnostics uri version diagnostics
+    Map.insert (toNormalizedUri uri) (DocState text version parseRes diagnostics')
+  publishDocumentDiagnostics uri version diagnostics'
 
 --------------------------------------------------------------------------------
 -- Document lifecycle handlers
@@ -316,8 +326,111 @@ parseDiagnostics :: T.Text -> ParseErrorBundle String Void -> [LSPTypes.Diagnost
 parseDiagnostics text bundle =
   [ mkDiagnostic (offsetToRange text . errorOffset . NE.head $ bundleErrors bundle)
       "parser"
-      (T.pack . diagnosticFirstLine $ errorBundlePretty bundle)
+      (T.pack $ errorBundlePretty bundle)
   ]
+
+loadImportedModuleBinding :: GlobalState -> LSPTypes.Uri -> ModuleImport -> IO ModuleBindings
+loadImportedModuleBinding gState currentUri moduleImport = do
+  mModule <- loadImportedModule gState currentUri (importModuleName moduleImport)
+  pure $ case mModule of
+    Nothing             -> []
+    Just (_, _, parsed) -> [(importModuleName moduleImport, parsed)]
+
+importDiagnostics :: T.Text -> ModuleBindings -> ParseResult -> [LSPTypes.Diagnostic]
+importDiagnostics text modules parsed =
+  [ mkDiagnostic (moduleImportRange text moduleImport) "resolver" $
+      T.pack ("module not found " <> show (importModuleName moduleImport))
+  | moduleImport <- moduleImports parsed
+  , importModuleName moduleImport `notElem` (fst <$> modules)
+  ]
+
+moduleImportRange :: T.Text -> ModuleImport -> Range
+moduleImportRange text moduleImport =
+  let moduleName = T.pack $ importModuleName moduleImport
+      importLines = zip [0..] $ T.lines text
+  in fromMaybe fallbackRange $ listToMaybe
+       [ textRange line column (T.length moduleName)
+       | (line, lineText) <- importLines
+       , "import" `T.isPrefixOf` T.stripStart lineText
+       , Just column <- [findIdentifierColumn moduleName lineText]
+       ]
+
+findIdentifierColumn :: T.Text -> T.Text -> Maybe Int
+findIdentifierColumn name lineText = go 0 lineText
+  where
+    go column remaining
+      | T.null remaining = Nothing
+      | T.isPrefixOf name remaining && beforeBoundary column && afterBoundary remaining = Just column
+      | otherwise = go (column + 1) (T.tail remaining)
+    beforeBoundary column =
+      column == 0 || not (lspIdentChar . T.last $ T.take column lineText)
+    afterBoundary remaining =
+      let afterName = T.drop (T.length name) remaining
+      in T.null afterName || not (lspIdentChar $ T.head afterName)
+
+undefinedVariableDiagnostics :: ModuleBindings -> ParseResult -> [LSPTypes.Diagnostic]
+undefinedVariableDiagnostics modules parsed =
+  dedupeDiagnostics
+    [ mkDiagnostic range "resolver" $ T.pack ("missing definition " <> show name)
+    | (name, range) <- unresolvedReferences globals parsed
+    ]
+  where
+    globals = Set.fromList $ builtinNames <> importedDefinitionNames modules parsed <> currentDefinitionNames parsed
+
+builtinNames :: [String]
+builtinNames = ["zero", "left", "right", "trace", "pair", "app"]
+
+importedDefinitionNames :: ModuleBindings -> ParseResult -> [String]
+importedDefinitionNames modules parsed =
+  [ maybe name (<> ('.' : name)) (importQualifier moduleImport)
+  | moduleImport <- moduleImports parsed
+  , Just moduleParsed <- [lookup (importModuleName moduleImport) modules]
+  , Right (name, _) <- moduleParsed
+  ]
+
+currentDefinitionNames :: ParseResult -> [String]
+currentDefinitionNames parsed = [name | Right (name, _) <- parsed]
+
+unresolvedReferences :: Set.Set String -> ParseResult -> [(String, Range)]
+unresolvedReferences globals parsed =
+  concatMap (unresolvedTerm globals) [term | Right (_, term) <- parsed]
+
+unresolvedTerm :: Set.Set String -> AnnotatedUPT -> [(String, Range)]
+unresolvedTerm globals = go Set.empty
+  where
+    go bound (loc :< term) = case term of
+      VarUPF name
+        | name `Set.member` bound || name `Set.member` globals -> []
+        | otherwise -> [(name, locTagToRange loc)]
+      LetUPF bindings body ->
+        let localNames = Set.fromList $ letBindingName <$> bindings
+            bound' = localNames <> bound
+        in concatMap (go bound' . letBindingValue) bindings <> go bound' body
+      LamUPF name body -> go (Set.insert name bound) body
+      UDTUPF names body -> go (Set.union (Set.fromList names) bound) body
+      CaseUPF scrutinee cases ->
+        go bound scrutinee <> concatMap (caseRefs bound) cases
+      ITEUPF i t e -> concatMap (go bound) [i, t, e]
+      ListUPF items -> concatMap (go bound) items
+      PairUPF a b -> concatMap (go bound) [a, b]
+      AppUPF f x -> concatMap (go bound) [f, x]
+      LeftUPF x -> go bound x
+      RightUPF x -> go bound x
+      TraceUPF x -> go bound x
+      CheckUPF checkExpr body -> go bound checkExpr <> go bound body
+      HashUPF x -> go bound x
+      UnsizedRecursionUPF t r b -> concatMap (go bound) [t, r, b]
+      _ -> []
+
+    caseRefs bound (pat, body) =
+      go (Set.union (Set.fromList $ patternBoundNames pat) bound) body
+
+dedupeDiagnostics :: [LSPTypes.Diagnostic] -> [LSPTypes.Diagnostic]
+dedupeDiagnostics = Map.elems . Map.fromList . fmap (\diagnostic -> (diagnosticKey diagnostic, diagnostic))
+
+diagnosticKey :: LSPTypes.Diagnostic -> (Range, Maybe T.Text, T.Text)
+diagnosticKey diagnostic =
+  (diagnostic ^. LSP.range, diagnostic ^. LSP.source, diagnostic ^. LSP.message)
 
 resolverDiagnostics :: ModuleBindings -> ParseResult -> [LSPTypes.Diagnostic]
 resolverDiagnostics modules parsed =
