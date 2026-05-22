@@ -116,7 +116,7 @@ printLastExpr eval bindings = do
                            Right r  -> case toTelomare r of
                              Just te -> pure $ fromTelomare te
                              _ -> Left . RTE . ResultConversionError $ "conversion error from compiled expr:\n" <> prettyPrint r
-        case compile' =<< first RE (process (UnknownLoc :< LetUPF bindings' upt)) of
+        case compile' =<< first RE (process (UnknownLoc :< LetUPF ((\(name, value) -> (UnknownLoc, name, value)) <$> bindings') upt)) of
           Left err -> print err
           Right iexpr' -> case eval iexpr' of
               Left e      -> putStrLn $ "error: " <> show e

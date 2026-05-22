@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase          #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Main where
@@ -66,6 +67,15 @@ unitTests = testGroup "Unit tests"
           sourcePositionColumn (sourceSpanStart span) @?= 1
           sourcePositionLine (sourceSpanEnd span) @?= 1
           sourcePositionColumn (sourceSpanEnd span) @?= 4
+        Right parsed -> assertFailure $ "unexpected parse result: " <> show parsed
+  , testCase "let binding source spans exclude trailing whitespace" $ do
+      case runParser parseLongExpr "" "let foo   = 0 in foo" of
+        Left err -> assertFailure $ errorBundlePretty err
+        Right (_ :< LetUPF [(SourceLoc span, "foo", _)] _) -> do
+          sourcePositionLine (sourceSpanStart span) @?= 1
+          sourcePositionColumn (sourceSpanStart span) @?= 5
+          sourcePositionLine (sourceSpanEnd span) @?= 1
+          sourcePositionColumn (sourceSpanEnd span) @?= 8
         Right parsed -> assertFailure $ "unexpected parse result: " <> show parsed
   , testCase "test function applied to a string that has whitespaces in both sides inside a structure" $ do
       res1 <- parseSuccessful parseLongExpr "(foo \"woops\" , 0)"
@@ -204,7 +214,7 @@ unitTests = testGroup "Unit tests"
       res `compare` False @?= EQ
   , testCase "Case within top level definitions" $ do
       res' <- runTelomareParser parseTopLevel caseExpr0
-      let res = forget res'
+      let res = stripLetBindingLocs $ forget res'
       res @?= caseExpr0UPT
   , testCase "Simple import parsing" $ do
       res' <- runTelomareParser parseImport importExpr0str
@@ -232,12 +242,17 @@ importQualifiedExpr0 = ImportQualifiedUP "F" "Foo"
 importExpr0str = "import Foo"
 importExpr0 = ImportUP "Foo"
 
+stripLetBindingLocs :: UnprocessedParsedTerm -> UnprocessedParsedTerm
+stripLetBindingLocs = cata $ \case
+  LetUPF bindings body -> LetUP ((\(_, name, value) -> (UnknownLoc, name, value)) <$> bindings) body
+  other -> embed other
+
 caseExpr0UPT =
-  LetUP [ ("foo", LamUP "a" (CaseUP (VarUP "a")
+  LetUP [ (UnknownLoc, "foo", LamUP "a" (CaseUP (VarUP "a")
                                [ (PatternInt 0,VarUP "a")
                                , (PatternVar "x",AppUP (VarUP "succ") (VarUP "a"))
                                ]))
-        , ("main", LamUP "i" (PairUP (StringUP "Success")
+        , (UnknownLoc, "main", LamUP "i" (PairUP (StringUP "Success")
                                      (IntUP 0)))
         ]
         (LamUP "i" (PairUP (StringUP "Success") (IntUP 0)))

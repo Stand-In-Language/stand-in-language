@@ -12,7 +12,7 @@ import Control.Applicative ((<|>))
 import Control.Comonad.Cofree (Cofree ((:<)))
 import Control.Concurrent.STM
 import Control.Exception (IOException, try)
-import Control.Monad (void)
+import Control.Monad (join, void)
 import Control.Monad.IO.Class (MonadIO (liftIO))
 import Data.Bifunctor (first)
 import Data.Char (isAsciiLower, isAsciiUpper, isDigit)
@@ -42,8 +42,8 @@ import Language.LSP.Server
 
 import Telomare (LocTag (..), Pattern (..), ResolverError (..),
                  SourcePosition (..), SourceSpan (..),
-                 UnprocessedParsedTermF (..), locStartLineColumn,
-                 renderResolverError)
+                 UnprocessedParsedTermF (..), letBindingName, letBindingValue,
+                 locStartLineColumn, renderResolverError)
 import Telomare.Eval (eval2IExpr)
 import Telomare.Parser (AnnotatedUPT, parseModule, parseModuleDetailed)
 import Telomare.Resolver (main2Term3)
@@ -431,8 +431,9 @@ definitionAt gState uri position docState = case docParse docState of
     let currentIndex = buildSymbolIndex uri (docText docState) parsed
         definitions = symbolDefinitions currentIndex <> importedDefinitions
     pure $ do
-      symbol <- symbolAtPosition position currentIndex
-      Map.lookup symbol definitions
+      localDefinitionAt uri position parsed <|> do
+        symbol <- symbolAtPosition position currentIndex
+        Map.lookup symbol definitions
 
 referencesAt :: LSPTypes.Uri -> Bool -> Position -> DocState -> [LSPTypes.Location]
 referencesAt uri includeDeclaration position docState =
@@ -591,9 +592,9 @@ termReferences bound (loc :< term) =
           | otherwise         -> [(name, locTagToRange loc)]
         ITEUPF i t e -> termReferences bound i <> termReferences bound t <> termReferences bound e
         LetUPF bindings body ->
-          let localNames = fst <$> bindings
+          let localNames = letBindingName <$> bindings
               bound' = localNames <> bound
-          in concatMap (termReferences bound' . snd) bindings <> termReferences bound' body
+          in concatMap (termReferences bound' . letBindingValue) bindings <> termReferences bound' body
         ListUPF items -> concatMap (termReferences bound) items
         PairUPF a b -> termReferences bound a <> termReferences bound b
         AppUPF f x -> termReferences bound f <> termReferences bound x
@@ -609,6 +610,61 @@ termReferences bound (loc :< term) =
   in children
   where
     caseReferences (pat, body) = termReferences (patternBoundNames pat <> bound) body
+
+localDefinitionAt :: LSPTypes.Uri -> Position -> ParseResult -> Maybe LSPTypes.Location
+localDefinitionAt uri position parsed =
+  listToMaybe [ location
+              | Right (_, term) <- parsed
+              , location <- foldMap pure $ localTermDefinitionAt uri position Map.empty term
+              ]
+
+localTermDefinitionAt :: LSPTypes.Uri
+                      -> Position
+                      -> Map.Map String (Maybe LSPTypes.Location)
+                      -> AnnotatedUPT
+                      -> Maybe LSPTypes.Location
+localTermDefinitionAt uri position env (loc :< term) = case term of
+  VarUPF name
+    | positionInRange position (locTagToRange loc) -> join $ Map.lookup name env
+    | otherwise -> Nothing
+  LetUPF bindings body ->
+    let bindingLocations = Map.fromList
+          [ (name, Just $ LSPTypes.Location uri (locTagToRange bindingLoc))
+          | (bindingLoc, name, _) <- bindings
+          ]
+        env' = bindingLocations <> env
+        bindingDefinition = listToMaybe
+          [ LSPTypes.Location uri (locTagToRange bindingLoc)
+          | (bindingLoc, _, _) <- bindings
+          , positionInRange position (locTagToRange bindingLoc)
+          ]
+        bindingRefs = listToMaybe
+          [ location
+          | binding <- bindings
+          , location <- foldMap pure $ localTermDefinitionAt uri position env' (letBindingValue binding)
+          ]
+    in bindingDefinition <|> bindingRefs <|> localTermDefinitionAt uri position env' body
+  ITEUPF i t e -> firstJust [i, t, e]
+  ListUPF items -> firstJust items
+  PairUPF a b -> firstJust [a, b]
+  AppUPF f x -> firstJust [f, x]
+  LamUPF name body -> localTermDefinitionAt uri position (Map.insert name Nothing env) body
+  LeftUPF x -> localTermDefinitionAt uri position env x
+  RightUPF x -> localTermDefinitionAt uri position env x
+  TraceUPF x -> localTermDefinitionAt uri position env x
+  CheckUPF checkExpr body -> firstJust [checkExpr, body]
+  HashUPF x -> localTermDefinitionAt uri position env x
+  UDTUPF names body -> localTermDefinitionAt uri position (foldr (`Map.insert` Nothing) env names) body
+  CaseUPF scrutinee cases ->
+    localTermDefinitionAt uri position env scrutinee
+      <|> listToMaybe [ location
+                      | (pat, caseBody) <- cases
+                      , let env' = foldr (`Map.insert` Nothing) env $ patternBoundNames pat
+                      , location <- foldMap pure $ localTermDefinitionAt uri position env' caseBody
+                      ]
+  _ -> Nothing
+  where
+    firstJust = listToMaybe . mapMaybe (localTermDefinitionAt uri position env)
 
 patternBoundNames :: Pattern -> [String]
 patternBoundNames = \case

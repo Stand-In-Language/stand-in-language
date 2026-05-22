@@ -1120,7 +1120,7 @@ data Pattern
 data UnprocessedParsedTerm
   = VarUP String
   | ITEUP UnprocessedParsedTerm UnprocessedParsedTerm UnprocessedParsedTerm
-  | LetUP [(String, UnprocessedParsedTerm)] UnprocessedParsedTerm
+  | LetUP [(LocTag, String, UnprocessedParsedTerm)] UnprocessedParsedTerm
   | ListUP [UnprocessedParsedTerm]
   | IntUP Int
   | StringUP String
@@ -1143,6 +1143,15 @@ data UnprocessedParsedTerm
 makeBaseFunctor ''UnprocessedParsedTerm -- Functorial version UnprocessedParsedTerm
 makePrisms ''UnprocessedParsedTerm
 
+letBindingName :: (LocTag, String, a) -> String
+letBindingName (_, name, _) = name
+
+letBindingValue :: (LocTag, String, a) -> a
+letBindingValue (_, _, value) = value
+
+letBindingLoc :: (LocTag, String, a) -> LocTag
+letBindingLoc (loc, _, _) = loc
+
 makeBaseFunctor ''Pattern
 
 instance Eq a => Eq (UnprocessedParsedTermF a) where
@@ -1153,7 +1162,7 @@ instance Eq1 UnprocessedParsedTermF where
   liftEq eq (ITEUPF c1 t1 e1) (ITEUPF c2 t2 e2) =
     eq c1 c2 && eq t1 t2 && eq e1 e2
   liftEq eq (LetUPF binds1 body1) (LetUPF binds2 body2) =
-    liftEq (\(s1, t1) (s2, t2) -> s1 == s2 && eq t1 t2) binds1 binds2 && eq body1 body2
+    liftEq (\(_, s1, t1) (_, s2, t2) -> s1 == s2 && eq t1 t2) binds1 binds2 && eq body1 body2
   liftEq eq (ListUPF items1) (ListUPF items2) =
     liftEq eq items1 items2
   liftEq eq (IntUPF n1) (IntUPF n2) =
@@ -1219,8 +1228,8 @@ instance Show1 UnprocessedParsedTermF where
     ITEUPF c t e -> showString "ITEUPF " . showsPrecFunc 11 c . showChar ' '
                     . showsPrecFunc 11 t . showChar ' ' . showsPrecFunc 11 e
     LetUPF bindings body ->
-      let showBinding (str, x) = showChar '(' . shows str . showString ", "
-                                . showsPrecFunc 11 x . showChar ')'
+      let showBinding (_, str, x) = showChar '(' . shows str . showString ", "
+                                 . showsPrecFunc 11 x . showChar ')'
           showBindings bs = showChar '[' . foldr1 (\a b -> a . showString ", " . b)
                            (fmap showBinding bs) . showChar ']'
       in showString "LetUPF " . showBindings bindings . showChar ' ' . showsPrecFunc 11 body

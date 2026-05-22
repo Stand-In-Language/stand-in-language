@@ -42,14 +42,14 @@ decompileUPT =
       draw = \case
           VarUP s -> showS s
           ITEUP i t e -> drawList [showS "if ", draw i, showS " then ", draw t, showS " else ", draw e]
-          LetUP ((firstName, firstDef):bindingsXS) in_ -> if null bindingsXS
+          LetUP ((_, firstName, firstDef):bindingsXS) in_ -> if null bindingsXS
             then drawList [showS "let ", showS firstName, showS " = ", draw firstDef, showS " in ", draw in_]
             else do
             startIn <- State.get
             l <- showS "let "
             startBind <- State.get
             fb <- drawList [showS firstName, showS " = ", draw firstDef, pure "\n"]
-            let drawOne (name, upt) = do
+            let drawOne (_, name, upt) = do
                   State.put startBind
                   drawList [drawIndent, showS name, showS " = ", draw upt, pure "\n"]
             displayedBindings <- mconcat <$> traverse drawOne bindingsXS

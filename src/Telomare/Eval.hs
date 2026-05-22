@@ -464,16 +464,16 @@ tagUPTwithIExpr prelude upt = evalState (para alg upt) 0 where
     LetUPF l (upt0, x) -> do
       i <- State.get
       State.modify (+ 1)
-      let lupt :: [(String, UnprocessedParsedTerm)]
-          lupt = (fmap . fmap) fst l
+      let lupt :: [(LocTag, String, UnprocessedParsedTerm)]
+          lupt = (\(loc, name, (upt, _)) -> (loc, name, upt)) <$> l
           slcupt :: State Int
-                     [Cofree UnprocessedParsedTermF (Int, Either String IExpr)]
-          slcupt = mapM snd (snd <$> l)
-          vnames :: [String]
-          vnames = fst <$> l
+                      [Cofree UnprocessedParsedTermF (Int, Either String IExpr)]
+          slcupt = mapM (\(_, _, (_, value)) -> value) l
+          vnames :: [(LocTag, String)]
+          vnames = (\(loc, name, _) -> (loc, name)) <$> l
       lcupt <- slcupt
       x' <- x
-      pure $ (i, upt2iexpr $ LetUP lupt upt0) :< LetUPF (vnames `zip` lcupt) x'
+      pure $ (i, upt2iexpr $ LetUP lupt upt0) :< LetUPF (zipWith (\(loc, name) value -> (loc, name, value)) vnames lcupt) x'
     CaseUPF (upt0, x) l -> do
       i <- State.get
       State.modify (+ 1)

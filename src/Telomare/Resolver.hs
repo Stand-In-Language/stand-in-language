@@ -405,11 +405,11 @@ validateVariables term =
           -- Build dependency graph
           let dependencies :: Map String (Set String)
               dependencies = Map.fromList
-                [(name, Set.fromList $ getDirectDeps def) | (name, def) <- preludeMap]
+                [(name, Set.fromList $ getDirectDeps def) | (_, name, def) <- preludeMap]
 
               -- Get direct variable dependencies (only those defined in this let block)
               -- Uses Set to properly handle lambda-bound variable shadowing
-              letBindingNames = Set.fromList (fmap fst preludeMap)
+              letBindingNames = Set.fromList (letBindingName <$> preludeMap)
               getDirectDeps :: AnnotatedUPT -> [String]
               getDirectDeps = Set.toList . cata alg where
                 alg :: CofreeF UnprocessedParsedTermF LocTag (Set String) -> Set String
@@ -417,8 +417,8 @@ validateVariables term =
                     (_ C.:< VarUPF n) -> if Set.member n letBindingNames then Set.singleton n else Set.empty
                     (_ C.:< LamUPF v body) -> Set.delete v body
                     (_ C.:< LetUPF binds body) ->
-                      let boundNames = Set.fromList (fmap fst binds)
-                          bindDeps = foldMap snd binds
+                      let boundNames = Set.fromList (letBindingName <$> binds)
+                          bindDeps = foldMap letBindingValue binds
                       in Set.union (bindDeps Set.\\ boundNames) (body Set.\\ boundNames)
                     (_ C.:< ITEUPF i t e) -> i <> t <> e
                     (_ C.:< PairUPF a b) -> a <> b
@@ -433,7 +433,7 @@ validateVariables term =
                     _ -> Set.empty
 
           -- Check if original order works (no forward references)
-          let originalOrder = fmap fst preludeMap
+          let originalOrder = letBindingName <$> preludeMap
               hasForwardRef = any (\(i, name) ->
                 let deps = Map.findWithDefault Set.empty name dependencies
                     laterNames = Set.fromList $ drop (i + 1) originalOrder
@@ -473,8 +473,8 @@ validateVariables term =
               Left cycle -> State.lift . Left $ cycle
               Right sortedNames ->
                 pure [(name, def) | name <- sortedNames,
-                      (name', def) <- preludeMap, name == name']
-            else pure preludeMap  -- Keep original order
+                      (_, name', def) <- preludeMap, name == name']
+            else pure $ (\(_, name, def) -> (name, def)) <$> preludeMap  -- Keep original order
 
           -- Process bindings in order
           forM_ sortedBindings $ \(name, def) -> do
@@ -531,7 +531,7 @@ annotateUnsizedCount = capTop . flip evalStateT 0 . cata f where
         lift (Set.singleton n, (anno, 0) :< AppUPF ((anno, 0) :< nur) ((anno, 0) :< VarUPF (':' : show n)))
       LetUPF bindings inner -> (\b i -> (anno, 0) :< LetUPF b i) <$> traverse rebind bindings <*> inner
       x -> ((anno, 0) :<) <$> sequence x
-  rebind (n, x) = cap n $ evalStateT x 0
+  rebind (loc, n, x) = (\(n', x') -> (loc, n', x')) <$> cap n (evalStateT x 0)
   cap n (vs, x@((anno, _) :< _)) = lift (Set.empty, (n, foldr (\v b -> (anno, length vs) :< LamUPF (':' : show v) b) x vs))
   -- HACK vars are just placehorders for next step
   capTop (vs, x@((anno, _) :< _)) =
@@ -573,7 +573,7 @@ letsToApps term =
         Just s | not (null s) -> mconcat . fmap (getTransitive deps) $ Set.toList s
         _ -> Set.empty
       getTransitive' deps = mconcat . fmap (getTransitive deps) . Set.toList
-      makeBindingsAsoc (name, def) = case runWriterT def of
+      makeBindingsAsoc (_, name, def) = case runWriterT def of
         Left s           -> Left s
         Right (nx, refs) -> pure (name, (nx,refs))
       -- f algebra builds Term1 wrapped with metadata (WriterT) of unbound refs (Set String) or ResolverError
@@ -591,7 +591,7 @@ letsToApps term =
           Right (nInner, refs) -> WriterT $ do
             -- Build dependency graph
             nBindings <- traverse makeBindingsAsoc bindings
-            let originalOrder = fmap fst bindings
+            let originalOrder = letBindingName <$> bindings
                 dependencies = Map.fromList $ fmap (second snd) nBindings
                 sortedBindings :: Either ResolverError [(String, Cofree (ParserTermF String String) (LocTag, Int))]
                 sortedBindings =
@@ -674,16 +674,17 @@ generateAllHashes x@(anno :< _) = transform interm x where
 
 addBuiltins :: AnnotatedUPT -> AnnotatedUPT
 addBuiltins aupt = GeneratedLoc "addBuiltins" Nothing :< LetUPF
-  [ ("zero", builtin "zero" :< IntUPF 0)
-  , ("left", builtin "left" :< LamUPF "x" (builtin "left" :< LeftUPF (builtin "left" :< VarUPF "x")))
-  , ("right", builtin "right" :< LamUPF "x" (builtin "right" :< RightUPF (builtin "right" :< VarUPF "x")))
-  , ("trace", builtin "trace" :< LamUPF "x" (builtin "trace" :< TraceUPF (builtin "trace" :< VarUPF "x")))
-  , ("pair", builtin "pair" :< LamUPF "x" (builtin "pair" :< LamUPF "y" (builtin "pair" :< PairUPF (builtin "pair" :< VarUPF "x") (builtin "pair" :< VarUPF "y"))))
-  , ("app", builtin "app" :< LamUPF "x" (builtin "app" :< LamUPF "y" (builtin "app" :< AppUPF (builtin "app" :< VarUPF "x") (builtin "app" :< VarUPF "y"))))
+  [ bind "zero" (builtin "zero" :< IntUPF 0)
+  , bind "left" (builtin "left" :< LamUPF "x" (builtin "left" :< LeftUPF (builtin "left" :< VarUPF "x")))
+  , bind "right" (builtin "right" :< LamUPF "x" (builtin "right" :< RightUPF (builtin "right" :< VarUPF "x")))
+  , bind "trace" (builtin "trace" :< LamUPF "x" (builtin "trace" :< TraceUPF (builtin "trace" :< VarUPF "x")))
+  , bind "pair" (builtin "pair" :< LamUPF "x" (builtin "pair" :< LamUPF "y" (builtin "pair" :< PairUPF (builtin "pair" :< VarUPF "x") (builtin "pair" :< VarUPF "y"))))
+  , bind "app" (builtin "app" :< LamUPF "x" (builtin "app" :< LamUPF "y" (builtin "app" :< AppUPF (builtin "app" :< VarUPF "x") (builtin "app" :< VarUPF "y"))))
   ]
   aupt
   where
     builtin = BuiltinLoc
+    bind name value = (builtin name, name, value)
 
 -- |Process an `AnnotatedUPT` to a `Term3` with failing capability.
 process :: AnnotatedUPT
@@ -784,7 +785,8 @@ resolveMain allModules mainModule = case lookup mainModule allModules of
                    Just x ->
                      let loc = case x of
                            loc' :< _ -> loc'
-                     in Right $ GeneratedLoc "resolveMain" (Just loc) :< LetUPF (pruneBindings x resolved) x
+                         locatedBindings = (\(name, value) -> (GeneratedLoc "resolveMain.binding" (Just loc), name, value)) <$> pruneBindings x resolved
+                      in Right $ GeneratedLoc "resolveMain" (Just loc) :< LetUPF locatedBindings x
 
 main2Term3 :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -- ^Modules: [(ModuleName, [Either Import (VariableName, BindedUPT)])]
            -> String -- ^Module name with main

@@ -387,7 +387,7 @@ instance Show MultiLineShowUPT where
                         concatMap (\x -> "  , " <> ind x <> "\n") ls <>
                         "  ]"
       (LetUPF ls x) -> "LetUP\n" <>
-                         concatMap (\(n,v) -> "  , (" <> n <> ", " <> ind v <> ")\n") ls <>
+                         concatMap (\(_,n,v) -> "  , (" <> n <> ", " <> ind v <> ")\n") ls <>
                          "  ]\n" <>
                          "  " <> ind x
       (CaseUPF x ls) -> "CaseUP\n" <>
@@ -420,8 +420,8 @@ instance Show PrettyUPT where
         "let " <> indentSansFirstLine 4 (unlines (assignList <$> ls)) <> "\n" <>
         "in " <> indentSansFirstLine 3 x
           where
-            assignList :: (String, String) -> String
-            assignList (str, upt) = str <> " = " <> indentSansFirstLine (3 + length str) upt
+            assignList :: (LocTag, String, String) -> String
+            assignList (_, str, upt) = str <> " = " <> indentSansFirstLine (3 + length str) upt
       (ListUPF []) -> "[]"
       (ListUPF [x]) -> "[" <> x <> "]"
       (ListUPF ls) ->
