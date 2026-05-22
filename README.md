@@ -87,6 +87,7 @@ Useful Spacemacs holy-mode bindings once LSP is attached:
 M-.   go to definition
 M-?   find references
 M-,   jump back
+C-c C-v   show Telomare LSP version
 ```
 
 If navigation does not work, check the active LSP session with
@@ -101,6 +102,22 @@ The expected command shape is:
 
 ```elisp
 ("nix" "run" "path:/nix/store/...-source#lsp" "--")
+```
+
+The LSP also exposes a version command. `C-c C-v` calls it from Telomare buffers.
+It reports a UTC timestamp truncated to minutes, using the parent commit
+timestamp when git history is available and the flake source timestamp when
+launched from a Nix store source without `.git`.
+
+```elisp
+(lsp-request "workspace/executeCommand"
+             `(:command "telomare.version" :arguments []))
+```
+
+The command also shows an editor message such as:
+
+```text
+Telomare LSP version: 2026-05-22T10:14Z
 ```
 
 ## Git Hooks

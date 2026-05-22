@@ -31,7 +31,8 @@
   (define-key telomare-mode-map (kbd "M-?") #'lsp-find-references)
   (define-key telomare-mode-map (kbd "C-c h") #'lsp-describe-thing-at-point)
   (define-key telomare-mode-map (kbd "C-c r") #'lsp-rename)
-  (define-key telomare-mode-map (kbd "C-c a") #'lsp-execute-code-action))
+  (define-key telomare-mode-map (kbd "C-c a") #'lsp-execute-code-action)
+  (define-key telomare-mode-map (kbd "C-c C-v") #'telomare-lsp-version))
 
 ;; Initialize
 (telomare-vanilla-setup)

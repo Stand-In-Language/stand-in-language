@@ -40,6 +40,17 @@ mode file. TELOMARE_ROOT is only an override for non-Nix/manual setups."
   (setq-local comment-start "-- ")
   (setq-local comment-end ""))
 
+(defun telomare-lsp-version ()
+  "Show the Telomare LSP version."
+  (interactive)
+  (unless (bound-and-true-p lsp-mode)
+    (user-error "LSP is not active in this buffer"))
+  (let ((version (lsp-request "workspace/executeCommand"
+                              `(:command "telomare.version" :arguments []))))
+    (message "Telomare LSP version: %s" version)))
+
+(define-key telomare-mode-map (kbd "C-c C-v") #'telomare-lsp-version)
+
 ;; Associate .tel files with telomare-mode
 (add-to-list 'auto-mode-alist '("\\.tel\\'" . telomare-mode))
 

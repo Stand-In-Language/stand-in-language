@@ -13,7 +13,21 @@
     flake-parts.lib.mkFlake { inherit inputs; } {
       systems = [ "x86_64-linux" "aarch64-linux" ];
       imports = [ inputs.haskell-flake.flakeModule ];
-      perSystem = { self', system, pkgs, ... }: {
+      perSystem = { self', system, pkgs, ... }:
+        let
+          lspVersion =
+            if self ? lastModifiedDate then
+              let
+                timestamp = self.lastModifiedDate;
+                year = builtins.substring 0 4 timestamp;
+                month = builtins.substring 4 2 timestamp;
+                day = builtins.substring 6 2 timestamp;
+                hour = builtins.substring 8 2 timestamp;
+                minute = builtins.substring 10 2 timestamp;
+              in "${year}-${month}-${day}T${hour}:${minute}Z"
+            else
+              "unknown";
+        in {
         haskellProjects.default = {
           basePackages = pkgs.haskell.packages.ghc96;
           # To get access to non-Haskell dependencies one most add them to `extraBuildDepends`
@@ -68,7 +82,13 @@
       };
       apps.lsp = {
         type = "app";
-        program = "${self.packages.${system}.telomare}/bin/telomare-lsp";
+        program = "${pkgs.writeShellApplication {
+          name = "telomare-lsp";
+          text = ''
+            export TELOMARE_LSP_VERSION="${lspVersion}"
+            exec "${self.packages.${system}.telomare}/bin/telomare-lsp" "$@"
+          '';
+        }}/bin/telomare-lsp";
       };
       apps.format-lint = {
         type = "app";

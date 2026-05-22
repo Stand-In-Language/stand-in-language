@@ -178,9 +178,11 @@ executable telomare-lsp
                       , lsp
                       , lsp-types
                       , megaparsec
+                      , process
                       , stm
                       , telomare
                       , text
+                      , time
                       , aeson
 
   default-language:    Haskell2010

@@ -21,9 +21,14 @@ import qualified Data.List.NonEmpty as NE
 import qualified Data.Map.Strict as Map
 import Data.Maybe (listToMaybe, mapMaybe)
 import qualified Data.Text as T
+import Data.Time (defaultTimeLocale, formatTime, parseTimeM, zonedTimeToUTC)
+import Data.Time.LocalTime (ZonedTime)
 import Data.Void (Void)
 import System.Directory (doesFileExist, makeAbsolute)
+import System.Environment (lookupEnv)
+import System.Exit (ExitCode (..))
 import System.FilePath (takeDirectory, (<.>), (</>))
+import System.Process (readProcessWithExitCode)
 
 import Control.Lens ((^.))
 import qualified Data.Aeson as JSON
@@ -143,7 +148,9 @@ serverOptions =
           (Just False)                              -- willSaveWaitUntil
           Nothing                                   -- save
   in defaultOptions { optTextDocumentSync = Just syncOpts
-                    , optExecuteCommandCommands = Just ["telomare.partialEval"]
+                    , optExecuteCommandCommands = Just [ "telomare.partialEval"
+                                                       , "telomare.version"
+                                                       ]
                     }
 
 -- Token type indices (matching the server's reported legend)
@@ -206,7 +213,35 @@ executeCommandHandler gState req respond = do
               respond . Right $ LSPTypes.InL JSON.Null
             _ -> respond . Right $ LSPTypes.InL JSON.Null
         _ -> respond . Right $ LSPTypes.InL JSON.Null
+    "telomare.version" -> do
+      version <- liftIO lspVersion
+      sendNotification SMethod_WindowShowMessage $
+        LSPTypes.ShowMessageParams
+          LSPTypes.MessageType_Info
+          ("Telomare LSP version: " <> version)
+      respond . Right . LSPTypes.InL . JSON.String $ version
     _ -> respond . Right $ LSPTypes.InL JSON.Null
+
+lspVersion :: IO T.Text
+lspVersion = do
+  parentTimestamp <- gitParentCommitTimestamp
+  case parentTimestamp of
+    Just timestamp -> pure timestamp
+    Nothing -> do
+      envVersion <- lookupEnv "TELOMARE_LSP_VERSION"
+      pure . maybe "unknown" T.pack $ envVersion
+
+gitParentCommitTimestamp :: IO (Maybe T.Text)
+gitParentCommitTimestamp = do
+  result <- try (readProcessWithExitCode "git" ["log", "-1", "--format=%cI", "HEAD^"] "") :: IO (Either IOException (ExitCode, String, String))
+  pure $ case result of
+    Right (ExitSuccess, stdout, _) -> formatTimestampMinutesUTC stdout
+    _                              -> Nothing
+
+formatTimestampMinutesUTC :: String -> Maybe T.Text
+formatTimestampMinutesUTC rawTimestamp = do
+  zonedTime <- parseTimeM True defaultTimeLocale "%Y-%m-%dT%H:%M:%S%Q%z" (takeWhile (/= '\n') rawTimestamp) :: Maybe ZonedTime
+  pure . T.pack $ formatTime defaultTimeLocale "%Y-%m-%dT%H:%MZ" (zonedTimeToUTC zonedTime)
 
 --------------------------------------------------------------------------------
 -- Helpers: centralize parsing through parseModule
