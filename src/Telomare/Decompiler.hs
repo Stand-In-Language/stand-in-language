@@ -42,16 +42,16 @@ decompileUPT =
       draw = \case
           VarUP s -> showS s
           ITEUP i t e -> drawList [showS "if ", draw i, showS " then ", draw t, showS " else ", draw e]
-          LetUP ((_, firstName, firstDef):bindingsXS) in_ -> if null bindingsXS
-            then drawList [showS "let ", showS firstName, showS " = ", draw firstDef, showS " in ", draw in_]
+          LetUP ((firstName, firstDef):bindingsXS) in_ -> if null bindingsXS
+            then drawList [showS "let ", showS (locatedNameText firstName), showS " = ", draw firstDef, showS " in ", draw in_]
             else do
             startIn <- State.get
             l <- showS "let "
             startBind <- State.get
-            fb <- drawList [showS firstName, showS " = ", draw firstDef, pure "\n"]
-            let drawOne (_, name, upt) = do
+            fb <- drawList [showS (locatedNameText firstName), showS " = ", draw firstDef, pure "\n"]
+            let drawOne (name, upt) = do
                   State.put startBind
-                  drawList [drawIndent, showS name, showS " = ", draw upt, pure "\n"]
+                  drawList [drawIndent, showS (locatedNameText name), showS " = ", draw upt, pure "\n"]
             displayedBindings <- mconcat <$> traverse drawOne bindingsXS
             State.put startIn
             mconcat <$> sequence [pure l, pure fb, pure displayedBindings, drawIndent, showS "in ", draw in_]
@@ -64,7 +64,7 @@ decompileUPT =
           PairUP a b -> drawList [showS "(", draw a, showS ",", draw b, showS ")"]
           AppUP f x -> drawList [drawFirstParens f, drawParens x]
           -- TODO flatten nested lambdas
-          LamUP n x -> drawList [showS "\\", showS n, showS " -> ", draw x]
+          LamUP n x -> drawList [showS "\\", showS (locatedNameText n), showS " -> ", draw x]
           ChurchUP n -> drawList [showS "$", showS $ show n]
           UnsizedRecursionUP t r b -> drawList [showS "{", draw t, showS ",", draw r, showS ",", draw b, showS "}"]
           LeftUP x -> drawList [showS "left ", drawParens x]
@@ -105,8 +105,8 @@ decompileTerm1 = \case
   _ :< TLeftF x -> LeftUP (decompileTerm1 x)
   _ :< TRightF x -> RightUP (decompileTerm1 x)
   _ :< TTraceF x -> TraceUP (decompileTerm1 x)
-  _ :< TLamF (Open n) x -> LamUP n (decompileTerm1 x)
-  _ :< TLamF (Closed n) x -> LamUP n (decompileTerm1 x) -- not strictly equivalent
+  loc :< TLamF (Open n) x -> LamUP (locatedName loc n) (decompileTerm1 x)
+  loc :< TLamF (Closed n) x -> LamUP (locatedName loc n) (decompileTerm1 x) -- not strictly equivalent
   _ :< TLimitedRecursionF t r b -> UnsizedRecursionUP (decompileTerm1 t) (decompileTerm1 r) (decompileTerm1 b)
 
 decompileTerm2 :: Term2 -> Term1

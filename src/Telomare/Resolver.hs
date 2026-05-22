@@ -101,7 +101,7 @@ fitPatternVarsToCasedUPT p aupt@(anno :< _) = applyVars2UPT varsOnUPT $ pattern2
                 -> AnnotatedUPT
   applyVars2UPT m = \case
     anno :< LamUPF str x ->
-      case Map.lookup str m of
+      case Map.lookup (locatedNameText str) m of
         Just a  -> anno :< AppUPF (anno :< LamUPF str (applyVars2UPT m x)) a
         Nothing -> anno :< LamUPF str x
     x -> x
@@ -111,7 +111,7 @@ varsUPT :: UnprocessedParsedTerm -> Set String
 varsUPT = cata alg where
   alg :: Base UnprocessedParsedTerm (Set String) -> Set String
   alg (VarUPF n)     = Set.singleton n
-  alg (LamUPF str x) = del str x
+  alg (LamUPF str x) = del (locatedNameText str) x
   alg e              = F.fold e
   del :: String -> Set String -> Set String
   del n x = if Set.member n x then Set.delete n x else x
@@ -122,7 +122,7 @@ freeVarsDeep :: UnprocessedParsedTerm -> Set String
 freeVarsDeep = cata alg where
   alg :: Base UnprocessedParsedTerm (Set String) -> Set String
   alg (VarUPF n)           = Set.singleton n
-  alg (LamUPF n body)      = Set.delete n body
+  alg (LamUPF n body)      = Set.delete (locatedNameText n) body
   alg (CaseUPF scrut alts) = scrut <> foldMap (\(p, body) -> patternRefs p <> body) alts <> caseRefs
     where
       caseRefs = Set.fromList ["and", "listEqual", "foldl", "abort"]
@@ -157,7 +157,7 @@ mkLambda4FreeVarUPs aupt@(anno :< _) = tag anno $ go upt freeVars where
   go :: UnprocessedParsedTerm -> [String] -> UnprocessedParsedTerm
   go x = \case
     []     -> x
-    (y:ys) -> LamUP y $ go x ys
+    (y:ys) -> LamUP (locatedName UnknownLoc y) $ go x ys
 
 findPatternVars :: LocTag -> Pattern -> Map String (AnnotatedUPT -> AnnotatedUPT)
 findPatternVars anno = cata alg where
@@ -211,16 +211,16 @@ mkCaseAlternative casedUPT@(anno :< _) caseResult p = appVars2ResultLambdaAlts p
                            -> AnnotatedUPT
   appVars2ResultLambdaAlts m = \case
     lam@(_ :< LamUPF varName upt) ->
-      case Map.lookup varName m of
+      case Map.lookup (locatedNameText varName) m of
         Nothing -> lam
-        Just x -> anno :< AppUPF (anno :< LamUPF varName (appVars2ResultLambdaAlts (Map.delete varName m) upt)) x
+        Just x -> anno :< AppUPF (anno :< LamUPF varName (appVars2ResultLambdaAlts (Map.delete (locatedNameText varName) m) upt)) x
     x -> x
   makeLambdas :: AnnotatedUPT
               -> [String]
               -> AnnotatedUPT
   makeLambdas aupt@(anno' :< _) = \case
     []     -> aupt
-    (x:xs) -> anno' :< LamUPF x (makeLambdas aupt xs)
+    (x:xs) -> anno' :< LamUPF (locatedName anno' x) (makeLambdas aupt xs)
 
 case2annidatedIfs :: AnnotatedUPT -- ^ Term to be pattern matched
                   -> [Pattern] -- ^ All patterns in a case expression
@@ -405,7 +405,7 @@ validateVariables term =
           -- Build dependency graph
           let dependencies :: Map String (Set String)
               dependencies = Map.fromList
-                [(name, Set.fromList $ getDirectDeps def) | (_, name, def) <- preludeMap]
+                [(locatedNameText name, Set.fromList $ getDirectDeps def) | (name, def) <- preludeMap]
 
               -- Get direct variable dependencies (only those defined in this let block)
               -- Uses Set to properly handle lambda-bound variable shadowing
@@ -415,7 +415,7 @@ validateVariables term =
                 alg :: CofreeF UnprocessedParsedTermF LocTag (Set String) -> Set String
                 alg = \case
                     (_ C.:< VarUPF n) -> if Set.member n letBindingNames then Set.singleton n else Set.empty
-                    (_ C.:< LamUPF v body) -> Set.delete v body
+                    (_ C.:< LamUPF v body) -> Set.delete (locatedNameText v) body
                     (_ C.:< LetUPF binds body) ->
                       let boundNames = Set.fromList (letBindingName <$> binds)
                           bindDeps = foldMap letBindingValue binds
@@ -473,8 +473,8 @@ validateVariables term =
               Left cycle -> State.lift . Left $ cycle
               Right sortedNames ->
                 pure [(name, def) | name <- sortedNames,
-                      (_, name', def) <- preludeMap, name == name']
-            else pure $ (\(_, name, def) -> (name, def)) <$> preludeMap  -- Keep original order
+                      (name', def) <- preludeMap, name == locatedNameText name']
+            else pure $ first locatedNameText <$> preludeMap  -- Keep original order
 
           -- Process bindings in order
           forM_ sortedBindings $ \(name, def) -> do
@@ -486,10 +486,10 @@ validateVariables term =
           pure result
         anno :< LamUPF v x -> do
           oldState <- State.get
-          State.modify (Map.insert v (anno :< TVarF v))
+          State.modify (Map.insert (locatedNameText v) (anno :< TVarF (locatedNameText v)))
           result <- validateWithEnvironment x
           State.put oldState
-          pure $ openLambda v result
+          pure $ openLambda (locatedNameText v) result
         anno :< VarUPF n -> do
           definitionsMap <- State.get
           case Map.lookup n definitionsMap of
@@ -531,11 +531,11 @@ annotateUnsizedCount = capTop . flip evalStateT 0 . cata f where
         lift (Set.singleton n, (anno, 0) :< AppUPF ((anno, 0) :< nur) ((anno, 0) :< VarUPF (':' : show n)))
       LetUPF bindings inner -> (\b i -> (anno, 0) :< LetUPF b i) <$> traverse rebind bindings <*> inner
       x -> ((anno, 0) :<) <$> sequence x
-  rebind (loc, n, x) = (\(n', x') -> (loc, n', x')) <$> cap n (evalStateT x 0)
-  cap n (vs, x@((anno, _) :< _)) = lift (Set.empty, (n, foldr (\v b -> (anno, length vs) :< LamUPF (':' : show v) b) x vs))
+  rebind (n, x) = (\(n', x') -> (n, x')) <$> cap (locatedNameText n) (evalStateT x 0)
+  cap n (vs, x@((anno, _) :< _)) = lift (Set.empty, (n, foldr (\v b -> (anno, length vs) :< LamUPF (locatedName anno (':' : show v)) b) x vs))
   -- HACK vars are just placehorders for next step
   capTop (vs, x@((anno, _) :< _)) =
-    foldr (\v b -> (anno, length vs) :< AppUPF ((anno, 0) :< LamUPF (':' : show v) b) ((anno, 0) :< VarUPF (':' : show v))) x vs
+    foldr (\v b -> (anno, length vs) :< AppUPF ((anno, 0) :< LamUPF (locatedName anno (':' : show v)) b) ((anno, 0) :< VarUPF (':' : show v))) x vs
 
 
 -- convert let bindings to nested lambda/app brackets
@@ -573,18 +573,19 @@ letsToApps term =
         Just s | not (null s) -> mconcat . fmap (getTransitive deps) $ Set.toList s
         _ -> Set.empty
       getTransitive' deps = mconcat . fmap (getTransitive deps) . Set.toList
-      makeBindingsAsoc (_, name, def) = case runWriterT def of
+      makeBindingsAsoc (name, def) = case runWriterT def of
         Left s           -> Left s
-        Right (nx, refs) -> pure (name, (nx,refs))
+        Right (nx, refs) -> pure (locatedNameText name, (nx,refs))
       -- f algebra builds Term1 wrapped with metadata (WriterT) of unbound refs (Set String) or ResolverError
       buildRefs :: CofreeF UnprocessedParsedTermF (LocTag, Int) (WriterT (Set String) (Either ResolverError) (Cofree (ParserTermF String String) (LocTag, Int)))
                    -> WriterT (Set String) (Either ResolverError) (Cofree (ParserTermF String String) (LocTag, Int))
       buildRefs ((anno, urC) CofreeT.:< upf) = case upf of
         VarUPF n -> writer ((anno, urC) :< TVarF n, Set.singleton n)
         LamUPF v x -> f (runWriterT x) where
-          f (Right (nx, refs)) = let nrefs = Set.delete v refs in if null nrefs && urC == 0
-            then writer ((anno, urC) :< TLamF (Closed v) nx, nrefs)
-            else writer ((anno, urC) :< TLamF (Open v) nx, nrefs)
+          name = locatedNameText v
+          f (Right (nx, refs)) = let nrefs = Set.delete name refs in if null nrefs && urC == 0
+            then writer ((anno, urC) :< TLamF (Closed name) nx, nrefs)
+            else writer ((anno, urC) :< TLamF (Open name) nx, nrefs)
           f (Left s)           = lift $ Left s
         LetUPF bindings inner -> case runWriterT inner of
           Left s -> lift $ Left s
@@ -650,8 +651,8 @@ optimizeBuiltinFunctions = transform optimize where
         VarUPF "left"  -> anno0 :< LeftUPF x
         VarUPF "right" -> anno0 :< RightUPF x
         VarUPF "trace" -> anno0 :< TraceUPF x
-        VarUPF "pair"  -> anno0 :< LamUPF "y" (anno1 :< PairUPF x (anno1 :< VarUPF "y"))
-        VarUPF "app"   -> anno0 :< LamUPF "y" (anno1 :< AppUPF x (anno1 :< VarUPF "y"))
+        VarUPF "pair"  -> anno0 :< LamUPF (locatedName anno0 "y") (anno1 :< PairUPF x (anno1 :< VarUPF "y"))
+        VarUPF "app"   -> anno0 :< LamUPF (locatedName anno0 "y") (anno1 :< AppUPF x (anno1 :< VarUPF "y"))
         _             -> oneApp
         -- VarUP "check" TODO
     x -> x
@@ -675,16 +676,16 @@ generateAllHashes x@(anno :< _) = transform interm x where
 addBuiltins :: AnnotatedUPT -> AnnotatedUPT
 addBuiltins aupt = GeneratedLoc "addBuiltins" Nothing :< LetUPF
   [ bind "zero" (builtin "zero" :< IntUPF 0)
-  , bind "left" (builtin "left" :< LamUPF "x" (builtin "left" :< LeftUPF (builtin "left" :< VarUPF "x")))
-  , bind "right" (builtin "right" :< LamUPF "x" (builtin "right" :< RightUPF (builtin "right" :< VarUPF "x")))
-  , bind "trace" (builtin "trace" :< LamUPF "x" (builtin "trace" :< TraceUPF (builtin "trace" :< VarUPF "x")))
-  , bind "pair" (builtin "pair" :< LamUPF "x" (builtin "pair" :< LamUPF "y" (builtin "pair" :< PairUPF (builtin "pair" :< VarUPF "x") (builtin "pair" :< VarUPF "y"))))
-  , bind "app" (builtin "app" :< LamUPF "x" (builtin "app" :< LamUPF "y" (builtin "app" :< AppUPF (builtin "app" :< VarUPF "x") (builtin "app" :< VarUPF "y"))))
+  , bind "left" (builtin "left" :< LamUPF (locatedName (builtin "left") "x") (builtin "left" :< LeftUPF (builtin "left" :< VarUPF "x")))
+  , bind "right" (builtin "right" :< LamUPF (locatedName (builtin "right") "x") (builtin "right" :< RightUPF (builtin "right" :< VarUPF "x")))
+  , bind "trace" (builtin "trace" :< LamUPF (locatedName (builtin "trace") "x") (builtin "trace" :< TraceUPF (builtin "trace" :< VarUPF "x")))
+  , bind "pair" (builtin "pair" :< LamUPF (locatedName (builtin "pair") "x") (builtin "pair" :< LamUPF (locatedName (builtin "pair") "y") (builtin "pair" :< PairUPF (builtin "pair" :< VarUPF "x") (builtin "pair" :< VarUPF "y"))))
+  , bind "app" (builtin "app" :< LamUPF (locatedName (builtin "app") "x") (builtin "app" :< LamUPF (locatedName (builtin "app") "y") (builtin "app" :< AppUPF (builtin "app" :< VarUPF "x") (builtin "app" :< VarUPF "y"))))
   ]
   aupt
   where
     builtin = BuiltinLoc
-    bind name value = (builtin name, name, value)
+    bind name value = (locatedName (builtin name) name, value)
 
 -- |Process an `AnnotatedUPT` to a `Term3` with failing capability.
 process :: AnnotatedUPT
@@ -783,10 +784,9 @@ resolveMain allModules mainModule = case lookup mainModule allModules of
               in case maybeMain of
                    Nothing -> Left $ NoMainFunction mainModule
                    Just x ->
-                     let loc = case x of
-                           loc' :< _ -> loc'
-                         locatedBindings = (\(name, value) -> (GeneratedLoc "resolveMain.binding" (Just loc), name, value)) <$> pruneBindings x resolved
-                      in Right $ GeneratedLoc "resolveMain" (Just loc) :< LetUPF locatedBindings x
+                     let loc = case x of loc' :< _ -> loc'
+                         locatedBindings = first (locatedName (GeneratedLoc "resolveMain.binding" (Just loc))) <$> pruneBindings x resolved
+                     in Right $ GeneratedLoc "resolveMain" (Just loc) :< LetUPF locatedBindings x
 
 main2Term3 :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -- ^Modules: [(ModuleName, [Either Import (VariableName, BindedUPT)])]
            -> String -- ^Module name with main

@@ -14,7 +14,7 @@ import Control.Monad.Except (ExceptT, MonadError, catchError, runExceptT,
                              throwError)
 import Data.Algorithm.Diff (getGroupedDiff)
 import Data.Algorithm.DiffOutput (ppDiff)
-import Data.List (isInfixOf, sortOn)
+import Data.List (isInfixOf, isPrefixOf, sortOn)
 import Debug.Trace (trace, traceShow, traceShowId)
 import System.IO
 import qualified System.IO.Strict as Strict
@@ -184,15 +184,20 @@ genRecursiveLetWithCycle = do
 
 -- Variable and Import str generator
 genName :: Gen String
-genName = do
-  firstChar <- elements $ ['a'..'z'] <> ['A'..'Z']
-  len <- choose (3, 15)
-  rest <- vectorOf (len - 1)
-                   (frequency [ (10, elements (['a'..'z'] <> ['A'..'Z'] <> ['0'..'9']))
-                              , (1, pure '_')
-                              , (1, pure '.')
-                              ])
-  pure (firstChar : rest)
+genName = suchThat genNameRaw (not . startsWithReservedWord)
+  where
+    genNameRaw = do
+      firstChar <- elements $ ['a'..'z'] <> ['A'..'Z']
+      len <- choose (3, 15)
+      rest <- vectorOf (len - 1)
+                       (frequency [ (10, elements (['a'..'z'] <> ['A'..'Z'] <> ['0'..'9']))
+                                  , (1, pure '_')
+                                  , (1, pure '.')
+                                  ])
+      pure (firstChar : rest)
+
+    startsWithReservedWord name = any (`isPrefixOf` name)
+      [ "case", "else", "if", "import", "in", "let", "of", "then" ]
 
 genInteger :: Gen Int
 genInteger = choose (0, 100)

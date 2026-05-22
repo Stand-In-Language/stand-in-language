@@ -30,7 +30,7 @@ import PrettyPrint
 import Telomare (AbstractRunTime, BreakState, BreakState', EvalError (..),
                  ExprA (..), FragExpr (..), FragExprF (..),
                  FragIndex (FragIndex), IExpr (..), IExprF (..), LocTag (..),
-                 PartialType (..), Pattern, RecursionPieceFrag,
+                 LocatedName, PartialType (..), Pattern, RecursionPieceFrag,
                  RecursionSimulationPieces (..), ResolverError (..),
                  RunTimeError (..), TelomareLike (..), Term2, Term3 (Term3),
                  Term4 (Term4), UnprocessedParsedTerm (..),
@@ -464,16 +464,16 @@ tagUPTwithIExpr prelude upt = evalState (para alg upt) 0 where
     LetUPF l (upt0, x) -> do
       i <- State.get
       State.modify (+ 1)
-      let lupt :: [(LocTag, String, UnprocessedParsedTerm)]
-          lupt = (\(loc, name, (upt, _)) -> (loc, name, upt)) <$> l
+      let lupt :: [(LocatedName, UnprocessedParsedTerm)]
+          lupt = (\(name, (upt, _)) -> (name, upt)) <$> l
           slcupt :: State Int
-                      [Cofree UnprocessedParsedTermF (Int, Either String IExpr)]
-          slcupt = mapM (\(_, _, (_, value)) -> value) l
-          vnames :: [(LocTag, String)]
-          vnames = (\(loc, name, _) -> (loc, name)) <$> l
+                       [Cofree UnprocessedParsedTermF (Int, Either String IExpr)]
+          slcupt = mapM (snd . snd) l
+          vnames :: [LocatedName]
+          vnames = fst <$> l
       lcupt <- slcupt
       x' <- x
-      pure $ (i, upt2iexpr $ LetUP lupt upt0) :< LetUPF (zipWith (\(loc, name) value -> (loc, name, value)) vnames lcupt) x'
+      pure $ (i, upt2iexpr $ LetUP lupt upt0) :< LetUPF (zip vnames lcupt) x'
     CaseUPF (upt0, x) l -> do
       i <- State.get
       State.modify (+ 1)

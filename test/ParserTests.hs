@@ -71,11 +71,24 @@ unitTests = testGroup "Unit tests"
   , testCase "let binding source spans exclude trailing whitespace" $ do
       case runParser parseLongExpr "" "let foo   = 0 in foo" of
         Left err -> assertFailure $ errorBundlePretty err
-        Right (_ :< LetUPF [(SourceLoc span, "foo", _)] _) -> do
+        Right (_ :< LetUPF [(name, _)] _) | SourceLoc span <- locatedNameLoc name -> do
+          locatedNameText name @?= "foo"
           sourcePositionLine (sourceSpanStart span) @?= 1
           sourcePositionColumn (sourceSpanStart span) @?= 5
           sourcePositionLine (sourceSpanEnd span) @?= 1
           sourcePositionColumn (sourceSpanEnd span) @?= 8
+        Right parsed -> assertFailure $ "unexpected parse result: " <> show parsed
+  , testCase "lambda binding source spans exclude trailing whitespace" $ do
+      case runParser parseLongExpr "" "\\foo   -> foo" of
+        Left err -> assertFailure $ errorBundlePretty err
+        Right (_ :< LamUPF binder _) -> case locatedNameLoc binder of
+          SourceLoc span -> do
+            locatedNameText binder @?= "foo"
+            sourcePositionLine (sourceSpanStart span) @?= 1
+            sourcePositionColumn (sourceSpanStart span) @?= 2
+            sourcePositionLine (sourceSpanEnd span) @?= 1
+            sourcePositionColumn (sourceSpanEnd span) @?= 5
+          loc -> assertFailure $ "unexpected lambda binder location: " <> show loc
         Right parsed -> assertFailure $ "unexpected parse result: " <> show parsed
   , testCase "test function applied to a string that has whitespaces in both sides inside a structure" $ do
       res1 <- parseSuccessful parseLongExpr "(foo \"woops\" , 0)"
@@ -214,7 +227,7 @@ unitTests = testGroup "Unit tests"
       res `compare` False @?= EQ
   , testCase "Case within top level definitions" $ do
       res' <- runTelomareParser parseTopLevel caseExpr0
-      let res = stripLetBindingLocs $ forget res'
+      let res = stripParserLocs $ forget res'
       res @?= caseExpr0UPT
   , testCase "Simple import parsing" $ do
       res' <- runTelomareParser parseImport importExpr0str
@@ -242,20 +255,21 @@ importQualifiedExpr0 = ImportQualifiedUP "F" "Foo"
 importExpr0str = "import Foo"
 importExpr0 = ImportUP "Foo"
 
-stripLetBindingLocs :: UnprocessedParsedTerm -> UnprocessedParsedTerm
-stripLetBindingLocs = cata $ \case
-  LetUPF bindings body -> LetUP ((\(_, name, value) -> (UnknownLoc, name, value)) <$> bindings) body
+stripParserLocs :: UnprocessedParsedTerm -> UnprocessedParsedTerm
+stripParserLocs = cata $ \case
+  LetUPF bindings body -> LetUP ((\(name, value) -> (locatedName UnknownLoc $ locatedNameText name, value)) <$> bindings) body
+  LamUPF name body -> LamUP (locatedName UnknownLoc $ locatedNameText name) body
   other -> embed other
 
 caseExpr0UPT =
-  LetUP [ (UnknownLoc, "foo", LamUP "a" (CaseUP (VarUP "a")
+  LetUP [ (locatedName UnknownLoc "foo", LamUP (locatedName UnknownLoc "a") (CaseUP (VarUP "a")
                                [ (PatternInt 0,VarUP "a")
                                , (PatternVar "x",AppUP (VarUP "succ") (VarUP "a"))
                                ]))
-        , (UnknownLoc, "main", LamUP "i" (PairUP (StringUP "Success")
+        , (locatedName UnknownLoc "main", LamUP (locatedName UnknownLoc "i") (PairUP (StringUP "Success")
                                      (IntUP 0)))
         ]
-        (LamUP "i" (PairUP (StringUP "Success") (IntUP 0)))
+        (LamUP (locatedName UnknownLoc "i") (PairUP (StringUP "Success") (IntUP 0)))
 caseExpr0 = unlines
   [ "foo = \\a -> case a of"
   , "              0 -> a"

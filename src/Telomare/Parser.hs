@@ -1,6 +1,5 @@
 {-# LANGUAGE LambdaCase          #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TupleSections       #-}
 {-# LANGUAGE TypeFamilies        #-}
 
 module Telomare.Parser where
@@ -36,18 +35,18 @@ import Text.Show.Deriving (deriveShow1)
 type AnnotatedUPT = Cofree UnprocessedParsedTermF LocTag
 
 data AssignmentEntry
-  = SingleAssignment LocTag String AnnotatedUPT
-  | ListAssignment LocTag [(LocTag, String)] AnnotatedUPT
+  = SingleAssignment LocatedName AnnotatedUPT
+  | ListAssignment LocTag [LocatedName] AnnotatedUPT
 
 instance Plated UnprocessedParsedTerm where
   plate f = \case
     ITEUP i t e -> ITEUP <$> f i <*> f t <*> f e
-    LetUP l x   -> LetUP <$> traverse (\(loc, name, value) -> (loc, name,) <$> f value) l <*> f x
+    LetUP l x   -> LetUP <$> traverse (traverse f) l <*> f x
     CaseUP x l  -> CaseUP <$> f x <*> traverse (sequenceA . second f) l
     ListUP l    -> ListUP <$> traverse f l
     PairUP a b  -> PairUP <$> f a <*> f b
     AppUP u x   -> AppUP <$> f u <*> f x
-    LamUP s x   -> LamUP s <$> f x
+    LamUP name x -> LamUP name <$> f x
     LeftUP x    -> LeftUP <$> f x
     RightUP x   -> RightUP <$> f x
     TraceUP x   -> TraceUP <$> f x
@@ -231,7 +230,7 @@ parseHash = do
 parseListAssignment :: TelomareParser AssignmentEntry
 parseListAssignment = do
   x <- getSourceLoc
-  names <- (brackets (commaSep (scn *> locatedIdentifier <* scn)) <* scn)
+  names <- (brackets (commaSep (scn *> locatedNameParser <* scn)) <* scn)
            <?> "list assignment names"
   (scn *> symbol "=") <?> "list assignment ="
   expr <- (scn *> parseLongExpr <* scn) <?> "list assignment body"
@@ -239,6 +238,9 @@ parseListAssignment = do
 
 locatedIdentifier :: TelomareParser (LocTag, String)
 locatedIdentifier = lexeme $ withSourceSpan identifierRaw
+
+locatedNameParser :: TelomareParser LocatedName
+locatedNameParser = uncurry locatedName <$> locatedIdentifier
 
 parseCase :: TelomareParser AnnotatedUPT
 parseCase = do
@@ -258,12 +260,33 @@ parseSingleCase = do
 
 parsePattern :: TelomareParser Pattern
 parsePattern = choice $ try <$> [ parsePatternIgnore
-                                , parsePatternVar
-                                , parsePatternAnnotated
-                                , parsePatternString
-                                , parsePatternInt
-                                , parsePatternPair
-                                ]
+                                 , parsePatternVar
+                                 , parsePatternAnnotated
+                                 , parsePatternString
+                                 , parsePatternInt
+                                 , parsePatternPair
+                                 ]
+
+parseLocatedPattern :: TelomareParser (LocTag, Pattern)
+parseLocatedPattern = choice $ try <$> [ parseLocatedPatternVar
+                                       , parseLocatedPatternOther
+                                       ]
+
+parseLocatedPatternVar :: TelomareParser (LocTag, Pattern)
+parseLocatedPatternVar = do
+  (loc, name) <- locatedIdentifier <* scn
+  pure (loc, PatternVar name)
+
+parseLocatedPatternOther :: TelomareParser (LocTag, Pattern)
+parseLocatedPatternOther = do
+  loc <- getSourceLoc
+  pattern' <- choice $ try <$> [ parsePatternIgnore
+                               , parsePatternAnnotated
+                               , parsePatternString
+                               , parsePatternInt
+                               , parsePatternPair
+                               ]
+  pure (loc, pattern')
 
 parsePatternPair :: TelomareParser Pattern
 parsePatternPair = parens $ do
@@ -341,10 +364,10 @@ genPatternVarName = ("generatedVar" <>)
 
 -- |Pick the lambda-bound variable name for a pattern: use the user's name
 -- for a 'PatternVar', otherwise generate one.
-lambdaVarName :: Pattern -> String
-lambdaVarName = \case
-  PatternVar str -> str
-  p              -> genPatternVarName p
+lambdaVarName :: (LocTag, Pattern) -> LocatedName
+lambdaVarName (loc, pattern') = case pattern' of
+  PatternVar str -> locatedName loc str
+  p              -> locatedName (GeneratedLoc "lambda pattern" (Just loc)) (genPatternVarName p)
 
 -- |Build a multi-argument lambda whose destructuring all happens INSIDE
 -- the innermost lambda body. For @\\p1 p2 p3 -> body@ this emits
@@ -359,10 +382,10 @@ lambdaVarName = \case
 -- This avoids putting a function-valued lambda inside a case body, which
 -- would cause the case-rewrite to type-mismatch against the (Pair-typed)
 -- abort fallback.
-buildMultiLambda :: LocTag -> [Pattern] -> AnnotatedUPT -> AnnotatedUPT
+buildMultiLambda :: LocTag -> [(LocTag, Pattern)] -> AnnotatedUPT -> AnnotatedUPT
 buildMultiLambda lt patterns body =
   let varNames = lambdaVarName <$> patterns
-      destructured = foldr applyDestructure body (zip patterns varNames)
+      destructured = foldr applyDestructure body (zip (snd <$> patterns) (locatedNameText <$> varNames))
       lamWrapped = foldr (\v inner -> lt :< LamUPF v inner) destructured varNames
   in lamWrapped
   where
@@ -390,14 +413,14 @@ buildMultiLambda lt patterns body =
 -- Kept as a thin wrapper around 'buildMultiLambda' so existing callers
 -- that work pattern-at-a-time continue to function.
 makeLambda :: LocTag -> Pattern -> AnnotatedUPT -> AnnotatedUPT
-makeLambda lt p = buildMultiLambda lt [p]
+makeLambda lt p = buildMultiLambda lt [(lt, p)]
 
 -- |Parse lambda expression.
 parseLambda :: TelomareParser AnnotatedUPT
 parseLambda = do
   x <- getSourceLoc
   symbol "\\" <* scn
-  variables <- some parsePattern <* scn
+  variables <- some parseLocatedPattern <* scn
   symbol "->" <* scn
   term1expr <- parseLongExpr <* scn
   pure $ buildMultiLambda x variables term1expr
@@ -446,18 +469,18 @@ parseRefinementCheck = do
 -- |Parse assignment add adding binding to ParserState.
 parseAssignment :: TelomareParser (String, AnnotatedUPT)
 parseAssignment = do
-  (_, var, expr) <- parseLocatedAssignment
-  pure (var, expr)
+  (var, expr) <- parseLocatedAssignment
+  pure (locatedNameText var, expr)
 
-parseLocatedAssignment :: TelomareParser (LocTag, String, AnnotatedUPT)
+parseLocatedAssignment :: TelomareParser (LocatedName, AnnotatedUPT)
 parseLocatedAssignment = do
   (loc, var) <- locatedIdentifier <* scn
   annotation <- optional . try $ parseRefinementCheck
   scn *> symbol "=" <?> "assignment ="
   expr <- scn *> parseLongExpr <* scn
   case annotation of
-    Just annot -> pure (loc, var, annot expr)
-    _          -> pure (loc, var, expr)
+    Just annot -> pure (locatedName loc var, annot expr)
+    _          -> pure (locatedName loc var, expr)
 
 -- |Parse top level expressions.
 parseTopLevel :: TelomareParser AnnotatedUPT
@@ -485,15 +508,15 @@ parseImportQualified = do
 -- uppercase-lambda list assignment during expansion.
 parseAssignmentEntry :: TelomareParser AssignmentEntry
 parseAssignmentEntry =
-  (\(loc, name, value) -> SingleAssignment loc name value) <$> parseLocatedAssignment
+  uncurry SingleAssignment <$> parseLocatedAssignment
     <|> parseListAssignment
 
 -- |Parse assignments, expanding list assignments into their per-slot bindings.
 parseAssignmentEntries :: TelomareParser [(String, AnnotatedUPT)]
 parseAssignmentEntries = do
-  fmap (\(_, name, value) -> (name, value)) <$> parseLocatedAssignmentEntries
+  fmap (first locatedNameText) <$> parseLocatedAssignmentEntries
 
-parseLocatedAssignmentEntries :: TelomareParser [(LocTag, String, AnnotatedUPT)]
+parseLocatedAssignmentEntries :: TelomareParser [(LocatedName, AnnotatedUPT)]
 parseLocatedAssignmentEntries = do
   entries <- scn *> many parseAssignmentEntry <* eof
   pure (expandAssignmentEntry =<< entries)
@@ -505,18 +528,18 @@ parseTopLevelWithExtraModuleBindings :: [(String, AnnotatedUPT)]
 parseTopLevelWithExtraModuleBindings lst = do
   x <- getSourceLoc
   bindingList <- parseLocatedAssignmentEntries
-  case lookup "main" $ (\(_, name, value) -> (name, value)) <$> bindingList of
-    Just m  -> pure $ x :< LetUPF (((\(name, value) -> (UnknownLoc, name, value)) <$> lst) <> bindingList) m
+  case lookup "main" $ first locatedNameText <$> bindingList of
+    Just m  -> pure $ x :< LetUPF ((first (locatedName UnknownLoc) <$> lst) <> bindingList) m
     Nothing -> fail "missing 'main' definition"
 
-expandAssignmentEntry :: AssignmentEntry -> [(LocTag, String, AnnotatedUPT)]
+expandAssignmentEntry :: AssignmentEntry -> [(LocatedName, AnnotatedUPT)]
 expandAssignmentEntry = \case
-  SingleAssignment loc name body -> [(loc, name, body)]
+  SingleAssignment name body -> [(name, body)]
   ListAssignment loc locatedNames body
     | isUDTAssignment names body -> expandUDTLocated loc locatedNames body
     | otherwise                 -> expandPlainListAssignment loc locatedNames body
     where
-      names = snd <$> locatedNames
+      names = locatedNameText <$> locatedNames
 
 isUDTAssignment :: [String] -> AnnotatedUPT -> Bool
 isUDTAssignment (name:_) (_ :< LamUPF _ _) = case name of
@@ -524,20 +547,20 @@ isUDTAssignment (name:_) (_ :< LamUPF _ _) = case name of
   _           -> False
 isUDTAssignment _ _ = False
 
-expandPlainListAssignment :: LocTag -> [(LocTag, String)] -> AnnotatedUPT -> [(LocTag, String, AnnotatedUPT)]
+expandPlainListAssignment :: LocTag -> [LocatedName] -> AnnotatedUPT -> [(LocatedName, AnnotatedUPT)]
 expandPlainListAssignment loc locatedNames body =
   case listAssignmentSlots body of
     Just (slots, wrapBody)
       | length locatedNames == length slots ->
-          zipWith (\(nameLoc, name) slot -> (nameLoc, name, wrapBody slot)) locatedNames slots
+          zipWith (\name slot -> (name, wrapBody slot)) locatedNames slots
       | otherwise -> error
         $ "list assignment arity mismatch: " <> show (length locatedNames)
         <> " names for " <> show (length slots) <> " values"
     Nothing ->
       let intermediate = listAssignmentIntermediate loc
           source = loc :< VarUPF intermediate
-          mkAccessorBinding idx (nameLoc, name) = (nameLoc, name, accessAt loc idx source)
-      in (GeneratedLoc "listAssignmentIntermediate" (Just loc), intermediate, body)
+          mkAccessorBinding idx name = (name, accessAt loc idx source)
+      in (locatedName (GeneratedLoc "listAssignmentIntermediate" (Just loc)) intermediate, body)
        : zipWith mkAccessorBinding [0 ..] locatedNames
 
 -- |Find a final list literal in a plain list assignment, preserving lambdas
@@ -589,55 +612,54 @@ accessAt loc n e = loc :< LeftUPF (iterate (\x -> loc :< RightUPF x) e !! n)
 -- this fallback is kept for direct/internal callers of 'expandUDT'.
 expandUDT :: AnnotatedUPT -> [(String, AnnotatedUPT)]
 expandUDT (loc :< UDTUPF names@(tname:_) body) =
-  (\(_, name, value) -> (name, value)) <$> expandUDTLocated loc ((loc,) <$> names) body
+  first locatedNameText <$> expandUDTLocated loc (locatedName loc <$> names) body
 expandUDT _ = []
 
-expandUDTLocated :: LocTag -> [(LocTag, String)] -> AnnotatedUPT -> [(LocTag, String, AnnotatedUPT)]
+expandUDTLocated :: LocTag -> [LocatedName] -> AnnotatedUPT -> [(LocatedName, AnnotatedUPT)]
 expandUDTLocated loc locatedNames body =
   case names of
     tname:_ -> expandUDTLocated' loc locatedNames tname body
     _       -> []
   where
-    names = snd <$> locatedNames
+    names = locatedNameText <$> locatedNames
 
-expandUDTLocated' :: LocTag -> [(LocTag, String)] -> String -> AnnotatedUPT -> [(LocTag, String, AnnotatedUPT)]
+expandUDTLocated' :: LocTag -> [LocatedName] -> String -> AnnotatedUPT -> [(LocatedName, AnnotatedUPT)]
 expandUDTLocated' loc locatedNames tname body =
   case body of
     (_ :< LamUPF hParam inner) ->
       let (slots, wrapBody) = udtSlots tname inner
+          hParamName = locatedNameText hParam
           (coreSlots, hoistedSlots) = splitAt 2 slots
           coreNames = take (1 + length coreSlots) locatedNames
           hoistedNames = drop (1 + length coreSlots) locatedNames
-          validator    = autoValidator loc tname hParam
+          validator    = autoValidator loc tname hParamName
           intermediate = "__udt_" <> tname
           hashName     = intermediate <> "_hash"
           hashVar      = loc :< VarUPF hashName
-          coreList     = loc :< ListUPF ((loc :< VarUPF hParam)
+          coreList     = loc :< ListUPF ((loc :< VarUPF hParamName)
                                       : (loc :< VarUPF tname)
                                       : coreSlots)
-          wrappedInner = loc :< LetUPF [(loc, tname, validator)] (wrapBody coreList)
+          wrappedInner = loc :< LetUPF [(locatedName loc tname, validator)] (wrapBody coreList)
           wrapper      = loc :< LamUPF hParam wrappedInner
           udtTuple     = loc :< AppUPF wrapper (loc :< HashUPF wrapper)
-          generated parent name = (GeneratedLoc name (Just parent), name)
-          hashBinding  = let (hashLoc, hashName') = generated loc hashName
-                         in (hashLoc, hashName', accessAt loc 0 (loc :< VarUPF intermediate))
-          mkAccessorBinding idx (nameLoc, name) =
-            (nameLoc, name, accessAt loc idx (loc :< VarUPF intermediate))
-          mkHoistedBinding (nameLoc, name) slot =
-            ( nameLoc
-            , name
-            , loc :< LetUPF [ (loc, hParam, hashVar)
-                            , (loc, tname, validator)
+          generated parent name = locatedName (GeneratedLoc name (Just parent)) name
+          hashBinding  = (generated loc hashName, accessAt loc 0 (loc :< VarUPF intermediate))
+          mkAccessorBinding idx name =
+            (name, accessAt loc idx (loc :< VarUPF intermediate))
+          mkHoistedBinding name slot =
+            ( name
+            , loc :< LetUPF [ (locatedName (locatedNameLoc hParam) hParamName, hashVar)
+                            , (locatedName loc tname, validator)
                             ]
                 (wrapBody slot)
             )
-          (intermediateLoc, intermediateName) = generated loc intermediate
-      in (intermediateLoc, intermediateName, udtTuple)
+          intermediateName = generated loc intermediate
+      in (intermediateName, udtTuple)
        : hashBinding
        : zipWith mkAccessorBinding [1 ..] coreNames
        <> zipWith mkHoistedBinding hoistedNames hoistedSlots
     _ ->
-      zipWith (\(nameLoc, name) idx -> (nameLoc, name, accessAt loc idx body)) locatedNames [0 ..]
+      zipWith (\name idx -> (name, accessAt loc idx body)) locatedNames [0 ..]
 
 -- |Find the final list literal in a UDT body and return a wrapper that
 -- reapplies any surrounding lets. Hoisted methods get the same let
@@ -659,7 +681,7 @@ udtSlots tname = go where
 -- extra ITE.
 autoValidator :: LocTag -> String -> String -> AnnotatedUPT
 autoValidator loc tname hParam =
-  loc :< LamUPF "__udt_v"
+  loc :< LamUPF (locatedName (GeneratedLoc "annotated pattern lambda" (Just loc)) "__udt_v")
     (loc :< ITEUPF
        (loc :< AppUPF
           (loc :< AppUPF
@@ -713,7 +735,7 @@ parseImportOrAssignment = do
       maybeEntry <- optional $ scn *> try parseAssignmentEntry <* scn
       case maybeEntry of
         Nothing    -> fail "Expected either an import statement or an assignment"
-        Just entry -> pure (Right . (\(_, name, value) -> (name, value)) <$> expandAssignmentEntry entry)
+        Just entry -> pure (Right . first locatedNameText <$> expandAssignmentEntry entry)
     Just imp -> pure [Left imp]
 
 parseWithPrelude :: [(String, AnnotatedUPT)]   -- ^Prelude

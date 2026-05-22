@@ -263,7 +263,7 @@ instance Arbitrary UnprocessedParsedTerm where
                                    , LeftUP <$> recur (i - 1)
                                    , RightUP <$> recur (i - 1)
                                    , TraceUP <$> recur (i - 1)
-                                   , elements lambdaTerms >>= \var -> LamUP var <$> genTree (var : varList) (i - 1)
+                                    , elements lambdaTerms >>= \var -> LamUP (locatedName UnknownLoc var) <$> genTree (var : varList) (i - 1)
                                    , ITEUP <$> recur third <*> recur third <*> recur third
                                    , UnsizedRecursionUP <$> recur third <*> recur third <*> recur third
                                    , ListUP <$> childList
@@ -271,8 +271,8 @@ instance Arbitrary UnprocessedParsedTerm where
                                          ; let childShare = div i listSize
                                                makeList [] = pure []
                                                makeList (v:vl) = do
-                                                 newTree <- genTree (v:varList) childShare
-                                                 ((UnknownLoc, v, newTree) :) <$> makeList vl
+                                                  newTree <- genTree (v:varList) childShare
+                                                  ((locatedName UnknownLoc v, newTree) :) <$> makeList vl
                                          ; vars <- take listSize <$> identifierList
                                          ; childList <- makeList vars
                                          ; pure $ LetUP (init childList) (letBindingValue . last $ childList)
@@ -307,7 +307,7 @@ instance Arbitrary UnprocessedParsedTerm where
       _ -> let shrinkBinding (n, v) = map (n,) $ shrink v
            in snd (head l) : LetUP (tail l) i : map (flip LetUP i . second shrink) l
 -}
-    LetUP l i -> let shrinkBinding (loc, n, v) = (loc, n,) <$> shrink v
+    LetUP l i -> let shrinkBinding (n, v) = (n,) <$> shrink v
                      removeAt n x = let (f,s) = splitAt n x in (f <> tail s)
                      makeOptions f n [] = error "debugging split here"
                      makeOptions f n x = let (pa,c:pz) = splitAt n x in ((pa ++) . (:pz) <$> f c)

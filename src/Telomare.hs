@@ -1116,17 +1116,29 @@ data Pattern
   | PatternPair Pattern Pattern
   deriving (Show, Eq, Ord)
 
+newtype LocatedName = LocatedName (LocTag, String)
+  deriving (Eq, Ord, Show)
+
+locatedNameLoc :: LocatedName -> LocTag
+locatedNameLoc (LocatedName (loc, _)) = loc
+
+locatedNameText :: LocatedName -> String
+locatedNameText (LocatedName (_, name)) = name
+
+locatedName :: LocTag -> String -> LocatedName
+locatedName loc name = LocatedName (loc, name)
+
 -- |Firstly parsed AST sans location annotations
 data UnprocessedParsedTerm
   = VarUP String
   | ITEUP UnprocessedParsedTerm UnprocessedParsedTerm UnprocessedParsedTerm
-  | LetUP [(LocTag, String, UnprocessedParsedTerm)] UnprocessedParsedTerm
+  | LetUP [(LocatedName, UnprocessedParsedTerm)] UnprocessedParsedTerm
   | ListUP [UnprocessedParsedTerm]
   | IntUP Int
   | StringUP String
   | PairUP UnprocessedParsedTerm UnprocessedParsedTerm
   | AppUP UnprocessedParsedTerm UnprocessedParsedTerm
-  | LamUP String UnprocessedParsedTerm
+  | LamUP LocatedName UnprocessedParsedTerm
   | ChurchUP Int
   | UnsizedRecursionUP UnprocessedParsedTerm UnprocessedParsedTerm UnprocessedParsedTerm
   | LeftUP UnprocessedParsedTerm
@@ -1143,14 +1155,14 @@ data UnprocessedParsedTerm
 makeBaseFunctor ''UnprocessedParsedTerm -- Functorial version UnprocessedParsedTerm
 makePrisms ''UnprocessedParsedTerm
 
-letBindingName :: (LocTag, String, a) -> String
-letBindingName (_, name, _) = name
+letBindingName :: (LocatedName, a) -> String
+letBindingName (name, _) = locatedNameText name
 
-letBindingValue :: (LocTag, String, a) -> a
-letBindingValue (_, _, value) = value
+letBindingValue :: (LocatedName, a) -> a
+letBindingValue (_, value) = value
 
-letBindingLoc :: (LocTag, String, a) -> LocTag
-letBindingLoc (loc, _, _) = loc
+letBindingLoc :: (LocatedName, a) -> LocTag
+letBindingLoc (name, _) = locatedNameLoc name
 
 makeBaseFunctor ''Pattern
 
@@ -1162,7 +1174,7 @@ instance Eq1 UnprocessedParsedTermF where
   liftEq eq (ITEUPF c1 t1 e1) (ITEUPF c2 t2 e2) =
     eq c1 c2 && eq t1 t2 && eq e1 e2
   liftEq eq (LetUPF binds1 body1) (LetUPF binds2 body2) =
-    liftEq (\(_, s1, t1) (_, s2, t2) -> s1 == s2 && eq t1 t2) binds1 binds2 && eq body1 body2
+    liftEq (\(s1, t1) (s2, t2) -> locatedNameText s1 == locatedNameText s2 && eq t1 t2) binds1 binds2 && eq body1 body2
   liftEq eq (ListUPF items1) (ListUPF items2) =
     liftEq eq items1 items2
   liftEq eq (IntUPF n1) (IntUPF n2) =
@@ -1174,7 +1186,7 @@ instance Eq1 UnprocessedParsedTermF where
   liftEq eq (AppUPF f1 x1) (AppUPF f2 x2) =
     eq f1 f2 && eq x1 x2
   liftEq eq (LamUPF var1 body1) (LamUPF var2 body2) =
-    var1 == var2 && eq body1 body2
+    locatedNameText var1 == locatedNameText var2 && eq body1 body2
   liftEq eq (ChurchUPF n1) (ChurchUPF n2) =
     n1 == n2
   liftEq eq (UnsizedRecursionUPF a1 b1 c1) (UnsizedRecursionUPF a2 b2 c2) =
@@ -1228,7 +1240,7 @@ instance Show1 UnprocessedParsedTermF where
     ITEUPF c t e -> showString "ITEUPF " . showsPrecFunc 11 c . showChar ' '
                     . showsPrecFunc 11 t . showChar ' ' . showsPrecFunc 11 e
     LetUPF bindings body ->
-      let showBinding (_, str, x) = showChar '(' . shows str . showString ", "
+      let showBinding (str, x) = showChar '(' . shows (locatedNameText str) . showString ", "
                                  . showsPrecFunc 11 x . showChar ')'
           showBindings bs = showChar '[' . foldr1 (\a b -> a . showString ", " . b)
                            (fmap showBinding bs) . showChar ']'
@@ -1243,7 +1255,7 @@ instance Show1 UnprocessedParsedTermF where
                    . showsPrecFunc 11 b
     AppUPF f x -> showString "AppUPF " . showsPrecFunc 11 f . showChar ' '
                   . showsPrecFunc 11 x
-    LamUPF var body -> showString "LamUPF " . shows var . showChar ' '
+    LamUPF var body -> showString "LamUPF " . shows (locatedNameText var) . showChar ' '
                        . showsPrecFunc 11 body
     ChurchUPF n -> showString "ChurchUPF " . shows n
     UnsizedRecursionUPF a b c -> showString "UnsizedRecursionUPF "

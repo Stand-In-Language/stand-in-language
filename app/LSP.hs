@@ -44,7 +44,8 @@ import Language.LSP.Server
 import Telomare (LocTag (..), Pattern (..), ResolverError (..),
                  SourcePosition (..), SourceSpan (..),
                  UnprocessedParsedTermF (..), letBindingName, letBindingValue,
-                 locStartLineColumn, renderResolverError)
+                 locStartLineColumn, locatedNameLoc, locatedNameText,
+                 renderResolverError)
 import Telomare.Eval (eval2IExpr)
 import Telomare.Parser (AnnotatedUPT, parseModule, parseModuleDetailed)
 import Telomare.Resolver (main2Term3)
@@ -406,7 +407,7 @@ unresolvedTerm globals = go Set.empty
         let localNames = Set.fromList $ letBindingName <$> bindings
             bound' = localNames <> bound
         in concatMap (go bound' . letBindingValue) bindings <> go bound' body
-      LamUPF name body -> go (Set.insert name bound) body
+      LamUPF name body -> go (Set.insert (locatedNameText name) bound) body
       UDTUPF names body -> go (Set.union (Set.fromList names) bound) body
       CaseUPF scrutinee cases ->
         go bound scrutinee <> concatMap (caseRefs bound) cases
@@ -711,7 +712,7 @@ termReferences bound (loc :< term) =
         ListUPF items -> concatMap (termReferences bound) items
         PairUPF a b -> termReferences bound a <> termReferences bound b
         AppUPF f x -> termReferences bound f <> termReferences bound x
-        LamUPF var body -> termReferences (var : bound) body
+        LamUPF var body -> termReferences (locatedNameText var : bound) body
         LeftUPF x -> termReferences bound x
         RightUPF x -> termReferences bound x
         TraceUPF x -> termReferences bound x
@@ -742,14 +743,14 @@ localTermDefinitionAt uri position env (loc :< term) = case term of
     | otherwise -> Nothing
   LetUPF bindings body ->
     let bindingLocations = Map.fromList
-          [ (name, Just $ LSPTypes.Location uri (locTagToRange bindingLoc))
-          | (bindingLoc, name, _) <- bindings
+          [ (locatedNameText name, Just $ LSPTypes.Location uri (locTagToRange $ locatedNameLoc name))
+          | (name, _) <- bindings
           ]
         env' = bindingLocations <> env
         bindingDefinition = listToMaybe
-          [ LSPTypes.Location uri (locTagToRange bindingLoc)
-          | (bindingLoc, _, _) <- bindings
-          , positionInRange position (locTagToRange bindingLoc)
+          [ LSPTypes.Location uri (locTagToRange $ locatedNameLoc name)
+          | (name, _) <- bindings
+          , positionInRange position (locTagToRange $ locatedNameLoc name)
           ]
         bindingRefs = listToMaybe
           [ location
@@ -761,7 +762,13 @@ localTermDefinitionAt uri position env (loc :< term) = case term of
   ListUPF items -> firstJust items
   PairUPF a b -> firstJust [a, b]
   AppUPF f x -> firstJust [f, x]
-  LamUPF name body -> localTermDefinitionAt uri position (Map.insert name Nothing env) body
+  LamUPF name body ->
+    let nameLoc = locatedNameLoc name
+        location = LSPTypes.Location uri (locTagToRange nameLoc)
+        env' = Map.insert (locatedNameText name) (Just location) env
+    in if positionInRange position (locTagToRange nameLoc)
+         then Just location
+         else localTermDefinitionAt uri position env' body
   LeftUPF x -> localTermDefinitionAt uri position env x
   RightUPF x -> localTermDefinitionAt uri position env x
   TraceUPF x -> localTermDefinitionAt uri position env x

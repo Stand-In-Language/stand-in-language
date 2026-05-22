@@ -58,7 +58,7 @@ evalUDTExpr input = do
   case runParser (parseLongExpr <* eof) "" input of
     Left err -> pure $ Left (errorBundlePretty err)
     Right aupt -> do
-      let term = UnknownLoc :< LetUPF ((\(name, value) -> (UnknownLoc, name, value)) <$> pruneBindings aupt allBindings) aupt
+      let term = UnknownLoc :< LetUPF (first (locatedName UnknownLoc) <$> pruneBindings aupt allBindings) aupt
           compile' :: Term3 -> Either EvalError CompiledExpr
           compile' = compile (DebugSizing (SizingSettings 255 False)) runStaticChecks
       case first RE (process term) >>= compile' of
