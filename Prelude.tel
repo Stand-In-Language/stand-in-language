@@ -143,44 +143,19 @@ gcd = \a b ->
 lcm = \a b -> dDiv (dTimes a b) (gcd a b)
 
 [Rational, fromRational, toRational, rPlus, rTimes, rMinus, rDiv] = \h ->
-  [ \n d -> if dEqual d 0
-            then abort "Denominator cannot be zero"
-            else
-              let g   = gcd n d
-                  num = dDiv n g
-                  den = dDiv d g
-              in (h, (num, den))
-  , \i -> Rational i
-  , \a b ->
-      let n1 = left (right a)
-          d1 = right (right a)
-          n2 = left (right b)
-          d2 = right (right b)
-          num = dPlus (dTimes n1 d2) (dTimes n2 d1)
-          den = dTimes d1 d2
-      in fromRational num den
-  , \a b ->
-      let n1 = left (right a)
-          d1 = right (right a)
-          n2 = left (right b)
-          d2 = right (right b)
-          num = dTimes n1 n2
-          den = dTimes d1 d2
-      in fromRational num den
-  , \a b ->
-      let n1 = left (right a)
-          d1 = right (right a)
-          n2 = left (right b)
-          d2 = right (right b)
-          num = dMinus (dTimes n1 d2) (dTimes n2 d1)
-          den = dTimes d1 d2
-      in fromRational num den
-  , \a b ->
-      let n1 = left (right a)
-          d1 = right (right a)
-          n2 = left (right b)
-          d2 = right (right b)
-          num = dTimes n1 d2
-          den = dTimes d1 n2
-      in fromRational num den
-  ]
+  let rNum = \x -> left (right x)
+      rDen = \x -> right (right x)
+  in [ \n d -> if dEqual d 0
+               then abort "Denominator cannot be zero"
+               else let g = gcd n d
+                    in (h, (dDiv n g, dDiv d g))
+     , Rational
+     , \a b -> fromRational (dPlus (dTimes (rNum a) (rDen b)) (dTimes (rNum b) (rDen a)))
+                            (dTimes (rDen a) (rDen b))
+     , \a b -> fromRational (dTimes (rNum a) (rNum b))
+                            (dTimes (rDen a) (rDen b))
+     , \a b -> fromRational (dMinus (dTimes (rNum a) (rDen b)) (dTimes (rNum b) (rDen a)))
+                            (dTimes (rDen a) (rDen b))
+     , \a b -> fromRational (dTimes (rNum a) (rDen b))
+                            (dTimes (rDen a) (rNum b))
+     ]

@@ -68,5 +68,16 @@ mode file. TELOMARE_ROOT is only an override for non-Nix/manual setups."
 ;; Auto-start LSP in telomare-mode
 (add-hook 'telomare-mode-hook #'lsp)
 
+;; Major-mode leader bindings. Reachable as `SPC m ...` in Evil state and
+;; `M-m m ...` in holy-mode; only LSP features the server actually
+;; implements are bound (no hover, no rename).
+(with-eval-after-load 'lsp-mode
+  (when (fboundp 'spacemacs/set-leader-keys-for-major-mode)
+    (spacemacs/set-leader-keys-for-major-mode 'telomare-mode
+      "g" #'lsp-find-definition
+      "G" #'lsp-find-references
+      "a" #'lsp-execute-code-action
+      "v" #'telomare-lsp-version)))
+
 (provide 'telomare-mode-spacemacs)
 ;;; telomare-mode-spacemacs.el ends here
