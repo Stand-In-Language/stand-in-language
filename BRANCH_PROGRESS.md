@@ -153,11 +153,24 @@ Verified the LSP definition/reference slice.
 
 Plan note: The LSP now has a source-facing top-level navigation index. The next route for navigation quality is to annotate binders directly, then extend the index from top-level symbols to local scopes without scanning source text for binder names.
 
+### 2026-05-21: Spacemacs Nix Store LSP Launch Fix
+
+Fixed Telomare LSP startup from Nix-installed Emacs mode files.
+
+- `telomare-mode-spacemacs.el` now passes absolute flake roots to `nix run` as `path:<root>#lsp`.
+- This fixes failures where the mode is loaded from a Nix store source path and `nix run /nix/store/...-source#lsp --` is interpreted as a non-flake installable.
+- The normal NixOS/Home Manager path is now: load the mode file from the Telomare flake input source in `/nix/store`, auto-detect that store path as `telomare-project-root`, then launch `nix run path:/nix/store/...-source#lsp --`.
+- `TELOMARE_ROOT` remains only an override for non-Nix/manual setups.
+- Verified by loading `telomare-mode-spacemacs.el` directly from an archived `/nix/store/...-source` flake source; `(telomare--lsp-command)` returned `("nix" "run" "path:/nix/store/...-source#lsp" "--")`, and `nix eval --raw path:/nix/store/...-source#apps.x86_64-linux.lsp.program` resolved the server binary.
+
+Plan note: NixOS/Home Manager installs the mode from the flake input source, so the editor should not depend on `/home/hhefesto/src/telomare`. The LSP launch path should come from the flake input source that the system already put in the Nix store.
+
 ## Current Plan
 
-1. Inspect the final diff.
-2. Commit the LSP navigation slice with a detailed multi-line commit message if the diff contains only intended changes.
-3. Continue binder-span and composite parser span work in follow-up slices.
+1. Update the Telomare flake input in the NixOS configuration and rebuild each target system.
+2. Restart Emacs or reload the Telomare mode after rebuilding the NixOS/Home Manager config.
+3. Verify `M-: (telomare--lsp-command)` shows `("nix" "run" "path:/nix/store/...-source#lsp" "--")`.
+4. Continue binder-span and composite parser span work in follow-up slices.
 
 ## Deferred Work
 

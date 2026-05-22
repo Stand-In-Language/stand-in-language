@@ -6,15 +6,16 @@
 
 (defcustom telomare-project-root
   (or (getenv "TELOMARE_ROOT")
-      ;; If this file lives inside the repo, try to auto-detect the flake root:
+      ;; This normally resolves to the Nix flake input source when the mode is
+      ;; loaded from a NixOS/Home Manager generated Spacemacs config.
       (let* ((this (or load-file-name (buffer-file-name)))
              (dir  (and this (file-name-directory this)))
              (root (and dir (locate-dominating-file dir "flake.nix"))))
         (when root (expand-file-name root))))
-  "Path to the Telomare flake directory (the folder containing flake.nix).
+  "Path to the Telomare flake directory or Nix store flake input source.
 
-Users should set this to something like \"~/src/telomare\".
-You can also set TELOMARE_ROOT in your environment."
+NixOS/Home Manager installs should leave this auto-detected from the loaded
+mode file. TELOMARE_ROOT is only an override for non-Nix/manual setups."
   :type '(choice (const :tag "Auto-detect / unset" nil)
                  (directory :tag "Telomare flake directory"))
   :group 'telomare)
@@ -29,8 +30,8 @@ You can also set TELOMARE_ROOT in your environment."
   (unless (and telomare-project-root
                (file-exists-p (expand-file-name "flake.nix" telomare-project-root)))
     (user-error "telomare-project-root is not set (or has no flake.nix). Set it to your Telomare repo path"))
-  (let* ((root  (file-truename (expand-file-name telomare-project-root)))
-         (flake (format "%s#%s" root telomare-lsp-flake-attr)))
+  (let* ((root  (directory-file-name (file-truename (expand-file-name telomare-project-root))))
+         (flake (format "path:%s#%s" root telomare-lsp-flake-attr)))
     (list "nix" "run" flake "--")))
 
 ;; Define Telomare mode
