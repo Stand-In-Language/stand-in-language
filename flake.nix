@@ -97,8 +97,10 @@
           runtimeInputs = [
             pkgs.diffutils
             pkgs.git
-            pkgs.haskellPackages.hlint
-            pkgs.haskellPackages.stylish-haskell
+            # Use the project's GHC 9.6 tools so format-lint matches the
+            # hlint/stylish-haskell that the devShell and CI use.
+            pkgs.haskell.packages.ghc96.hlint
+            pkgs.haskell.packages.ghc96.stylish-haskell
           ];
           text = ''
             mapfile -t hs_files < <(git ls-files '*.hs')
@@ -119,11 +121,18 @@
               done
             fi
 
-            if [ "$format_status" -ne 0 ]; then
-              exit "$format_status"
-            fi
+            lint_status=0
+            hlint . || lint_status=$?
 
-            hlint .
+            if [ "$format_status" -ne 0 ]; then
+              printf 'Formatting check failed\n'
+            fi
+            if [ "$lint_status" -ne 0 ]; then
+              printf 'Linting check failed\n'
+            fi
+            if [ "$format_status" -ne 0 ] || [ "$lint_status" -ne 0 ]; then
+              exit 1
+            fi
 
             printf 'Formatting and linting are OK\n'
           '';
