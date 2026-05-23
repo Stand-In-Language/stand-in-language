@@ -63,7 +63,7 @@ evalExprString input = do
   case parseResult of
     Left err -> pure $ Left (errorBundlePretty err)
     Right aupt -> do
-      let term = DummyLoc :< LetUPF (pruneBindings aupt preludeBindings) aupt
+      let term = UnknownLoc :< LetUPF (first (locatedName UnknownLoc) <$> pruneBindings aupt preludeBindings) aupt
           compile' :: Term3 -> Either EvalError CompiledExpr
           compile' = compile (DebugSizing (SizingSettings 255 False)) runStaticChecks
       case first RE (process term) >>= compile' of

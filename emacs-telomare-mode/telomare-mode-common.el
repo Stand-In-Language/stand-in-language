@@ -34,6 +34,15 @@
 ;;;###autoload
 (add-to-list 'auto-mode-alist '("\\.tel\\'" . telomare-mode))
 
+(defun telomare-lsp-version ()
+  "Show the Telomare LSP version."
+  (interactive)
+  (unless (bound-and-true-p lsp-mode)
+    (user-error "LSP is not active in this buffer"))
+  (let ((version (lsp-request "workspace/executeCommand"
+                              `(:command "telomare.version" :arguments []))))
+    (message "Telomare LSP version: %s" version)))
+
 ;; Common LSP setup function
 (defun telomare-register-lsp-client ()
   "Register the Telomare LSP client."

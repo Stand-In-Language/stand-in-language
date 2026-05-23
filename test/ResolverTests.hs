@@ -14,7 +14,7 @@ import Control.Monad.Except (ExceptT, MonadError, catchError, runExceptT,
                              throwError)
 import Data.Algorithm.Diff (getGroupedDiff)
 import Data.Algorithm.DiffOutput (ppDiff)
-import Data.List (isInfixOf, sortOn)
+import Data.List (isInfixOf, isPrefixOf, sortOn)
 import Debug.Trace (trace, traceShow, traceShowId)
 import System.IO
 import qualified System.IO.Strict as Strict
@@ -47,54 +47,52 @@ tests = testGroup "Tests" [unitTests, qcProps, unitTestsCase, qcPropsCase]
 ------ Property Tests
 ---------------------
 qcProps = testGroup "Property tests (QuickCheck)"
-  [ QC.testProperty "Check recursive let work backward" $
-      \() -> withMaxSuccess 16 . QC.idempotentIOProperty $ do
-        assignments <- generate genRecursiveLet
+  [ QC.testProperty "Check recursive let work backward"
+      . withMaxSuccess 16
+      . QC.forAll genRecursiveLet $ \assignments -> QC.idempotentIOProperty $ do
         let dummymodule = wrapRecursiveBackwardLet assignments
             expectedValue = recursiveLetResult assignments <> "\ndone"
         result <- testUserDefAdHocTypes dummymodule
-        pure $ result === expectedValue
-  , QC.testProperty "Check recursive let work forward" $
-      \() -> withMaxSuccess 16 . QC.idempotentIOProperty $ do
-        assignments <- generate genRecursiveLet
+        pure . QC.counterexample dummymodule $ result === expectedValue
+  , QC.testProperty "Check recursive let work forward"
+      . withMaxSuccess 16
+      . QC.forAll genRecursiveLet $ \assignments -> QC.idempotentIOProperty $ do
         let dummymodule = wrapRecursiveForwardLet assignments
             expectedValue = recursiveLetResult assignments <> "\ndone"
         result <- testUserDefAdHocTypes dummymodule
-        pure $ result === expectedValue
-  , QC.testProperty "Check recursive let work" $
-      \() -> withMaxSuccess 16 . QC.idempotentIOProperty $ do
-        assignments <- generate genRecursiveLet
-        shuffleInt  <- generate genInt
+        pure . QC.counterexample dummymodule $ result === expectedValue
+  , QC.testProperty "Check recursive let work"
+      . withMaxSuccess 16
+      . QC.forAll genRecursiveLet $ \assignments -> QC.forAll genInt $ \shuffleInt -> QC.idempotentIOProperty $ do
         let dummymodule   = wrapRecursiveRandomLet assignments shuffleInt
             expectedValue = recursiveLetResult assignments <> "\ndone"
         result <- testUserDefAdHocTypes dummymodule
-        pure $ result === expectedValue
-  , QC.testProperty "Cyclic let backward are stopped to avoid loops" $
-      \() -> withMaxSuccess 16 . QC.idempotentIOProperty $ do
-        assignments <- generate genRecursiveLetWithCycle
+        pure . QC.counterexample dummymodule $ result === expectedValue
+  , QC.testProperty "Cyclic let backward are stopped to avoid loops"
+      . withMaxSuccess 16
+      . QC.forAll genRecursiveLetWithCycle $ \assignments -> QC.idempotentIOProperty $ do
         let dummymodule   = wrapRecursiveBackwardLet assignments
             expectedError = "failed: RE (DefinitionCycle"
         result <- try (testUserDefAdHocTypes dummymodule) :: IO (Either SomeException String)
-        pure $ case result of
+        pure . QC.counterexample dummymodule $ case result of
           Left err  -> expectedError `isInfixOf` show err
           Right res -> expectedError `isInfixOf` show res
-  , QC.testProperty "Cyclic let forward are stopped to avoid loops" $
-      \() -> withMaxSuccess 16 . QC.idempotentIOProperty $ do
-        assignments <- generate genRecursiveLetWithCycle
+  , QC.testProperty "Cyclic let forward are stopped to avoid loops"
+      . withMaxSuccess 16
+      . QC.forAll genRecursiveLetWithCycle $ \assignments -> QC.idempotentIOProperty $ do
         let dummymodule = wrapRecursiveForwardLet assignments
             expectedError = "failed: RE (DefinitionCycle"
         result <- try (testUserDefAdHocTypes dummymodule) :: IO (Either SomeException String)
-        pure $ case result of
+        pure . QC.counterexample dummymodule $ case result of
           Left err  -> expectedError `isInfixOf` show err
           Right res -> expectedError `isInfixOf` show res
-  , QC.testProperty "Cyclic let are stopped to avoid loops" $
-      \() -> withMaxSuccess 16 . QC.idempotentIOProperty $ do
-        assignments <- generate genRecursiveLetWithCycle
-        shuffleInt  <- generate genInt
+  , QC.testProperty "Cyclic let are stopped to avoid loops"
+      . withMaxSuccess 16
+      . QC.forAll genRecursiveLetWithCycle $ \assignments -> QC.forAll genInt $ \shuffleInt -> QC.idempotentIOProperty $ do
         let dummymodule = wrapRecursiveRandomLet assignments shuffleInt
             expectedError = "failed: RE (DefinitionCycle"
         result <- try (testUserDefAdHocTypes dummymodule) :: IO (Either SomeException String)
-        pure $ case result of
+        pure . QC.counterexample dummymodule $ case result of
           Left err  -> expectedError `isInfixOf` show err
           Right res -> expectedError `isInfixOf` show res
   , QC.testProperty "Arbitrary UnprocessedParsedTerm to test hash uniqueness of HashUP's" $
@@ -105,12 +103,12 @@ qcProps = testGroup "Property tests (QuickCheck)"
       \(x' :: Term2) -> withMaxSuccess 16 $
         let x = forget x'
         in containsTHash x QC.==> onlyHashUPsChanged x
-  , QC.testProperty "Check recursive imports work" $
-      \() -> withMaxSuccess 16 . QC.idempotentIOProperty $ do
-        modules <- generate genRecursiveImports
+  , QC.testProperty "Check recursive imports work"
+      . withMaxSuccess 16
+      . QC.forAll genRecursiveImports $ \modules -> QC.idempotentIOProperty $ do
         let expectedValue = recursiveImportsResult modules <> "\ndone"
         result <- runMain_ modules "Main"
-        pure $ result === expectedValue
+        pure . QC.counterexample (ppShow modules) $ result === expectedValue
   ]
 
 recursiveResult :: String -> String
@@ -186,15 +184,20 @@ genRecursiveLetWithCycle = do
 
 -- Variable and Import str generator
 genName :: Gen String
-genName = do
-  firstChar <- elements $ ['a'..'z'] <> ['A'..'Z']
-  len <- choose (3, 15)
-  rest <- vectorOf (len - 1)
-                   (frequency [ (10, elements (['a'..'z'] <> ['A'..'Z'] <> ['0'..'9']))
-                              , (1, pure '_')
-                              , (1, pure '.')
-                              ])
-  pure (firstChar : rest)
+genName = suchThat genNameRaw (not . startsWithReservedWord)
+  where
+    genNameRaw = do
+      firstChar <- elements $ ['a'..'z'] <> ['A'..'Z']
+      len <- choose (3, 15)
+      rest <- vectorOf (len - 1)
+                       (frequency [ (10, elements (['a'..'z'] <> ['A'..'Z'] <> ['0'..'9']))
+                                  , (1, pure '_')
+                                  , (1, pure '.')
+                                  ])
+      pure (firstChar : rest)
+
+    startsWithReservedWord name = any (`isPrefixOf` name)
+      [ "case", "else", "if", "import", "in", "let", "of", "then" ]
 
 genInteger :: Gen Int
 genInteger = choose (0, 100)
@@ -244,7 +247,7 @@ containsTHash = \case
 onlyHashUPsChanged :: Term2' -> Bool
 onlyHashUPsChanged term2 = all (isHash . fst) diffList where
   diffList :: [(Term2', Term2')]
-  diffList = diffTerm2 (term2, forget . generateAllHashes . tag DummyLoc $ term2)
+  diffList = diffTerm2 (term2, forget . generateAllHashes . tag UnknownLoc $ term2)
   isHash :: Term2' -> Bool
   isHash = \case
     THash _ -> True
@@ -260,7 +263,7 @@ noDups = not . f []
 
 allHashesToTerm2 :: Term2' -> [Term2']
 allHashesToTerm2 term2 =
-  let term2WithoutTHash = forget . generateAllHashes . tag DummyLoc $ term2
+  let term2WithoutTHash = forget . generateAllHashes . tag UnknownLoc $ term2
       interm :: (Term2', Term2') -> [Term2']
       interm = \case
         (THash _ , x) -> [x]
@@ -310,6 +313,17 @@ unitTests = testGroup "Unit tests"
       let recursiveRandomLet = wrapRecursiveRandomLet recursiveLet shuffleInt
       res <- testUserDefAdHocTypes recursiveRandomLet
       res @?= "whattt\ndone"
+    -- Missing definitions should point at the unresolved variable so CLI
+    -- messages and LSP diagnostics can direct users to the real source site.
+  , testCase "missing definition error reports source location" $ do
+      case parseWithPrelude [] "main = foo 0" of
+        Left err -> assertFailure err
+        Right term -> case process term of
+          Left err -> do
+            let rendered = renderResolverError err
+            rendered @?= "missing definition \"foo\" at line 1, column 8"
+            show err @?= rendered
+          Right _ -> assertFailure "expected missing definition error"
   , testCase "test backward cycle let" $ do
       let backwardCycleLet = wrapRecursiveBackwardLet cycleLet
       result <- try ( testUserDefAdHocTypes backwardCycleLet ) :: IO (Either SomeException String)

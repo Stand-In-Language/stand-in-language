@@ -20,12 +20,11 @@ import PrettyPrint (indentSansFirstLine)
 import qualified System.IO.Strict as Strict
 import Telomare
 import Telomare.TypeChecker (typeCheck)
-import Text.Megaparsec (MonadParsec (eof, notFollowedBy, try), Parsec, Pos,
-                        PosState (pstateSourcePos),
-                        SourcePos (sourceColumn, sourceLine),
-                        State (statePosState), between, choice,
-                        errorBundlePretty, getParserState, many, manyTill,
-                        optional, runParser, sepBy, some, unPos, (<?>), (<|>))
+import Text.Megaparsec (MonadParsec (eof, notFollowedBy, try), ParseErrorBundle,
+                        Parsec, Pos, SourcePos (sourceColumn, sourceLine),
+                        between, choice, errorBundlePretty, getOffset,
+                        getSourcePos, many, manyTill, optional, runParser,
+                        sepBy, some, unPos, (<?>), (<|>))
 import Text.Megaparsec.Char (alphaNumChar, char, letterChar, space1, string)
 import qualified Text.Megaparsec.Char.Lexer as L
 import Text.Megaparsec.Debug (dbg)
@@ -36,18 +35,18 @@ import Text.Show.Deriving (deriveShow1)
 type AnnotatedUPT = Cofree UnprocessedParsedTermF LocTag
 
 data AssignmentEntry
-  = SingleAssignment String AnnotatedUPT
-  | ListAssignment LocTag [String] AnnotatedUPT
+  = SingleAssignment LocatedName AnnotatedUPT
+  | ListAssignment LocTag [LocatedName] AnnotatedUPT
 
 instance Plated UnprocessedParsedTerm where
   plate f = \case
     ITEUP i t e -> ITEUP <$> f i <*> f t <*> f e
-    LetUP l x   -> LetUP <$> traverse (sequenceA . second f) l <*> f x
+    LetUP l x   -> LetUP <$> traverse (traverse f) l <*> f x
     CaseUP x l  -> CaseUP <$> f x <*> traverse (sequenceA . second f) l
     ListUP l    -> ListUP <$> traverse f l
     PairUP a b  -> PairUP <$> f a <*> f b
     AppUP u x   -> AppUP <$> f u <*> f x
-    LamUP s x   -> LamUP s <$> f x
+    LamUP name x -> LamUP name <$> f x
     LeftUP x    -> LeftUP <$> f x
     RightUP x   -> RightUP <$> f x
     TraceUP x   -> TraceUP <$> f x
@@ -62,10 +61,8 @@ type TelomareParser = Parsec Void String
 -- |Parse a variable.
 parseVariable :: TelomareParser AnnotatedUPT
 parseVariable = do
-  s <- getParserState
-  let line = unPos . sourceLine . pstateSourcePos . statePosState $ s
-      column = unPos . sourceColumn . pstateSourcePos . statePosState $ s
-  (\str -> Loc line column :< VarUPF str) <$> identifier
+  (loc, str) <- withSourceSpan identifierRaw
+  pure $ loc :< VarUPF str
 
 -- |Line comments start with "--".
 lineComment :: TelomareParser ()
@@ -108,7 +105,10 @@ rws = ["let", "in", "if", "then", "else", "case", "of", "import"]
 -- |Variable identifiers can consist of alphanumeric characters, underscore,
 -- and must start with an English alphabet letter
 identifier :: TelomareParser String
-identifier = lexeme . try $ p >>= check
+identifier = lexeme identifierRaw
+
+identifierRaw :: TelomareParser String
+identifierRaw = try $ p >>= check
   where
     p = (:) <$> letterChar <*> many (alphaNumChar <|> char '_' <|> char '.' <?> "variable")
     check x = if x `elem` rws
@@ -133,30 +133,57 @@ commaSep p = p `sepBy` symbol ","
 
 -- |Integer TelomareParser used by `parseNumber` and `parseChurch`
 integer :: TelomareParser Integer
-integer = toInteger <$> lexeme L.decimal
+integer = lexeme integerRaw
 
-getLineColumn = do
-  s <- getParserState
-  let line = unPos . sourceLine . pstateSourcePos . statePosState $ s
-      column = unPos . sourceColumn . pstateSourcePos . statePosState $ s
-  pure $ Loc line column
+integerRaw :: TelomareParser Integer
+integerRaw = toInteger <$> L.decimal
+
+sourcePositionFromPos :: Int -> SourcePos -> SourcePosition
+sourcePositionFromPos offset pos = SourcePosition
+  { sourcePositionLine = unPos $ sourceLine pos
+  , sourcePositionColumn = unPos $ sourceColumn pos
+  , sourcePositionOffset = offset
+  }
+
+sourceLocFromPositions :: (Int, SourcePos) -> (Int, SourcePos) -> LocTag
+sourceLocFromPositions (startOffset, start) (endOffset, end) = SourceLoc SourceSpan
+  { sourceSpanFile = Nothing
+  , sourceSpanStart = sourcePositionFromPos startOffset start
+  , sourceSpanEnd = sourcePositionFromPos endOffset end
+  }
+
+withSourceSpan :: TelomareParser a -> TelomareParser (LocTag, a)
+withSourceSpan parser = do
+  startOffset <- getOffset
+  start <- getSourcePos
+  x <- parser
+  endOffset <- getOffset
+  end <- getSourcePos
+  sc
+  pure (sourceLocFromPositions (startOffset, start) (endOffset, end), x)
+
+getSourceLoc :: TelomareParser LocTag
+getSourceLoc = do
+  offset <- getOffset
+  pos <- getSourcePos
+  pure $ sourceLocFromPositions (offset, pos) (offset, pos)
 
 -- |Parse string literal.
 parseString :: TelomareParser AnnotatedUPT
 parseString = do
-  x <- getLineColumn
-  (\str -> x :< StringUPF str) <$> (char '"' >> manyTill L.charLiteral (char '"' <* sc))
+  (x, str) <- withSourceSpan (char '"' >> manyTill L.charLiteral (char '"'))
+  pure $ x :< StringUPF str
 
 -- |Parse number (Integer).
 parseNumber :: TelomareParser AnnotatedUPT
 parseNumber = do
-  x <- getLineColumn
-  (\i -> x :< (IntUPF . fromInteger $ i)) <$> integer
+  (x, i) <- withSourceSpan integerRaw
+  pure $ x :< (IntUPF . fromInteger $ i)
 
 -- |Parse a pair.
 parsePair :: TelomareParser AnnotatedUPT
 parsePair = parens $ do
-  x <- getLineColumn
+  x <- getSourceLoc
   a <- scn *> parseLongExpr <* scn
   _ <- symbol "," <* scn
   b <- parseLongExpr <* scn
@@ -165,7 +192,7 @@ parsePair = parens $ do
 -- |Parse unsized recursion triple
 parseUnsizedRecursion :: TelomareParser AnnotatedUPT
 parseUnsizedRecursion = curlies $ do
-  x <- getLineColumn
+  x <- getSourceLoc
   a <- scn *> parseLongExpr <* scn
   _ <- symbol "," <* scn
   b <- parseLongExpr <* scn
@@ -176,7 +203,7 @@ parseUnsizedRecursion = curlies $ do
 -- |Parse a list.
 parseList :: TelomareParser AnnotatedUPT
 parseList = do
-  x <- getLineColumn
+  x <- getSourceLoc
   exprs <- brackets (commaSep (scn *> parseLongExpr <*scn))
   pure $ x :< ListUPF exprs
 
@@ -184,7 +211,7 @@ parseList = do
 -- |Parse ITE (which stands for "if then else").
 parseITE :: TelomareParser AnnotatedUPT
 parseITE = do
-  x <- getLineColumn
+  x <- getSourceLoc
   reserved "if" <* scn
   cond <- (parseLongExpr <|> parseSingleExpr) <* scn
   reserved "then" <* scn
@@ -195,23 +222,29 @@ parseITE = do
 
 parseHash :: TelomareParser AnnotatedUPT
 parseHash = do
-  x <- getLineColumn
+  x <- getSourceLoc
   symbol "#" <* scn
   upt <- parseSingleExpr
   pure $ x :< HashUPF upt
 
 parseListAssignment :: TelomareParser AssignmentEntry
 parseListAssignment = do
-  x <- getLineColumn
-  names :: [String] <- (brackets (commaSep (scn *> identifier <* scn)) <* scn)
-                       <?> "list assignment names"
+  x <- getSourceLoc
+  names <- (brackets (commaSep (scn *> locatedNameParser <* scn)) <* scn)
+           <?> "list assignment names"
   (scn *> symbol "=") <?> "list assignment ="
   expr <- (scn *> parseLongExpr <* scn) <?> "list assignment body"
   pure $ ListAssignment x names expr
 
+locatedIdentifier :: TelomareParser (LocTag, String)
+locatedIdentifier = lexeme $ withSourceSpan identifierRaw
+
+locatedNameParser :: TelomareParser LocatedName
+locatedNameParser = uncurry locatedName <$> locatedIdentifier
+
 parseCase :: TelomareParser AnnotatedUPT
 parseCase = do
-  x <- getLineColumn
+  x <- getSourceLoc
   reserved "case" <* scn
   iexpr <- parseLongExpr <* scn
   reserved "of" <* scn
@@ -227,12 +260,33 @@ parseSingleCase = do
 
 parsePattern :: TelomareParser Pattern
 parsePattern = choice $ try <$> [ parsePatternIgnore
-                                , parsePatternVar
-                                , parsePatternAnnotated
-                                , parsePatternString
-                                , parsePatternInt
-                                , parsePatternPair
-                                ]
+                                 , parsePatternVar
+                                 , parsePatternAnnotated
+                                 , parsePatternString
+                                 , parsePatternInt
+                                 , parsePatternPair
+                                 ]
+
+parseLocatedPattern :: TelomareParser (LocTag, Pattern)
+parseLocatedPattern = choice $ try <$> [ parseLocatedPatternVar
+                                       , parseLocatedPatternOther
+                                       ]
+
+parseLocatedPatternVar :: TelomareParser (LocTag, Pattern)
+parseLocatedPatternVar = do
+  (loc, name) <- locatedIdentifier <* scn
+  pure (loc, PatternVar name)
+
+parseLocatedPatternOther :: TelomareParser (LocTag, Pattern)
+parseLocatedPatternOther = do
+  loc <- getSourceLoc
+  pattern' <- choice $ try <$> [ parsePatternIgnore
+                               , parsePatternAnnotated
+                               , parsePatternString
+                               , parsePatternInt
+                               , parsePatternPair
+                               ]
+  pure (loc, pattern')
 
 parsePatternPair :: TelomareParser Pattern
 parsePatternPair = parens $ do
@@ -287,7 +341,7 @@ parseSingleExpr = choice $ try <$> [ parseHash
 -- |Parse application of functions.
 parseApplied :: TelomareParser AnnotatedUPT
 parseApplied = do
-  x <- getLineColumn
+  x <- getSourceLoc
   fargs <- L.lineFold scn $ \sc' ->
     parseSingleExpr `sepBy` try sc'
   case fargs of
@@ -310,10 +364,10 @@ genPatternVarName = ("generatedVar" <>)
 
 -- |Pick the lambda-bound variable name for a pattern: use the user's name
 -- for a 'PatternVar', otherwise generate one.
-lambdaVarName :: Pattern -> String
-lambdaVarName = \case
-  PatternVar str -> str
-  p              -> genPatternVarName p
+lambdaVarName :: (LocTag, Pattern) -> LocatedName
+lambdaVarName (loc, pattern') = case pattern' of
+  PatternVar str -> locatedName loc str
+  p              -> locatedName (GeneratedLoc "lambda pattern" (Just loc)) (genPatternVarName p)
 
 -- |Build a multi-argument lambda whose destructuring all happens INSIDE
 -- the innermost lambda body. For @\\p1 p2 p3 -> body@ this emits
@@ -328,10 +382,10 @@ lambdaVarName = \case
 -- This avoids putting a function-valued lambda inside a case body, which
 -- would cause the case-rewrite to type-mismatch against the (Pair-typed)
 -- abort fallback.
-buildMultiLambda :: LocTag -> [Pattern] -> AnnotatedUPT -> AnnotatedUPT
+buildMultiLambda :: LocTag -> [(LocTag, Pattern)] -> AnnotatedUPT -> AnnotatedUPT
 buildMultiLambda lt patterns body =
   let varNames = lambdaVarName <$> patterns
-      destructured = foldr applyDestructure body (zip patterns varNames)
+      destructured = foldr applyDestructure body (zip (snd <$> patterns) (locatedNameText <$> varNames))
       lamWrapped = foldr (\v inner -> lt :< LamUPF v inner) destructured varNames
   in lamWrapped
   where
@@ -359,14 +413,14 @@ buildMultiLambda lt patterns body =
 -- Kept as a thin wrapper around 'buildMultiLambda' so existing callers
 -- that work pattern-at-a-time continue to function.
 makeLambda :: LocTag -> Pattern -> AnnotatedUPT -> AnnotatedUPT
-makeLambda lt p = buildMultiLambda lt [p]
+makeLambda lt p = buildMultiLambda lt [(lt, p)]
 
 -- |Parse lambda expression.
 parseLambda :: TelomareParser AnnotatedUPT
 parseLambda = do
-  x <- getLineColumn
+  x <- getSourceLoc
   symbol "\\" <* scn
-  variables <- some parsePattern <* scn
+  variables <- some parseLocatedPattern <* scn
   symbol "->" <* scn
   term1expr <- parseLongExpr <* scn
   pure $ buildMultiLambda x variables term1expr
@@ -382,7 +436,7 @@ parseSameLvl pos parser = do
 -- a specialized list-assignment convention.
 parseLet :: TelomareParser AnnotatedUPT
 parseLet = do
-  x <- getLineColumn
+  x <- getSourceLoc
   reserved "let" <* scn
   lvl <- L.indentLevel
   entries <- manyTill (parseSameLvl lvl parseAssignmentEntry) (reserved "in") <* scn
@@ -403,25 +457,30 @@ parseLongExpr = choice $ try <$> [ parseLet
 -- |Parse church numerals (church numerals are a "$" appended to an integer, without any whitespace separation).
 parseChurch :: TelomareParser AnnotatedUPT
 parseChurch = do
-  x <- getLineColumn
-  (\upt -> x :< ChurchUPF upt) . fromInteger <$> (symbol "$" *> integer)
+  (x, upt) <- withSourceSpan (char '$' *> integerRaw)
+  pure . (x :<) . ChurchUPF $ fromInteger upt
 
 -- |Parse refinement check.
 parseRefinementCheck :: TelomareParser (AnnotatedUPT -> AnnotatedUPT)
 parseRefinementCheck = do
-  x <- getLineColumn
+  x <- getSourceLoc
   (\a b -> x :< CheckUPF a b) <$> (symbol ":" *> parseLongExpr)
 
 -- |Parse assignment add adding binding to ParserState.
 parseAssignment :: TelomareParser (String, AnnotatedUPT)
 parseAssignment = do
-  var <- identifier <* scn
+  (var, expr) <- parseLocatedAssignment
+  pure (locatedNameText var, expr)
+
+parseLocatedAssignment :: TelomareParser (LocatedName, AnnotatedUPT)
+parseLocatedAssignment = do
+  (loc, var) <- locatedIdentifier <* scn
   annotation <- optional . try $ parseRefinementCheck
   scn *> symbol "=" <?> "assignment ="
   expr <- scn *> parseLongExpr <* scn
   case annotation of
-    Just annot -> pure (var, annot expr)
-    _          -> pure (var, expr)
+    Just annot -> pure (locatedName loc var, annot expr)
+    _          -> pure (locatedName loc var, expr)
 
 -- |Parse top level expressions.
 parseTopLevel :: TelomareParser AnnotatedUPT
@@ -429,14 +488,14 @@ parseTopLevel = parseTopLevelWithExtraModuleBindings []
 
 parseImport :: TelomareParser AnnotatedUPT
 parseImport = do
-  x <- getLineColumn
+  x <- getSourceLoc
   reserved "import" <* scn
   var <- identifier <* scn
   pure $ x :< ImportUPF var
 
 parseImportQualified :: TelomareParser AnnotatedUPT
 parseImportQualified = do
-  x <- getLineColumn
+  x <- getSourceLoc
   reserved "import" <* scn
   reserved "qualified" <* scn
   m <- identifier <* scn
@@ -449,12 +508,16 @@ parseImportQualified = do
 -- uppercase-lambda list assignment during expansion.
 parseAssignmentEntry :: TelomareParser AssignmentEntry
 parseAssignmentEntry =
-  (uncurry SingleAssignment <$> parseAssignment)
+  uncurry SingleAssignment <$> parseLocatedAssignment
     <|> parseListAssignment
 
 -- |Parse assignments, expanding list assignments into their per-slot bindings.
 parseAssignmentEntries :: TelomareParser [(String, AnnotatedUPT)]
 parseAssignmentEntries = do
+  fmap (first locatedNameText) <$> parseLocatedAssignmentEntries
+
+parseLocatedAssignmentEntries :: TelomareParser [(LocatedName, AnnotatedUPT)]
+parseLocatedAssignmentEntries = do
   entries <- scn *> many parseAssignmentEntry <* eof
   pure (expandAssignmentEntry =<< entries)
 
@@ -463,18 +526,20 @@ parseAssignmentEntries = do
 parseTopLevelWithExtraModuleBindings :: [(String, AnnotatedUPT)]
                                      -> TelomareParser AnnotatedUPT
 parseTopLevelWithExtraModuleBindings lst = do
-  x <- getLineColumn
-  bindingList <- parseAssignmentEntries
-  case lookup "main" bindingList of
-    Just m  -> pure $ x :< LetUPF (lst <> bindingList) m
+  x <- getSourceLoc
+  bindingList <- parseLocatedAssignmentEntries
+  case lookup "main" $ first locatedNameText <$> bindingList of
+    Just m  -> pure $ x :< LetUPF ((first (locatedName UnknownLoc) <$> lst) <> bindingList) m
     Nothing -> fail "missing 'main' definition"
 
-expandAssignmentEntry :: AssignmentEntry -> [(String, AnnotatedUPT)]
+expandAssignmentEntry :: AssignmentEntry -> [(LocatedName, AnnotatedUPT)]
 expandAssignmentEntry = \case
   SingleAssignment name body -> [(name, body)]
-  ListAssignment loc names body
-    | isUDTAssignment names body -> expandUDT (loc :< UDTUPF names body)
-    | otherwise                 -> expandPlainListAssignment loc names body
+  ListAssignment loc locatedNames body
+    | isUDTAssignment names body -> expandUDTLocated loc locatedNames body
+    | otherwise                 -> expandPlainListAssignment loc locatedNames body
+    where
+      names = locatedNameText <$> locatedNames
 
 isUDTAssignment :: [String] -> AnnotatedUPT -> Bool
 isUDTAssignment (name:_) (_ :< LamUPF _ _) = case name of
@@ -482,19 +547,21 @@ isUDTAssignment (name:_) (_ :< LamUPF _ _) = case name of
   _           -> False
 isUDTAssignment _ _ = False
 
-expandPlainListAssignment :: LocTag -> [String] -> AnnotatedUPT -> [(String, AnnotatedUPT)]
-expandPlainListAssignment loc names body =
+expandPlainListAssignment :: LocTag -> [LocatedName] -> AnnotatedUPT -> [(LocatedName, AnnotatedUPT)]
+expandPlainListAssignment loc locatedNames body =
   case listAssignmentSlots body of
     Just (slots, wrapBody)
-      | length names == length slots -> zip names (wrapBody <$> slots)
+      | length locatedNames == length slots ->
+          zipWith (\name slot -> (name, wrapBody slot)) locatedNames slots
       | otherwise -> error
-        $ "list assignment arity mismatch: " <> show (length names)
+        $ "list assignment arity mismatch: " <> show (length locatedNames)
         <> " names for " <> show (length slots) <> " values"
     Nothing ->
       let intermediate = listAssignmentIntermediate loc
           source = loc :< VarUPF intermediate
           mkAccessorBinding idx name = (name, accessAt loc idx source)
-      in (intermediate, body) : zipWith mkAccessorBinding [0 ..] names
+      in (locatedName (GeneratedLoc "listAssignmentIntermediate" (Just loc)) intermediate, body)
+       : zipWith mkAccessorBinding [0 ..] locatedNames
 
 -- |Find a final list literal in a plain list assignment, preserving lambdas
 -- and lets around each extracted slot. This lets `[f, g] = \x -> [...]`
@@ -511,9 +578,9 @@ listAssignmentSlots = go where
   go _ = Nothing
 
 listAssignmentIntermediate :: LocTag -> String
-listAssignmentIntermediate = \case
-  Loc line column -> "__list_assignment_" <> show line <> "_" <> show column
-  DummyLoc        -> "__list_assignment"
+listAssignmentIntermediate loc = case locStartLineColumn loc of
+  Just (line, column) -> "__list_assignment_" <> show line <> "_" <> show column
+  Nothing             -> "__list_assignment"
 
 accessAt :: LocTag -> Int -> AnnotatedUPT -> AnnotatedUPT
 accessAt loc 0 e = loc :< LeftUPF e
@@ -545,39 +612,54 @@ accessAt loc n e = loc :< LeftUPF (iterate (\x -> loc :< RightUPF x) e !! n)
 -- this fallback is kept for direct/internal callers of 'expandUDT'.
 expandUDT :: AnnotatedUPT -> [(String, AnnotatedUPT)]
 expandUDT (loc :< UDTUPF names@(tname:_) body) =
+  first locatedNameText <$> expandUDTLocated loc (locatedName loc <$> names) body
+expandUDT _ = []
+
+expandUDTLocated :: LocTag -> [LocatedName] -> AnnotatedUPT -> [(LocatedName, AnnotatedUPT)]
+expandUDTLocated loc locatedNames body =
+  case names of
+    tname:_ -> expandUDTLocated' loc locatedNames tname body
+    _       -> []
+  where
+    names = locatedNameText <$> locatedNames
+
+expandUDTLocated' :: LocTag -> [LocatedName] -> String -> AnnotatedUPT -> [(LocatedName, AnnotatedUPT)]
+expandUDTLocated' loc locatedNames tname body =
   case body of
     (_ :< LamUPF hParam inner) ->
       let (slots, wrapBody) = udtSlots tname inner
+          hParamName = locatedNameText hParam
           (coreSlots, hoistedSlots) = splitAt 2 slots
-          coreNames = take (1 + length coreSlots) names
-          hoistedNames = drop (1 + length coreSlots) names
-          validator    = autoValidator loc tname hParam
+          coreNames = take (1 + length coreSlots) locatedNames
+          hoistedNames = drop (1 + length coreSlots) locatedNames
+          validator    = autoValidator loc tname hParamName
           intermediate = "__udt_" <> tname
           hashName     = intermediate <> "_hash"
           hashVar      = loc :< VarUPF hashName
-          coreList     = loc :< ListUPF ((loc :< VarUPF hParam)
+          coreList     = loc :< ListUPF ((loc :< VarUPF hParamName)
                                       : (loc :< VarUPF tname)
                                       : coreSlots)
-          wrappedInner = loc :< LetUPF [(tname, validator)] (wrapBody coreList)
+          wrappedInner = loc :< LetUPF [(locatedName loc tname, validator)] (wrapBody coreList)
           wrapper      = loc :< LamUPF hParam wrappedInner
           udtTuple     = loc :< AppUPF wrapper (loc :< HashUPF wrapper)
-          hashBinding  = (hashName, accessAt loc 0 (loc :< VarUPF intermediate))
+          generated parent name = locatedName (GeneratedLoc name (Just parent)) name
+          hashBinding  = (generated loc hashName, accessAt loc 0 (loc :< VarUPF intermediate))
           mkAccessorBinding idx name =
             (name, accessAt loc idx (loc :< VarUPF intermediate))
           mkHoistedBinding name slot =
             ( name
-            , loc :< LetUPF [ (hParam, hashVar)
-                            , (tname, validator)
+            , loc :< LetUPF [ (locatedName (locatedNameLoc hParam) hParamName, hashVar)
+                            , (locatedName loc tname, validator)
                             ]
                 (wrapBody slot)
             )
-      in (intermediate, udtTuple)
+          intermediateName = generated loc intermediate
+      in (intermediateName, udtTuple)
        : hashBinding
        : zipWith mkAccessorBinding [1 ..] coreNames
-      <> zipWith mkHoistedBinding hoistedNames hoistedSlots
+       <> zipWith mkHoistedBinding hoistedNames hoistedSlots
     _ ->
-      zipWith (\name idx -> (name, accessAt loc idx body)) names [0 ..]
-expandUDT _ = []
+      zipWith (\name idx -> (name, accessAt loc idx body)) locatedNames [0 ..]
 
 -- |Find the final list literal in a UDT body and return a wrapper that
 -- reapplies any surrounding lets. Hoisted methods get the same let
@@ -599,7 +681,7 @@ udtSlots tname = go where
 -- extra ITE.
 autoValidator :: LocTag -> String -> String -> AnnotatedUPT
 autoValidator loc tname hParam =
-  loc :< LamUPF "__udt_v"
+  loc :< LamUPF (locatedName (GeneratedLoc "annotated pattern lambda" (Just loc)) "__udt_v")
     (loc :< ITEUPF
        (loc :< AppUPF
           (loc :< AppUPF
@@ -653,7 +735,7 @@ parseImportOrAssignment = do
       maybeEntry <- optional $ scn *> try parseAssignmentEntry <* scn
       case maybeEntry of
         Nothing    -> fail "Expected either an import statement or an assignment"
-        Just entry -> pure (Right <$> expandAssignmentEntry entry)
+        Just entry -> pure (Right . first locatedNameText <$> expandAssignmentEntry entry)
     Just imp -> pure [Left imp]
 
 parseWithPrelude :: [(String, AnnotatedUPT)]   -- ^Prelude
@@ -662,8 +744,10 @@ parseWithPrelude :: [(String, AnnotatedUPT)]   -- ^Prelude
 parseWithPrelude prelude str = first errorBundlePretty $ runParser (parseTopLevelWithExtraModuleBindings prelude) "" str
 
 parseModule :: String -> Either String [Either AnnotatedUPT (String, AnnotatedUPT)]
-parseModule str = let result = runParser (concat <$> (scn *> many parseImportOrAssignment <* eof)) "" str
-                  in first errorBundlePretty result
+parseModule str = first errorBundlePretty $ parseModuleDetailed str
+
+parseModuleDetailed :: String -> Either (ParseErrorBundle String Void) [Either AnnotatedUPT (String, AnnotatedUPT)]
+parseModuleDetailed = runParser (concat <$> (scn *> many parseImportOrAssignment <* eof)) ""
 
 -- |Parse either a single expression or top level definitions defaulting to the `main` definition.
 --  This function was made for telomare-evaluare

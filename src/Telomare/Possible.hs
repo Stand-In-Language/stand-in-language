@@ -56,7 +56,7 @@ import GHC.Generics (Generic)
 import PrettyPrint
 import Telomare (AbstractRunTime (..), BreakState' (..), FragExpr (..),
                  FragExprF (..), FragExprUR (..), FragIndex, IExpr (..),
-                 IExprF (SetEnvF), LocTag (DummyLoc), PartialType (..),
+                 IExprF (SetEnvF), LocTag (RuntimeLoc), PartialType (..),
                  RecursionPieceFrag, RecursionSimulationPieces (..),
                  RunTimeError (..), TelomareLike (fromTelomare, toTelomare),
                  Term3 (..), Term4 (..),
@@ -1179,7 +1179,7 @@ term4toAbortExpr (Term4 termMap') =
 abortExprToTerm4 :: (Base g ~ f, BasicBase f, StuckBase f, AbortBase f, Foldable f, Recursive g) => g -> Either IExpr Term4
 abortExprToTerm4 x =
   let
-    dl = (DummyLoc :<)
+    dl = (RuntimeLoc :<)
     pv = pure . dl
     findAborted = cata $ \case
       AbortFW (AbortedF e) -> Just e
@@ -1329,7 +1329,7 @@ partiallyAnnotate :: (Base g ~ f, Annotatable1 f, Annotatable g)
 partiallyAnnotate term =
   let runner :: State (PartialType, Set TypeAssociation, Int) (Either TypeCheckError PartialType)
       runner = runExceptT $ anno term
-      initState = (TypeVariable DummyLoc 0, Set.empty, 0)
+      initState = (TypeVariable RuntimeLoc 0, Set.empty, 0)
       (rt, (_, s, _)) = State.runState runner initState
   in (,) <$> rt <*> (flip Map.lookup <$> buildTypeMap s)
 
@@ -1340,7 +1340,7 @@ annotateTree term = do
   let fResolve = fullyResolve resolver
       ca x = anno1 x >>= \a -> pure (fResolve a :< x)
       f = ca <=< sequence
-      initState = (TypeVariable DummyLoc 0, Set.empty, 0)
+      initState = (TypeVariable RuntimeLoc 0, Set.empty, 0)
   flip State.evalState initState . runExceptT $ cata f term
 
 matchType :: PartialType -> PartialType -> Bool
@@ -1356,7 +1356,7 @@ matchType a b = case (a,b) of
 
 matchTypeHead :: (Annotatable1 f, Annotatable g) => PartialType -> f g -> Bool
 matchTypeHead t x =
-  let initState = (TypeVariable DummyLoc 0, Set.empty, 0)
+  let initState = (TypeVariable RuntimeLoc 0, Set.empty, 0)
   in case State.evalState (runExceptT $ anno1 x) initState of
     Left _   -> False
     Right t' -> matchType t' t
@@ -1376,7 +1376,7 @@ instance Validity (Cofree UnsizedExprF PartialType) where
                      ArrTypeP a b -> mv' a <> mv' b
                      PairTypeP a b -> mv' a <> mv' b
                      _ -> Max 0
-                   initState = (TypeVariable DummyLoc startVar, Set.empty, startVar)
+                   initState = (TypeVariable RuntimeLoc startVar, Set.empty, startVar)
                    etb = \case
                      Right True -> True
                      _ -> False
@@ -1416,7 +1416,7 @@ instance GenValidAdj UnsizedExpr where
             resolve = \case
               t@(TypeVariable _ i) -> (fromMaybe t (resolver i))
             f = ca <=< sequence
-            initState = (TypeVariable DummyLoc 0, Set.empty, 0)
+            initState = (TypeVariable RuntimeLoc 0, Set.empty, 0)
         flip State.evalState initState . runExceptT $ cata f term
       ppax = case annoTerm x of
         Left z   -> "toGennable ppax bad: " <> show z

@@ -6,17 +6,21 @@ LSP-enabled major mode for the Telomare programming language, with support for D
 
 Based on the Telomare LSP server capabilities:
 - **Syntax highlighting** via semantic tokens (keywords, comments, strings, numbers, operators)
-- **Hover information** showing expression evaluation and parse errors
 - **Go to definition** and **Find references** (via LSP)
-- **Rename symbol** support
-- **Parse error reporting** displayed on hover
+- **Diagnostics** for parse errors, undefined variables, missing imports, and resolver errors
+- **Partial evaluation** code action for a selected expression
+- **LSP version command**
 - **Comment support** (`-- comments`)
+
+Hover and rename are not implemented by the server yet.
 
 ## Installation
 
 ### Prerequisites
 
-Ensure your Telomare LSP server is available at the configured path (default: `/home/hhefesto/src/telomare#lsp`).
+Ensure your Telomare LSP server is available. By default the mode runs it
+through the Telomare flake (`nix run path:<telomare-source>#lsp --`); see
+"Customizing the LSP Command" below to point it at a different path or binary.
 
 ### Modular Configuration (4 files)
 
@@ -68,23 +72,33 @@ Place all four files in a directory in your load-path. All variants require `tel
 
 ## Key Bindings
 
-### Doom Emacs
-- `SPC m g` - Go to definition TODO: improve
-- `SPC m G` - Find references  
-- TODO: `SPC m h` - Describe at point (hover)
-- TODO: `SPC m r` - Rename symbol
+The mode binds only features the Telomare LSP server implements; there is
+no hover or rename.
 
 ### Spacemacs
-- `SPC m g` - Go to definition TODO: improve
-- `SPC m G` - Find references
-- TODO: `SPC m h` - Describe at point (hover)
-- TODO: `SPC m r` - Rename symbol
+
+Major-mode leader bindings, reachable as `SPC m ...` in Evil state and
+`M-m m ...` in holy-mode:
+
+- `g` - Go to definition
+- `G` - Find references
+- `a` - Execute code action (partial evaluation)
+- `v` - Show Telomare LSP version
+
+Also `C-c C-v` - Show Telomare LSP version.
+
+### Doom Emacs
+
+`telomare-mode-doom.el` adds no bindings of its own; navigation relies on
+`lsp-mode`/Evil defaults such as `g d` (go to definition). The version
+command is available as `M-x telomare-lsp-version`.
 
 ### Vanilla Emacs
+
 - `M-.` - Go to definition
 - `M-?` - Find references
-- TODO: `C-c h` - Describe at point (hover)
-- TODO: `C-c r` - Rename symbol
+- `C-c a` - Execute code action (partial evaluation)
+- `C-c C-v` - Show Telomare LSP version
 
 ## Troubleshooting
 

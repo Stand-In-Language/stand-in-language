@@ -13,7 +13,21 @@
     flake-parts.lib.mkFlake { inherit inputs; } {
       systems = [ "x86_64-linux" "aarch64-linux" ];
       imports = [ inputs.haskell-flake.flakeModule ];
-      perSystem = { self', system, pkgs, ... }: {
+      perSystem = { self', system, pkgs, ... }:
+        let
+          lspVersion =
+            if self ? lastModifiedDate then
+              let
+                timestamp = self.lastModifiedDate;
+                year = builtins.substring 0 4 timestamp;
+                month = builtins.substring 4 2 timestamp;
+                day = builtins.substring 6 2 timestamp;
+                hour = builtins.substring 8 2 timestamp;
+                minute = builtins.substring 10 2 timestamp;
+              in "${year}-${month}-${day}T${hour}:${minute}Z"
+            else
+              "unknown";
+        in {
         haskellProjects.default = {
           basePackages = pkgs.haskell.packages.ghc96;
           # To get access to non-Haskell dependencies one most add them to `extraBuildDepends`
@@ -68,7 +82,13 @@
       };
       apps.lsp = {
         type = "app";
-        program = "${self.packages.${system}.telomare}/bin/telomare-lsp";
+        program = "${pkgs.writeShellApplication {
+          name = "telomare-lsp";
+          text = ''
+            export TELOMARE_LSP_VERSION="${lspVersion}"
+            exec "${self.packages.${system}.telomare}/bin/telomare-lsp" "$@"
+          '';
+        }}/bin/telomare-lsp";
       };
       apps.format-lint = {
         type = "app";
@@ -77,8 +97,10 @@
           runtimeInputs = [
             pkgs.diffutils
             pkgs.git
-            pkgs.haskellPackages.hlint
-            pkgs.haskellPackages.stylish-haskell
+            # Use the project's GHC 9.6 tools so format-lint matches the
+            # hlint/stylish-haskell that the devShell and CI use.
+            pkgs.haskell.packages.ghc96.hlint
+            pkgs.haskell.packages.ghc96.stylish-haskell
           ];
           text = ''
             mapfile -t hs_files < <(git ls-files '*.hs')
@@ -99,11 +121,18 @@
               done
             fi
 
-            if [ "$format_status" -ne 0 ]; then
-              exit "$format_status"
-            fi
+            lint_status=0
+            hlint . || lint_status=$?
 
-            hlint .
+            if [ "$format_status" -ne 0 ]; then
+              printf 'Formatting check failed\n'
+            fi
+            if [ "$lint_status" -ne 0 ]; then
+              printf 'Linting check failed\n'
+            fi
+            if [ "$format_status" -ne 0 ] || [ "$lint_status" -ne 0 ]; then
+              exit 1
+            fi
 
             printf 'Formatting and linting are OK\n'
           '';

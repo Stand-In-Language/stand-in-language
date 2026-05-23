@@ -26,12 +26,12 @@
   ;; Add LSP hook
   (add-hook 'telomare-mode-hook #'lsp-deferred 'append)
 
-  ;; Set up minimal keybindings
+  ;; Set up minimal keybindings. Only LSP features the server
+  ;; implements are bound (the server has no hover or rename).
   (define-key telomare-mode-map (kbd "M-.") #'lsp-find-definition)
   (define-key telomare-mode-map (kbd "M-?") #'lsp-find-references)
-  (define-key telomare-mode-map (kbd "C-c h") #'lsp-describe-thing-at-point)
-  (define-key telomare-mode-map (kbd "C-c r") #'lsp-rename)
-  (define-key telomare-mode-map (kbd "C-c a") #'lsp-execute-code-action))
+  (define-key telomare-mode-map (kbd "C-c a") #'lsp-execute-code-action)
+  (define-key telomare-mode-map (kbd "C-c C-v") #'telomare-lsp-version))
 
 ;; Initialize
 (telomare-vanilla-setup)

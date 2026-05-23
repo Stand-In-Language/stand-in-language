@@ -30,7 +30,7 @@ caseExprStrWithPattern :: Pattern -> String
 caseExprStrWithPattern p = unlines
   [ "import Prelude"
   , "main ="
-  , "  let toCase = " <> (show . PrettyUPT . forget . pattern2UPT DummyLoc $ p)
+  , "  let toCase = " <> (show . PrettyUPT . forget . pattern2UPT UnknownLoc $ p)
   , "      caseTest ="
   , "        case toCase of"
   , "          " <> (show . PrettyPattern $ p) <> " -> \"True\""
@@ -42,7 +42,7 @@ caseExprStrWithPatternIgnore :: Pattern -> String
 caseExprStrWithPatternIgnore p = unlines
   [ "import Prelude"
   , "main ="
-  , "  let toCase = " <> (show . PrettyUPT . forget . pattern2UPT DummyLoc $ p)
+  , "  let toCase = " <> (show . PrettyUPT . forget . pattern2UPT UnknownLoc $ p)
   , "      caseTest ="
   , "        case toCase of"
   , "          _ -> \"True\""

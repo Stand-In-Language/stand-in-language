@@ -13,7 +13,8 @@ import Telomare (DataType (..), FragExpr (..), FragExprF (..), FragExprUR (..),
                  RecursionSimulationPieces (..), Term1, Term3 (..), Term4 (..),
                  UnprocessedParsedTerm (..), UnprocessedParsedTermF (..),
                  forget, forgetAnnotationFragExprUR, g2i, indentWithChildren',
-                 indentWithOneChild', indentWithTwoChildren', isNum, rootFrag)
+                 indentWithOneChild', indentWithTwoChildren', isNum,
+                 locatedNameText, rootFrag)
 
 import qualified Control.Comonad.Trans.Cofree as CofreeT (CofreeF (..))
 import qualified Control.Monad.State as State
@@ -363,7 +364,7 @@ instance Show MultiLineShowUPT where
       (AppUPF x y) -> "AppUP\n" <>
                         "  " <> ind x <> "\n" <>
                         "  " <> ind y
-      (LamUPF str y) -> "LamUP " <> str <> "\n" <>
+      (LamUPF str y) -> "LamUP " <> locatedNameText str <> "\n" <>
                         "  " <> ind y
       (ChurchUPF x) -> "ChurchUP " <> show x
       (LeftUPF x) -> "LeftUP\n" <>
@@ -387,7 +388,7 @@ instance Show MultiLineShowUPT where
                         concatMap (\x -> "  , " <> ind x <> "\n") ls <>
                         "  ]"
       (LetUPF ls x) -> "LetUP\n" <>
-                         concatMap (\(n,v) -> "  , (" <> n <> ", " <> ind v <> ")\n") ls <>
+                         concatMap (\(n,v) -> "  , (" <> locatedNameText n <> ", " <> ind v <> ")\n") ls <>
                          "  ]\n" <>
                          "  " <> ind x
       (CaseUPF x ls) -> "CaseUP\n" <>
@@ -420,8 +421,7 @@ instance Show PrettyUPT where
         "let " <> indentSansFirstLine 4 (unlines (assignList <$> ls)) <> "\n" <>
         "in " <> indentSansFirstLine 3 x
           where
-            assignList :: (String, String) -> String
-            assignList (str, upt) = str <> " = " <> indentSansFirstLine (3 + length str) upt
+            assignList (name, upt) = locatedNameText name <> " = " <> indentSansFirstLine (3 + length (locatedNameText name)) upt
       (ListUPF []) -> "[]"
       (ListUPF [x]) -> "[" <> x <> "]"
       (ListUPF ls) ->
@@ -433,7 +433,7 @@ instance Show PrettyUPT where
               _         -> error "removeFirstComma: input does not start with a comma"
       (AppUPF x y) -> (if (length . words $ x) == 1 then x else "(" <> x <> ")") <> " " <>
                       if (length . words $ y) == 1 then y else "(" <> y <> ")"
-      (LamUPF str y) -> "\\ " <> str <> " -> " <> indentSansFirstLine (6 + length str) y
+      (LamUPF str y) -> "\\ " <> locatedNameText str <> " -> " <> indentSansFirstLine (6 + length (locatedNameText str)) y
       (ChurchUPF x) -> "$" <> show x
       (LeftUPF x) -> "left (" <> indentSansFirstLine 6 x <> ")"
       (RightUPF x) -> "right (" <> indentSansFirstLine 7 x <> ")"
