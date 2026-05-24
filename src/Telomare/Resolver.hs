@@ -36,7 +36,7 @@ import Data.Monoid (Sum (..))
 import Data.Set (Set, (\\))
 import qualified Data.Set as Set
 import Debug.Trace (trace, traceShow, traceShowId)
-import PrettyPrint (TypeDebugInfo (..), prettyPrint, showTypeDebugInfo)
+import PrettyPrint (prettyPrint)
 import Telomare
 import Telomare.Parser (AnnotatedUPT, TelomareParser, identifier)
 import Text.Megaparsec (errorBundlePretty, runParser)
@@ -319,6 +319,7 @@ debruijinizeApp = fmap closeLams . ($ []) . runReaderT . cata f where
 rewriteOuterTag :: anno -> Cofree a anno -> Cofree a anno
 rewriteOuterTag anno (_ :< x) = anno :< x
 
+{-
 splitExpr' :: Term2 -> BreakState' RecursionPieceFrag UnsizedRecursionToken
 splitExpr' = \case
   (anno :< TZeroF) -> pure (anno :< ZeroFragF)
@@ -346,6 +347,28 @@ newtype Term3' = Term3' (Map FragIndex FragExprUR') deriving (Eq, Show)
 splitExpr :: Term2 -> Term3
 splitExpr t = let (bf, (_,_,m)) = State.runState (splitExpr' t) (toEnum 0, FragIndex 1, Map.empty)
               in Term3 . Map.map FragExprUR $ Map.insert (FragIndex 0) bf m
+-}
+splitExpr :: Term2 -> Term3
+splitExpr = flip State.evalState (toEnum 0, toEnum 0) . cata f where
+  f = \case
+    (anno C.:< g) -> rewriteOuterTag anno <$> case g of
+      TZeroF -> pure zeroB
+      TPairF a b -> pairS a b
+      TVarF n -> pure $ varB n
+      TAppF c i -> appS c i
+      TCheckF tc c -> (\tc' c' -> anno :< Term3CheckingWrapper anno tc' c') <$> tc <*> c
+      TITEF i t e -> iteB_ <$> i <*> t <*> e
+      TLeftF x -> leftB <$> x
+      TRightF x -> rightB <$> x
+      TTraceF x -> x -- TODO add trace back in, or rethink
+      TLamF (Open ()) x -> lamS x
+      TLamF (Closed ()) x -> clamS x
+      TChurchF n -> i2CB anno n
+      TLimitedRecursionF t r b -> unsizedRecursionWrapper anno t r b
+      TUnsizedRepeaterF -> do
+        urt <- State.gets snd
+        State.modify (\(fi, _) -> (fi, succ urt))
+        repeaterAndAbort anno urt
 
 openLambda :: String -> Term1 -> Term1
 openLambda name body@(anno :< _) = anno :< TLamF (Open name) body

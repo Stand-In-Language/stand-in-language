@@ -5,15 +5,14 @@ module PrettyPrint where
 
 import Control.Monad.State (State)
 import Data.Map (Map)
-import Naturals (NExpr (..), NExprs (..), NResult)
-import Telomare (DataType (..), FragExpr (..), FragExprF (..), FragExprUR (..),
-                 FragExprURSansAnnotation (FragExprURSA, unFragExprURSA),
-                 FragIndex (..), IExpr (..), IExprF (..), LamType (..), LocTag,
+import Telomare (DataType (..), LamType (..), LocTag, PartExprF (..),
+                 StuckF (..), AbortableF (..), StuckExprF (..),
+                 CompiledExprF (..), Term3F (..), FunctionIndex,
                  ParserTermF (..), PartialType (..), Pattern (..),
-                 RecursionSimulationPieces (..), Term1, Term3 (..), Term4 (..),
+                 Term1, Term3 (..),
                  UnprocessedParsedTerm (..), UnprocessedParsedTermF (..),
-                 forget, forgetAnnotationFragExprUR, g2i, indentWithChildren',
-                 indentWithOneChild', indentWithTwoChildren', isNum, rootFrag)
+                 forget, indentWithChildren', convertAbortMessage,
+                 indentWithOneChild', indentWithTwoChildren') --, isNum)
 
 import qualified Control.Comonad.Trans.Cofree as CofreeT (CofreeF (..))
 import qualified Control.Monad.State as State
@@ -45,139 +44,8 @@ indentation :: Int -> String
 indentation 0 = []
 indentation n = ' ' : ' ' : indentation (n - 1)
 
-showPIExpr :: Int -> Int -> IExpr -> String
-showPIExpr _ _ Zero = "Z"
-showPIExpr _ _ Env = "E"
-showPIExpr l i (Pair a b) =
-  concat ["P\n", indentation i, showPIExpr l (i + 1) a, "\n", indentation i, showPIExpr l (i + 1) b]
-showPIExpr l i (Gate a b) = -- "G"
-  "G\n" <> indentation i <> showPIExpr l (i + 1) a <> "\n" <> indentation i <> showPIExpr l (i + 1) b
-showPIExpr _ _ Trace = "T"
-showPIExpr l i (Defer x) = "D " <> showPIExpr l i x
-showPIExpr l i (PLeft x) = "L " <> showPIExpr l i x
-showPIExpr l i (PRight x) = "R " <> showPIExpr l i x
-showPIExpr l i (SetEnv x) = "S " <> showPIExpr l i x
-
-showPIE = showPIExpr 80 1
-
-showTPIExpr :: Map Int PartialType -> Int -> Int -> IExpr -> String
-showTPIExpr typeMap l i expr =
-  let recur = showTPIExpr typeMap l i
-      indented x = (indentation i <> showTPIExpr typeMap l (i + 1) x)
-  in case expr of
-    Zero       -> "Z"
-    Env        -> "E"
-    (Pair a b) -> concat ["P\n", indented a, "\n", indented b]
-    Gate a b   -> "G\n" <> indented a <> "\n" <> indented b
-    Trace      -> "T"
-
-showNExpr :: Map FragIndex NResult -> Int -> Int -> NExpr -> String
-showNExpr nMap l i expr =
-  let recur = showNExpr nMap l i
-      showTwo c a b =
-        concat [c, "\n", indentation i, showNExpr nMap l (i + 1) a, "\n", indentation i, showNExpr nMap l (i + 1) b]
-  in case expr of
-  NZero -> "Z"
-  NEnv -> "E"
-  (NPair a b) -> showTwo "P" a b
-  NGate a b -> showTwo "G" a b
-  NTrace -> "T"
-  (NDefer ind) -> case Map.lookup ind nMap of
-    (Just n) -> "D " <> recur n
-    _        -> "NDefer error: no function found for " <> show ind
-  (NLeft x) -> "L " <> recur x
-  (NRight x) -> "R " <> recur x
-  (NSetEnv x) -> "S " <> recur x
-  (NAdd a b) -> showTwo "+" a b
-  (NMult a b) -> showTwo "X" a b
-  (NPow a b) -> showTwo "^" a b
-  (NApp c i) -> showTwo "$" c i
-  (NNum n) -> show n --concat ["()"]
-  (NToChurch c i) -> showTwo "<" c i
-  (NOldDefer x) -> "% " <> recur x
-  (NTwiddle x) -> "W " <> recur x
-
-showNIE (NExprs m) = case Map.lookup (FragIndex 0) m of
-  Just f -> showNExpr m 80 1 f
-  _      -> "error: no root nexpr"
-
-showFragInds inds = let showInd (FragIndex i) = i in show (fmap showInd inds)
-
-showOneNExpr :: Int -> Int -> NExpr -> String
-showOneNExpr l i expr =
-  let recur = showOneNExpr l i
-      showTwo c a b =
-        concat [c, "\n", indentation i, showOneNExpr l (i + 1) a, "\n", indentation i, showOneNExpr l (i + 1) b]
-  in case expr of
-      NZero                    -> "Z"
-      NEnv                     -> "E"
-      (NPair a b)              -> showTwo "P" a b
-      NGate a b                -> showTwo "G" a b
-      NTrace                   -> "T"
-      (NDefer (FragIndex ind)) -> concat ["[", show ind, "]"]
-      (NLeft x)                -> "L " <> recur x
-      (NRight x)               -> "R " <> recur x
-      (NSetEnv x)              -> "S " <> recur x
-      (NAdd a b)               -> showTwo "+" a b
-      (NMult a b)              -> showTwo "X" a b
-      (NPow a b)               -> showTwo "^" a b
-      (NApp c i)               -> showTwo "$" c i
-      (NNum n)                 -> show n --concat ["()"]
-      (NToChurch c i)          -> showTwo "<" c i
-      (NOldDefer x)            -> "% " <> recur x
-      (NTwiddle x)             -> "W " <> recur x
-      NToNum                   -> "["
-
-showNExprs :: NExprs -> String
-showNExprs (NExprs m) = concatMap
-  (\(FragIndex k,v) -> concat [show k, " ", showOneNExpr 80 2 v, "\n"])
-  $ Map.toList m
-
 -- termMap, function->type lookup, root frag type
-data TypeDebugInfo = TypeDebugInfo Term3 (FragIndex -> PartialType) PartialType
-
-instance PrettyPrintable Term3 where
-  showP (Term3 termMap) = showFrag (unFragExprUR $ rootFrag termMap) where
-    showFrag = cata showF
-    showF (_ CofreeT.:< x) = sf x
-    showL (a CofreeT.:< _) = show a
-    sf = \case
-      ZeroFragF -> pure "Z"
-      PairFragF a b -> indentWithTwoChildren' "P" a b
-      EnvFragF -> pure "E"
-      SetEnvFragF x -> indentWithOneChild' "S" x
-      DeferFragF fi -> case Map.lookup fi termMap of
-        Just frag -> let f = unFragExprUR frag
-                     in indentWithOneChild' ("D" <> showL (project f)) $ showFrag f
-        z -> error $ "PrettyPrint Term3 bad index found: " <> show z
-      AbortFragF -> pure "A"
-      GateFragF l r -> indentWithTwoChildren' "G" l r
-      LeftFragF x -> indentWithOneChild' "L" x
-      RightFragF x -> indentWithOneChild' "R" x
-      TraceFragF -> pure "T"
-      AuxFragF x -> case x of
-        CheckingWrapper l tc x' -> indentWithTwoChildren' (":" <> show l) (showFrag $ unFragExprUR tc) (showFrag $ unFragExprUR x')
-        NestedSetEnvs _ -> pure "%"
-
-instance PrettyPrintable Term4 where
-  showP (Term4 termMap) = showFrag (rootFrag termMap) where
-    showFrag = cata showF
-    showF (_ CofreeT.:< x) = sf x
-    showL (a CofreeT.:< _) = show a
-    sf = \case
-      ZeroFragF -> pure "Z"
-      PairFragF a b -> indentWithTwoChildren' "P" a b
-      EnvFragF -> pure "E"
-      SetEnvFragF x -> indentWithOneChild' "S" x
-      DeferFragF fi -> case Map.lookup fi termMap of
-        Just frag -> indentWithOneChild' ("D" <> showL (project frag)) $ showFrag frag
-        z -> error $ "PrettyPrint Term3 bad index found: " <> show z
-      AbortFragF -> pure "A"
-      GateFragF l r -> indentWithTwoChildren' "G" l r
-      LeftFragF x -> indentWithOneChild' "L" x
-      RightFragF x -> indentWithOneChild' "R" x
-      TraceFragF -> pure "T"
-      AuxFragF _ -> error "prettyPrint term4 - should be no auxfrag here"
+-- data TypeDebugInfo = TypeDebugInfo Term3 (FragIndex -> PartialType) PartialType
 
 instance {-# OVERLAPPING #-} PrettyPrintable Term1 where
   showP = cata fa where
@@ -219,42 +87,6 @@ instance {-# OVERLAPPING #-} (Show l, Show v) => PrettyPrintable (Fix (ParserTer
       TLimitedRecursionF t r b -> indentWithChildren' "TRB" [t,r,b]
       TUnsizedRepeaterF        -> pure "*"
 
-showTypeDebugInfo :: TypeDebugInfo -> String
-showTypeDebugInfo (TypeDebugInfo (Term3 m) lookup rootType) =
-  let termMap = forgetAnnotationFragExprUR <$> m
-      showFrag (FragIndex i) ty frag = show i <> ": " <> show (PrettyPartialType ty) <> "\n" <> showExpr 80 2 frag
-      showExpr l i =
-        let recur = showExpr l i
-            showTwo c a b =
-              concat [c, "\n", indentation i, showExpr l (i + 1) a, "\n", indentation i, showExpr l (i + 1) b]
-            showThree x a b c =
-              concat [x, "\n", indentation i, showExpr l (i + 1) a, "\n", indentation i, showExpr l (i + 1) b, "\n", indentation i, showExpr l (i + 1) c]
-        in \case
-          ZeroFrag                                   -> "Z"
-          PairFrag a b                               -> showTwo "P" a b
-          EnvFrag                                    -> "E"
-          SetEnvFrag x                               -> "S " <> recur x
-          DeferFrag (FragIndex ind)                  -> "[" <> show ind <> "]"
-          AbortFrag                                  -> "A"
-          GateFrag l r                               -> showTwo "G" l r
-          LeftFrag x                                 -> "L " <> recur x
-          RightFrag x                                -> "R " <> recur x
-          TraceFrag                                  -> "T"
-          AuxFrag (NestedSetEnvs _)                  -> "%"
-  in showFrag (FragIndex 0) rootType (unFragExprURSA $ rootFrag termMap) <> "\n"
-     <> concatMap (\(k, v) -> showFrag k (lookup k) v <> "\n")
-                  (tail . Map.toAscList . Map.map unFragExprURSA $ termMap)
-
-newtype PrettyIExpr = PrettyIExpr IExpr
-
-instance Show PrettyIExpr where
-  show (PrettyIExpr iexpr) = case iexpr of
-    p@(Pair a b) -> if isNum p
-      then show $ g2i p
-      else concat ["(", show (PrettyIExpr a), ",", show (PrettyIExpr b), ")"]
-    Zero -> "0"
-    x -> show x
-
 indentSansFirstLine :: Int -> String -> String
 indentSansFirstLine i x = removeLastNewLine res where
   res = unlines $ (\(s:ns) -> s:((indentation i <>) <$> ns)) (lines x)
@@ -262,48 +94,6 @@ indentSansFirstLine i x = removeLastNewLine res where
     case reverse str of
       '\n' : rest -> reverse rest
       x           -> str
-
-newtype PrettierIExpr = PrettierIExpr IExpr
-
-instance Show PrettierIExpr where
-  show (PrettierIExpr iexpr) = removeRedundantParens $ cata alg iexpr where
-    removeRedundantParens :: String -> String
-    removeRedundantParens str = unlines $ removeRedundantParensOneLine <$> lines str
-    filterOnce :: Eq a => a -> [a] -> [a]
-    filterOnce y = \case
-      []     -> []
-      (x:xs) -> if x == y then xs else x : filterOnce y xs
-    removeRedundantParensOneLine :: String -> String
-    removeRedundantParensOneLine str =
-      case (elemIndex '(' str, elemIndex ')' str) of
-        (Just x, Just y) -> filterOnce ')' . filterOnce '(' $ str
-        _                -> str
-    alg :: Base IExpr String -> String
-    alg = \case
-      PairF x y -> case (y, readMaybe x :: Maybe Int) of
-                     ("0", Just x) -> show $ x + 1
-                     _ -> "P\n" <>
-                          "  (" <> indentSansFirstLine 3 x <> ")\n" <>
-                          "  (" <> indentSansFirstLine 3 y <> ")"
-                     -- _ -> if (length . lines $ x) == 1 && (length . lines $ y) == 1
-                     --        then "(" <> x <> ", " <> y  <> ")"
-                     --        else "( " <> indentSansFirstLine 2 x <> "\n" <>
-                     --             ", " <> indentSansFirstLine 2 y <> "\n" <>
-                     --             ")"
-      ZeroF -> "0"
-      EnvF -> "E"
-      TraceF -> "T"
-      SetEnvF x -> "S\n" <>
-                   "  (" <> indentSansFirstLine 3 x <> ")"
-      DeferF x -> "D\n" <>
-                   "  (" <> indentSansFirstLine 3 x <> ")"
-      GateF x y -> "G\n" <>
-                   "  (" <> indentSansFirstLine 3 x <> ")\n" <>
-                   "  (" <> indentSansFirstLine 3 y <> ")"
-      PLeftF x -> "L\n" <>
-                  "  (" <> indentSansFirstLine 3 x <> ")"
-      PRightF x -> "R\n" <>
-                   "  (" <> indentSansFirstLine 3 x <> ")"
 
 newtype PrettyDataType = PrettyDataType DataType
 
@@ -454,3 +244,50 @@ instance Show PrettyUPT where
                           then "(" <> indentSansFirstLine 2 y <> " : " <> "\n" <>
                                "    " <> indentSansFirstLine 4 y <> ")"
                           else "(" <> y <> " : " <> x <> ")"
+
+instance PrettyPrintable LocTag where
+  showP = const $ pure ""
+
+showFI :: FunctionIndex -> String
+showFI = ("F" <>) . show . fromEnum
+
+instance PrettyPrintable1 StuckF where
+  showP1 = \case
+    DeferSF ind x -> indentWithOneChild' (showFI ind) $ showP x
+
+instance PrettyPrintable1 PartExprF where
+  showP1 = \case
+    ZeroSF     -> pure "Z"
+    PairSF a b -> indentWithTwoChildren' "P" (showP a) (showP b)
+    EnvSF      -> pure "E"
+    SetEnvSF x -> indentWithOneChild' "S" $ showP x
+    GateSF l r -> indentWithTwoChildren' "G" (showP l) (showP r)
+    LeftSF x   -> indentWithOneChild' "L" $ showP x
+    RightSF x  -> indentWithOneChild' "R" $ showP x
+
+instance PrettyPrintable1 AbortableF where
+  showP1 = \case
+    AbortF      -> pure "!"
+    AbortedF am -> pure $ "(aborted - " <> convertAbortMessage am <> ")"
+
+instance PrettyPrintable1 StuckExprF where
+  showP1 = \case
+    StuckExprB x -> showP1 x
+    StuckExprS x -> showP1 x
+
+instance PrettyPrintable1 CompiledExprF where
+  showP1 = \case
+    CompiledExprB x -> showP1 x
+    CompiledExprS x -> showP1 x
+    CompiledExprA x -> showP1 x
+
+instance PrettyPrintable1 Term3F where
+  showP1 = \case
+    Term3B x -> showP1 x
+    Term3S x -> showP1 x
+    Term3A x -> showP1 x
+    Term3Unsized urt -> pure $ "#" <> show urt
+    Term3CheckingWrapper _ t c -> indentWithTwoChildren' ":" (showP t) (showP c)
+
+instance {-# OVERLAPPING #-} (PrettyPrintable a, PrettyPrintable1 f) => PrettyPrintable (Cofree f a) where
+  showP (a :< x) = (<>) <$> showP a <*> showP1 x

@@ -1,4 +1,5 @@
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE PatternSynonyms #-}
 
 module Telomare.TypeChecker where
 
@@ -10,15 +11,18 @@ import Control.Monad.State (State)
 import qualified Control.Monad.State as State
 import Data.Bifunctor (second)
 import qualified Data.DList as DList
+import Data.Foldable (fold)
+import Data.Functor.Foldable
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Debug.Trace
 import PrettyPrint
-import Telomare (FragExpr (..), FragExprF (..), FragExprUR (..), FragIndex (..),
-                 LocTag (..), PartialType (..), RecursionSimulationPieces (..),
-                 Term3 (..), TypeCheckError (..), rootFrag)
+import Telomare (FunctionIndex (FunctionIndex), LocTag (..), PartialType (..),
+                 PartExprF (..), StuckF (..), AbortableF (..), Term3, Term3F (..), TypeCheckError (..),
+                 pattern StuckFW, pattern BasicFW, pattern AbortFW, pattern ZeroB, pattern PairB)
+import Data.Semigroup (Max(..))
 
 debug :: Bool
 debug = False
@@ -105,34 +109,59 @@ associateVar :: PartialType -> PartialType -> AnnotateState ()
 associateVar a b = liftEither (makeAssociations a b) >>= \set -> State.modify (changeState set) where
   changeState set (curVar, oldSet, v) = (curVar, oldSet <> set, v)
 
-{-
--- convert a PartialType to a full type, aborting on circular references
-fullyResolve :: Map Int PartialType -> PartialType -> Maybe DataType
-fullyResolve typeMap x = case mostlyResolved of
-  Left _ -> Nothing
-  Right mr -> filterTypeVars mr
-  where
-    filterTypeVars ZeroTypeP = pure ZeroType
-    filterTypeVars (TypeVariable _) = Nothing
-    filterTypeVars (ArrTypeP a b) = ArrType <$> filterTypeVars a <*> filterTypeVars b
-    filterTypeVars (PairTypeP a b) = PairType <$> filterTypeVars a <*> filterTypeVars b
-    mostlyResolved = mostlyResolve typeMap x
--}
-
-{--
- - reserve 0 -> n*2 TypeVariables for types of FragExprs
- -}
 initState :: Term3 -> (PartialType, Set TypeAssociation, Int)
+{-
 initState (Term3 termMap) =
   let startVariable = case Set.maxView (Map.keysSet termMap) of
         Nothing               -> 0
         Just (FragIndex i, _) -> (i + 1) * 2
   in (TypeVariable DummyLoc 0, Set.empty, startVariable)
-
-getFragType :: LocTag -> FragIndex -> PartialType
-getFragType anno (FragIndex i) = ArrTypeP (TypeVariable anno $ i * 2) (TypeVariable anno $ i * 2 + 1)
+-}
+initState t = (TypeVariable DummyLoc 0, Set.empty, startVariable) where
+  -- startVariable = (* 2) . succ . getMax $ cata m t
+  startVariable = (+2) . getMax $ cata m t
+  m = \case
+    StuckFW (DeferSF fi x) -> Max (fromEnum fi) <> x
+    x -> Data.Foldable.fold x
 
 annotate :: Term3 -> AnnotateState PartialType
+annotate term =
+  let annotate' :: Term3 -> AnnotateState PartialType
+      annotate' = \case
+        anno :< g -> case g of
+          BasicFW ZeroSF -> pure ZeroTypeP
+          BasicFW (PairSF a b) -> PairTypeP <$> annotate' a <*> annotate' b
+          BasicFW EnvSF -> State.gets (\(t, _, _) -> t)
+          BasicFW (SetEnvSF x) -> do
+            xt <- annotate' x
+            (it, (ot, _)) <- withNewEnv anno . withNewEnv anno $ pure ()
+            associateVar (PairTypeP (ArrTypeP it ot) it) xt
+            pure ot
+          StuckFW (DeferSF fi x) -> let inType = TypeVariable anno . succ $ fromEnum fi
+                                    in State.modify (\(_, s, i) -> (inType, s, i)) >> annotate' x
+                                       >>= \ot -> pure $ ArrTypeP inType ot
+          AbortFW AbortF -> do
+            (it, _) <- withNewEnv anno $ pure ()
+            pure (ArrTypeP ZeroTypeP (ArrTypeP it it))
+          BasicFW (GateSF l r) -> do
+            lt <- annotate' l
+            rt <- annotate' r
+            associateVar lt rt
+            pure $ ArrTypeP ZeroTypeP lt
+          BasicFW (LeftSF x) -> do
+            xt <- annotate' x
+            (la, _) <- withNewEnv anno $ pure ()
+            associateVar (PairTypeP la AnyType) xt
+            pure la
+          BasicFW (RightSF x) -> do
+            xt <- annotate' x
+            (ra, _) <- withNewEnv anno $ pure ()
+            associateVar (PairTypeP AnyType ra) xt
+            pure ra
+          Term3CheckingWrapper _ _ c -> annotate' c
+          Term3Unsized _ -> State.gets (\(t, _, _) -> t)
+  in annotate' term
+{-
 annotate (Term3 termMap) =
   let annotate' :: Cofree (FragExprF (RecursionSimulationPieces FragExprUR)) LocTag -> AnnotateState PartialType
       annotate' = \case
@@ -172,6 +201,7 @@ annotate (Term3 termMap) =
       associateOutType anno fi ot = let (ArrTypeP _ ot2) = getFragType anno fi in associateVar ot ot2
       rootType anno = initInputType anno (FragIndex 0) >> annotate' (unFragExprUR $ rootFrag termMap)
   in sequence_ (Map.mapWithKey (\k v -> initInputType DummyLoc k >> annotate' (unFragExprUR v) >>= associateOutType DummyLoc k) termMap) >> rootType DummyLoc
+-}
 
 partiallyAnnotate :: Term3 -> Either TypeCheckError (PartialType, Int -> Maybe PartialType)
 partiallyAnnotate term =
@@ -185,12 +215,9 @@ inferType tm = lookupFully <$> partiallyAnnotate tm where
   lookupFully (ty, resolver) = fullyResolve resolver ty
 
 typeCheck :: PartialType -> Term3 -> Maybe TypeCheckError
-typeCheck t tm@(Term3 typeMap) = convert (partiallyAnnotate tm >>= associate) where
-  associate (ty, resolver) = debugTrace ("COMPARING TYPES " <> show (t, fullyResolve resolver ty) <> "\n" <> debugMap ty resolver)
-    . traceAgain $ makeAssociations (fullyResolve resolver ty) t
-  debugMap ty resolver = showTypeDebugInfo (TypeDebugInfo tm (fullyResolve resolver . getFragType DummyLoc)
-                                            (fullyResolve resolver ty))
-  traceAgain s = debugTrace ("Resulting thing " <> show s) s
+typeCheck t tm = convert (partiallyAnnotate tm >>= associate) where
+  associate (ty, resolver) = debugTrace ("COMPARING TYPES " <> show (t, fullyResolve resolver ty))
+     $ makeAssociations (fullyResolve resolver ty) t
   convert = \case
     Left er -> Just er
     _       -> Nothing

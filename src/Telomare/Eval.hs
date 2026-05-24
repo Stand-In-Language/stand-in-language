@@ -26,30 +26,32 @@ import System.Process
 import qualified Control.Comonad.Trans.Cofree as CofreeT
 import Data.Functor.Foldable (Base, cata, embed, para)
 import PrettyPrint
-import Telomare (AbstractRunTime, BreakState, BreakState', EvalError (..),
-                 ExprA (..), FragExpr (..), FragExprF (..),
-                 FragIndex (FragIndex), IExpr (..), IExprF (..), LocTag (..),
-                 PartialType (..), Pattern, RecursionPieceFrag,
-                 RecursionSimulationPieces (..), ResolverError (..),
-                 RunTimeError (..), TelomareLike (..), Term2, Term3 (Term3),
-                 Term4 (Term4), UnprocessedParsedTerm (..),
-                 UnprocessedParsedTermF (..), UnsizedRecursionToken (..), app,
-                 appF, convertAbortMessage, deferF, eval, forget, g2s,
-                 innerChurchF, insertAndGetKey, pairF, rootFrag, s2g, setEnvF,
-                 tag, unFragExprUR)
+import Telomare (AbstractRunTime, EvalError (..),
+                 LocTag (..),
+                 PartialType (..), Pattern,
+                 ResolverError (..),
+                 RunTimeError (..), TelomareLike (..), Term2,
+                 UnprocessedParsedTerm (..),
+                 UnprocessedParsedTermF (..), UnsizedRecursionToken (..),
+                 deferS, abortEE,
+                 convertAbortMessage, eval, forget, embedB, basicEE, stuckEE, pairB, zeroB, rightB, leftB, embedS, setEnvB, envB, b2s, s2b,
+                 insertAndGetKey, appS, pattern ZeroB, pattern PairB,
+                 tag, Term3, CompiledExpr, StuckF (..), pattern StuckFW, Term3F (..), pattern AbortFW, StuckExpr, BasicExpr, CompiledExprF,
+                 PartExprF (..), pattern BasicEE, pattern StuckEE, convertBasic, convertStuck, convertAbort,
+                 pattern BasicFW, pattern StuckFW, Term3Builder, AbortableF (AbortF))
 import Telomare.Parser (AnnotatedUPT, parseModule, parseOneExprOrTopLevelDefs,
                         parsePrelude)
-import Telomare.Possible (SizingSettings (SizingSettings), abortExprToTerm4,
-                          abortPossibilities, appB, deferB, evalStaticCheck,
+import Telomare.Possible (SizingSettings (SizingSettings),
+                          appB, deferB, evalStaticCheck, basicEval,
                           getSizesM, sizeTermM, term3ToUnsizedExpr,
-                          term4toAbortExpr)
-import Telomare.PossibleData (AbortExpr, CompiledExpr (..), SizedRecursion (..),
-                              VoidF, envB, leftB, pairB, pattern AbortFW,
-                              rightB, setEnvB)
+                          )
+import Telomare.PossibleData (SizedRecursion (..),
+                              VoidF,
+                              )
 import Telomare.Resolver (main2Term3, main2Term3let, process, resolveAllImports)
-import Telomare.RunTime (rEval)
 import Telomare.TypeChecker (typeCheck)
 import Text.Megaparsec (errorBundlePretty, runParser)
+import Control.Lens (Identity(runIdentity))
 
 debug :: Bool
 debug = False
@@ -57,8 +59,10 @@ debug = False
 debugTrace :: String -> a -> a
 debugTrace s x = if debug then trace s x else x
 
-convertPT :: (UnsizedRecursionToken -> Int) -> Term3 -> Term4
-convertPT ll (Term3 termMap) =
+-- note that function indexes may be changed in this process
+convertPT :: (UnsizedRecursionToken -> Int) -> Term3 -> CompiledExpr
+{-
+convertPT ll term =
   let unURedMap = Map.map unFragExprUR termMap
       startKey = succ . fst $ Map.findMax termMap
       changeFrag :: Cofree (FragExprF RecursionPieceFrag) LocTag
@@ -96,6 +100,19 @@ convertPT ll (Term3 termMap) =
         TraceFragF     -> TraceFragF
         AuxFragF z     -> error "convertPT should be no AuxFrags here TODO"
   in Term4 $ fmap (hoistCofree changeType) newMap
+-}
+convertPT ll = forget . flip State.evalState (toEnum 0, toEnum 0) . cata (f (convertBasic (convertAbort failConvert))) where
+  failConvert = error "convertPT failed"
+  appTC :: Term3Builder (Cofree CompiledExprF LocTag)
+  appTC = appS (pure $ leftB envB) (pure $ rightB envB)
+  f convertOther (_ CofreeT.:< g)= case g of
+    StuckFW (DeferSF _ x) -> x >>= deferS
+    Term3Unsized urt -> pure $ iterate setEnvB envB !! ll urt
+    Term3CheckingWrapper _ tc c ->
+      let performTC = (>>= deferS) ((\ia -> setEnvB (pairB (setEnvB (pairB (abortEE AbortF) ia))
+                                                     (rightB envB))) <$> appTC)
+      in (\tc' c' ptc -> setEnvB (pairB ptc (pairB  tc' c'))) <$> tc <*> c <*> performTC
+    x -> convertOther x
 
 data SizingOption
   = NoSizing -- deprecated
@@ -103,10 +120,11 @@ data SizingOption
   | MainSizing
   | DebugSizing SizingSettings
 
-findChurchSizeD :: SizingOption -> Term3 -> Either EvalError Term4
+findChurchSizeD :: SizingOption -> Term3 -> Either EvalError CompiledExpr
 findChurchSizeD so t3 = let reallyBigNum = 65536 in case so of
   NoSizing       -> pure (convertPT (const reallyBigNum) t3)
-  UnitTestSizing -> calculateRecursionLimits (SizingSettings reallyBigNum False) t3
+  UnitTestSizing       -> pure (convertPT (const reallyBigNum) t3) -- TODO remove, just here to validate convertPT
+  -- UnitTestSizing -> calculateRecursionLimits (SizingSettings reallyBigNum False) t3
   MainSizing     -> calculateRecursionLimits (SizingSettings reallyBigNum True) t3
   DebugSizing ss -> calculateRecursionLimits ss t3
 
@@ -123,13 +141,13 @@ removeChecks (Term4 m) =
         insertAndGetKey $ DummyLoc :< DeferFragF envDefer
   in Term4 $ Map.map (transform f) newM
 -}
-removeChecks :: Term4 -> Term4
+removeChecks :: CompiledExpr -> CompiledExpr
 removeChecks = id
 
-runStaticChecks :: Term4 -> Either EvalError Term4
-runStaticChecks t@(Term4 termMap) =
+runStaticChecks :: CompiledExpr -> Either EvalError CompiledExpr
+runStaticChecks t =
   let result = evalStaticCheck False scTerm
-      scTerm = term4toAbortExpr t
+      scTerm = runIdentity $ cata (convertBasic (convertStuck (convertAbort (\_ -> error "error converting for runStaticChecks")))) t
   in case debugTrace ("running static checks for:\n" <> prettyPrint t) result of
     Nothing -> pure t
     Just e  -> Left . StaticCheckError $ convertAbortMessage e
@@ -155,22 +173,27 @@ compileUnitTestNoAbort = fmap (cata f) . compileUnitTest where
     AbortFW _ -> deferB (toEnum (-9)) envB
     x -> embed x
 
-compile :: SizingOption -> (Term4 -> Either EvalError Term4) -> Term3 -> Either EvalError CompiledExpr
+compile :: SizingOption -> (CompiledExpr -> Either EvalError CompiledExpr) -> Term3 -> Either EvalError CompiledExpr
 compile so staticCheck t = debugTrace ("compiling term3:\n" <> prettyPrint t)
-  $ term4toAbortExpr . removeChecks <$> (findChurchSizeD so t >>= staticCheck)
+  $ removeChecks <$> (findChurchSizeD so t >>= staticCheck)
 
 -- converts between easily understood Haskell types and untyped IExprs around an iteration of a Telomare expression
-funWrap :: forall a. (Show a, AbstractRunTime a) => a -> (a -> a -> a) -> Maybe (String, IExpr) -> (String, Either RunTimeError a)
+funWrap :: forall a. (Show a, AbstractRunTime a) => a -> (a -> a -> a) -> Maybe (String, BasicExpr) -> (String, Either RunTimeError BasicExpr)
 funWrap fun app inp =
-  let iexpInp = case inp of
-        Nothing                  -> Zero
-        Just (userInp, oldState) -> Pair (s2g userInp) oldState
+  let iexpInp = conv $ case inp of
+        Nothing                  -> zeroB
+        Just (userInp, oldState) -> pairB (s2b userInp) oldState
+      conv = runIdentity . cata (convertBasic (\_ -> error "funWrap conversion error"))
+      conv2 = runIdentity . cata (convertBasic (convertStuck ((\_ -> error "funWrap conversion error2"))))
+      conv3 = runIdentity . cata (convertBasic (\_ -> error "funWrap conversion error3"))
   in case eval (app fun $ fromTelomare iexpInp) of
     Right x -> case toTelomare x of
-      Nothing -> ("error converting iteration value:\n" <> show x, Left $ AbortRunTime Zero)
-      Just Zero -> ("aborted", Left $ AbortRunTime Zero)
-      Just (Pair disp newState) -> (g2s disp, pure $ fromTelomare newState)
-      Just z -> ("unexpected runtime value, dumped:\n" <> show z, Left $ GenericRunTimeError "unexpected runtime value" z)
+      Nothing -> ("error converting iteration value:\n" <> show x, Left $ AbortRunTime zeroB)
+      Just ZeroB -> ("aborted", Left $ AbortRunTime zeroB)
+      -- Just (PairB disp newState) -> (b2s disp, pure $ fromTelomare newState)
+      Just (PairB disp newState) -> case b2s disp of
+        Just d -> (d, pure $ conv3 newState)
+        _ -> ("error converting display value:\n" <> prettyPrint disp, Left . GenericRunTimeError "" $ conv2 disp)
     Left e -> ("runtime error:\n" <> show e, Left e)
 
 runMainCore :: [(String, String)] -- ^All modules as (Module_Name, Module_Content)
@@ -222,12 +245,14 @@ runMainWithInput :: [String] -- ^Inputs
                  -> IO String
 runMainWithInput inputList modulesStrings s = runMainCore modulesStrings s (evalLoopWithInput inputList)
 
-schemeEval :: IExpr -> IO ()
+{- TODO fix
+schemeEval :: CompiledExpr -> IO ()
 schemeEval iexpr = do
   writeFile "scheme.txt" ('(' : (show (app iexpr Zero) <> ")"))
   (_, Just mhout, _, _) <- createProcess (shell "chez-script runtime.so") { std_out = CreatePipe }
   scheme <- hGetContents mhout
   putStrLn scheme
+-}
 
 evalLoopCore :: CompiledExpr
              -> (String -> String -> IO String)
@@ -235,21 +260,30 @@ evalLoopCore :: CompiledExpr
              -> [String]
              -> IO String
 evalLoopCore expr accumFn initAcc manualInput =
-  let wrappedEval :: Maybe (String, IExpr) -> (String, Either RunTimeError CompiledExpr)
+  {-
+  let wrappedEval :: Maybe (String, BasicExpr) -> (String, Either RunTimeError CompiledExpr)
       wrappedEval = funWrap expr appB
+-}
+  let wrappedEval = funWrap expr appB
       mainLoop acc strInput s = do
         let (out, nextState) = wrappedEval s
         newAcc <- accumFn acc out
-        case toTelomare <$> nextState of
+        -- case toTelomare <$> nextState of
+        case nextState of
           Left e -> pure $ newAcc <> "\n" <> show e
+  {-
           Right Nothing -> pure $ newAcc <> "\ndone"
-          Right (Just Zero) -> pure $ newAcc <> "\n" <> "done"
+          Right (Just ZeroB) -> pure $ newAcc <> "\n" <> "done"
           Right (Just ns) -> do
+-}
+          Right ZeroB -> pure $ newAcc <> "\n" <> "done"
+          Right ns -> do
+
             (inp, rest) <-
               if null strInput
               then (, []) <$> getLine
               else pure (head strInput, tail strInput)
-            mainLoop newAcc rest $ pure (inp, fromTelomare ns)
+            mainLoop newAcc rest $ pure (inp, ns)
   in mainLoop initAcc manualInput Nothing
 
 evalLoop :: CompiledExpr -> IO ()
@@ -274,23 +308,22 @@ evalLoop_ iexpr = evalLoopCore iexpr printAcc "" []
                        then pure out
                        else pure (acc <> "\n" <> out)
 
-calculateRecursionLimits :: SizingSettings -> Term3 -> Either EvalError Term4
-calculateRecursionLimits sizingSettings t3 =
-  let abortExprToTerm4' :: AbortExpr -> Either IExpr Term4
-      abortExprToTerm4' = abortExprToTerm4
-      limitSize = 256
-  in case fmap abortExprToTerm4' . sizeTermM sizingSettings $ term3ToUnsizedExpr limitSize t3 of
+calculateRecursionLimits :: SizingSettings -> Term3 -> Either EvalError CompiledExpr
+calculateRecursionLimits sizingSettings t3 = case sizeTermM sizingSettings $ term3ToUnsizedExpr t3 of
     Left urt -> Left $ RecursionLimitError urt
+    Right t  -> pure t
+  {-
     Right t  -> case t of
       Left a  -> Left . StaticCheckError . convertAbortMessage $ a
       Right t -> pure t
+-}
 
 -- takes a main function and sizes the unsized recursion and then displays the results as comments in the original source
 showSizingInSource :: String -> String -> String
 showSizingInSource prelude s
   = let asLines = zip [0..] $ lines s
         parsed = first ParseError (parsePrelude prelude) >>= (`parseMain` s)
-        unsizedExpr = term3ToUnsizedExpr 256 <$> first RE parsed
+        unsizedExpr = term3ToUnsizedExpr <$> first RE parsed
         sizedRecursion = unsizedExpr >>= (first RecursionLimitError . getSizesM 256)
         sizeLocs = error "TODO showSizingInSource implement sizeLocs" --Map.toAscList . buildUnsizedLocMap <$> unsizedExpr
         -- (orphanLocs, lineLocs) = partition ((== DummyLoc) . snd) sizeLocs
@@ -314,6 +347,7 @@ showSizingInSource prelude s
           l -> ("   # " <>) $ foldMap ((\s -> show (fromEnum s) <> ":" <> lookupSize s <> " ") . fst) l
     in "showSizingInSource\n" <> orphans <> "\n" <> foldMap (\(l, s) -> s <> getSizeMatchingLine l <> "\n") asLines
 
+{-
 showFunctionIndexesInSource :: String -> String -> String
 showFunctionIndexesInSource prelude s
   = let asLines = zip [1..] $ lines s
@@ -336,6 +370,7 @@ showFunctionIndexesInSource prelude s
           l  -> ("   # " <>) $ foldMap ((<> " ") . show . fromEnum . fst) l
     -- in "showFunInSource\n" <> orphans <> "\nBodyLocs\n" <> show bodyLocs <> "\n" <> foldMap (\(l, s) -> s <> getFunMatchingLine l <> "\n") asLines
     in "showFunInSource\n" <> orphans <> "\n" <> foldMap (\(l, s) -> s <> getFunMatchingLine l <> "\n") asLines
+-}
 
 parseMain :: [(String, AnnotatedUPT)] -- ^Prelude: [(VariableName, BindedUPT)]
           -> String                            -- ^Raw string to be parserd.
@@ -350,10 +385,11 @@ parseMain prelude' str =
           Right pam -> pam
   in main2Term3 (parseAuxModule str:prelude) "AuxModule"
 
-getAbortPossibilities :: String -> String -> Set IExpr
+{-
+getAbortPossibilities :: String -> String -> Set BasicExpr
 getAbortPossibilities prelude s
   = let parsed = first ParseError (parsePrelude prelude) >>= (`parseMain` s)
-        unsizedExpr = term3ToUnsizedExpr 256 <$> parsed
+        unsizedExpr = term3ToUnsizedExpr <$> parsed
     in case unsizedExpr of
          Left e   -> error $ "getAbortPossibilities: " <> show e
          Right ue -> abortPossibilities 256 ue
@@ -361,12 +397,13 @@ getAbortPossibilities prelude s
 getAbortPossibilities' :: String -> String -> Set String
 getAbortPossibilities' prelude s
   = let parsed = first ParseError (parsePrelude prelude) >>= (`parseMain` s)
-        unsizedExpr = term3ToUnsizedExpr 256 <$> parsed
+        unsizedExpr = term3ToUnsizedExpr <$> parsed
     in case unsizedExpr of
          Left e   -> error $ "getAbortPossibilities: " <> show e
          Right ue -> Set.map convertAbortMessage $ abortPossibilities 256 ue
+-}
 
-eval2IExpr :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -> String -> Either String IExpr
+eval2IExpr :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -> String -> Either String CompiledExpr
 eval2IExpr extraModuleBindings str =
   first errorBundlePretty (runParser (parseOneExprOrTopLevelDefs resolved) "" str)
   >>= first show . process
@@ -374,77 +411,88 @@ eval2IExpr extraModuleBindings str =
     where
       tt = \case
         Left e -> Left $ show e
+        Right x -> pure x
+  {-
         Right x -> case toTelomare x of
           Just ie -> pure ie
           _ -> Left $ "eval2IExpr conversion error back to iexpr:\n" <> prettyPrint x
+-}
       aux = (\str -> Left (DummyLoc :< ImportQualifiedUPF str str)) . fst <$> extraModuleBindings
       resolved = resolveAllImports extraModuleBindings aux
 
-tagIExprWithEval :: IExpr -> Cofree IExprF (Int, IExpr)
+tagIExprWithEval :: CompiledExpr -> Cofree CompiledExprF (Int, CompiledExpr)
 tagIExprWithEval iexpr = evalState (para alg iexpr) 0 where
   statePlus1 :: State Int Int
   statePlus1 = do
       i <- State.get
       State.modify (+ 1)
       pure i
-  alg :: Base IExpr
-              ( IExpr
-              , State Int (Cofree IExprF (Int, IExpr))
+  alg :: Base CompiledExpr
+              ( CompiledExpr
+              , State Int (Cofree CompiledExprF (Int, CompiledExpr))
               )
-      -> State Int (Cofree IExprF (Int, IExpr))
+      -> State Int (Cofree CompiledExprF (Int, CompiledExpr))
   alg = \case
-    ZeroF -> do
+    BasicFW ZeroSF -> do
       i <- statePlus1
-      pure ((i, rEval Zero Zero) :< ZeroF)
-    EnvF -> do
+      -- pure ((i, rEval Zero Zero) :< ZeroF)
+      pure ((i, basicEval zeroB) :< embedB ZeroSF)
+    BasicFW EnvSF -> do
       i <- statePlus1
-      pure ((i, rEval Zero Env) :< EnvF)
-    TraceF -> do
-      i <- statePlus1
-      pure ((i, rEval Zero Trace) :< TraceF)
-    SetEnvF (iexpr0, x) -> do
-      i <- statePlus1
-      x' <- x
-      pure $ (i, rEval Zero $ SetEnv iexpr0) :< SetEnvF x'
-    DeferF (iexpr0, x) -> do
+      -- pure ((i, rEval Zero Env) :< EnvF)
+      pure ((i, basicEval zeroB) :< embedB EnvSF)
+    BasicFW (SetEnvSF (iexpr0, x)) -> do
       i <- statePlus1
       x' <- x
-      pure $ (i, rEval Zero $ Defer iexpr0) :< DeferF x'
-    PLeftF (iexpr0, x) -> do
+      -- pure $ (i, rEval Zero $ SetEnv iexpr0) :< SetEnvF x'
+      pure $ (i, basicEval $ setEnvB iexpr0) :< embedB (SetEnvSF x')
+    StuckFW (DeferSF ind (iexpr0, x)) -> do
       i <- statePlus1
       x' <- x
-      pure $ (i, rEval Zero $ PLeft iexpr0) :< PLeftF x'
-    PRightF (iexpr0, x) -> do
+      -- pure $ (i, rEval Zero $ Defer iexpr0) :< DeferF x'
+      pure $ (i, basicEval . stuckEE $ DeferSF (toEnum (-1)) iexpr0) :< embedS (DeferSF (toEnum (-1)) x')
+    BasicFW (LeftSF (iexpr0, x)) -> do
       i <- statePlus1
       x' <- x
-      pure $ (i, rEval Zero $ PRight iexpr0) :< PRightF x'
-    PairF (iexpr0, x) (iexpr1, y) -> do
+      -- pure $ (i, rEval Zero $ PLeft iexpr0) :< PLeftF x'
+      pure $ (i, basicEval $ leftB iexpr0) :< embedB (LeftSF x')
+    BasicFW (RightSF (iexpr0, x)) -> do
       i <- statePlus1
       x' <- x
-      y' <- y
-      pure $ (i, rEval Zero $ Pair iexpr0 iexpr1) :< PairF x' y'
-    GateF (iexpr0, x) (iexpr1, y) -> do
+      -- pure $ (i, rEval Zero $ PRight iexpr0) :< PRightF x'
+      pure $ (i, basicEval $ rightB iexpr0) :< embedB (RightSF x')
+    BasicFW (PairSF (iexpr0, x) (iexpr1, y)) -> do
       i <- statePlus1
       x' <- x
       y' <- y
-      pure $ (i, rEval Zero $ Gate iexpr0 iexpr1) :< GateF x' y'
+      -- pure $ (i, rEval Zero $ Pair iexpr0 iexpr1) :< PairF x' y'
+      pure $ (i, basicEval $ pairB iexpr0 iexpr1) :< embedB (PairSF x' y')
+    BasicFW (GateSF (iexpr0, x) (iexpr1, y)) -> do
+      i <- statePlus1
+      x' <- x
+      y' <- y
+      -- pure $ (i, rEval Zero $ Gate iexpr0 iexpr1) :< GateF x' y'
+      pure $ (i, basicEval . basicEE $ GateSF iexpr0 iexpr1) :< embedB (GateSF x' y')
 
 tagUPTwithIExpr :: [(String, AnnotatedUPT)]
                 -> UnprocessedParsedTerm
-                -> Cofree UnprocessedParsedTermF (Int, Either String IExpr)
+                -> Cofree UnprocessedParsedTermF (Int, Either String CompiledExpr)
 tagUPTwithIExpr prelude upt = evalState (para alg upt) 0 where
-  upt2iexpr :: UnprocessedParsedTerm -> Either String IExpr
+  upt2iexpr :: UnprocessedParsedTerm -> Either String CompiledExpr
   upt2iexpr u = first show (process (tag DummyLoc u)) >>= tt . first show . compileUnitTest
   tt = \case
     Left e -> Left e
+    Right x -> pure x
+  {-
     Right x -> case toTelomare x of
       Just ie -> pure ie
       _ -> Left $ "tagUPTwithExpr conversion error back to iexpr:\n" <> prettyPrint x
+-}
   alg :: Base UnprocessedParsedTerm
               ( UnprocessedParsedTerm
-              , State Int (Cofree UnprocessedParsedTermF (Int, Either String IExpr))
+              , State Int (Cofree UnprocessedParsedTermF (Int, Either String CompiledExpr))
               )
-      -> State Int (Cofree UnprocessedParsedTermF (Int, Either String IExpr))
+      -> State Int (Cofree UnprocessedParsedTermF (Int, Either String CompiledExpr))
   alg = \case
     ITEUPF (utp1, x) (utp2, y) (utp3, z) -> do
       i <- State.get
@@ -456,7 +504,7 @@ tagUPTwithIExpr prelude upt = evalState (para alg upt) 0 where
     ListUPF l -> do
       i <- State.get
       State.modify (+ 1)
-      let scupt :: State Int [Cofree UnprocessedParsedTermF (Int, Either String IExpr)]
+      let scupt :: State Int [Cofree UnprocessedParsedTermF (Int, Either String CompiledExpr)]
           scupt = mapM snd l
       cupt <- scupt
       pure $ (i, upt2iexpr . ListUP $ fst <$> l) :< ListUPF cupt
@@ -466,7 +514,7 @@ tagUPTwithIExpr prelude upt = evalState (para alg upt) 0 where
       let lupt :: [(String, UnprocessedParsedTerm)]
           lupt = (fmap . fmap) fst l
           slcupt :: State Int
-                     [Cofree UnprocessedParsedTermF (Int, Either String IExpr)]
+                     [Cofree UnprocessedParsedTermF (Int, Either String CompiledExpr)]
           slcupt = mapM snd (snd <$> l)
           vnames :: [String]
           vnames = fst <$> l
@@ -485,7 +533,7 @@ tagUPTwithIExpr prelude upt = evalState (para alg upt) 0 where
           aux0 = (fmap . fmap) snd l
           aux1 :: State Int
                     [ ( Pattern
-                      , Cofree UnprocessedParsedTermF (Int, Either String IExpr)
+                      , Cofree UnprocessedParsedTermF (Int, Either String CompiledExpr)
                       )
                     ]
           aux1 = mapM sequence aux0

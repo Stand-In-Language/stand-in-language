@@ -31,13 +31,11 @@ library
                      , OverloadedStrings
                      , RecursiveDo
                      , LambdaCase
-  exposed-modules:     Naturals
-                     , Debug
+  exposed-modules:     Debug
                      , PrettyPrint
                      , Telomare
                      , Telomare.Eval
                      , Telomare.Decompiler
-                     , Telomare.Optimizer
                      , Telomare.Parser
                      , Telomare.Possible
                      , Telomare.PossibleData

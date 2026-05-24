@@ -132,6 +132,7 @@ decompileTerm2 =
         anno :< TLimitedRecursionF t r b -> (\x y z -> anno :< TLimitedRecursionF x y z) <$> go t <*> go r <*> go b
   in snd . go
 
+{-
 decompileFragMap :: Map.Map FragIndex (Cofree (FragExprF a) LocTag) -> Term2
 decompileFragMap tm =
   let decomp :: Cofree (FragExprF a) LocTag
@@ -159,16 +160,4 @@ decompileTerm4 (Term4 tm) = decompileFragMap tm
 
 decompileTerm3 :: Term3 -> Term2
 decompileTerm3 (Term3 tm) = decompileFragMap $ Map.map unFragExprUR tm
-
-decompileIExpr :: IExpr -> Term4
-decompileIExpr x = let build = \case
-                         Zero     -> pure . tag DummyLoc $ ZeroFrag
-                         Pair a b -> (\x y -> DummyLoc :< PairFragF x y) <$> build a <*> build b
-                         Env      -> pure . tag DummyLoc $ EnvFrag
-                         SetEnv x -> (DummyLoc :<) . SetEnvFragF <$> build x
-                         Gate l r -> (\x y -> DummyLoc :< GateFragF x y) <$> build l <*> build r
-                         PLeft x  -> (DummyLoc :<) . LeftFragF <$> build x
-                         PRight x -> (DummyLoc :<) . RightFragF <$> build x
-                         Trace    -> pure . tag DummyLoc $ TraceFrag
-                         Defer x  -> deferF $ build x
-                   in Term4 . buildFragMap $ build x
+-}
