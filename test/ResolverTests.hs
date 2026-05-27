@@ -555,17 +555,18 @@ showAllTransformations input = do
   print x
   -- let iEvalVar0 = iEval () Zero toTelomareVar
 
-stepIEval :: IExpr -> IO IExpr
-stepIEval =
-  let wio :: IExpr -> IExpr
-      wio = rEval Zero
-  in pure . wio
+stepIEval :: StuckExpr -> IO StuckExpr
+stepIEval x = case eval (fromTelomare x :: CompiledExpr) of
+  Right r -> case toTelomare r of
+    Just s -> pure s
+    Nothing -> error "stepIEval: conversion failure"
+  Left e -> error $ "stepIEval: " <> show e
 
 newtype WrappedIO a = WrappedIO
   { wioIO :: IO a
   } deriving (Functor)
 
-instance Show (WrappedIO IExpr) where
+instance Show (WrappedIO StuckExpr) where
   show = show . unsafePerformIO . wioIO
 
 instance Applicative WrappedIO where

@@ -20,9 +20,9 @@ import Telomare.Eval (SizingOption (..), compile, compileUnitTest,
 import Telomare.Parser (AnnotatedUPT, TelomareParser, parseLongExpr,
                         parsePrelude)
 import Telomare.Possible (SizingSettings (SizingSettings))
-import Telomare.PossibleData (CompiledExpr)
+import Telomare (CompiledExpr)
 import Telomare.Resolver (process)
-import Telomare.RunTime (simpleEval)
+
 import Test.Tasty
 import Test.Tasty.HUnit
 import Test.Tasty.QuickCheck as QC
@@ -69,7 +69,7 @@ evalExprString input = do
         Right iexpr -> case eval iexpr of
                          Left e -> pure . Left . show $ e
                          Right result -> case toTelomare result of
-                           Just r -> pure . Right . show $ PrettyIExpr r
+                           Just r -> pure . Right . show $ PrettyStuckExpr r
                            Nothing -> pure . Left $ "conversion error from result:\n" <> prettyPrint result
 
 assertExpr :: String -> String -> Assertion

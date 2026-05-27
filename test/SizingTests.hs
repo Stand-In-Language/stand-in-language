@@ -12,18 +12,16 @@ import Data.List (partition)
 import qualified Data.Map as Map
 import Data.Monoid
 import Debug.Trace
-import Naturals
 import System.Exit
 import System.IO
 import qualified System.IO.Strict as Strict
 import Telomare
 import Telomare.Decompiler
 import Telomare.Eval
-import Telomare.Optimizer
 import Telomare.Parser
 import Telomare.Possible (SizingSettings (SizingSettings),
-                          UnexpectedGrammarException, appB, evalBU, evalBU')
-import Telomare.PossibleData (zeroB)
+                          UnexpectedGrammarException, appB)
+import Telomare (zeroB)
 import Telomare.Resolver
 import Telomare.RunTime
 import Telomare.TypeChecker
@@ -82,26 +80,25 @@ parsePreludeWithFile preludePath telFile = do
     Left e  -> error $ show e
 
 -- | Compile using our sizing toggle function
-compileWithSizing :: SizingOption -> Term3 -> Either EvalError IExpr
+compileWithSizing :: SizingOption -> Term3 -> Either EvalError CompiledExpr
 compileWithSizing useSizing term = case typeCheck (PairTypeP (ArrTypeP ZeroTypeP ZeroTypeP) AnyType) term of
   Just e -> Left $ TCE e
   _      -> compileWithSizing' useSizing term
 
-compileWithSizing' :: SizingOption -> Term3 -> Either EvalError IExpr
+compileWithSizing' :: SizingOption -> Term3 -> Either EvalError CompiledExpr
 compileWithSizing' useSizing t =
-  case toTelomare . removeChecks <$> findChurchSizeD useSizing t of
-    Right (Just i) -> pure i
-    Right Nothing  -> Left CompileConversionError
-    Left e         -> Left e
+  case removeChecks <$> findChurchSizeD useSizing t of
+    Right i -> pure i
+    Left e  -> Left e
 
 -- | Converts between easily understood Haskell types and untyped IExprs around an iteration of a Telomare expression
 -- | Renamed to avoid conflict with Telomare.Eval.funWrap'
-sizingFunWrap :: (IExpr -> IExpr) -> IExpr -> Maybe (String, IExpr) -> (String, Maybe IExpr)
-sizingFunWrap eval fun inp =
+sizingFunWrap :: (StuckExpr -> StuckExpr) -> StuckExpr -> Maybe (String, StuckExpr) -> (String, Maybe StuckExpr)
+sizingFunWrap evalFn fun inp =
   let iexpInp = case inp of
-        Nothing                  -> Zero
-        Just (userInp, oldState) -> Pair (s2g userInp) oldState
-  in case eval (app fun iexpInp) of
-    Zero               -> ("aborted", Nothing)
-    Pair disp newState -> (g2s disp, Just newState)
-    z                  -> ("runtime error, dumped:\n" <> show z, Nothing)
+        Nothing                  -> zeroB
+        Just (userInp, oldState) -> pairB (s2b userInp) oldState
+  in case evalFn (appB fun iexpInp) of
+    ZeroB               -> ("aborted", Nothing)
+    PairB disp newState -> (case b2s disp of { Just s -> s; Nothing -> show disp }, Just newState)
+    z                   -> ("runtime error, dumped:\n" <> show z, Nothing)
