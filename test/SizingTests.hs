@@ -21,7 +21,6 @@ import Telomare.Eval
 import Telomare.Parser
 import Telomare.Possible (SizingSettings (SizingSettings),
                           UnexpectedGrammarException, appB)
-import Telomare (zeroB)
 import Telomare.Resolver
 import Telomare.RunTime
 import Telomare.TypeChecker

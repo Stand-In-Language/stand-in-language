@@ -38,7 +38,7 @@ toChurch x =
   let inner :: Int -> Term3Builder Term3
       inner 0 = pure (leftB envB)
       inner a = appS (pure (leftB $ rightB envB)) (inner (a - 1))
-  in buildTerm $ fmap (\d -> pairB d zeroB) (lamS (inner x) >>= deferS)
+  in buildTerm $ fmap (`pairB` zeroB) (lamS (inner x) >>= deferS)
 
 -- recursively finds shrink matching invariant, ordered simplest to most complex
 shrinkComplexCase :: Arbitrary a => (a -> Bool) -> [a] -> [a]
@@ -56,52 +56,51 @@ two_succ = buildTerm $ lamS (pure (pairB (varB 0) zeroB)) >>= \il -> appS (appS 
 church_type :: StuckExpr
 church_type = pairB (pairB zeroB zeroB) (pairB zeroB zeroB)
 
-c2d = buildTerm $ lamS $ lamS (pure (pairB (varB 0) zeroB)) >>= \il -> appS (appS (pure (varB 0)) (pure il)) (pure zeroB)
+c2d = buildTerm . lamS $ (lamS (pure (pairB (varB 0) zeroB)) >>= \il -> appS (appS (pure (varB 0)) (pure il)) (pure zeroB))
 
 test_toChurch = buildTerm $ lamS (pure (pairB (varB 0) zeroB)) >>= \il -> appS (appS (pure (toChurch 2)) (pure il)) (pure zeroB)
 
 map_ =
-  let layer = buildTerm $ lamS . lamS . lamS $ do
+  let layer = (buildTerm . lamS . lamS . lamS $ (do
                 a <- appS (pure (varB 1)) (pure (leftB $ varB 0))
                 b <- appS (appS (pure (varB 2)) (pure (varB 1))) (pure (rightB $ varB 0))
-                pure $ iteB_ (varB 0) (pairB a b) zeroB
-      base = buildTerm $ lamS . lamS . pure $ leftB (pairB zeroB envB)
+                pure $ iteB_ (varB 0) (pairB a b) zeroB))
+      base = (buildTerm . lamS . lamS . pure $ leftB (pairB zeroB envB))
   in buildTerm $ appS (appS (pure (toChurch 255)) (pure layer)) (pure base)
 
 foldr_ =
-  let layer = buildTerm $ lamS . lamS . lamS . lamS $ do
+  let layer = (buildTerm . lamS . lamS . lamS . lamS $ (do
                 a <- appS (appS (pure (varB 2)) (pure (leftB $ varB 0))) (pure (varB 1))
                 b <- appS (appS (appS (pure (varB 3)) (pure (varB 2))) (pure a)) (pure (rightB $ varB 0))
-                pure $ iteB_ (varB 0) b (varB 1)
-      base = buildTerm $ lamS . lamS . lamS . pure $ zeroB
+                pure $ iteB_ (varB 0) b (varB 1)))
+      base = (buildTerm . lamS . lamS . lamS . pure $ zeroB)
   in buildTerm $ appS (appS (pure (toChurch 255)) (pure layer)) (pure base)
 
 zipWith_ =
-  let layer = buildTerm $ lamS . lamS . lamS . lamS $ do
+  let layer = (buildTerm . lamS . lamS . lamS . lamS $ (do
                 a <- appS (appS (pure (varB 2)) (pure (leftB $ varB 1))) (pure (leftB $ varB 0))
                 b <- appS (appS (appS (pure (varB 3)) (pure (varB 2))) (pure (rightB $ varB 1))) (pure (rightB $ varB 0))
-                pure $ iteB_ (varB 1) (iteB_ (varB 0) (pairB a b) zeroB) zeroB
-      base = buildTerm $ lamS . lamS . lamS . pure $ zeroB
+                pure $ iteB_ (varB 1) (iteB_ (varB 0) (pairB a b) zeroB) zeroB))
+      base = (buildTerm . lamS . lamS . lamS . pure $ zeroB)
   in buildTerm $ appS (appS (pure (toChurch 255)) (pure layer)) (pure base)
 
 d2c recur =
-  let layer = buildTerm $ lamS . lamS . lamS . lamS $ do
+  let layer = (buildTerm . lamS . lamS . lamS . lamS $ (do
                 a <- appS (appS (appS (pure (varB 3)) (pure (leftB $ varB 2))) (pure (varB 1))) (pure (varB 0))
                 b <- appS (pure (varB 1)) (pure a)
-                pure $ iteB_ (varB 2) b (varB 0)
-      base = buildTerm $ lamS . lamS . lamS . pure $ varB 0
+                pure $ iteB_ (varB 2) b (varB 0)))
+      base = (buildTerm . lamS . lamS . lamS . pure $ varB 0)
   in buildTerm $ do
        wrapLam <- lamS $ appS (appS (pure (varB 0)) (pure layer)) (pure base)
        appS (pure wrapLam) (pure (toChurch recur))
 
-d_equals_one = buildTerm $ lamS . pure $
-  iteB_ (varB 0) (iteB_ (leftB (varB 0)) zeroB (i2B 1)) zeroB
+d_equals_one = buildTerm . lamS . pure $ iteB_ (varB 0) (iteB_ (leftB (varB 0)) zeroB (i2B 1)) zeroB
 
-d_to_equality = buildTerm $ lamS . lamS $ do
+d_to_equality = buildTerm . lamS . lamS $ (do
   innerLam <- lamS . pure $ leftB (varB 0)
   a <- appS (appS (appS (pure (d2c 255)) (pure (leftB $ varB 1))) (pure innerLam)) (pure (varB 0))
   b <- appS (pure d_equals_one) (pure a)
-  pure $ iteB_ (varB 1) b (iteB_ (varB 0) zeroB (i2B 1))
+  pure $ iteB_ (varB 1) b (iteB_ (varB 0) zeroB (i2B 1)))
 
 list_equality = buildTerm $ do
   and_ <- lamS . lamS . pure $ iteB_ (varB 1) (varB 0) zeroB
@@ -118,31 +117,31 @@ list_length = buildTerm $ do
 
 plus_ :: Term3 -> Term3 -> Term3
 plus_ x y =
-  let plus = buildTerm $ lamS . lamS . lamS . lamS $ do
+  let plus = (buildTerm . lamS . lamS . lamS . lamS $ (do
                 a <- appS (appS (pure (varB 2)) (pure (varB 1))) (pure (varB 0))
-                appS (appS (pure (varB 3)) (pure (varB 1))) (pure a)
+                appS (appS (pure (varB 3)) (pure (varB 1))) (pure a)))
   in buildTerm $ appS (appS (pure plus) (pure x)) (pure y)
 
-d_plus = buildTerm $ lamS . lamS $ do
+d_plus = buildTerm . lamS . lamS $ (do
   a <- appS (pure (d2c 255)) (pure (varB 1))
   b <- appS (pure (d2c 255)) (pure (varB 0))
-  appS (pure c2d) (pure (plus_ a b))
+  appS (pure c2d) (pure (plus_ a b)))
 
-d_plus2 = buildTerm $ lamS . lamS $ do
+d_plus2 = buildTerm . lamS . lamS $ (do
   a <- appS (pure (d2c 6)) (pure (varB 1))
   b <- appS (pure (d2c 6)) (pure (varB 0))
-  appS (pure c2d) (pure (plus_ a b))
+  appS (pure c2d) (pure (plus_ a b)))
 
-d_plus3 = buildTerm $ lamS $ do
+d_plus3 = buildTerm . lamS $ (do
   a <- appS (pure (d2c 6)) (pure (varB 0))
-  appS (pure c2d) (pure (plus_ (toChurch 2) a))
+  appS (pure c2d) (pure (plus_ (toChurch 2) a)))
 
 d2c_test =
-  let layer = buildTerm $ lamS . lamS . lamS . lamS $ do
+  let layer = (buildTerm . lamS . lamS . lamS . lamS $ (do
                 a <- appS (appS (appS (pure (varB 3)) (pure (leftB $ varB 2))) (pure (varB 1))) (pure (varB 0))
                 b <- appS (pure (varB 1)) (pure a)
-                pure $ iteB_ (varB 2) b (varB 0)
-      base = buildTerm $ lamS . lamS . lamS . pure $ varB 0
+                pure $ iteB_ (varB 2) b (varB 0)))
+      base = (buildTerm . lamS . lamS . lamS . pure $ varB 0)
   in buildTerm $ do
        s_d2c <- appS (appS (pure (toChurch 3)) (pure layer)) (pure base)
        succLam <- lamS . pure $ pairB (varB 0) zeroB
@@ -173,33 +172,33 @@ test_plus255 = buildTerm $ do { a <- appS (pure (d2c 255)) (pure (i2B 255)); app
 test_plus256 = buildTerm $ do { a <- appS (pure (d2c 255)) (pure (i2B 256)); appS (pure c2d) (pure (plus_ (toChurch 3) a)) }
 
 one_plus_one =
-  let plus = buildTerm $ lamS . lamS . lamS . lamS $ do
+  let plus = (buildTerm . lamS . lamS . lamS . lamS $ (do
                 a <- appS (appS (pure (varB 2)) (pure (varB 1))) (pure (varB 0))
-                appS (appS (pure (varB 3)) (pure (varB 1))) (pure a)
+                appS (appS (pure (varB 3)) (pure (varB 1))) (pure a)))
   in buildTerm $ do
        a <- appS (appS (pure plus) (pure (toChurch 1))) (pure (toChurch 1))
        appS (pure c2d) (pure a)
 
 times_two =
-  let times_app = buildTerm $ lamS . lamS $ do
+  let times_app = (buildTerm . lamS . lamS $ (do
                     a <- appS (pure (varB 1)) (pure (varB 0))
-                    appS (pure (toChurch 2)) (pure a)
+                    appS (pure (toChurch 2)) (pure a)))
   in buildTerm $ do
        a <- appS (pure times_app) (pure (toChurch 3))
        appS (pure c2d) (pure a)
 
 times_three =
-  let times_app = buildTerm $ lamS . lamS $ do
+  let times_app = (buildTerm . lamS . lamS $ (do
                     a <- appS (pure (toChurch 3)) (pure (varB 0))
-                    appS (pure (varB 1)) (pure a)
+                    appS (pure (varB 1)) (pure a)))
   in buildTerm $ do
        a <- appS (pure times_app) (pure (toChurch 2))
        appS (pure c2d) (pure a)
 
 times_wip =
-  let times_app = buildTerm $ lamS . lamS $ do
+  let times_app = (buildTerm . lamS . lamS $ (do
                     a <- appS (pure (toChurch 3)) (pure (varB 0))
-                    appS (pure (varB 1)) (pure a)
+                    appS (pure (varB 1)) (pure a)))
   in buildTerm $ appS (pure c2d) (pure (toChurch 6))
 
 function_argument :: Term3
@@ -211,9 +210,9 @@ function_argument = buildTerm $ do
 -- m f (n f x)
 -- app (app m f) (app (app n f) x)
 three_plus_two =
-  let plus = buildTerm $ lamS . lamS . lamS . lamS $ do
+  let plus = (buildTerm . lamS . lamS . lamS . lamS $ (do
                 a <- appS (appS (pure (varB 2)) (pure (varB 1))) (pure (varB 0))
-                appS (appS (pure (varB 3)) (pure (varB 1))) (pure a)
+                appS (appS (pure (varB 3)) (pure (varB 1))) (pure a)))
   in buildTerm $ do
        a <- appS (appS (pure plus) (pure (toChurch 3))) (pure (toChurch 2))
        appS (pure c2d) (pure a)
@@ -221,19 +220,19 @@ three_plus_two =
 -- (m (n f)) x
 -- app (app m (app n f)) x
 three_times_two =
-  let succ = buildTerm $ lamS . pure $ pairB (varB 0) zeroB
-      times = buildTerm $ lamS . lamS . lamS . lamS $ do
+  let succ = (buildTerm . lamS . pure $ pairB (varB 0) zeroB)
+      times = (buildTerm . lamS . lamS . lamS . lamS $ (do
                 a <- appS (pure (varB 2)) (pure (varB 1))
-                appS (appS (pure (varB 3)) (pure a)) (pure (varB 0))
+                appS (appS (pure (varB 3)) (pure a)) (pure (varB 0))))
   in buildTerm $ appS (appS (appS (appS (pure times) (pure (toChurch 3))) (pure (toChurch 2))) (pure succ)) (pure zeroB)
 
 -- m n
 -- app (app (app (m n)) f) x
 three_pow_two =
-  let succ = buildTerm $ lamS . pure $ pairB (varB 0) zeroB
-      pow = buildTerm $ lamS . lamS . lamS . lamS $ do
+  let succ = (buildTerm . lamS . pure $ pairB (varB 0) zeroB)
+      pow = (buildTerm . lamS . lamS . lamS . lamS $ (do
               a <- appS (appS (pure (varB 3)) (pure (varB 2))) (pure (varB 1))
-              appS (pure a) (pure (varB 0))
+              appS (pure a) (pure (varB 0))))
   in buildTerm $ appS (appS (appS (appS (pure pow) (pure (toChurch 2))) (pure (toChurch 3))) (pure succ)) (pure zeroB)
 
 -- validate termination checking
@@ -300,8 +299,7 @@ unitTests_ parse = do
                            in pure $ \s i e -> it ("main input " <> i) $ eval (Just (i, s)) `shouldBe` e
         z -> pure $ \s i e -> runIO . expectationFailure $ "failed to compile main:\n" <> show s <> "\nbecause:\n" <> show z
       -- decompileExample = IExprWrapper (SetEnv (SetEnv (SetEnv (Pair (Defer (Pair (Defer (Pair (Defer Zero) Env)) Env)) Zero))))
-  describe "unitTest2" $ do
-    unitTestType "main = succ 0" (ArrTypeP ZeroTypeP ZeroTypeP) isInconsistentType
+  describe "unitTest2" $ unitTestType "main = succ 0" (ArrTypeP ZeroTypeP ZeroTypeP) isInconsistentType
 
 c2dApp = "main = (c2dG $4 3) $2 succ 0"
 
@@ -378,19 +376,18 @@ unitTests parse = do
     unitTest "3^2" "9" three_pow_two
     unitTest "test_tochurch" "2" test_toChurch
     unitTest "three" "3" three_succ
-    unitTest "data 3+5" "8" $ buildTerm $ appS (appS (pure d_plus) (pure (i2B 3))) (pure (i2B 5))
-    unitTest "foldr" "13" $ buildTerm $ appS (appS (appS (pure foldr_) (pure d_plus)) (pure (i2B 1))) (pure (foldr (pairB . i2B) zeroB [2,4,6]))
-    unitTest "listlength0" "0" $ buildTerm $ appS (pure list_length) (pure zeroB)
-    unitTest "listlength3" "3" $ buildTerm $ appS (pure list_length) (pure (foldr (pairB . i2B) zeroB [1,2,3]))
-    unitTest "zipwith" "((4,1),((5,1),((6,2),0)))"
-      $ buildTerm $ appS (appS (appS (pure zipWith_) (pure (buildTerm $ lamS . lamS . pure $ pairB (varB 1) (varB 0))))
+    unitTest "data 3+5" "8" . buildTerm $ appS (appS (pure d_plus) (pure (i2B 3))) (pure (i2B 5))
+    unitTest "foldr" "13" . buildTerm $ appS (appS (appS (pure foldr_) (pure d_plus)) (pure (i2B 1))) (pure (foldr (pairB . i2B) zeroB [2,4,6]))
+    unitTest "listlength0" "0" . buildTerm $ appS (pure list_length) (pure zeroB)
+    unitTest "listlength3" "3" . buildTerm $ appS (pure list_length) (pure (foldr (pairB . i2B) zeroB [1,2,3]))
+    unitTest "zipwith" "((4,1),((5,1),((6,2),0)))" . buildTerm $ appS (appS (appS (pure zipWith_) (pure (buildTerm $ lamS . lamS . pure $ pairB (varB 1) (varB 0))))
                                (pure (foldr (pairB . i2B) zeroB [4,5,6])))
                          (pure (foldr (pairB . i2B) zeroB [1,1,2,3]))
-    unitTest "listequal1" "1" $ buildTerm $ appS (appS (pure list_equality) (pure (s2b "hey"))) (pure (s2b "hey"))
-    unitTest "listequal0" "0" $ buildTerm $ appS (appS (pure list_equality) (pure (s2b "hey"))) (pure (s2b "he"))
-    unitTest "listequal00" "0" $ buildTerm $ appS (appS (pure list_equality) (pure (s2b "hey"))) (pure (s2b "hel"))
+    unitTest "listequal1" "1" . buildTerm $ appS (appS (pure list_equality) (pure (s2b "hey"))) (pure (s2b "hey"))
+    unitTest "listequal0" "0" . buildTerm $ appS (appS (pure list_equality) (pure (s2b "hey"))) (pure (s2b "he"))
+    unitTest "listequal00" "0" . buildTerm $ appS (appS (pure list_equality) (pure (s2b "hey"))) (pure (s2b "hel"))
   -- because of the way lists are represented, the last number will be prettyPrinted + 1
-    unitTest "map" "(2,(3,5))" $ buildTerm $ appS (appS (pure map_) (pure (buildTerm $ lamS . pure $ pairB (varB 0) zeroB)))
+    unitTest "map" "(2,(3,5))" . buildTerm $ appS (appS (pure map_) (pure (buildTerm $ lamS . pure $ pairB (varB 0) zeroB)))
                                                   (pure (foldr (pairB . i2B) zeroB [1,2,3]))
 
   describe "refinement" $ do

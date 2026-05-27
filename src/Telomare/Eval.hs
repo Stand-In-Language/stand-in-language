@@ -144,7 +144,7 @@ funWrap fun app inp =
         Nothing                  -> zeroB
         Just (userInp, oldState) -> pairB (s2b userInp) oldState
       conv = runIdentity . cata (convertBasic (\_ -> error "funWrap conversion error"))
-      conv2 = runIdentity . cata (convertBasic (convertStuck ((\_ -> error "funWrap conversion error2"))))
+      conv2 = runIdentity . cata (convertBasic (convertStuck (\_ -> error "funWrap conversion error2")))
       conv3 = runIdentity . cata (convertBasic (\_ -> error "funWrap conversion error3"))
   in case eval (app fun $ fromTelomare iexpInp) of
     Right x -> case toTelomare x of

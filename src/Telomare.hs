@@ -152,7 +152,7 @@ b2s = fmap (fmap chr) . f where
     _ -> Nothing
 
 s2b :: forall g f. (Base g ~ f, BasicBase f, Corecursive g) => String -> g
-s2b = foldr (pairB . i2B) zeroB . fmap ord
+s2b = foldr (pairB . i2B . ord) zeroB
 
 -- note that this doesn't incorporate laziness necessary for things like sizing recursion
 iteB_ :: (Base g ~ f, BasicBase f, Corecursive g) => g -> g -> g -> g

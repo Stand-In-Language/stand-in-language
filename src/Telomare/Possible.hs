@@ -868,7 +868,7 @@ findInputLimitStepM handleOther x = f x where
           convertIL = validate . cata f where
             f = convertBasic (convertStuck (convertAbort (convertIndexed convertFail)))
             -- convertFail z = Left ("findInputLimitStepM convert failed on unexpected\n" <> prettyPrint z)
-            convertFail z = Left ("findInputLimitStepM convert failed on something unexpected")
+            convertFail z = Left "findInputLimitStepM convert failed on something unexpected"
           validate = \case
             Left e -> error e
             Right x -> x
