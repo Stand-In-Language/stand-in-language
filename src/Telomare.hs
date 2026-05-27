@@ -26,6 +26,7 @@ import qualified Control.Monad.State as State
 import Data.Bool (bool)
 import Data.Char (chr, ord)
 import Data.Eq.Deriving (deriveEq1)
+import Data.Fix (Fix (..))
 import Data.Functor.Classes (Eq1 (..), Eq2 (..), Show1 (..), Show2 (..), eq1)
 import Data.Functor.Foldable (Base, Corecursive (embed),
                               Recursive (cata, project))
@@ -46,78 +47,313 @@ import Text.Show.Deriving (deriveShow1)
  - extract abort logic from arbitrary expressions (like, make quick dynamic check the way we have static check)
  - make sure recur calls in unsized recursion combinator are structurally smaller ... although, we can fail sizing and report that to user
 -}
--- TODO replace with a Plated fold
-class MonoidEndoFolder a where
-  monoidFold :: Monoid m => (a -> m) -> a -> m
 
-data IExpr
-  = Zero                     -- no special syntax necessary
-  | Pair !IExpr !IExpr       -- (,)
-  | Env                      -- identifier
-  | SetEnv !IExpr -- SetEnv takes a Pair where the right part is Env and the left part is Defer. Inside the Defer is a closed lambda with all argument information on the right (i.e. Env)
-  | Defer !IExpr
-  -- the rest of these should be no argument constructors, to be treated as functions with setenv
-  | Gate !IExpr !IExpr
-  | PLeft !IExpr             -- left
-  | PRight !IExpr            -- right
-  | Trace
-  deriving (Eq, Show, Ord, Read, Generic)
-makeBaseFunctor ''IExpr -- Functorial version IExprF.
 
-instance Plated IExpr where
-  plate f = \case
-    Pair a b -> Pair <$> f a <*> f b
-    SetEnv x -> SetEnv <$> f x
-    Defer x  -> Defer <$> f x
-    Gate l r -> Gate <$> f l <*> f r
-    PLeft x  -> PLeft <$> f x
-    PRight x -> PRight <$> f x
-    x        -> pure x
+class BasicBase g where
+  embedB :: PartExprF x -> g x
+  extractB :: g x -> Maybe (PartExprF x)
 
-instance Validity IExpr
-instance GenValid IExpr
+class StuckBase g where
+  embedS :: StuckF x -> g x
+  extractS :: g x -> Maybe (StuckF x)
 
--- probably should get rid of this in favor of ExprT
-data ExprA a
-  = ZeroA a
-  | PairA (ExprA a) (ExprA a) a
-  | EnvA a
-  | SetEnvA (ExprA a) a
-  | DeferA (ExprA a) a
-  | AbortA a
-  | GateA (ExprA a) (ExprA a) a
-  | PLeftA (ExprA a) a
-  | PRightA (ExprA a) a
-  | TraceA a
-  deriving (Eq, Ord, Show)
+class AbortBase g where
+  embedA :: AbortableF x -> g x
+  extractA :: g x -> Maybe (AbortableF x)
 
--- so we can add annotations at any location in the AST
-data ExprT a
-  = ZeroT
-  | PairT (ExprT a) (ExprT a)
-  | EnvT
-  | SetEnvT (ExprT a)
-  | DeferT (ExprT a)
-  | AbortT
-  | GateT (ExprT a) (ExprT a)
-  | LeftT (ExprT a)
-  | RightT (ExprT a)
-  | TraceT
-  | TagT (ExprT a) a
-  deriving (Eq, Ord, Show)
+pattern BasicFW :: BasicBase g => PartExprF x -> g x
+pattern BasicFW x <- (extractB -> Just x)
+pattern BasicEE :: (Base g ~ f, BasicBase f, Recursive g) => PartExprF g -> g
+pattern BasicEE x <- (project -> BasicFW x)
+pattern StuckFW :: (StuckBase g) => StuckF x -> g x
+pattern StuckFW x <- (extractS -> Just x)
+pattern StuckEE :: (Base g ~ f, StuckBase f, Recursive g) => StuckF g -> g
+pattern StuckEE x <- (project -> StuckFW x)
+pattern AbortFW :: AbortBase g => AbortableF x -> g x
+pattern AbortFW x <- (extractA -> Just x)
+pattern AbortEE :: (Base g ~ f, AbortBase f, Recursive g) => AbortableF g -> g
+pattern AbortEE x <- (project -> (AbortFW x))
 
--- there must be a typeclass I can derive that does this
-getA :: ExprA a -> a
-getA (ZeroA a)     = a
-getA (PairA _ _ a) = a
-getA (EnvA a)      = a
-getA (SetEnvA _ a) = a
-getA (DeferA _ a)  = a
-getA (AbortA a)    = a
-getA (GateA _ _ a) = a
-getA (PLeftA _ a)  = a
-getA (PRightA _ a) = a
-getA (TraceA a)    = a
+pattern ZeroB :: (Base g ~ f, BasicBase f, Recursive g) => g
+pattern ZeroB <- BasicEE ZeroSF
+pattern PairB :: (Base g ~ f, BasicBase f, Recursive g) => g -> g -> g
+pattern PairB a b <- BasicEE (PairSF a b)
+pattern FillFunction :: (Base g ~ f, BasicBase f, Recursive g) => g -> g -> f g
+pattern FillFunction c e <- BasicFW (SetEnvSF (BasicEE (PairSF c e)))
+pattern GateSwitch :: (Base g ~ f, BasicBase f, Recursive g) => g -> g -> g -> f g
+pattern GateSwitch l r s <- FillFunction (BasicEE (GateSF l r)) s
+pattern AppEE :: (Base g ~ f, BasicBase f, StuckBase f, Recursive g) => g -> g -> g
+pattern AppEE c i <- BasicEE (SetEnvSF (BasicEE (SetEnvSF (BasicEE (PairSF (StuckEE (DeferSF _ (BasicEE (PairSF (BasicEE (LeftSF (BasicEE (RightSF (BasicEE EnvSF))))) (BasicEE (PairSF (BasicEE (LeftSF (BasicEE EnvSF))) (BasicEE (RightSF (BasicEE (RightSF (BasicEE EnvSF))))))))))) (BasicEE (PairSF i c)))))))
+
+basicEE :: (Base g ~ f, BasicBase f, Corecursive g) => PartExprF g -> g
+basicEE = embed . embedB
+stuckEE :: (Base g ~ f, StuckBase f, Corecursive g) => StuckF g -> g
+stuckEE = embed . embedS
+abortEE :: (Base g ~ f, AbortBase f, Corecursive g) => AbortableF g -> g
+abortEE = embed . embedA
+
+zeroB :: (Base g ~ f, BasicBase f, Corecursive g) => g
+zeroB = basicEE ZeroSF
+pairB :: (Base g ~ f, BasicBase f, Corecursive g) => g -> g -> g
+pairB a b = basicEE $ PairSF a b
+envB :: (Base g ~ f, BasicBase f, Corecursive g) => g
+envB = basicEE EnvSF
+setEnvB :: (Base g ~ f, BasicBase f, Corecursive g) => g -> g
+setEnvB = basicEE . SetEnvSF
+gateB :: (Base g ~ f, BasicBase f, Corecursive g) => g -> g -> g
+gateB l r = basicEE $ GateSF l r
+leftB :: (Base g ~ f, BasicBase f, Corecursive g) => g -> g
+leftB = basicEE . LeftSF
+rightB :: (Base g ~ f, BasicBase f, Corecursive g) => g -> g
+rightB = basicEE . RightSF
+
+fillFunction :: (Base g ~ f, BasicBase f, Corecursive g) => g -> g -> g
+fillFunction c e = setEnvB (pairB c e)
+gateSwitch :: (Base g ~ f, BasicBase f, Corecursive g) => g -> g -> g -> g
+gateSwitch l r = fillFunction (gateB l r)
+
+abortB :: (Base g ~ f, AbortBase f, Corecursive g) => g
+abortB = abortEE AbortF
+
+-- TODO: remove in favor of varB
+firstArgB :: (Base g ~ f, BasicBase f, Corecursive g) => g
+firstArgB = leftB envB
+secondArgB :: (Base g ~ f, BasicBase f, Corecursive g) => g
+secondArgB = leftB $ rightB envB
+thirdArgB :: (Base g ~ f, BasicBase f, Corecursive g) => g
+thirdArgB = leftB . rightB $ rightB envB
+fourthArgB :: (Base g ~ f, BasicBase f, Corecursive g) => g
+fourthArgB = leftB . rightB . rightB $ rightB envB
+fifthArgB :: (Base g ~ f, BasicBase f, Corecursive g) => g
+fifthArgB = leftB . rightB . rightB . rightB $ rightB envB
+
+varB :: (Base g ~ f, BasicBase f, Corecursive g) => Int -> g
+varB n = if n < 0
+  then error $ "varB invalid debruijin index " <> show n
+  else leftB (iterate rightB envB !! n)
+
+i2B :: (Base g ~ f, BasicBase f, Corecursive g) => Int -> g
+i2B = \case
+  0 -> zeroB
+  n -> pairB (i2B $ n - 1) zeroB
+
+b2i :: (Base g ~ f, BasicBase f, Recursive g) => g -> Maybe Int
+b2i = cata f where
+  f = \case
+    BasicFW ZeroSF -> Just 0
+    BasicFW (PairSF n (Just 0)) -> succ <$> n
+    _ -> Nothing
+
+b2s :: forall g f. (Base g ~ f, BasicBase f, Recursive g) => g -> Maybe String
+b2s = fmap (fmap chr) . f where
+  f = \case
+    PairB x xs -> (:) <$> b2i x <*> f xs
+    ZeroB -> pure []
+    _ -> Nothing
+
+s2b :: forall g f. (Base g ~ f, BasicBase f, Corecursive g) => String -> g
+s2b = foldr (pairB . i2B) zeroB . fmap ord
+
+-- note that this doesn't incorporate laziness necessary for things like sizing recursion
+iteB_ :: (Base g ~ f, BasicBase f, Corecursive g) => g -> g -> g -> g
+iteB_ i t e = setEnvB $ pairB (gateB e t) i
+
+data PartExprF f
+  = ZeroSF
+  | PairSF f f
+  | EnvSF
+  | SetEnvSF f
+  | GateSF f f
+  | LeftSF f
+  | RightSF f
+  deriving (Eq, Ord, Show, Functor, Foldable, Traversable, Generic)
+
+instance Eq1 PartExprF where
+  liftEq test a b = case (a,b) of
+    (ZeroSF, ZeroSF)         -> True
+    (EnvSF, EnvSF)           -> True
+    (PairSF a b, PairSF c d) -> test a c && test b d
+    (SetEnvSF x, SetEnvSF y) -> test x y
+    (GateSF a b, GateSF c d) -> test a c && test b d
+    (LeftSF x, LeftSF y)     -> test x y
+    (RightSF x, RightSF y)   -> test x y
+    _                        -> False
+
+instance Show1 PartExprF where
+  liftShowsPrec showsPrec' showList prec = \case
+    ZeroSF -> shows "ZeroSF"
+    PairSF a b -> shows "PairSF (" . showsPrec' 0 a . shows ", " . showsPrec' 0 b . shows ")"
+    EnvSF -> shows "EnvSF"
+    SetEnvSF x -> shows "SetEnvSF (" . showsPrec' 0 x . shows ")"
+    GateSF l r -> shows "GateSF (" . showsPrec' 0 l . shows ", " . showsPrec' 0 r . shows ")"
+    LeftSF x -> shows "LeftSF (" . showsPrec' 0 x . shows ")"
+    RightSF x -> shows "RightSF (" . showsPrec' 0 x . shows ")"
+
+instance BasicBase PartExprF where
+  embedB = id
+  extractB = pure
+
+type BasicExpr = Fix PartExprF
+
+data StuckF f
+  = DeferSF FunctionIndex f
+  deriving (Eq, Ord, Show, Functor, Foldable, Traversable, Generic)
+
+instance Show1 StuckF where
+  liftShowsPrec showsPrec' showList prec = \case
+    DeferSF fi x -> shows "DeferSF " . shows fi . shows " (" . showsPrec' 0 x . shows ")"
+instance Eq1 StuckF where
+  liftEq test a b = case (a,b) of
+    (DeferSF ix _, DeferSF iy _) | ix == iy -> True -- test a b
+    _                                       -> False
+
+newtype FunctionIndex = FunctionIndex { unFunctionIndex :: Int } deriving (Eq, Ord, Enum, Show, Generic)
+
+instance Validity FunctionIndex
+
+-- TODO we can simplify abort semantics to (defer env), and then could do gate x (abort [message] x) for conditional abort
+data AbortableF f
+  = AbortF
+  | AbortedF BasicExpr
+  deriving (Eq, Show, Functor, Foldable, Traversable, Generic)
+
+instance Eq1 AbortableF  where
+  liftEq test a b = case (a,b) of
+    (AbortF, AbortF)                  -> True
+    (AbortedF a, AbortedF b) | a == b -> True
+    _                                 -> False
+
+instance Show1 AbortableF where
+  liftShowsPrec showsPrec showList prec = \case
+    AbortF     -> shows "AbortF"
+    AbortedF x -> shows "(AbortedF " . shows x . shows ")"
+
+data StuckExprF f
+  = StuckExprB (PartExprF f)
+  | StuckExprS (StuckF f)
+  deriving (Eq, Ord, Show, Functor, Foldable, Traversable)
+instance BasicBase StuckExprF where
+  embedB = StuckExprB
+  extractB = \case
+    StuckExprB x -> Just x
+    _            -> Nothing
+instance StuckBase StuckExprF where
+  embedS = StuckExprS
+  extractS = \case
+    StuckExprS x -> Just x
+    _            -> Nothing
+instance Eq1 StuckExprF where
+  liftEq test a b = case (a,b) of
+    (StuckExprB x, StuckExprB y) -> liftEq test x y
+    (StuckExprS x, StuckExprS y) -> liftEq test x y
+    _ -> False
+instance Show1 StuckExprF where
+  liftShowsPrec showsPrec showList prec = \case
+    StuckExprB x -> liftShowsPrec showsPrec showList prec x
+    StuckExprS x -> liftShowsPrec showsPrec showList prec x
+
+type StuckExpr = Fix StuckExprF
+
+data CompiledExprF f
+  = CompiledExprB (PartExprF f)
+  | CompiledExprS (StuckF f)
+  | CompiledExprA (AbortableF f)
+  deriving (Eq, Show, Functor, Foldable, Traversable, Generic)
+instance BasicBase CompiledExprF where
+  embedB = CompiledExprB
+  extractB = \case
+    CompiledExprB x -> Just x
+    _              -> Nothing
+instance StuckBase CompiledExprF where
+  embedS = CompiledExprS
+  extractS = \case
+    CompiledExprS x -> Just x
+    _ -> Nothing
+instance AbortBase CompiledExprF where
+  embedA = CompiledExprA
+  extractA = \case
+    CompiledExprA x -> Just x
+    _ -> Nothing
+instance Eq1 CompiledExprF where
+  liftEq test a b = case (a,b) of
+    (CompiledExprB x, CompiledExprB y) -> liftEq test x y
+    (CompiledExprS x, CompiledExprS y) -> liftEq test x y
+    (CompiledExprA x, CompiledExprA y) -> liftEq test x y
+    _                                  -> False
+instance Show1 CompiledExprF where
+  liftShowsPrec showsPrec showList prec = \case
+    CompiledExprB x -> liftShowsPrec showsPrec showList prec x
+    CompiledExprS x -> liftShowsPrec showsPrec showList prec x
+    CompiledExprA x -> liftShowsPrec showsPrec showList prec x
+
+type CompiledExpr = Fix CompiledExprF
+
+newtype UnsizedRecursionToken = UnsizedRecursionToken { unUnsizedRecursionToken :: Int } deriving (Eq, Ord, Show, Enum, NFData, Generic)
+
+instance Validity UnsizedRecursionToken
+
+data SourcePosition = SourcePosition
+  { sourcePositionLine   :: Int
+  , sourcePositionColumn :: Int
+  , sourcePositionOffset :: Int
+  }
+  deriving (Eq, Show, Ord, Generic, NFData)
+
+instance Validity SourcePosition
+instance GenValid SourcePosition
+
+data SourceSpan = SourceSpan
+  { sourceSpanFile  :: Maybe FilePath
+  , sourceSpanStart :: SourcePosition
+  , sourceSpanEnd   :: SourcePosition
+  }
+  deriving (Eq, Show, Ord, Generic, NFData)
+
+instance Validity SourceSpan
+instance GenValid SourceSpan
+
+data LocTag
+  = SourceLoc SourceSpan
+  | GeneratedLoc String (Maybe LocTag)
+  | BuiltinLoc String
+  | RuntimeLoc
+  | DecompiledLoc
+  | UnknownLoc
+  deriving (Eq, Show, Ord, Generic, NFData)
+
+instance Validity LocTag
+instance GenValid LocTag
+
+data Term3F f
+  = Term3B (PartExprF f)
+  | Term3S (StuckF f)
+  | Term3A (AbortableF f)
+  | Term3Unsized UnsizedRecursionToken
+  | Term3CheckingWrapper LocTag f f
+  deriving (Eq, Show, Functor, Foldable, Traversable, Generic)
+instance BasicBase Term3F where
+  embedB = Term3B
+  extractB = \case
+    Term3B x -> Just x
+    _              -> Nothing
+instance StuckBase Term3F where
+  embedS = Term3S
+  extractS = \case
+    Term3S x -> Just x
+    _ -> Nothing
+instance AbortBase Term3F where
+  embedA = Term3A
+  extractA = \case
+    Term3A x -> Just x
+    _ -> Nothing
+instance Show1 Term3F where
+  liftShowsPrec showsPrec' showList prec = \case
+    Term3B x -> liftShowsPrec showsPrec' showList prec x
+    Term3S x -> liftShowsPrec showsPrec' showList prec x
+    Term3A x -> liftShowsPrec showsPrec' showList prec x
+    Term3Unsized urt -> shows $ "Term3Unsized" <> show urt
+    Term3CheckingWrapper loc cf c -> shows "Term3CheckingWrapper(" . shows loc . shows ", " . showsPrec' 0 cf . shows ", " . showsPrec' 0 c . shows ")"
+
 
 -- | Lambdas can be closed if it's expresion does not depend on any
 --   outer binding.
@@ -127,20 +363,12 @@ data LamType l
   | LetBinding Int l
   deriving (Eq, Show, Ord)
 
-{-
-data FunRef v r
-  = NamedRef v
-  | ExplicitRef r
-  deriving (Eq, Show, Ord, Functor, Foldable, Traversable)
--}
-
 -- | Parser AST
 data ParserTerm l v
   = TZero
   | TPair (ParserTerm l v) (ParserTerm l v)
   | TVar v
   | TApp (ParserTerm l v) (ParserTerm l v)
---  | TPartApp (ParserTerm l v) (ParserTerm l v)
   | TCheck (ParserTerm l v) (ParserTerm l v)
   | TITE (ParserTerm l v) (ParserTerm l v) (ParserTerm l v)
   | TLeft (ParserTerm l v)
@@ -149,12 +377,9 @@ data ParserTerm l v
   | THash (ParserTerm l v)
   | TChurch Int
   | TLam (LamType l) (ParserTerm l v)
-  --  | TLam [ParserTerm l v] (ParserTerm l v)
-  --  | TLam l [FunRef v (ParserTerm l v)] (ParserTerm l v)
   | TLimitedRecursion (ParserTerm l v) (ParserTerm l v) (ParserTerm l v)
   | TUnsizedRepeater
   deriving (Eq, Ord, Functor, Foldable, Traversable)
---   deriving (Eq, Ord)
 makeBaseFunctor ''ParserTerm -- Functorial version ParserTermF
 deriving instance (Show l, Show v, Show a) => Show (ParserTermF l v a)
 deriving instance (Show l, Show v) => Show1 (ParserTermF l v)
@@ -182,7 +407,6 @@ instance Eq l => Eq2 (ParserTermF l) where
   liftEq2 eqv eqa (TPairF x1 y1) (TPairF x2 y2) = eqa x1 x2 && eqa y1 y2
   liftEq2 eqv eqa (TVarF v1) (TVarF v2) = eqv v1 v2
   liftEq2 eqv eqa (TAppF x1 y1) (TAppF x2 y2) = eqa x1 x2 && eqa y1 y2
---  liftEq2 eqv eqa (TPartAppF x1 y1) (TPartAppF x2 y2) = eqa x1 x2 && eqa y1 y2
   liftEq2 eqv eqa (TCheckF x1 y1) (TCheckF x2 y2) = eqa x1 x2 && eqa y1 y2
   liftEq2 eqv eqa (TITEF c1 t1 e1) (TITEF c2 t2 e2) = eqa c1 c2 && eqa t1 t2 && eqa e1 e2
   liftEq2 eqv eqa (TLeftF x1) (TLeftF x2) = eqa x1 x2
@@ -191,7 +415,6 @@ instance Eq l => Eq2 (ParserTermF l) where
   liftEq2 eqv eqa (THashF x1) (THashF x2) = eqa x1 x2
   liftEq2 eqv eqa (TChurchF n1) (TChurchF n2) = n1 == n2
   liftEq2 eqv eqa (TLamF l1 x1) (TLamF l2 x2) = l1 == l2 && eqa x1 x2
-  -- liftEq2 eqv eqa (TLamF v1 x1) (TLamF v2 x2) = and (zipWith eqa v1 v2) && eqa x1 x2
   liftEq2 eqv eqa (TLimitedRecursionF a1 b1 c1) (TLimitedRecursionF a2 b2 c2) =
     eqa a1 a2 && eqa b1 b2 && eqa c1 c2
   liftEq2 _ _ TUnsizedRepeaterF TUnsizedRepeaterF = True
@@ -281,6 +504,7 @@ indentWithChildren' str l = do
   let doLine = fmap (<> "\n" <> indent newl "") . (State.put newl >>)
   foldl (\s c -> (<>) <$> s <*> c) (pure sout) $ fmap doLine l
 
+-- TODO replace with above version
 -- |Two children indentation.
 indentWithTwoChildren :: String -> State Int String -> State Int String -> State Int String
 indentWithTwoChildren str sl sr = do
@@ -291,6 +515,7 @@ indentWithTwoChildren str sl sr = do
   r <- sr
   pure $ indent i (str <> "\n") <> l <> "\n" <> r
 
+-- TODO replace with other version
 indentWithThreeChildren :: String -> State Int String -> State Int String -> State Int String -> State Int String
 indentWithThreeChildren str sa sb sc = do
   i <- State.get
@@ -307,153 +532,6 @@ dropUntil :: (a -> Bool) -> [a] -> [a]
 dropUntil _ [] = []
 dropUntil p x@(x1:_) =
   if p x1 then x else dropUntil p (drop 1 x)
-
-newtype FragIndex = FragIndex { unFragIndex :: Int } deriving (Eq, Show, Ord, Enum, NFData, Generic)
-
-data FragExpr a
-  = ZeroFrag
-  | PairFrag (FragExpr a) (FragExpr a)
-  | EnvFrag
-  | SetEnvFrag (FragExpr a)
-  | DeferFrag FragIndex
-  | AbortFrag
-  | GateFrag (FragExpr a) (FragExpr a)
-  | LeftFrag (FragExpr a)
-  | RightFrag (FragExpr a)
-  | TraceFrag
-  | AuxFrag a
-  deriving (Eq, Ord, Generic, NFData)
-makeBaseFunctor ''FragExpr -- Functorial version FragExprF.
-
-instance Plated (FragExpr a) where
-  plate f = \case
-    PairFrag a b -> PairFrag <$> f a <*> f b
-    SetEnvFrag x -> SetEnvFrag <$> f x
-    GateFrag l r -> GateFrag <$> f l <*> f r
-    LeftFrag x   -> LeftFrag <$> f x
-    RightFrag x  -> RightFrag <$> f x
-    x            -> pure x
-
-showFragAlg :: Show a => (Base (FragExpr a)) (State Int String) -> State Int String
-showFragAlg = \case
-      ZeroFragF         -> sindent "ZeroFrag"
-      (PairFragF sl sr) -> indentWithTwoChildren "PairFrag" sl sr
-      EnvFragF          -> sindent "EnvFrag"
-      (SetEnvFragF sx)  -> indentWithOneChild "SetEnvFrag" sx
-      (DeferFragF i)    -> sindent $ "DeferFrag " <> show i
-      AbortFragF        -> sindent "AbortFrag"
-      (GateFragF sx sy) -> indentWithTwoChildren "GateFrag" sx sy
-      (LeftFragF sl)    -> indentWithOneChild "LeftFrag" sl
-      (RightFragF sr)   -> indentWithOneChild "RightFrag" sr
-      TraceFragF        -> sindent "TraceFrag"
-      (AuxFragF x)      -> sindent $ "AuxFrag " <> show x
-
-instance Show a => Show (FragExpr a) where
-  show fexp = State.evalState (cata showFragAlg fexp) 0
-
-instance (Eq a, Eq r) => Eq (FragExprF a r) where
-  ZeroFragF == ZeroFragF             = True
-  PairFragF x1 y1 == PairFragF x2 y2 = x1 == x2 && y1 == y2
-  EnvFragF == EnvFragF               = True
-  SetEnvFragF x1 == SetEnvFragF x2   = x1 == x2
-  DeferFragF i1 == DeferFragF i2     = i1 == i2
-  AbortFragF == AbortFragF           = True
-  GateFragF x1 y1 == GateFragF x2 y2 = x1 == x2 && y1 == y2
-  LeftFragF x1 == LeftFragF x2       = x1 == x2
-  RightFragF x1 == RightFragF x2     = x1 == x2
-  TraceFragF == TraceFragF           = True
-  AuxFragF x1 == AuxFragF x2         = x1 == x2
-  _ == _                             = False
-
-instance Eq a => Eq1 (FragExprF a) where
-  liftEq eq ZeroFragF ZeroFragF                 = True
-  liftEq eq (PairFragF x1 y1) (PairFragF x2 y2) = eq x1 x2 && eq y1 y2
-  liftEq eq EnvFragF EnvFragF                   = True
-  liftEq eq (SetEnvFragF x1) (SetEnvFragF x2)   = eq x1 x2
-  liftEq eq (DeferFragF i1) (DeferFragF i2)     = i1 == i2
-  liftEq eq AbortFragF AbortFragF               = True
-  liftEq eq (GateFragF x1 y1) (GateFragF x2 y2) = eq x1 x2 && eq y1 y2
-  liftEq eq (LeftFragF x1) (LeftFragF x2)       = eq x1 x2
-  liftEq eq (RightFragF x1) (RightFragF x2)     = eq x1 x2
-  liftEq eq TraceFragF TraceFragF               = True
-  liftEq eq (AuxFragF x1) (AuxFragF x2)         = x1 == x2
-  liftEq _ _ _                                  = False
-
-instance (Show a, Show r) => Show (FragExprF a r) where
-  show ZeroFragF       = "ZeroFragF"
-  show (PairFragF x y) = "PairFragF " <> show x <> " " <> show y
-  show EnvFragF        = "EnvFragF"
-  show (SetEnvFragF x) = "SetEnvFragF " <> show x
-  show (DeferFragF i)  = "DeferFragF " <> show i
-  show AbortFragF      = "AbortFragF"
-  show (GateFragF x y) = "GateFragF " <> show x <> " " <> show y
-  show (LeftFragF x)   = "LeftFragF " <> show x
-  show (RightFragF x)  = "RightFragF " <> show x
-  show TraceFragF      = "TraceFragF"
-  show (AuxFragF x)    = "AuxFragF " <> show x
-
-instance Show a => Show1 (FragExprF a) where
-  liftShowsPrec showsPrecf _ d ZeroFragF = showString "ZeroFragF"
-  liftShowsPrec showsPrecf _ d (PairFragF x y) =
-    showString "PairFragF " . showsPrecf d x . showChar ' ' . showsPrecf d y
-  liftShowsPrec _ _ _ EnvFragF = showString "EnvFragF"
-  liftShowsPrec showsPrecf _ d (SetEnvFragF x) =
-    showString "SetEnvFragF " . showsPrecf d x
-  liftShowsPrec _ _ d (DeferFragF i) =
-    showString "DeferFragF " . shows i
-  liftShowsPrec _ _ _ AbortFragF = showString "AbortFragF"
-  liftShowsPrec showsPrecf _ d (GateFragF x y) =
-    showString "GateFragF " . showsPrecf d x . showChar ' ' . showsPrecf d y
-  liftShowsPrec showsPrecf _ d (LeftFragF x) =
-    showString "LeftFragF " . showsPrecf d x
-  liftShowsPrec showsPrecf _ d (RightFragF x) =
-    showString "RightFragF " . showsPrecf d x
-  liftShowsPrec _ _ _ TraceFragF = showString "TraceFragF"
-  liftShowsPrec _ _ d (AuxFragF x) =
-    showString "AuxFragF " . shows x
-
-newtype EIndex = EIndex { unIndex :: Int } deriving (Eq, Show, Ord)
-
-newtype UnsizedRecursionToken = UnsizedRecursionToken { unUnsizedRecursionToken :: Int } deriving (Eq, Ord, Show, Enum, NFData, Generic)
-
-instance Validity UnsizedRecursionToken
-
-data RecursionSimulationPieces a
-  = NestedSetEnvs UnsizedRecursionToken
-  | CheckingWrapper LocTag a a
-  deriving (Eq, Ord, Show, NFData, Generic, Functor)
-
-data SourcePosition = SourcePosition
-  { sourcePositionLine   :: Int
-  , sourcePositionColumn :: Int
-  , sourcePositionOffset :: Int
-  }
-  deriving (Eq, Show, Ord, Generic, NFData)
-
-instance Validity SourcePosition
-instance GenValid SourcePosition
-
-data SourceSpan = SourceSpan
-  { sourceSpanFile  :: Maybe FilePath
-  , sourceSpanStart :: SourcePosition
-  , sourceSpanEnd   :: SourcePosition
-  }
-  deriving (Eq, Show, Ord, Generic, NFData)
-
-instance Validity SourceSpan
-instance GenValid SourceSpan
-
-data LocTag
-  = SourceLoc SourceSpan
-  | GeneratedLoc String (Maybe LocTag)
-  | BuiltinLoc String
-  | RuntimeLoc
-  | DecompiledLoc
-  | UnknownLoc
-  deriving (Eq, Show, Ord, Generic, NFData)
-
-instance Validity LocTag
-instance GenValid LocTag
 
 locStartLineColumn :: LocTag -> Maybe (Int, Int)
 locStartLineColumn = \case
@@ -479,51 +557,9 @@ renderLocTagVerbose loc = case (loc, renderLocTag loc) of
   (_, Just rendered)                     -> rendered
   (_, Nothing)                           -> "unknown location"
 
-newtype FragExprUR =
-  FragExprUR { unFragExprUR :: Cofree (FragExprF (RecursionSimulationPieces FragExprUR))
-                                      LocTag
-             }
-  deriving (Eq, Show, Generic)
-instance NFData FragExprUR where
-  -- rnf (FragExprUR (a :< x)) = seq (rnf a) $ rnf x
-  rnf (FragExprUR (a :< !x)) = seq (rnf a) () -- TODO fix if we ever care about proper NFData
-
-type RecursionPieceFrag = RecursionSimulationPieces FragExprUR
-
 type Term1 = Cofree (ParserTermF String String) LocTag
 type Term2 = Cofree (ParserTermF () Int) LocTag
-
--- |Term3 :: Map FragIndex (FragExpr BreakExtras) -> Term3
-newtype Term3 = Term3 (Map FragIndex FragExprUR) deriving (Eq, Show, Generic, NFData)
-newtype Term4 = Term4 (Map FragIndex (Cofree (FragExprF Void) LocTag)) deriving (Eq, Show)
-
-type BreakState a b = State (b, FragIndex, Map FragIndex (Cofree (FragExprF a) LocTag))
-
-type BreakState' a b = BreakState a b (Cofree (FragExprF a) LocTag)
-
-type IndExpr = ExprA EIndex
-
-instance MonoidEndoFolder IExpr where
-  monoidFold f Zero = f Zero
-  monoidFold f (Pair a b) = mconcat [f (Pair a b), monoidFold f a, monoidFold f b]
-  monoidFold f Env = f Env
-  monoidFold f (SetEnv x) = mconcat [f (SetEnv x), monoidFold f x]
-  monoidFold f (Defer x) = mconcat [f (Defer x), monoidFold f x]
-  monoidFold f (Gate l r) = mconcat [f (Gate l r), monoidFold f l, monoidFold f r]
-  monoidFold f (PLeft x) = mconcat [f (PLeft x), monoidFold f x]
-  monoidFold f (PRight x) = mconcat [f (PRight x), monoidFold f x]
-  monoidFold f Trace = f Trace
-
-instance NFData IExpr where
-  rnf Zero         = ()
-  rnf (Pair e1 e2) = rnf e1 `seq` rnf e2
-  rnf Env          = ()
-  rnf (SetEnv  e)  = rnf e
-  rnf (Defer   e)  = rnf e
-  rnf (Gate l r)   = rnf l `seq` rnf r
-  rnf (PLeft   e)  = rnf e
-  rnf (PRight  e)  = rnf e
-  rnf Trace        = ()
+type Term3 = Cofree Term3F LocTag
 
 data TypeCheckError
   = UnboundType Int
@@ -559,13 +595,13 @@ data EvalError = RTE RunTimeError
     | StaticCheckError String
     | CompileConversionError
     | RecursionLimitError UnsizedRecursionToken
-    deriving (Eq, Ord, Show)
+    deriving (Eq, Show)
 
 data RunTimeError
-  = AbortRunTime IExpr
-  | GenericRunTimeError String IExpr
+  = AbortRunTime BasicExpr
+  | GenericRunTimeError String CompiledExpr
   | ResultConversionError String
-  deriving (Eq, Ord)
+  deriving (Eq)
 
 instance Show RunTimeError where
   show (AbortRunTime a) = "Aborted, " <> convertAbortMessage a
@@ -575,275 +611,109 @@ instance Show RunTimeError where
 -- type RunResult = ExceptT RunTimeError IO
 
 class TelomareLike a where
-  fromTelomare :: IExpr -> a
-  toTelomare :: a -> Maybe IExpr
+  fromTelomare :: StuckExpr -> a
+  toTelomare :: a -> Maybe StuckExpr
 
 class TelomareLike a => AbstractRunTime a where
   eval :: a -> Either RunTimeError a
 
-rootFrag :: Map FragIndex a -> a
-rootFrag = (Map.! FragIndex 0)
+instance BasicBase f => BasicBase (CofreeT.CofreeF f LocTag) where
+  embedB = (GeneratedLoc "BasicBase Cofree instance" Nothing CofreeT.:<) . embedB
+  extractB = extractB . (\(_ CofreeT.:< x) -> x)
 
--- TODO get rid of these and use bidirectional pattern matching
-zero :: IExpr
-zero = Zero
-pair :: IExpr -> IExpr -> IExpr
-pair = Pair
-var :: IExpr
-var = Env
-env :: IExpr
-env = Env
-twiddle :: IExpr -> IExpr
-twiddle x = setenv (pair (defer (pair (pleft (pright env)) (pair (pleft env) (pright (pright env))))) x)
-app :: IExpr -> IExpr -> IExpr
-app c i = setenv (setenv (pair (defer (pair (pleft (pright env)) (pair (pleft env) (pright (pright env)))))
-                          (pair i c)))
-pleft :: IExpr -> IExpr
-pleft = PLeft
-pright :: IExpr -> IExpr
-pright = PRight
-setenv :: IExpr -> IExpr
-setenv = SetEnv
-defer :: IExpr -> IExpr
-defer = Defer
-lam :: IExpr -> IExpr
-lam x = pair (defer x) env
--- a form of lambda that does not pull in a surrounding environment
-completeLam :: IExpr -> IExpr
-completeLam x = pair (defer x) zero
-ite :: IExpr -> IExpr -> IExpr -> IExpr
-ite i t e = setenv (pair (Gate e t) i)
-varN :: Int -> IExpr
-varN n = if n < 0
-  then error ("varN invalid debruijin index " <> show n)
-  else pleft (iterate pright env !! n)
+instance StuckBase f => StuckBase (CofreeT.CofreeF f LocTag) where
+  embedS = (GeneratedLoc "StuckBase Cofree instance" Nothing CofreeT.:<) . embedS
+  extractS = extractS . (\(_ CofreeT.:< x) -> x)
 
-varNF :: Int -> FragExpr a
-varNF n = if n < 0
-  then error ("varN invalid debruijin index " <> show n)
-  else LeftFrag (iterate RightFrag EnvFrag !! n)
+instance AbortBase f => AbortBase (CofreeT.CofreeF f LocTag) where
+  embedA = (GeneratedLoc "AbortBase Cofree instance" Nothing CofreeT.:<) . embedA
+  extractA = extractA . (\(_ CofreeT.:< x) -> x)
 
--- make sure these patterns are in exact correspondence with the shortcut functions above
-pattern FirstArg :: IExpr
-pattern FirstArg = PLeft Env
-pattern SecondArg :: IExpr
-pattern SecondArg = PLeft (PRight Env)
-pattern ThirdArg :: IExpr
-pattern ThirdArg <- PLeft (PRight (PRight Env))
-pattern FourthArg :: IExpr
-pattern FourthArg <- PLeft (PRight (PRight (PRight Env)))
-pattern Lam :: IExpr -> IExpr
-pattern Lam x = Pair (Defer x) Env
-pattern App :: IExpr -> IExpr -> IExpr
-pattern App c i = SetEnv (SetEnv (Pair (Defer (Pair (PLeft (PRight Env)) (Pair (PLeft Env) (PRight (PRight Env)))))
-                         (Pair i c)))
-pattern TwoArgFun :: IExpr -> IExpr
-pattern TwoArgFun c <- Pair (Defer (Pair (Defer c) Env)) Env
-pattern ITE :: IExpr -> IExpr -> IExpr -> IExpr
-pattern ITE i t e = SetEnv (Pair (Gate e t) i)
-pattern EasyTrace :: IExpr -> IExpr
-pattern EasyTrace x = SetEnv (Pair (Defer Trace) x)
+type Term3Builder = State (FunctionIndex, UnsizedRecursionToken)
 
-countApps :: Int -> IExpr -> Maybe Int
-countApps x FirstArg          = pure x
-countApps x (App SecondArg c) = countApps (x + 1) c
-countApps _ _                 = Nothing
+buildTerm :: (Corecursive g) => Term3Builder g -> g
+buildTerm = flip State.evalState (toEnum 0, toEnum 0)
 
-pattern ChurchNum :: Int -> IExpr
-pattern ChurchNum x <- TwoArgFun (countApps 0 -> Just x)
+deferS :: (Base g ~ f, StuckBase f, Corecursive g) => g -> Term3Builder g
+deferS x = do
+  fi <- State.gets fst
+  State.modify (\(_, urt) -> (succ fi, urt))
+  pure . stuckEE $ DeferSF fi x
 
-pattern ToChurch :: IExpr
-pattern ToChurch <-
-  Lam
-    (App
-      (App
-        FirstArg
-        (Lam (Lam (Lam (Lam
-          (ITE
-            ThirdArg
-            (App
-              SecondArg
-              (App
-                (App
-                  (App
-                    FourthArg
-                    (PLeft ThirdArg)
-                  )
-                  SecondArg
-                )
-                FirstArg
-              )
-            )
-            FirstArg
-          )
-        ))))
-      )
-      (Lam (Lam (Lam FirstArg)))
-    )
+pairS :: (Base g ~ CofreeT.CofreeF f a, BasicBase f, Recursive g, Corecursive g, Monad m) => m g -> m g -> m g
+pairS a b = do
+  a' <- a
+  b' <- b
+  let l CofreeT.:< _ = project a'
+  pure . embed $ l CofreeT.:< embedB (PairSF a' b')
 
-deferF :: Show a => BreakState' a b -> BreakState' a b
-deferF x = do
-  bx@(anno :< _) <- x
-  (uri, fi@(FragIndex i), fragMap) <- State.get
-  State.put (uri, FragIndex (i + 1), Map.insert fi bx fragMap)
-  pure $ anno :< DeferFragF fi
+clamS :: forall g f. (Base g ~ CofreeT.CofreeF f LocTag, StuckBase f, BasicBase f, Recursive g, Corecursive g)
+  => Term3Builder g -> Term3Builder g
+clamS x = pairS (x >>= deferS) $ pure zeroB
 
-pairF :: BreakState' a b -> BreakState' a b -> BreakState' a b
-pairF x y = do
-  bx@(anno :< _) <- x
-  by <- y
-  pure $ anno :< PairFragF bx by
+lamS :: forall g f. (Base g ~ CofreeT.CofreeF f LocTag, StuckBase f, BasicBase f, Recursive g, Corecursive g)
+  => Term3Builder g -> Term3Builder g
+lamS x = pairS (x >>= deferS) $ pure envB
 
-setEnvF :: BreakState' a b -> BreakState' a b
-setEnvF x = do
-  x'@(anno :< _) <- x
-  pure $ anno :< SetEnvFragF x'
+twiddleS :: forall g f. (Base g ~ CofreeT.CofreeF f LocTag, StuckBase f, BasicBase f, Corecursive g) => Term3Builder g
+twiddleS = deferS . pairB (leftB $ rightB envB) . pairB (leftB envB) $ rightB (rightB envB)
 
-appF :: (Show a, Enum b, Show b) => BreakState' a b -> BreakState' a b -> BreakState' a b
-appF c i =
-  let (anno :< _) = State.evalState c (toEnum 0, FragIndex 1, Map.empty)
-      twiddleF = deferF . pure . tag anno $ PairFrag (LeftFrag (RightFrag EnvFrag))
-                                                          (PairFrag (LeftFrag EnvFrag)
-                                                                    (RightFrag (RightFrag EnvFrag)))
-  in setEnvF . setEnvF $ pairF twiddleF (pairF i c)
-
-showRunBreakState' :: BreakState' RecursionPieceFrag UnsizedRecursionToken -> String
-showRunBreakState' bs = show (forget
-  (State.evalState bs (toEnum 0, FragIndex 1, Map.empty)) :: FragExpr RecursionPieceFrag)
-
-lamF :: (Show a, Enum b) => BreakState' a b -> BreakState' a b
-lamF x =
-  let (anno :< _) = State.evalState x (toEnum 0, FragIndex 1, Map.empty)
-  in pairF (deferF x) $ pure (anno :< EnvFragF)
-
-clamF :: (Show a, Enum b) => BreakState' a b -> BreakState' a b
-clamF x =
-  let (anno :< _) = State.evalState x (toEnum 0, FragIndex 1, Map.empty)
-  in pairF (deferF x) $ pure (anno :< ZeroFragF)
-
-innerChurchF :: LocTag -> Int -> BreakState' a b
-innerChurchF anno x = if x < 0
-  then error ("innerChurchF called with " <> show x)
-  else pure . tag anno $ iterate SetEnvFrag EnvFrag !! x
-
-gateF :: BreakState' a b -> BreakState' a b -> BreakState' a b
-gateF x y = do
-  x'@(anno :< _) <- x
-  y' <- y
-  pure $ anno :< GateFragF x' y'
-
-iteF :: BreakState' a b -> BreakState' a b -> BreakState' a b -> BreakState' a b
-iteF x y z = setEnvF (pairF (gateF z y) x)
+appS :: forall g f. (Base g ~ CofreeT.CofreeF f LocTag, StuckBase f, BasicBase f, Recursive g, Corecursive g)
+  => Term3Builder g -> Term3Builder g -> Term3Builder g
+appS c i = setEnvB . setEnvB <$> pairS twiddleS (pairS i c)
 
 -- inside three lambdas (\r f x -> ...)
 -- r is the repeater function
 -- creates and iterates on a function "frame" (rf, (rf, (f', (x, env'))))
 -- rf is the function to pull arguments out of the frame, run f', and construct the next frame
 -- (f',env') is f (since f may contain a saved environment/closure env we want to use for each iteration)
-repeatFunctionF :: (Show a, Show b, Enum b) => LocTag -> BreakState' a b
-repeatFunctionF l =
-  let applyF = SetEnvFrag $ RightFrag EnvFrag
-      env' = RightFrag (RightFrag (RightFrag EnvFrag))
+repeatFunctionS :: LocTag -> Term3Builder Term3
+repeatFunctionS l =
+  let applyF = setEnvB $ rightB envB
+      env' = rightB . rightB $ rightB envB
       -- takes (rf, (f', (x, env'))), executes f' with (x, env') and creates a new frame
-      rf = deferF . pure . tag l $
-                 PairFrag (LeftFrag EnvFrag)
-                          (PairFrag (LeftFrag EnvFrag)
-                                    (PairFrag (LeftFrag (RightFrag EnvFrag))
-                                              (PairFrag applyF env')))
-      r = pure . tag l . LeftFrag . LeftFrag . RightFrag . RightFrag $ EnvFrag
-      x = pure . tag l $ LeftFrag EnvFrag
-      f' = pure . tag l . LeftFrag . LeftFrag $ RightFrag EnvFrag
-      fenv = pure . tag l . RightFrag . LeftFrag $ RightFrag EnvFrag
+      rf = deferS $ pairB (leftB envB)
+                          (pairB (leftB envB)
+                                 (pairB (leftB (rightB envB))
+                                        (pairB applyF env')))
+      r = leftB . leftB . rightB $ rightB envB
+      x = leftB envB
+      f' = leftB . leftB $ rightB envB
+      fenv = rightB . leftB $ rightB envB
       -- (r, (x, ((f', fenv), 0))) -> (rf, (rf, (f', (x, fenv))))
-      frameSetup = rf >>= (\rf' -> pairF (pure rf') (pairF (pure rf') (pairF f' (pairF x fenv))))
-  in clamF . lamF . lamF . setEnvF $ pairF r frameSetup
+      frameSetup = pairS rf (pairS rf (pure $ pairB f' (pairB x fenv)))
+  in clamS . lamS . lamS $ setEnvB <$> pairS (pure r) frameSetup
 
-unsizedRepeater :: LocTag -> UnsizedRecursionToken -> BreakState' RecursionPieceFrag UnsizedRecursionToken
-unsizedRepeater l tok = clamF . pure . tag l . LeftFrag . RightFrag . RightFrag . RightFrag
-  . AuxFrag $ NestedSetEnvs tok
+unsizedRepeater :: LocTag -> UnsizedRecursionToken -> Term3Builder Term3
+unsizedRepeater l tok = clamS . pure . leftB . rightB . rightB . rightB . embed $ l CofreeT.:< Term3Unsized tok
 
-repeaterAndAbort :: LocTag -> UnsizedRecursionToken -> BreakState' RecursionPieceFrag UnsizedRecursionToken
-repeaterAndAbort l tok = pairF (unsizedRepeater l tok) abrt where
+repeaterAndAbort :: LocTag -> UnsizedRecursionToken -> Term3Builder Term3
+repeaterAndAbort l tok = pairS (unsizedRepeater l tok) abrt where
   -- args are (i, (b, ...)) since trb is on the stack
-  abrt = deferF . setEnvF $ pairF (setEnvF (pairF abortFragF abortToken))
-                                  (appF secondArgF firstArgF)
-  abortFragF = pure $ l :< AbortFragF
-  abortToken = (\t -> l :< PairFragF (l :< ZeroFragF) t) <$> i2gF l (fromEnum tok)
-  firstArgF = pure . tag l $ LeftFrag EnvFrag
-  secondArgF = pure . tag l $ LeftFrag (RightFrag EnvFrag)
+  abrt = (>>= deferS) $ setEnvB . pairB (setEnvB $ pairB abortB abortToken) <$> appS (pure secondArgB) (pure firstArgB)
+  abortToken = pairB zeroB . i2B $ fromEnum tok
 
 -- to construct a church numeral (\f x -> f ... (f x))
 -- the core is nested setenvs around an env, where the number of setenvs is magnitude of church numeral
-i2cF :: (Show a, Show b, Enum b) => LocTag -> Int -> BreakState' a b
-i2cF l n = appF (repeatFunctionF l) . clamF . pure . tag l . LeftFrag . RightFrag . RightFrag . RightFrag
-  $ iterate SetEnvFrag EnvFrag !! n
-
+i2CB :: LocTag -> Int -> Term3Builder Term3
+i2CB l n = appS (repeatFunctionS l) . clamS . pure . leftB . rightB . rightB . rightB $ iterate setEnvB envB !! n
 
 -- function is called with (r,a), where r is the repeating function, and a is the abort function
-unsizedRecursionWrapper :: LocTag
-                        -> BreakState' RecursionPieceFrag UnsizedRecursionToken
-                        -> BreakState' RecursionPieceFrag UnsizedRecursionToken
-                        -> BreakState' RecursionPieceFrag UnsizedRecursionToken
-                        -> BreakState' RecursionPieceFrag UnsizedRecursionToken
+unsizedRecursionWrapper :: LocTag -> Term3Builder Term3 -> Term3Builder Term3 -> Term3Builder Term3 -> Term3Builder Term3
 unsizedRecursionWrapper loc t r b =
-  let firstArgF = pure . tag loc $ LeftFrag EnvFrag
-      secondArgF = pure . tag loc $ LeftFrag (RightFrag EnvFrag)
-      thirdArgF = pure . tag loc . LeftFrag . RightFrag . RightFrag $ EnvFrag
-      fourthArgF = pure . tag loc . LeftFrag . RightFrag . RightFrag . RightFrag $ EnvFrag
-      fifthArgF = pure . tag loc . LeftFrag . RightFrag . RightFrag . RightFrag . RightFrag $ EnvFrag
-      repeater = pure . tag loc . LeftFrag $ LeftFrag EnvFrag
-      abrt = pairF (pure . tag loc . RightFrag $ LeftFrag EnvFrag) . pure $ loc :< EnvFragF
+  let repeater = leftB $ leftB envB
+      abrt = pairB (rightB $ leftB envB) envB
       -- drop first arg (repeater)
-      nsLamF x = pairF (deferF x) . pure . tag loc $ RightFrag EnvFrag
+      nsLamS :: Term3Builder Term3 -> Term3Builder Term3
+      nsLamS x = pairS (x >>= deferS) (pure $ rightB envB)
       -- \t r b r' i -> if t i then r r' i else b i -- t r b are already on the stack when this is evaluated
-      rWrap = nsLamF . lamF $ iteF (appF fifthArgF firstArgF)
-                                 (appF (appF fourthArgF secondArgF) firstArgF)
-                                 (appF thirdArgF firstArgF)
+      rWrap = nsLamS . lamS $ iteB_ <$> appS (pure fifthArgB) (pure firstArgB)
+                                    <*> appS (appS (pure fourthArgB) (pure secondArgB)) (pure firstArgB)
+                                    <*> appS (pure thirdArgB) (pure firstArgB)
       -- hack to make sure recursion test wrapper can be put in a definite place when sizing
-      tWrap = pairF (deferF $ appF secondArgF firstArgF) (pairF t . pure $ loc :< ZeroFragF)
-      trb = pairF b (pairF r (pairF tWrap (pure . tag loc $ ZeroFrag)))
-  in pairF (deferF $ appF (appF (appF (repeatFunctionF loc) repeater) rWrap) abrt) trb
-
-nextBreakToken :: (Enum b, Show b) => BreakState a b b
-nextBreakToken = do
-  (token, fi, fm) <- State.get
-  State.put (succ token, fi, fm)
-  pure token
-
-buildFragMap :: BreakState' a b -> Map FragIndex (Cofree (FragExprF a) LocTag)
-buildFragMap bs = let (bf, (_,_,m)) = State.runState bs (undefined, FragIndex 1, Map.empty)
-                  in Map.insert (FragIndex 0) bf m
-
-pattern FirstArgA :: ExprA a
-pattern FirstArgA <- PLeftA (EnvA _) _
-pattern SecondArgA :: ExprA a
-pattern SecondArgA <- PLeftA (PRightA (EnvA _) _) _
-pattern ThirdArgA :: ExprA a
-pattern ThirdArgA <- PLeftA (PRightA (PRightA (EnvA _) _) _) _
-pattern FourthArgA :: ExprA a
-pattern FourthArgA <- PLeftA (PRightA (PRightA (PRightA (EnvA _) _) _) _) _
-pattern AppA :: ExprA a -> ExprA a -> ExprA a
-pattern AppA c i <- SetEnvA (SetEnvA (PairA
-                                      (DeferA (PairA
-                                               (PLeftA (PRightA (EnvA _) _) _)
-                                               (PairA (PLeftA (EnvA _) _) (PRightA (PRightA (EnvA _) _) _) _)
-                                               _)
-                                       _)
-                                      (PairA i c _)
-                                      _)
-                            _)
-                    _
-pattern LamA :: ExprA a -> ExprA a
-pattern LamA x <- PairA (DeferA x _) (EnvA _) _
-pattern TwoArgFunA :: ExprA a -> a -> a -> ExprA a
-pattern TwoArgFunA c ana anb <- PairA (DeferA (PairA (DeferA c ana) (EnvA _) _) anb) (EnvA _) _
--- TODO check if these make sense at all. A church type should have two arguments (lamdas), but the inner lambdas
--- for addition/multiplication should be f, f+x rather than m+n
--- no, it does not, in \m n f x -> m f (n f x), m and n are FourthArg and ThirdArg respectively
-pattern PlusA :: ExprA a -> ExprA a -> ExprA a
-pattern PlusA m n <- LamA (LamA (AppA (AppA m SecondArgA) (AppA (AppA n SecondArgA) FirstArgA)))
-pattern MultA :: ExprA a -> ExprA a -> ExprA a
-pattern MultA m n <- LamA (AppA m (AppA n FirstArgA))
+      tWrap = pairS ((>>= deferS) (appS (pure secondArgB) (pure firstArgB))) (pairS t $ pure zeroB)
+      trb = pairS b . pairS r . pairS tWrap $ pure zeroB
+  in pairS (appS (appS (appS (repeatFunctionS loc) (pure repeater)) rWrap) (pure abrt) >>= deferS) trb
 
 data DataType
   = ZeroType
@@ -905,166 +775,40 @@ cleanType = \case
   PairTypeP a b -> cleanType a && cleanType b
   _             -> False
 
-g2i :: IExpr -> Int
-g2i Zero       = 0
-g2i (Pair a b) = 1 + g2i a + g2i b
-g2i x          = error ("g2i " <> show x)
-
-i2g :: Int -> IExpr
-i2g 0 = Zero
-i2g n = Pair (i2g (n - 1)) Zero
-
-ints2g :: [Int] -> IExpr
-ints2g = foldr (Pair . i2g) Zero
-
-g2Ints :: IExpr -> [Int]
-g2Ints Zero       = []
-g2Ints (Pair n g) = g2i n : g2Ints g
-g2Ints x          = error ("g2Ints " <> show x)
-
-s2g :: String -> IExpr
-s2g = ints2g . fmap ord
-
-g2s :: IExpr -> String
-g2s = fmap chr . g2Ints
-
-toChurch :: Int -> IExpr
-toChurch x =
-  let inner 0 = PLeft Env
-      inner a = app (PLeft $ PRight Env) (inner (a - 1))
-  in lam (lam (inner x))
-
-i2gF :: LocTag ->  Int -> BreakState' a b
-i2gF anno 0 = pure $ anno :< ZeroFragF
-i2gF anno n = (\x y -> anno :< PairFragF x y) <$> i2gF anno (n - 1) <*> pure (anno :< ZeroFragF)
-
-ints2gF :: LocTag -> [Int] -> BreakState' a b
-ints2gF anno = foldr (\i g -> (\x y -> anno :< PairFragF x y) <$> i2gF anno i <*> g) (pure $ anno :< ZeroFragF)
-
-s2gF :: LocTag -> String -> BreakState' a b
-s2gF anno = ints2gF anno . fmap ord
-
--- convention is numbers are left-nested pairs with zero on right
-isNum :: IExpr -> Bool
-isNum Zero          = True
-isNum (Pair n Zero) = isNum n
-isNum _             = False
-
-nextI :: State EIndex EIndex
-nextI = State.state $ \(EIndex n) -> (EIndex n, EIndex (n + 1))
-
-toIndExpr :: IExpr -> State EIndex IndExpr
-toIndExpr Zero       = ZeroA <$> nextI
-toIndExpr (Pair a b) = PairA <$> toIndExpr a <*> toIndExpr b <*> nextI
-toIndExpr Env        = EnvA <$> nextI
-toIndExpr (SetEnv x) = SetEnvA <$> toIndExpr x <*> nextI
-toIndExpr (Defer x)  = DeferA <$> toIndExpr x <*> nextI
-toIndExpr (Gate l r) = GateA <$> toIndExpr l <*> toIndExpr r <*> nextI
-toIndExpr (PLeft x)  = PLeftA <$> toIndExpr x <*> nextI
-toIndExpr (PRight x) = PRightA <$> toIndExpr x <*> nextI
-toIndExpr Trace      = TraceA <$> nextI
-
-toIndExpr' :: IExpr -> IndExpr
-toIndExpr' x = State.evalState (toIndExpr x) (EIndex 0)
-
-instance TelomareLike (ExprT a) where
-  fromTelomare = \case
-    Zero     -> ZeroT
-    Pair a b -> PairT (fromTelomare a) (fromTelomare b)
-    Env      -> EnvT
-    SetEnv x -> SetEnvT $ fromTelomare x
-    Defer x  -> DeferT $ fromTelomare x
-    Gate l r -> GateT (fromTelomare l) (fromTelomare r)
-    PLeft x  -> LeftT $ fromTelomare x
-    PRight x -> RightT $ fromTelomare x
-    Trace    -> TraceT
-  toTelomare = \case
-    ZeroT     -> pure Zero
-    PairT a b -> Pair <$> toTelomare a <*> toTelomare b
-    EnvT      -> pure Env
-    SetEnvT x -> SetEnv <$> toTelomare x
-    DeferT x  -> Defer <$> toTelomare x
-    AbortT    -> Nothing
-    GateT l r -> Gate <$> toTelomare l <*> toTelomare r
-    LeftT x   -> PLeft <$> toTelomare x
-    RightT x  -> PRight <$> toTelomare x
-    TraceT    -> pure Trace
-    TagT x _  -> toTelomare x -- just elide tags
-
-telomareToFragmap :: IExpr -> Map FragIndex (Cofree (FragExprF a) LocTag)
-telomareToFragmap expr = Map.insert (FragIndex 0) bf m where
-    (bf, (_,m)) = State.runState (convert expr) (FragIndex 1, Map.empty)
-    runtime = RuntimeLoc
-    convert = \case
-      Zero -> pure $ runtime :< ZeroFragF
-      Pair a b -> (\x y -> runtime :< PairFragF x y) <$> convert a <*> convert b
-      Env -> pure $ runtime :< EnvFragF
-      SetEnv x -> (\y -> runtime :< SetEnvFragF y) <$> convert x
-      Defer x -> do
-        bx <- convert x
-        (fi@(FragIndex i), fragMap) <- State.get
-        State.put (FragIndex (i + 1), Map.insert fi bx fragMap)
-        pure $ runtime :< DeferFragF fi
-      Gate l r -> (\x y -> runtime :< GateFragF x y) <$> convert l <*> convert r
-      PLeft x -> (\y -> runtime :< LeftFragF y) <$> convert x
-      PRight x -> (\y -> runtime :< RightFragF y) <$> convert x
-      Trace -> pure $ runtime :< TraceFragF
-
-fragmapToTelomare :: Map FragIndex (FragExpr a) -> Maybe IExpr
-fragmapToTelomare fragMap = convert (rootFrag fragMap) where
-    convert = \case
-      ZeroFrag      -> pure Zero
-      PairFrag a b  -> Pair <$> convert a <*> convert b
-      EnvFrag       -> pure Env
-      SetEnvFrag x  -> SetEnv <$> convert x
-      DeferFrag ind -> Defer <$> (Map.lookup ind fragMap >>= convert)
-      AbortFrag     -> Nothing
-      GateFrag l r  -> Gate <$> convert l <*> convert r
-      LeftFrag x    -> PLeft <$> convert x
-      RightFrag x   -> PRight <$> convert x
-      TraceFrag     -> pure Trace
-      AuxFrag _     -> Nothing
-
 forget :: Corecursive a => Cofree (Base a) anno -> a
 forget = cata (\(_ CofreeT.:< z) -> embed z)
 
 tag :: Recursive a => anno -> a -> Cofree (Base a) anno
 tag anno x = anno :< (tag anno <$> project x)
 
-newtype FragExprURSansAnnotation =
-  FragExprURSA { unFragExprURSA :: FragExpr (RecursionSimulationPieces FragExprURSansAnnotation)
-               }
-  deriving (Eq, Show)
 
-forgetAnnotationFragExprUR :: FragExprUR -> FragExprURSansAnnotation
-forgetAnnotationFragExprUR = FragExprURSA . cata ff . forget' . unFragExprUR where
-  forget' :: Cofree (Base (FragExpr (RecursionSimulationPieces FragExprUR))) anno
-          -> FragExpr (RecursionSimulationPieces FragExprUR)
-  forget' = forget
-  ff :: Base (FragExpr (RecursionSimulationPieces FragExprUR))
-             (FragExpr (RecursionSimulationPieces FragExprURSansAnnotation))
-     -> FragExpr (RecursionSimulationPieces FragExprURSansAnnotation)
-  ff = \case
-    AuxFragF (NestedSetEnvs t) -> AuxFrag . NestedSetEnvs $ t
-    ZeroFragF -> ZeroFrag
-    PairFragF a b -> PairFrag a b
-    EnvFragF -> EnvFrag
-    SetEnvFragF x -> SetEnvFrag x
-    DeferFragF ind -> DeferFrag ind
-    AbortFragF -> AbortFrag
-    GateFragF l r -> GateFrag l r
-    LeftFragF x -> LeftFrag x
-    RightFragF x -> RightFrag x
-    TraceFragF -> TraceFrag
+convertBasic :: (BasicBase g, BasicBase h, Base x ~ h, Corecursive x, Monad m) => (g (m x) -> m x) -> g (m x) -> m x
+convertBasic convertOther = \case
+  BasicFW x -> basicEE <$> sequence x
+  x -> convertOther x
+convertStuck :: (StuckBase g, StuckBase h, Base x ~ h, Corecursive x, Monad m) => (g (m x) -> m x) -> g (m x) -> m x
+convertStuck convertOther = \case
+  StuckFW x -> stuckEE <$> sequence x
+  x -> convertOther x
+convertAbort :: (AbortBase g, AbortBase h, Base x ~ h, Corecursive x, Monad m) => (g (m x) -> m x) -> g (m x) -> m x
+convertAbort convertOther = \case
+  AbortFW x -> abortEE <$> sequence x
+  x -> convertOther x
 
 instance TelomareLike Term3 where
-  fromTelomare = Term3 . Map.map FragExprUR . telomareToFragmap
-  toTelomare (Term3 t) = fragmapToTelomare $ Map.map unFragExprURSA fragMap where
-    fragMap = forgetAnnotationFragExprUR <$> t
-
-instance TelomareLike Term4 where
-  fromTelomare = Term4 . telomareToFragmap
-  toTelomare (Term4 fragMap) = fragmapToTelomare (forget <$> fragMap)
+  fromTelomare = verify . cata (convertBasic (convertStuck (\z -> Left "failed converting to Term3"))) where
+    verify = \case
+      Right x -> x
+      Left e -> error e
+  toTelomare = cata f . forget' where
+    forget' :: Term3 -> Fix Term3F
+    forget' = forget
+    f = \case
+      Term3Unsized _ -> Nothing
+      Term3CheckingWrapper _ _ _ -> Nothing
+      Term3A _ -> Nothing
+      Term3B b -> embed . StuckExprB <$> sequence b
+      Term3S s -> embed . StuckExprS <$> sequence s
 
 -- general utility functions
 
@@ -1077,32 +821,30 @@ insertAndGetKey v = do
   State.put $ Map.insert nextKey v m
   pure nextKey
 
--- abort codes
--- t x = if x <= 1
--- fact1 r x = if x <= 1
---    then 1
---    else x * (r (x - 1))
--- fix fact1
--- (\f x -> f x) fact1 (\_ -> error!) 3 -- error!
--- (\f x -> f (f x)) fact1 (\_ -> error!) 3 -- error!
--- (\f x -> f (f (f x))) fact1 (\_ -> error!) 3 -- 3, happy!
--- setenv env -- church numeral 1
--- setenv (setenv env) -- church numeral 2
+pattern AbortRecursion :: (Base g ~ f, BasicBase f, Recursive g) => g -> g
+pattern AbortRecursion t <- PairB ZeroB t
+pattern AbortUser :: (Base g ~ f, BasicBase f, Recursive g) => g -> g
+pattern AbortUser m  <- PairB (PairB ZeroB ZeroB) m
+pattern AbortAny :: (Base g ~ f, BasicBase f, Recursive g) => g
+pattern AbortAny <- PairB (PairB (PairB ZeroB ZeroB) ZeroB) ZeroB
+pattern AbortUnsizeable :: (Base g ~ f, BasicBase f, Recursive g) => g -> g
+pattern AbortUnsizeable t <- PairB (PairB (PairB (PairB ZeroB ZeroB) ZeroB) ZeroB) t
 
+abortRecursion :: (Base g ~ f, BasicBase f, Corecursive g) => g -> g
+abortRecursion = pairB zeroB
+abortUser :: (Base g ~ f, BasicBase f, Corecursive g) => g -> g
+abortUser = pairB (pairB zeroB zeroB)
+abortAny :: (Base g ~ f, BasicBase f, Corecursive g) => g
+abortAny = pairB (pairB (pairB zeroB zeroB) zeroB) zeroB
+abortUnsizeable :: (Base g ~ f, BasicBase f, Corecursive g) => g -> g
+abortUnsizeable = pairB (pairB (pairB (pairB zeroB zeroB) zeroB) zeroB)
 
-pattern AbortRecursion :: IExpr -> IExpr
-pattern AbortRecursion t = Pair Zero t
-pattern AbortUser :: IExpr -> IExpr -- convert to String -> IExpr ?
-pattern AbortUser m = Pair (Pair Zero Zero) m
-pattern AbortAny :: IExpr
-pattern AbortAny = Pair (Pair (Pair Zero Zero) Zero) Zero
-pattern AbortUnsizeable :: IExpr -> IExpr
-pattern AbortUnsizeable t = Pair (Pair (Pair (Pair Zero Zero) Zero) Zero) t
-
-convertAbortMessage :: IExpr -> String
+convertAbortMessage :: (Base g ~ f, BasicBase f, Recursive g, Show g) => g -> String
 convertAbortMessage = \case
-  AbortRecursion t -> "recursion overflow (should be caught by other means) for rt: " <> show (g2i t)
-  AbortUser s -> "user abort: " <> g2s s
+  AbortRecursion t -> "recursion overflow (should be caught by other means) for rt: " <> show (b2i t)
+  AbortUser s -> case b2s s of
+    Nothing -> "user abort invalid data: " <> show s
+    Just m -> "user abort: " <> m
   AbortAny -> "user abort of all possible abort reasons (non-deterministic input)"
   x -> "unexpected abort: " <> show x
 

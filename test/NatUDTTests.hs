@@ -18,7 +18,6 @@ import Telomare
 import Telomare.Eval (SizingOption (..), compile, runStaticChecks)
 import Telomare.Parser (AnnotatedUPT, parseLongExpr, parsePrelude)
 import Telomare.Possible (SizingSettings (SizingSettings))
-import Telomare.PossibleData (CompiledExpr)
 import Telomare.Resolver (process, pruneBindings)
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -66,7 +65,7 @@ evalUDTExpr input = do
         Right iexpr -> case eval iexpr of
           Left e       -> pure . Left . show $ e
           Right result -> case toTelomare result of
-            Just r  -> pure . Right . show $ PrettyIExpr r
+            Just r  -> pure . Right . show $ PrettyStuckExpr r
             Nothing -> pure . Left $ "conversion error from result:\n" <> prettyPrint result
 
 assertEvalEquals :: String -> String -> Assertion
