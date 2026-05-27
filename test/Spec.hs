@@ -14,7 +14,6 @@ import Data.Monoid
 import qualified Data.Set as Set
 import Data.Void
 import Debug.Trace
-import Naturals
 import PrettyPrint
 import System.Exit
 import System.IO
@@ -22,11 +21,8 @@ import qualified System.IO.Strict as Strict
 import Telomare
 import Telomare.Decompiler
 import Telomare.Eval
-import Telomare.Optimizer
 import Telomare.Parser
-import Telomare.Possible (SizingSettings (SizingSettings), appB, deferB, evalBU,
-                          evalBU')
-import Telomare.PossibleData (CompiledExpr (..), pairB, setEnvB, zeroB)
+import Telomare.Possible (SizingSettings (SizingSettings), appB, deferB)
 import Telomare.Resolver
 import Telomare.RunTime
 import Telomare.TypeChecker
@@ -37,6 +33,13 @@ import Test.QuickCheck
 -- Common datatypes for generating Telomare AST.
 import Common
 
+toChurch :: Int -> Term3
+toChurch x =
+  let inner :: Int -> Term3Builder Term3
+      inner 0 = pure (leftB envB)
+      inner a = appS (pure (leftB $ rightB envB)) (inner (a - 1))
+  in buildTerm $ fmap (\d -> pairB d zeroB) (lamS (inner x) >>= deferS)
+
 -- recursively finds shrink matching invariant, ordered simplest to most complex
 shrinkComplexCase :: Arbitrary a => (a -> Bool) -> [a] -> [a]
 shrinkComplexCase test a =
@@ -44,260 +47,200 @@ shrinkComplexCase test a =
       (recurseable, nonRecursable) = partition (not . null . snd) shrinksWithNextLevel
   in (shrinkComplexCase test (concatMap snd recurseable) <> fmap fst nonRecursable)
 
-three_succ = app (app (toChurch 3) (lam (pair (varN 0) zero))) zero
+three_succ = buildTerm $ lamS (pure (pairB (varB 0) zeroB)) >>= \il -> appS (appS (pure (toChurch 3)) (pure il)) (pure zeroB)
 
-one_succ = app (app (toChurch 1) (lam (pair (varN 0) zero))) zero
+one_succ = buildTerm $ lamS (pure (pairB (varB 0) zeroB)) >>= \il -> appS (appS (pure (toChurch 1)) (pure il)) (pure zeroB)
 
-two_succ = app (app (toChurch 2) (lam (pair (varN 0) zero))) zero
+two_succ = buildTerm $ lamS (pure (pairB (varB 0) zeroB)) >>= \il -> appS (appS (pure (toChurch 2)) (pure il)) (pure zeroB)
 
-church_type = pair (pair zero zero) (pair zero zero)
+church_type :: StuckExpr
+church_type = pairB (pairB zeroB zeroB) (pairB zeroB zeroB)
 
-c2d = lam (app (app (varN 0) (lam (pair (varN 0) zero))) zero)
+c2d = buildTerm $ lamS $ lamS (pure (pairB (varB 0) zeroB)) >>= \il -> appS (appS (pure (varB 0)) (pure il)) (pure zeroB)
 
-h2c i =
-  let layer recurf i churchf churchbase =
-        if i > 0
-        then churchf $ recurf (i - 1) churchf churchbase
-        -- app v1 (app (app (app v3 (pleft v2)) v1) v0)
-        else churchbase
-      stopf i churchf churchbase = churchbase
-  in layer (layer (layer (layer stopf))) i
-
-{-
-h_zipWith a b f =
-  let layer recurf zipf a b =
-        if a > 0
-        then if b > 0
-             then pair (zipf (pleft a) (pleft b)) (recurf zipf (pright a) (pright b))
-             else zero
-        else zero
-      stopf _ _ _ = zero
-  in layer (layer (layer (layer stopf))) a b f
-
-foldr_h =
-  let layer recurf f accum l =
-        if not $ nil l
-        then recurf f (f (pleft l) accum) (pright l)
-        else accum
--}
-
-test_toChurch = app (app (toChurch 2) (lam (pair (varN 0) zero))) zero
+test_toChurch = buildTerm $ lamS (pure (pairB (varB 0) zeroB)) >>= \il -> appS (appS (pure (toChurch 2)) (pure il)) (pure zeroB)
 
 map_ =
-  -- layer recurf f l = pair (f (pleft l)) (recurf f (pright l))
-  let layer = lam (lam (lam
-                            (ite (varN 0)
-                            (pair
-                             (app (varN 1) (pleft $ varN 0))
-                             (app (app (varN 2) (varN 1))
-                              (pright $ varN 0)))
-                            zero
-                            )))
-      base = lam (lam (pleft (pair zero var)))
-  in app (app (toChurch 255) layer) base
+  let layer = buildTerm $ lamS . lamS . lamS $ do
+                a <- appS (pure (varB 1)) (pure (leftB $ varB 0))
+                b <- appS (appS (pure (varB 2)) (pure (varB 1))) (pure (rightB $ varB 0))
+                pure $ iteB_ (varB 0) (pairB a b) zeroB
+      base = buildTerm $ lamS . lamS . pure $ leftB (pairB zeroB envB)
+  in buildTerm $ appS (appS (pure (toChurch 255)) (pure layer)) (pure base)
 
 foldr_ =
-  let layer = lam (lam (lam (lam
-                                 (ite (varN 0)
-                                 (app (app (app (varN 3) (varN 2))
-
-                                       (app (app (varN 2) (pleft $ varN 0))
-                                            (varN 1)))
-                                  (pright $ varN 0))
-                                 (varN 1)
-                                 )
-                                 )))
-      base = lam (lam (lam zero)) -- var 0?
-  in app (app (toChurch 255) layer) base
+  let layer = buildTerm $ lamS . lamS . lamS . lamS $ do
+                a <- appS (appS (pure (varB 2)) (pure (leftB $ varB 0))) (pure (varB 1))
+                b <- appS (appS (appS (pure (varB 3)) (pure (varB 2))) (pure a)) (pure (rightB $ varB 0))
+                pure $ iteB_ (varB 0) b (varB 1)
+      base = buildTerm $ lamS . lamS . lamS . pure $ zeroB
+  in buildTerm $ appS (appS (pure (toChurch 255)) (pure layer)) (pure base)
 
 zipWith_ =
-  let layer = lam (lam (lam (lam
-                                  (ite (varN 1)
-                                   (ite (varN 0)
-                                    (pair
-                                     (app (app (varN 2) (pleft $ varN 1))
-                                      (pleft $ varN 0))
-                                     (app (app (app (varN 3) (varN 2))
-                                           (pright $ varN 1))
-                                      (pright $ varN 0))
-                                    )
-                                    zero)
-                                   zero)
-                                 )))
-      base = lam (lam (lam zero))
-  in app (app (toChurch 255) layer) base
+  let layer = buildTerm $ lamS . lamS . lamS . lamS $ do
+                a <- appS (appS (pure (varB 2)) (pure (leftB $ varB 1))) (pure (leftB $ varB 0))
+                b <- appS (appS (appS (pure (varB 3)) (pure (varB 2))) (pure (rightB $ varB 1))) (pure (rightB $ varB 0))
+                pure $ iteB_ (varB 1) (iteB_ (varB 0) (pairB a b) zeroB) zeroB
+      base = buildTerm $ lamS . lamS . lamS . pure $ zeroB
+  in buildTerm $ appS (appS (pure (toChurch 255)) (pure layer)) (pure base)
 
--- layer recurf i churchf churchbase
--- layer :: (zero -> baseType) -> zero -> (baseType -> baseType) -> baseType
---           -> baseType
--- converts plain data type number (0-255) to church numeral
-{-
 d2c recur =
-  let layer = lam (lam (lam (lam (ite
-                             (varN 2)
-                             (app (varN 1)
-                              (app (app (app (varN 3)
-                                   (pleft $ varN 2))
-                                   (varN 1))
-                                   (varN 0)
-                                  ))
-                             (varN 0)
-                            ))))
-      base = lam (lam (lam (varN 0)))
-  in app (app (toChurch recur) layer) base
--}
-d2c recur =
-  let layer = lam (lam (lam (lam (ite
-                             (varN 2)
-                             (app (varN 1)
-                              (app (app (app (varN 3)
-                                   (pleft $ varN 2))
-                                   (varN 1))
-                                   (varN 0)
-                                  ))
-                             (varN 0)
-                            ))))
-      base = lam (lam (lam (varN 0)))
-  in app (lam (app (app (varN 0) layer) base)) (toChurch recur)
+  let layer = buildTerm $ lamS . lamS . lamS . lamS $ do
+                a <- appS (appS (appS (pure (varB 3)) (pure (leftB $ varB 2))) (pure (varB 1))) (pure (varB 0))
+                b <- appS (pure (varB 1)) (pure a)
+                pure $ iteB_ (varB 2) b (varB 0)
+      base = buildTerm $ lamS . lamS . lamS . pure $ varB 0
+  in buildTerm $ do
+       wrapLam <- lamS $ appS (appS (pure (varB 0)) (pure layer)) (pure base)
+       appS (pure wrapLam) (pure (toChurch recur))
 
--- d_equality_h iexpr = (\d -> if d > 0
---                                then \x -> d_equals_one ((d2c (pleft d) pleft) x)
---                                else \x -> if x == 0 then 1 else 0
---                         )
---
+d_equals_one = buildTerm $ lamS . pure $
+  iteB_ (varB 0) (iteB_ (leftB (varB 0)) zeroB (i2B 1)) zeroB
 
-d_equals_one = lam (ite (varN 0) (ite (pleft (varN 0)) zero (i2g 1)) zero)
+d_to_equality = buildTerm $ lamS . lamS $ do
+  innerLam <- lamS . pure $ leftB (varB 0)
+  a <- appS (appS (appS (pure (d2c 255)) (pure (leftB $ varB 1))) (pure innerLam)) (pure (varB 0))
+  b <- appS (pure d_equals_one) (pure a)
+  pure $ iteB_ (varB 1) b (iteB_ (varB 0) zeroB (i2B 1))
 
-d_to_equality = lam (lam (ite (varN 1)
-                                          (app d_equals_one (app (app (app (d2c 255) (pleft $ varN 1)) (lam . pleft $ varN 0)) (varN 0)))
-                                          (ite (varN 0) zero (i2g 1))
-                                         ))
+list_equality = buildTerm $ do
+  and_ <- lamS . lamS . pure $ iteB_ (varB 1) (varB 0) zeroB
+  pairs_equal <- appS (appS (appS (pure zipWith_) (pure d_to_equality)) (pure (varB 0))) (pure (varB 1))
+  ll1 <- appS (pure list_length) (pure (varB 1))
+  ll0 <- appS (pure list_length) (pure (varB 0))
+  length_equal <- appS (appS (pure d_to_equality) (pure ll1)) (pure ll0)
+  folded <- appS (appS (appS (pure foldr_) (pure and_)) (pure (i2B 1))) (pure (pairB length_equal pairs_equal))
+  lamS . lamS . pure $ folded
 
-list_equality =
-  let pairs_equal = app (app (app zipWith_ d_to_equality) (varN 0)) (varN 1)
-      length_equal = app (app d_to_equality (app list_length (varN 1)))
-                     (app list_length (varN 0))
-      and_ = lam (lam (ite (varN 1) (varN 0) zero))
-      folded = app (app (app foldr_ and_) (i2g 1)) (pair length_equal pairs_equal)
-  in lam (lam folded)
+list_length = buildTerm $ do
+  innerLam <- lamS . lamS . pure $ pairB (varB 0) zeroB
+  lamS $ appS (appS (appS (pure foldr_) (pure innerLam)) (pure zeroB)) (pure (varB 0))
 
-list_length = lam (app (app (app foldr_ (lam (lam (pair (varN 0) zero))))
-                                  zero)
-  (varN 0))
-
+plus_ :: Term3 -> Term3 -> Term3
 plus_ x y =
-  let succ = lam (pair (varN 0) zero)
-      plus_app = app (app (varN 3) (varN 1)) (app (app (varN 2) (varN 1)) (varN 0))
-      plus = lam (lam (lam (lam plus_app)))
-  in app (app plus x) y
+  let plus = buildTerm $ lamS . lamS . lamS . lamS $ do
+                a <- appS (appS (pure (varB 2)) (pure (varB 1))) (pure (varB 0))
+                appS (appS (pure (varB 3)) (pure (varB 1))) (pure a)
+  in buildTerm $ appS (appS (pure plus) (pure x)) (pure y)
 
-d_plus = lam (lam (app c2d (plus_
-                                   (app (d2c 255) (varN 1))
-                                   (app (d2c 255) (varN 0))
-                                   )))
+d_plus = buildTerm $ lamS . lamS $ do
+  a <- appS (pure (d2c 255)) (pure (varB 1))
+  b <- appS (pure (d2c 255)) (pure (varB 0))
+  appS (pure c2d) (pure (plus_ a b))
 
-d_plus2 = lam (lam (app c2d (plus_
-                                   (app (d2c 6) (varN 1))
-                                   (app (d2c 6) (varN 0))
-                                   )))
+d_plus2 = buildTerm $ lamS . lamS $ do
+  a <- appS (pure (d2c 6)) (pure (varB 1))
+  b <- appS (pure (d2c 6)) (pure (varB 0))
+  appS (pure c2d) (pure (plus_ a b))
 
-d_plus3 = lam (app c2d (plus_
-                                   (toChurch 2)
-                                   (app (d2c 6) (varN 0))
-                                   ))
+d_plus3 = buildTerm $ lamS $ do
+  a <- appS (pure (d2c 6)) (pure (varB 0))
+  appS (pure c2d) (pure (plus_ (toChurch 2) a))
 
 d2c_test =
-  let s_d2c = app (app (toChurch 3) layer) base
-      layer = lam (lam (lam (lam (ite
-                             (varN 2)
-                             (app (varN 1)
-                              (app (app (app (varN 3)
-                                   (pleft $ varN 2))
-                                   (varN 1))
-                                   (varN 0)
-                                  ))
-                             (varN 0)
-                            ))))
-      base = lam (lam (lam (varN 0)))
-  in app (app (app s_d2c (i2g 2)) (lam (pair (varN 0) zero))) zero
+  let layer = buildTerm $ lamS . lamS . lamS . lamS $ do
+                a <- appS (appS (appS (pure (varB 3)) (pure (leftB $ varB 2))) (pure (varB 1))) (pure (varB 0))
+                b <- appS (pure (varB 1)) (pure a)
+                pure $ iteB_ (varB 2) b (varB 0)
+      base = buildTerm $ lamS . lamS . lamS . pure $ varB 0
+  in buildTerm $ do
+       s_d2c <- appS (appS (pure (toChurch 3)) (pure layer)) (pure base)
+       succLam <- lamS . pure $ pairB (varB 0) zeroB
+       appS (appS (appS (pure s_d2c) (pure (i2B 2))) (pure succLam)) (pure zeroB)
 
-d2c2_test = ite zero (pleft (i2g 1)) (pleft (i2g 2))
+d2c2_test :: Term3
+d2c2_test = iteB_ zeroB (leftB (i2B 1)) (leftB (i2B 2))
 
-c2d_test = app c2d (toChurch 2)
-c2d_test2 = app (lam (app (app (varN 0) (lam (pair (varN 0) zero))) zero)) (toChurch 2)
-c2d_test3 = app (lam (app (varN 0) zero)) (lam (pair (varN 0) zero))
+c2d_test = buildTerm $ appS (pure c2d) (pure (toChurch 2))
+c2d_test2 = buildTerm $ do
+  innerLam <- lamS . pure $ pairB (varB 0) zeroB
+  outerLam <- lamS $ appS (appS (pure (varB 0)) (pure innerLam)) (pure zeroB)
+  appS (pure outerLam) (pure (toChurch 2))
+c2d_test3 = buildTerm $ do
+  bodyLam <- lamS . pure $ pairB (varB 0) zeroB
+  outerLam <- lamS $ appS (pure (varB 0)) (pure zeroB)
+  appS (pure outerLam) (pure bodyLam)
 
-double_app = app (app (lam (lam (pair (varN 0) (varN 1)))) zero) zero
+double_app :: Term3
+double_app = buildTerm $ do
+  inner <- lamS . lamS . pure $ pairB (varB 0) (varB 1)
+  appS (appS (pure inner) (pure zeroB)) (pure zeroB)
 
-test_plus0 = app c2d (plus_
-                         (toChurch 3)
-                         (app (d2c 255) zero))
-test_plus1 = app c2d (plus_
-                         (toChurch 3)
-                         (app (d2c 255) (i2g 1)))
-test_plus254 = app c2d (plus_
-                         (toChurch 3)
-                         (app (d2c 255) (i2g 254)))
-test_plus255 = app c2d (plus_
-                         (toChurch 3)
-                         (app (d2c 255) (i2g 255)))
-test_plus256 = app c2d (plus_
-                         (toChurch 3)
-                         (app (d2c 255) (i2g 256)))
+test_plus0 = buildTerm $ do { a <- appS (pure (d2c 255)) (pure zeroB); appS (pure c2d) (pure (plus_ (toChurch 3) a)) }
+test_plus1 = buildTerm $ do { a <- appS (pure (d2c 255)) (pure (i2B 1)); appS (pure c2d) (pure (plus_ (toChurch 3) a)) }
+test_plus254 = buildTerm $ do { a <- appS (pure (d2c 255)) (pure (i2B 254)); appS (pure c2d) (pure (plus_ (toChurch 3) a)) }
+test_plus255 = buildTerm $ do { a <- appS (pure (d2c 255)) (pure (i2B 255)); appS (pure c2d) (pure (plus_ (toChurch 3) a)) }
+test_plus256 = buildTerm $ do { a <- appS (pure (d2c 255)) (pure (i2B 256)); appS (pure c2d) (pure (plus_ (toChurch 3) a)) }
 
 one_plus_one =
-  let succ = lam (pair (varN 0) zero)
-      plus_app = app (app (varN 3) (varN 1)) (app (app (varN 2) (varN 1)) (varN 0))
-      plus = lam (lam (lam (lam plus_app)))
-  in app c2d (app (app plus (toChurch 1)) (toChurch 1))
+  let plus = buildTerm $ lamS . lamS . lamS . lamS $ do
+                a <- appS (appS (pure (varB 2)) (pure (varB 1))) (pure (varB 0))
+                appS (appS (pure (varB 3)) (pure (varB 1))) (pure a)
+  in buildTerm $ do
+       a <- appS (appS (pure plus) (pure (toChurch 1))) (pure (toChurch 1))
+       appS (pure c2d) (pure a)
 
 times_two =
-  let times_app = lam (lam (app (toChurch 2) (app (varN 1) (varN 0))))
-  in app c2d (app times_app (toChurch 3))
+  let times_app = buildTerm $ lamS . lamS $ do
+                    a <- appS (pure (varB 1)) (pure (varB 0))
+                    appS (pure (toChurch 2)) (pure a)
+  in buildTerm $ do
+       a <- appS (pure times_app) (pure (toChurch 3))
+       appS (pure c2d) (pure a)
 
 times_three =
-  let times_app = lam (lam (app (varN 1) (app (toChurch 3) (varN 0))))
-  in app c2d (app times_app (toChurch 2))
+  let times_app = buildTerm $ lamS . lamS $ do
+                    a <- appS (pure (toChurch 3)) (pure (varB 0))
+                    appS (pure (varB 1)) (pure a)
+  in buildTerm $ do
+       a <- appS (pure times_app) (pure (toChurch 2))
+       appS (pure c2d) (pure a)
 
 times_wip =
-  let times_app = lam (lam (app (varN 1) (app (toChurch 3) (varN 0))))
-  -- in app c2d (app times_app (toChurch 2))
--- c2d = lam (app (app (varN 0) (lam (pair (varN 0) zero))) zero)
-  in app c2d (toChurch 6)
+  let times_app = buildTerm $ lamS . lamS $ do
+                    a <- appS (pure (toChurch 3)) (pure (varB 0))
+                    appS (pure (varB 1)) (pure a)
+  in buildTerm $ appS (pure c2d) (pure (toChurch 6))
 
-function_argument =
-  app (lam (app (varN 0) zero)) (lam (pair zero (varN 0)))
+function_argument :: Term3
+function_argument = buildTerm $ do
+  bodyLam <- lamS . pure $ pairB zeroB (varB 0)
+  outerLam <- lamS $ appS (pure (varB 0)) (pure zeroB)
+  appS (pure outerLam) (pure bodyLam)
 
 -- m f (n f x)
 -- app (app m f) (app (app n f) x)
--- app (app (varN 3) (varN 1)) (app (app (varN 2) (varN 1)) (varN 0))
 three_plus_two =
-  let succ = lam (pair (varN 0) zero)
-      plus_app = app (app (varN 3) (varN 1)) (app (app (varN 2) (varN 1)) (varN 0))
-      plus = lam (lam (lam (lam plus_app)))
-  in app c2d (app (app plus (toChurch 3)) (toChurch 2))
+  let plus = buildTerm $ lamS . lamS . lamS . lamS $ do
+                a <- appS (appS (pure (varB 2)) (pure (varB 1))) (pure (varB 0))
+                appS (appS (pure (varB 3)) (pure (varB 1))) (pure a)
+  in buildTerm $ do
+       a <- appS (appS (pure plus) (pure (toChurch 3))) (pure (toChurch 2))
+       appS (pure c2d) (pure a)
 
 -- (m (n f)) x
 -- app (app m (app n f)) x
 three_times_two =
-  let succ = lam (pair (varN 0) zero)
-      times_app = app (app (varN 3) (app (varN 2) (varN 1))) (varN 0)
-      times = lam (lam (lam (lam times_app)))
-  in app (app (app (app times (toChurch 3)) (toChurch 2)) succ) zero
+  let succ = buildTerm $ lamS . pure $ pairB (varB 0) zeroB
+      times = buildTerm $ lamS . lamS . lamS . lamS $ do
+                a <- appS (pure (varB 2)) (pure (varB 1))
+                appS (appS (pure (varB 3)) (pure a)) (pure (varB 0))
+  in buildTerm $ appS (appS (appS (appS (pure times) (pure (toChurch 3))) (pure (toChurch 2))) (pure succ)) (pure zeroB)
 
 -- m n
 -- app (app (app (m n)) f) x
 three_pow_two =
-  let succ = lam (pair (varN 0) zero)
-      pow_app = app (app (app (varN 3) (varN 2)) (varN 1)) (varN 0)
-      pow = lam (lam (lam (lam pow_app)))
-  in app (app (app (app pow (toChurch 2)) (toChurch 3)) succ) zero
+  let succ = buildTerm $ lamS . pure $ pairB (varB 0) zeroB
+      pow = buildTerm $ lamS . lamS . lamS . lamS $ do
+              a <- appS (appS (pure (varB 3)) (pure (varB 2))) (pure (varB 1))
+              appS (pure a) (pure (varB 0))
+  in buildTerm $ appS (appS (appS (appS (pure pow) (pure (toChurch 2))) (pure (toChurch 3))) (pure succ)) (pure zeroB)
 
 -- validate termination checking
-inf_pairs =
-  let firstArg = pleft env
-      recur = defer (pair zero (setenv (pair firstArg env)))
-  in setenv (pair recur (pair recur zero))
+inf_pairs = buildTerm $ do
+  let firstArg = leftB envB
+  recur <- deferS (pairB zeroB (setEnvB (pairB firstArg envB)))
+  pure $ setEnvB (pairB recur (pairB recur zeroB))
 
 -- unbound type errors should be allowed for purposes of testing runtime
 allowedTypeCheck :: Maybe TypeCheckError -> Bool
@@ -305,136 +248,34 @@ allowedTypeCheck Nothing                = True
 allowedTypeCheck (Just (UnboundType _)) = True
 allowedTypeCheck _                      = False
 
--- testEval :: IExpr -> IO IExpr
-testEval :: CompiledExpr -> IO IExpr
--- testEval iexpr = optimizedEval (SetEnv (Pair (Defer iexpr) Zero))
--- testEval iexpr = optimizedEval (SetEnv (Pair (Defer deserialized) Zero))
--- testEval iexpr = evalBU' (SetEnv (Pair (Defer iexpr) Zero))
+testEval :: CompiledExpr -> IO StuckExpr
 testEval expr = case eval (setEnvB (pairB (deferB (toEnum 0) expr) zeroB)) of
   Right x -> case toTelomare x of
     Just x' -> pure x'
     _       -> error $ "testEval failed to convert:\n" <> prettyPrint x
   Left z -> error $ "testEval unexpected: " <> show z
--- testEval iexpr = evalB'' (SetEnv (Pair (Defer iexpr) Zero))
 
--- TODO get rid of testEval and just use this
-testEval' iexpr = evalBU (SetEnv (Pair (Defer iexpr) Zero))
+unitTest :: String -> String -> Term3 -> Spec
+unitTest name expected iexpr = it name $ if allowedTypeCheck (typeCheck ZeroTypeP iexpr)
+  then case compileUnitTest iexpr of
+    Left e  -> expectationFailure (concat [name, " failed to compile: ", show e])
+    Right compiled -> do
+      result <- show . PrettyStuckExpr <$> testEval compiled
+      result `shouldBe` expected
+  else expectationFailure ( concat [name, " failed typecheck: ", show (typeCheck ZeroTypeP iexpr)])
 
-unitTest :: String -> String -> IExpr -> Spec
-unitTest name expected iexpr = it name $ if allowedTypeCheck (typeCheck ZeroTypeP (fromTelomare iexpr))
-  then do
-    result <- show . PrettyIExpr <$> testEval (fromTelomare iexpr)
-    result `shouldBe` expected
-  else expectationFailure ( concat [name, " failed typecheck: ", show (typeCheck ZeroTypeP (fromTelomare iexpr))])
-
-unitTestRefinement :: String -> Bool -> IExpr -> Spec
-unitTestRefinement name shouldSucceed iexpr = it name $ case inferType (fromTelomare iexpr) of
-  Right t -> case (pureEval iexpr, shouldSucceed) of
-    (err, True) -> expectationFailure $ concat [name, ": failed refinement type -- ", show err]
-    (_, False) -> expectationFailure $ name <> ": expected refinement failure, but passed"
-  Left err -> expectationFailure $ concat ["refinement test failed typecheck: ", name, " ", show err]
+unitTestRefinement :: String -> Bool -> BasicExpr -> Spec
+unitTestRefinement name shouldSucceed iexpr = it name $
+  expectationFailure (name <> ": unitTestRefinement not yet updated after refactor")
 
 unitTestQC :: Testable p => String -> Int -> p -> Spec
 unitTestQC name times = modifyMaxSuccess (const times) . it name . property
 
 churchType = ArrType (ArrType ZeroType ZeroType) (ArrType ZeroType ZeroType)
 
--- quickcheckBuiltInOptimizedDoesNotChangeEval :: UnprocessedParsedTerm -> Bool
--- quickcheckBuiltInOptimizedDoesNotChangeEval up =
---   let iexpr = toTelomare . findChurchSize <$> fmap splitExpr . (>>= debruijinize []) . validateVariables id $ up
---   in False
-{-
-quickcheckBuiltInOptimizedDoesNotChangeEval :: UnprocessedParsedTerm -> Bool
-quickcheckBuiltInOptimizedDoesNotChangeEval up =
-  let
-      makeTelomare f = second (toTelomare . findChurchSize) (fmap splitExpr . (>>= debruijinize []) . validateVariables [] . f . addBuiltins $ up)
-      iexpr :: Either String (Maybe IExpr)
-      iexpr = makeTelomare id -- x. validateVariables id . optimizeBuiltinFunctions $ up)
-      iexpr' = makeTelomare optimizeBuiltinFunctions -- second (toTelomare . findChurchSize) (fmap splitExpr . (>>= debruijinize []) . validateVariables id $ up)
-  in
-    case (iexpr, iexpr') of
-       (Right (Just ie), Right (Just ie')) -> pureEval ie == pureEval ie'
-       _ | iexpr == iexpr'-> True
-       _ | otherwise -> False
--}
-
--- unitTestTypeP :: IExpr -> Either TypeCheckError PartialType -> IO Bool
-  -- inferType (fromTelomare iexpr)
 quickcheckDataTypedCorrectlyTypeChecks :: DataTypedIExpr -> Bool
 quickcheckDataTypedCorrectlyTypeChecks (IExprWrapper x) = not . null $ inferType (fromTelomare x)
 
-qcDecompileIExprAndBackEvalsSame :: DataTypedIExpr -> Bool
-qcDecompileIExprAndBackEvalsSame (IExprWrapper x) = pure (showResult $ eval' x)
-  -- == fmap (showResult . eval') (toTelomare . findChurchSize . splitExpr . showTrace . decompileTerm4 $ decompileIExpr x)
-  == fmap (showResult' . eval') (showTrace' . toTelomare . comp . showTrace . dec $ x)
-  where eval' = pureIEval
-        debruijinize' x = case debruijinize [] x of
-          Just r -> r
-          _      -> error "debruijinize error"
-        validateVariables' x = case validateVariables x of
-          Right r -> r
-          Left e  -> error ("validateVariables " <> show e)
-        parseLongExpr' x = case runTelomareParser (scn *> parseLongExpr <* scn) x of
-          Just r -> r
-          _      -> error "parseLongExpr' should be impossible"
-        findChurchSize' x = case findChurchSizeD UnitTestSizing x of
-          Right r -> r
-          Left e  -> error ("findChurchSize' error: " <> show e)
-        dec = decompileUPT . decompileTerm1 . decompileTerm2 . decompileTerm4 . decompileIExpr
-        comp = findChurchSize' . splitExpr . debruijinize' . validateVariables' . optimizeBuiltinFunctions . parseLongExpr'
-        showTrace x = x -- trace ("decompiled: " <> show x) x
-        showTrace' x = x -- trace ("recompiled: " <> show x) x
-        showResult x = x -- trace ("desired result: " <> show x) x
-        showResult' x = x -- trace ("actual result: " <> show x) x
-
-{-
-qcTestMapBuilderEqualsRegularEval :: DataTypedIExpr -> Bool
-qcTestMapBuilderEqualsRegularEval (IExprWrapper x) = (showResult $ eval' x)
-  == pure (showResult' . decodePossible . showIntermediate $ possibleConvert AnyX (rootFrag termMap))
-  where eval' = pureIEval
-        (Term3 termMap) = splitExpr . decompileTerm4 $ decompileIExpr x
-        annotateAux ur = pure . FunctionX $ AuxFrag ur -- should never actually be called
-        possibleConvert i f = (\tmb -> runReader (State.evalStateT tmb mempty) (const 0)) $
-          toPossible (termMap Map.!) testBuildingSetEval annotateAux i f
-        -- tmb = toPossible (termMap Map.!) testBuildingSetEval annotateAux AnyX (rootFrag termMap)
-        -- possibleResult = runReader (State.evalStateT tmb mempty) (const 0)
-        decodePossible x' = case toIExprList' possibleConvert x' of
-          DList.Cons r [] -> r
-          _ -> error ("bad possible from " <> show x)
-        showIntermediate x = trace ("intermediate possible: " <> show x) x
-        showResult x = trace ("desired result: " <> show x) x
-        showResult' x = trace ("actual result: " <> show x) x
--}
-
-qcTestURSizing :: URTestExpr -> Bool
-qcTestURSizing (URTestExpr t3) =
-  let compile x = toTelomare <$> findChurchSizeD UnitTestSizing x
-      compile' x = pure . toTelomare $ convertPT (const 255) x
-  in (fmap . fmap) pureIEval (compile t3) == (fmap . fmap) pureIEval (compile' t3)
-{-
-qcTestAbortExtract :: (URTestExpr, Int) -> Bool
-qcTestAbortExtract (URTestExpr (Term3 termMap), i) =
-  null staticToPossible
-  == extractedTestResult where
-  staticToPossible :: Either IExpr (PossibleExpr BreakExtras Void)
-  staticToPossible = toPossible (termMap' Map.!) staticAbortSetEval (pure . FunctionX . AuxFrag) AnyX (rootFrag termMap')
-  sizer = const i
-  (Term4 termMap') = convertPT sizer (Term3 termMap)
-  mapLookup' = (termMap Map.!)
-  annotateAux ur = pure . AnnotateX ur . FunctionX $ AuxFrag ur
-  testMapBuilder = toPossible mapLookup' testBuildingSetEval annotateAux AnyX (rootFrag termMap)
-  tests = splitTests . ($ i) . runReader .  (Map.! toEnum 0) . ($ sizer) . runReader $ State.execStateT testMapBuilder mempty
-  wrapAux = pure . FunctionX . AuxFrag
-  runTest (frag, inp) = null $ toPossible mapLookup' sizingAbortSetEval wrapAux inp frag
-  extractedTestResult = or $ fmap runTest tests
--}
-
-{-
-qcTestBottomUp :: DataTypedIExpr -> Bool
-qcTestBottomUp x =
-  let exp = getIExpr x
-  in evalS exp == evalBU exp
--}
 
 testRecur = concat
   [ "main = let layer = \\recur x -> recur (x, 0)"
@@ -449,126 +290,18 @@ testRecur = concat
 --     else expectationFailure $ "testSBV failed, got result " <> show r
 --   -- assertEqual "testing SBV" r 3
 
--- unitTests_ :: (String -> String -> Spec) -> (String -> PartialType -> (Maybe TypeCheckError -> Bool) -> Spec) -> Spec
 unitTests_ parse = do
   let unitTestType = unitTestType' (parse False)
       unitTest2 = unitTest2' (parse True)
       unitTestStaticChecks = unitTestStaticChecks' (parse True)
-      unitTestPossible = unitTestPossible' (parse True)
-      -- decompileExample = IExprWrapper (SetEnv (SetEnv (Pair (Defer (Pair (Gate Env Env) (Pair Zero Zero))) (SetEnv (SetEnv (SetEnv (PLeft (Pair (Pair (Defer (Pair (Defer (Pair (Defer Zero) Env)) Env)) Zero) Zero))))))))
-      -- decompileExample = IExprWrapper (SetEnv (SetEnv (Pair (Defer (Pair (Gate Env Env) (Pair Zero Zero))) Zero)))
-      decompileExample = IExprWrapper (SetEnv (SetEnv (Pair (Defer (Pair (Gate Env Env) (Pair Zero (Pair Zero Zero)))) Zero)))
+      decompileExample = IExprWrapper (buildTerm (deferS (pairB (gateB envB envB) (pairB zeroB (pairB zeroB zeroB))) >>= \d -> pure (setEnvB (setEnvB (pairB d zeroB)))) :: Term3)
       buildMainTest s = case fmap (compileMain' (SizingSettings 255 True)) (parse True s) of
         Right (Right g) -> let eval = funWrap g appB
                            in pure $ \s i e -> it ("main input " <> i) $ eval (Just (i, s)) `shouldBe` e
         z -> pure $ \s i e -> runIO . expectationFailure $ "failed to compile main:\n" <> show s <> "\nbecause:\n" <> show z
       -- decompileExample = IExprWrapper (SetEnv (SetEnv (SetEnv (Pair (Defer (Pair (Defer (Pair (Defer Zero) Env)) Env)) Zero))))
-  {-
-      unitTestRuntime = unitTestRuntime' parse
-      unitTestSameResult = unitTestSameResult' parse
--}
-  -- unitTestQC "decompileIexprToTerm2AndBackEvalsSame" 2000 qcDecompileIExprAndBackEvalsSame
-  -- unitTestQC "possibleEvalIsLikeRegularEval" 15000 qcTestMapBuilderEqualsRegularEval
-  -- unitTestQC "qcTestAbortExtract" 2000 qcTestAbortExtract
-  -- unitTestQC "qcTestURSizing" 2000 qcTestURSizing
-
-  -- unitTest2 "main = ? (\\r x -> if x then r (left x) else 0) (\\a -> 0) 1" "0" -- we're good now, for every n
-  -- unitTest2 "main = listLength [1,2,3]" "3" -- fails
-  -- unitTest2 "main = foldr (\\a b -> (a,b)) [] [1,2]" "[1,2]"
-  -- unitTestPossible "main : (\\x -> assert (not x) \"fail\") = 1" $ (== Left (StaticCheckError "user abort: fail"))
-  -- unitTestPossible "main = let x : ((\\x -> assert (not x) \"fail\")) = 1 in x" null
-  -- unitTestPossible "main = let x : ((\\x -> assert (not x) \"fail\")) = 1 in left (1, x)" (== Right (PairX ZeroX ZeroX))
-  -- unitTestPossible "main = let x : ((\\x -> assert (not x) \"fail\")) = 1 in left (1, x)" (== Right (PairX ZeroX ZeroX))
-  -- unitTestPossible "main = let f = (\\x -> let xb : (\\xb -> assert 0 \"fail\") = 0 in xb) in $1 (\\r l -> if l then r (left l) else 0) f [1,2]" null
-  -- unitTestPossible "main = let f = (\\x -> let xb : (\\xb -> assert 0 \"fail\") = 0 in xb) in $1 (\\r mf l -> if l then (mf (left l), r (right l)) else 0) f succ [1,2]" null -- works fine
-  -- unitTest2 "main = map succ [1,2]" "[2,3]" -- fails (CURRENTLY BEST FAIL?)
-  -- unitTest2 "main = filter (\\x -> dMinus x 3) (range 1 8)" "(4,(5,(6,8)))" -- success!
-  -- unitTestStaticChecks "main : (\\x -> assert (not (left x)) \"fail\") = 1" $ (not . null)
-  {-
-  unitTest2 "main = plus (d2c 5) (d2c 4) succ 0" "9"
-  unitTest "ite" "2" (ite (i2g 1) (i2g 2) (i2g 3))
-  -- unitTest "abort" "1" (pair (Abort (pair zero zero)) zero)
-  --unitTest "notAbort" "2" (setenv (pair (setenv (pair Abort zero)) (pair (pair zero zero) zero)))
-  unitTest "c2d" "2" c2d_test
-  unitTest "c2d2" "2" c2d_test2
-  unitTest "c2d3" "1" c2d_test3
-  unitTest "oneplusone" "2" one_plus_one
-  unitTest "church 3+2" "5" three_plus_two
-  unitTest "3*2" "6" three_times_two
-  unitTest "3^2" "9" three_pow_two
-  unitTest "test_tochurch" "2" test_toChurch
-  unitTest "three" "3" three_succ
-  unitTest "data 3+5" "8" $ app (app d_plus (i2g 3)) (i2g 5)
-  unitTest "foldr" "13" $ app (app (app foldr_ d_plus) (i2g 1)) (ints2g [2,4,6])
-  unitTest "listlength0" "0" $ app list_length zero
-  unitTest "listlength3" "3" $ app list_length (ints2g [1,2,3])
-  unitTest "zipwith" "((4,1),((5,1),((6,2),0)))"
-    $ app (app (app zipWith_ (lam (lam (pair (varN 1) (varN 0)))))
-                (ints2g [4,5,6]))
-          (ints2g [1,1,2,3])
-  unitTest "listequal1" "1" $ app (app list_equality (s2g "hey")) (s2g "hey")
-  unitTest "listequal0" "0" $ app (app list_equality (s2g "hey")) (s2g "he")
-  unitTest "listequal00" "0" $ app (app list_equality (s2g "hey")) (s2g "hel")
--- because of the way lists are represented, the last number will be prettyPrinted + 1
-  unitTest "map" "(2,(3,5))" $ app (app map_ (lam (pair (varN 0) zero)))
-                                    (ints2g [1,2,3])
--}
-  describe "bottom up eval" $ do
-    {-
-    testMain <- runIO $ Strict.readFile "simpleplus8.tel"
-    unitTestMain <- buildMainTest testMain
-    unitTestMain Zero "2" ("C", Right zeroB)
--}
-    {-
-    testMain <- runIO $ Strict.readFile "testchar.tel"
-    unitTestMain <- buildMainTest testMain
-    unitTestMain Zero "A" ("ascii value of first char is odd", Right zeroB)
--}
-    testMain <- runIO $ Strict.readFile "tc.tel"
-    unitTestMain <- buildMainTest testMain
-    unitTestMain Zero "A" ("O", Right zeroB)
-    -- unitTestMain Zero "B" ("ascii value of first char is even", Right zeroB)
-  {-
-    testMain <- runIO $ Strict.readFile "simpleplus.tel"
-    unitTestMain <- buildMainTest testMain
-    unitTestMain Zero "0 0" ("0 plus 0 is 0", Right zeroB)
-    unitTestMain Zero "9 9" ("9 plus 9 is 18", Right zeroB)
-    unitTestMain Zero "9 a" ("runtime error:\nAborted, user abort: invalid input", Left (AbortRunTime (AbortUser $ s2g "invalid input")))
--}
-    {-
-    testMain <- runIO $ Strict.readFile "simpleplus.tel"
-    unitTestMain <- buildMainTest testMain
--}
-  {-
-    unitTestMain Zero "2 2" ("2 plus 2 is 4", Right zeroB)
-    unitTestMain Zero "1 1" ("1 plus 1 is 2", Right zeroB) -- pass
--}
-    -- unitTestMain Zero "1 2" ("1 plus 2 is 3", Right zeroB)
-  {-
-    unitTest2 "main = dEqual 0 0" "1"
-    unitTest2 "main = dEqual 1 0" "0"
-    unitTest2 "main = dEqual 0 1" "0"
-    unitTest2 "main = dEqual 1 1" "1"
-    unitTest2 "main = dEqual 2 1" "0"
-    unitTest2 "main = dEqual 1 2" "0"
-    unitTest2 "main = dEqual 2 2" "1"
-    unitTest2 "main = listLength []" "0"
-    unitTest2 "main = listLength [1,2,3]" "3"
-    unitTest2 "main = listEqual \"hey\" \"hey\"" "1"
-    unitTest2 "main = listEqual \"hey\" \"he\"" "0"
-    unitTest2 "main = listEqual \"hey\" \"hel\"" "0"
-    unitTest2 "main = listPlus [1,2] [3,4]" "(1,(2,(3,5)))"
-    unitTest2 "main = listPlus 0 [1]" "2"
-    unitTest2 "main = listPlus [1] 0" "2"
-    unitTest2 "main = map left [1,2]" "(0,2)" -- test "left" as a function rather than builtin requiring argument
-    unitTest2 "main = concat [\"a\",\"b\",\"c\"]" "(97,(98,100))"
-    unitTest2 nestedNamedFunctionsIssue "2"
-    unitTest2 "main = take $0 [1,2,3]" "0"
-    unitTest2 "main = take $1 [1,2,3]" "2"
-    unitTest2 "main = take $5 [1,2,3]" "(1,(2,4))"
-    unitTest2 "main = c2d (minus $4 $3)" "1"
--}
-    -- unitTest2 "main = succ 0" "1"
+  describe "unitTest2" $ do
+    unitTestType "main = succ 0" (ArrTypeP ZeroTypeP ZeroTypeP) isInconsistentType
 
 c2dApp = "main = (c2dG $4 3) $2 succ 0"
 
@@ -578,7 +311,7 @@ isInconsistentType _                              = False
 isRecursiveType (Just (RecursiveType _)) = True
 isRecursiveType _                        = False
 
-unitTestTypeP :: IExpr -> Either TypeCheckError PartialType -> IO Bool
+unitTestTypeP :: StuckExpr -> Either TypeCheckError PartialType -> IO Bool
 unitTestTypeP iexpr expected = if inferType (fromTelomare iexpr) == expected
   then pure True
   else do
@@ -627,19 +360,15 @@ unitTests parse = do
     -- unitTestType "main = ? (\\r l -> if l then r (left l) else 0) (\\l -> 0) 2" ZeroTypeP (== Nothing)
     unitTestType "main = {id,\\r l -> r (left l),id} 2" ZeroTypeP (== Nothing)
     unitTestType2
-      (setenv (pair
-               (setenv (pair
-                        (defer (setenv (pair env env)))
-                        (defer env)
-                       )
-               )
-               zero
-              )
+      (buildTerm $ do
+        d1 <- deferS (setEnvB (pairB envB envB))
+        d2 <- deferS envB
+        pure $ setEnvB (pairB (setEnvB (pairB d1 d2)) zeroB)
       )
       ZeroTypeP isRecursiveType
     unitTestType2 inf_pairs ZeroTypeP isRecursiveType
   describe "unitTest" $ do
-    unitTest "ite" "2" (ite (i2g 1) (i2g 2) (i2g 3))
+    unitTest "ite" "2" (iteB_ (i2B 1) (i2B 2) (i2B 3))
     unitTest "c2d" "2" c2d_test
     unitTest "c2d2" "2" c2d_test2
     unitTest "c2d3" "1" c2d_test3
@@ -649,20 +378,20 @@ unitTests parse = do
     unitTest "3^2" "9" three_pow_two
     unitTest "test_tochurch" "2" test_toChurch
     unitTest "three" "3" three_succ
-    unitTest "data 3+5" "8" $ app (app d_plus (i2g 3)) (i2g 5)
-    unitTest "foldr" "13" $ app (app (app foldr_ d_plus) (i2g 1)) (ints2g [2,4,6])
-    unitTest "listlength0" "0" $ app list_length zero
-    unitTest "listlength3" "3" $ app list_length (ints2g [1,2,3])
+    unitTest "data 3+5" "8" $ buildTerm $ appS (appS (pure d_plus) (pure (i2B 3))) (pure (i2B 5))
+    unitTest "foldr" "13" $ buildTerm $ appS (appS (appS (pure foldr_) (pure d_plus)) (pure (i2B 1))) (pure (foldr (pairB . i2B) zeroB [2,4,6]))
+    unitTest "listlength0" "0" $ buildTerm $ appS (pure list_length) (pure zeroB)
+    unitTest "listlength3" "3" $ buildTerm $ appS (pure list_length) (pure (foldr (pairB . i2B) zeroB [1,2,3]))
     unitTest "zipwith" "((4,1),((5,1),((6,2),0)))"
-      $ app (app (app zipWith_ (lam (lam (pair (varN 1) (varN 0)))))
-                 (ints2g [4,5,6]))
-            (ints2g [1,1,2,3])
-    unitTest "listequal1" "1" $ app (app list_equality (s2g "hey")) (s2g "hey")
-    unitTest "listequal0" "0" $ app (app list_equality (s2g "hey")) (s2g "he")
-    unitTest "listequal00" "0" $ app (app list_equality (s2g "hey")) (s2g "hel")
+      $ buildTerm $ appS (appS (appS (pure zipWith_) (pure (buildTerm $ lamS . lamS . pure $ pairB (varB 1) (varB 0))))
+                               (pure (foldr (pairB . i2B) zeroB [4,5,6])))
+                         (pure (foldr (pairB . i2B) zeroB [1,1,2,3]))
+    unitTest "listequal1" "1" $ buildTerm $ appS (appS (pure list_equality) (pure (s2b "hey"))) (pure (s2b "hey"))
+    unitTest "listequal0" "0" $ buildTerm $ appS (appS (pure list_equality) (pure (s2b "hey"))) (pure (s2b "he"))
+    unitTest "listequal00" "0" $ buildTerm $ appS (appS (pure list_equality) (pure (s2b "hey"))) (pure (s2b "hel"))
   -- because of the way lists are represented, the last number will be prettyPrinted + 1
-    unitTest "map" "(2,(3,5))" $ app (app map_ (lam (pair (varN 0) zero)))
-                                     (ints2g [1,2,3])
+    unitTest "map" "(2,(3,5))" $ buildTerm $ appS (appS (pure map_) (pure (buildTerm $ lamS . pure $ pairB (varB 0) zeroB)))
+                                                  (pure (foldr (pairB . i2B) zeroB [1,2,3]))
 
   describe "refinement" $ do
     unitTestStaticChecks "main : (\\x -> assert (not x) \"fail\") = 1" (== Left (StaticCheckError "user abort: fail"))
@@ -718,50 +447,19 @@ unitTests parse = do
   describe "main function tests" $ do
     testMain <- runIO $ Strict.readFile "testchar.tel"
     unitTestMain <- buildMainTest testMain
-    unitTestMain Zero "A" ("ascii value of first char is odd", Right zeroB)
-    unitTestMain Zero "B" ("ascii value of first char is even", Right zeroB)
+    unitTestMain zeroB "A" ("ascii value of first char is odd", Right zeroB)
+    unitTestMain zeroB "B" ("ascii value of first char is even", Right zeroB)
     testMain <- runIO $ Strict.readFile "simpleplus.tel"
     unitTestMain <- buildMainTest testMain
-    unitTestMain Zero "0 0" ("0 plus 0 is 0", Right zeroB)
-    unitTestMain Zero "9 9" ("9 plus 9 is 18", Right zeroB)
-    unitTestMain Zero "9 a" ("runtime error:\nAborted, user abort: invalid input", Left (AbortRunTime (AbortUser $ s2g "invalid input")))
-  {-
-  describe "unsizedEval tests" $ do
-    unitTestUnsized parse "main = d2c 3 succ 0"
-    unitTestUnsized parse
-      $  "main =\n"
-      <> "  let t = \\i -> i\n"
-      <> "      r = \\recur i -> recur (left i)\n"
-      <> "      b = \\i -> (i, 0)\n"
-      <> "  in {t,r,b} 3"
--}
+    unitTestMain zeroB "0 0" ("0 plus 0 is 0", Right zeroB)
+    unitTestMain zeroB "9 9" ("9 plus 9 is 18", Right zeroB)
+    unitTestMain zeroB "9 a" ("runtime error:\nAborted, user abort: invalid input", Left (AbortRunTime (abortUser $ s2b "invalid input")))
 
 
   {- TODO -- figure out why this broke
     unitTest2 "main = quicksort [4,3,7,1,2,4,6,9,8,5,7]"
       "(1,(2,(3,(4,(4,(5,(6,(7,(7,(8,10))))))))))"
-quickcheckBuiltInOptimizedDoesNotChangeEval up =
 -}
-  -- , debugPEIITO (SetEnv (Twiddle (Twiddle (Pair (Defer Var) Zero))))
-  -- , debugPEIITO (SetEnv (Pair (Defer Var) Zero))
-  -- , debugPEIITO (SetEnv (Pair (Defer (Pair Zero Var)) Zero))
-  -- , debugREITIE (SetEnv (Pair Env Env))
-  -- , debugREITIE (Defer (SetEnv (Pair (Gate Env) (Pair Env Env))))
-  -- , debugREITIE (SetEnv (Twiddle (Pair Env Env)))
-  -- , debugREITIE (SetEnv (Pair (Gate (SetEnv (Pair (PRight Env) Env))) (Pair Env (Twiddle (PLeft Env)))))
-
-  {-
-  , Debugpcpt $ gate (check zero var)
-  , debugPCPT $ app var (check zero var)
-  , unitTestQC "promotingChecksPreservesType" promotingChecksPreservesType_prop
-  , unitTestOptimization "listequal0" $ app (app list_equality (s2g "hey")) (s2g "he")
-  , unitTestOptimization "map" $ app (app map_ (lam (pair (varN 0) zero))) (ints2g [1,2,3])
-  -}
-  -- warning: may be slow
-  -- describe "quickcheck" $ do
-  --   unitTestQC "propertyDecompileThenCompileIsIdentity" 1000 propertyDecompileThenCompileIsIdentity
-  --   unitTestQC "builtinOptimizationDoesntBreakEvaluation" 100 quickcheckBuiltInOptimizedDoesNotChangeEval
-  -- ++ quickCheckTests unitTest2 unitTestType
 
 testExpr = concat
   [ "main = let a = 0\n"
@@ -778,62 +476,14 @@ nestedNamedFunctionsIssue = concat
   , "       in bindTest 0"
   ]
 
-{-
-nexprTests :: Spec
-nexprTests = do
-  describe "nexpr eval" $ do
-    it "literal" $
-      NNum 42 `shouldEvalTo` 42
-    it "add" $
-      NNum 2 `NAdd` NNum 3 `shouldEvalTo` 5
-    it "mul" $
-      NNum 2 `NMult` NNum 3 `shouldEvalTo` 6
-    it "ite false" $
-      NITE (NNum 0) (NNum 1) (NNum 2) `shouldEvalTo` 2
-    it "ite true" $
-      NITE (NNum 1) (NNum 1) (NNum 2) `shouldEvalTo` 1
-  where
-    nexpr `shouldEvalTo` r = do
-      RunResult r' _ <- llvmEval (NSetEnv (NPair (NDefer nexpr) NZero))
-      r' `shouldBe` r
--}
 
 unitTest2' parse s r = it s $ case fmap compileUnitTest (parse s) of
   Left e -> expectationFailure $ concat ["failed to parse ", s, " ", show e]
   Right (Right g) -> testEval g >>= (\r2 -> if r2 == r
-  {-
-  Right (Right g) -> case toTelomare g of
-    Nothing -> error $ "unitTest2' conversion failure from CompiledExpr:\n" <> prettyPrint g
-    Just g' -> testEval g' >>= (\r2 -> if r2 == r
--}
     then pure ()
-    else expectationFailure $ concat [s, " result ", r2]) . show . PrettyIExpr
+    else expectationFailure $ concat [s, " result ", r2])
+    . show . PrettyStuckExpr
   Right (Left e) -> expectationFailure $ "failed to compile: " <> show e
-
--- TODO make this do something meaningful. Currently compiling will remove UnsizedF parts from grammar, so unsizedStepM never triggers
-{-
-unitTestUnsized parse s = it ("test unsized with " <> s) $ case fmap compileUnitTest (parse s) of
-  Left e -> expectationFailure $ concat ["failed to parse ", s, " ", show e]
-  Right (Right g) ->
-    let evalStep :: UnsizedExprF (StrictAccum SizedRecursion UnsizedExpr) -> StrictAccum SizedRecursion UnsizedExpr
-        evalStep = basicStepM (stuckStepM (abortStepM (unsizedStepM 255 evalStep unhandledError)))
-        evalU :: UnsizedExpr -> StrictAccum SizedRecursion UnsizedExpr
-        evalU = transformNoDeferM evalStep
-        unhandledError z = error $ ("test unsized " <> s <> " unhandled thing ") -- <> show (getX z))
-        evalUnsized = toTelomare . getX . evalU
-    in pure (testEval' g) `shouldBe` evalUnsized (fromTelomare g)
--}
-
-{-
-runPossible iexpr = evalS (SetEnv (Pair (Defer iexpr) Zero))
-
-unitTestPossible' parse s f = it s $ case fmap runPossible (parse s) of
-  Left e -> expectationFailure $ concat ["failed to parse ", s, " ", show e]
-  Right r' -> if f r'
-    then pure ()
-    else expectationFailure $ s <> " result " <> show (r')
--}
-unitTestPossible' = undefined
 
 unitTestType' parse s t tef = it s $ case parse s of
   Left e -> expectationFailure $ concat ["failed to parse ", s, " ", show e]
@@ -853,27 +503,10 @@ unitTestStaticChecks' parse s c = it s $ case parse s of
     expectationFailure $ "static check failed with " <> show rr
 
 unitTestType2 i t tef = it ("type check " <> show i) $
-  let apt = typeCheck t $ fromTelomare i
+  let apt = typeCheck t i
   in if tef apt
      then pure ()
      else expectationFailure $ concat [show i, " failed typecheck, result ", show apt]
-
-{-
-unitTestRuntime' parse s = it s $ case parse s of
-  Left e -> expectationFailure $ concat ["failed to parse ", s, " ", show e]
-  Right g -> verifyEval g >>= \x -> case x of
-    Nothing -> pure ()
-    Just (ir, nr) -> expectationFailure $ "expected result: " <> show ir <> "\nactual result: " <> show nr
-
-unitTestSameResult' parse a b = it ("comparing to " <> a) $ case (parse a, parse b) of
-  (Right ga, Right gb) -> do
-    ra <- testNEval ga -- runExceptT . eval $ (fromTelomare ga :: NExprs)
-    rb <- testNEval gb
-    if (show ra == show rb)
-      then pure ()
-      else expectationFailure $ "results don't match: " <> show ra <> " --- " <> show rb
-  _ -> expectationFailure "unitTestSameResult failed parsing somewhere"
--}
 
 main = do
   preludeFile <- Strict.readFile "Prelude.tel"
@@ -896,4 +529,3 @@ main = do
       else first show $ main2Term3 (parseAuxModule str:prelude) "AuxModule"
 
   hspec $ unitTests parse
-    --nexprTests

@@ -716,7 +716,7 @@ repeatFunctionS l =
       fenv = rightB . leftB $ rightB envB
       -- (r, (x, ((f', fenv), 0))) -> (rf, (rf, (f', (x, fenv))))
       frameSetup = pairS rf (pairS rf (pure $ pairB f' (pairB x fenv)))
-  in clamS . lamS . lamS $ pairS (pure r) frameSetup
+  in clamS . lamS . lamS $ setEnvB <$> pairS (pure r) frameSetup
 
 {-
 unsizedRepeater :: LocTag -> UnsizedRecursionToken -> BreakState' RecursionPieceFrag UnsizedRecursionToken

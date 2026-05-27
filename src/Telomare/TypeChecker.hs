@@ -110,19 +110,7 @@ associateVar a b = liftEither (makeAssociations a b) >>= \set -> State.modify (c
   changeState set (curVar, oldSet, v) = (curVar, oldSet <> set, v)
 
 initState :: Term3 -> (PartialType, Set TypeAssociation, Int)
-{-
-initState (Term3 termMap) =
-  let startVariable = case Set.maxView (Map.keysSet termMap) of
-        Nothing               -> 0
-        Just (FragIndex i, _) -> (i + 1) * 2
-  in (TypeVariable DummyLoc 0, Set.empty, startVariable)
--}
-initState t = (TypeVariable DummyLoc 0, Set.empty, startVariable) where
-  -- startVariable = (* 2) . succ . getMax $ cata m t
-  startVariable = (+2) . getMax $ cata m t
-  m = \case
-    StuckFW (DeferSF fi x) -> Max (fromEnum fi) <> x
-    x -> Data.Foldable.fold x
+initState t = (TypeVariable DummyLoc 0, Set.empty, 0)
 
 annotate :: Term3 -> AnnotateState PartialType
 annotate term =
@@ -135,11 +123,10 @@ annotate term =
           BasicFW (SetEnvSF x) -> do
             xt <- annotate' x
             (it, (ot, _)) <- withNewEnv anno . withNewEnv anno $ pure ()
-            associateVar (PairTypeP (ArrTypeP it ot) it) xt
+            associateVar (debugTrace ("setenv result " <> show xt <> " -- and out type " <> show ot) $ PairTypeP (ArrTypeP it ot) it) xt
             pure ot
-          StuckFW (DeferSF fi x) -> let inType = TypeVariable anno . succ $ fromEnum fi
-                                    in State.modify (\(_, s, i) -> (inType, s, i)) >> annotate' x
-                                       >>= \ot -> pure $ ArrTypeP inType ot
+          StuckFW (DeferSF fi x) -> withNewEnv anno (annotate' x)
+                                       >>= \(it, ot) -> pure $ ArrTypeP it ot
           AbortFW AbortF -> do
             (it, _) <- withNewEnv anno $ pure ()
             pure (ArrTypeP ZeroTypeP (ArrTypeP it it))
@@ -216,7 +203,7 @@ inferType tm = lookupFully <$> partiallyAnnotate tm where
 
 typeCheck :: PartialType -> Term3 -> Maybe TypeCheckError
 typeCheck t tm = convert (partiallyAnnotate tm >>= associate) where
-  associate (ty, resolver) = debugTrace ("COMPARING TYPES " <> show (t, fullyResolve resolver ty))
+  associate (ty, resolver) = debugTrace ("typechecking term:\n" <> prettyPrint tm <> "\nCOMPARING TYPES " <> show (t, fullyResolve resolver ty))
      $ makeAssociations (fullyResolve resolver ty) t
   convert = \case
     Left er -> Just er

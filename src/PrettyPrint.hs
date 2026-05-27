@@ -1,5 +1,6 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE LambdaCase        #-}
+{-# LANGUAGE PatternSynonyms   #-}
 
 module PrettyPrint where
 
@@ -12,7 +13,7 @@ import Telomare (DataType (..), LamType (..), LocTag, PartExprF (..),
                  Term1, Term3 (..),
                  UnprocessedParsedTerm (..), UnprocessedParsedTermF (..),
                  forget, indentWithChildren', convertAbortMessage,
-                 indentWithOneChild', indentWithTwoChildren') --, isNum)
+                 indentWithOneChild', indentWithTwoChildren', StuckExpr, pattern BasicEE, b2i)
 
 import qualified Control.Comonad.Trans.Cofree as CofreeT (CofreeF (..))
 import qualified Control.Monad.State as State
@@ -291,3 +292,14 @@ instance PrettyPrintable1 Term3F where
 
 instance {-# OVERLAPPING #-} (PrettyPrintable a, PrettyPrintable1 f) => PrettyPrintable (Cofree f a) where
   showP (a :< x) = (<>) <$> showP a <*> showP1 x
+
+newtype PrettyStuckExpr = PrettyStuckExpr StuckExpr
+
+instance Show PrettyStuckExpr where
+  show (PrettyStuckExpr x) = f x where
+    f :: StuckExpr -> String
+    f x = case b2i x of
+      Just n -> show n
+      _ -> case x of
+        BasicEE (PairSF a b) -> "(" <> f a <> "," <> f b <> ")"
+        z -> show z
