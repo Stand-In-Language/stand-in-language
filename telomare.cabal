@@ -109,6 +109,7 @@ executable telomare-repl
                      , megaparsec
                      , mtl
                      , optparse-applicative
+                     , recursion-schemes
                      , stm
                      , strict
                      , telomare

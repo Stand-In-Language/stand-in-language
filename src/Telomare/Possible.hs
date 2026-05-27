@@ -895,24 +895,6 @@ term3ToUnsizedExpr = runIdentity . cata conv where
     Term3Unsized urt -> pure . unsizedEE . UnsizedStubF urt $ envB
     Term3CheckingWrapper loc tc c -> unsizedEE <$> (RefinementWrapperF loc <$> tc <*> c)
     z -> error "term3ToUnsizedExpr could not convert"
-{-
-term3ToUnsizedExpr maxSize (Term3 termMap) =
-  let fragLookup = (termMap Map.!)
-      f = \case
-        ZeroFrag -> basicEE ZeroSF
-        PairFrag a b -> basicEE $ PairSF (f a) (f b)
-        EnvFrag -> basicEE EnvSF
-        SetEnvFrag x -> basicEE . SetEnvSF $ f x
-        DeferFrag ind -> stuckEE . DeferSF (toEnum $ fromEnum ind) . f . forget . unFragExprUR $ fragLookup ind
-        AbortFrag -> abortEE AbortF
-        GateFrag l r -> basicEE $ GateSF (f l) (f r)
-        LeftFrag x -> basicEE . LeftSF $ f x
-        RightFrag x -> basicEE . RightSF $ f x
-        TraceFrag -> unsizedEE . TraceF "from Term3" $ basicEE EnvSF
-        AuxFrag (NestedSetEnvs t) -> unsizedEE . UnsizedStubF t . embed $ embedB EnvSF
-        AuxFrag (CheckingWrapper loc (FragExprUR tc) (FragExprUR c)) -> unsizedEE $ RefinementWrapperF loc (f $ forget tc) (f $ forget c)
-  in f . forget . unFragExprUR $ rootFrag termMap
--}
 
 -- get simple input limits derived from refinements
 -- returns a set of guaranteed Zeros, where the Integer is the encoded path from root of intput
@@ -1004,7 +986,6 @@ initialInput irs = f 0 where
 
 sizeTermM :: SizingSettings -> UnsizedExpr -> Either UnsizedRecursionToken CompiledExpr
 sizeTermM sizingSettings x = tidyUp . ($ []) . runReaderT . transformNoDeferM evalStep $ mx where
-  -- failConvert x = Left $ "sizeTermM convert, unhandled:\n" <> prettyPrint x
   failConvert x = (>>= Left) $ ("sizeTermM convert, unhandled:\n" <>) .  prettyPrint <$> sequence x
   forceType :: StuckExpr -> StuckExpr
   forceType = id
@@ -1162,64 +1143,6 @@ basicEval :: forall f g. (Base g ~ f, BasicBase f, StuckBase f, Recursive g, Cor
 basicEval = transformNoDefer f where
   f = basicStep (stuckStep unhandledError)
   unhandledError z = error ("basicEval unhandled case:\n" <> prettyPrint (embed z))
-
-{-
-evalBU :: IExpr -> Either RunTimeError IExpr
-evalBU = pure . toIExpr . ebu . fromTelomare where
-  toIExpr = unwrapMaybe . toTelomare
-  unwrapMaybe = \case
-    Just x -> x
-    Nothing -> error "evalBU: could not convert back to IExpr"
-  ebu :: StuckExpr -> StuckExpr
-  ebu = transformNoDefer (basicStep (stuckStep undefined)) . (\x -> debugTrace ("evalBU starting expr:\n" <> prettyPrint x) x)
-
-evalBU' :: IExpr -> IO IExpr
-evalBU' = rewrap . evalBU where
-  rewrap = \case
-    Left e -> print e >> pure Zero
-    Right x -> pure x
-
-term4toAbortExpr :: (Base g ~ f, BasicBase f, StuckBase f, AbortBase f, Corecursive g) => Term4 -> g
-term4toAbortExpr (Term4 termMap') =
-  let termMap = forget <$> termMap'
-      convertFrag' = embed . convertFrag
-      convertFrag = \case
-        ZeroFrag      -> embedB ZeroSF
-        PairFrag a b  -> embedB $ PairSF (convertFrag' a) (convertFrag' b)
-        EnvFrag       -> embedB EnvSF
-        SetEnvFrag x  -> embedB . SetEnvSF $ convertFrag' x
-        DeferFrag ind -> embedS . DeferSF (toEnum . fromEnum $ ind) . convertFrag' $ termMap Map.! ind
-        AbortFrag     -> embedA AbortF
-        GateFrag l r  -> embedB $ GateSF (convertFrag' l) (convertFrag' r)
-        LeftFrag x    -> embedB . LeftSF $ convertFrag' x
-        RightFrag x   -> embedB . RightSF $ convertFrag' x
-        TraceFrag     -> embedB EnvSF
-        z             -> error ("term4toAbortExpr'' unexpected " <> show z)
-  in convertFrag' (rootFrag termMap)
-
-abortExprToTerm4 :: (Base g ~ f, BasicBase f, StuckBase f, AbortBase f, Foldable f, Recursive g) => g -> Either IExpr Term4
-abortExprToTerm4 x =
-  let
-    dl = (RuntimeLoc :<)
-    pv = pure . dl
-    findAborted = cata $ \case
-      AbortFW (AbortedF e) -> Just e
-      x                    -> asum x
-    convert = \case
-      BasicFW ZeroSF        -> pv ZeroFragF
-      BasicFW (PairSF a b)  -> dl <$> (PairFragF <$> a <*> b)
-      BasicFW EnvSF         -> pv EnvFragF
-      BasicFW (SetEnvSF x)  -> dl . SetEnvFragF <$> x
-      StuckFW (DeferSF _ x) -> deferF x
-      AbortFW AbortF        -> pv AbortFragF
-      BasicFW (GateSF l r)  -> dl <$> (GateFragF <$> l <*> r)
-      BasicFW (LeftSF x)    -> dl . LeftFragF <$> x
-      BasicFW (RightSF x)   -> dl . RightFragF <$> x
-      z                     -> error "abortExprToTerm4 unexpected thing "
-  in case findAborted x of
-    Just e -> Left e
-    _      -> pure . Term4 . buildFragMap . cata convert $ x
--}
 
 newtype PPOut a = PPOut a
 --   deriving Functor

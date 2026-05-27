@@ -617,6 +617,10 @@ class TelomareLike a where
 class TelomareLike a => AbstractRunTime a where
   eval :: a -> Either RunTimeError a
 
+instance TelomareLike StuckExpr where
+  fromTelomare = id
+  toTelomare = pure
+
 instance BasicBase f => BasicBase (CofreeT.CofreeF f LocTag) where
   embedB = (GeneratedLoc "BasicBase Cofree instance" Nothing CofreeT.:<) . embedB
   extractB = extractB . (\(_ CofreeT.:< x) -> x)

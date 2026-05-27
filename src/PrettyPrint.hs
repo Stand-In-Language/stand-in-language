@@ -13,7 +13,7 @@ import Telomare (DataType (..), LamType (..), LocTag, PartExprF (..),
                  Term1, Term3 (..),
                  UnprocessedParsedTerm (..), UnprocessedParsedTermF (..),
                  forget, indentWithChildren', convertAbortMessage,
-                 indentWithOneChild', indentWithTwoChildren', StuckExpr, pattern BasicEE, b2i, locatedNameText)
+                 indentWithOneChild', indentWithTwoChildren', StuckExpr, pattern BasicEE, b2i, locatedNameText, CompiledExpr)
 
 import qualified Control.Comonad.Trans.Cofree as CofreeT (CofreeF (..))
 import qualified Control.Monad.State as State
@@ -292,6 +292,17 @@ newtype PrettyStuckExpr = PrettyStuckExpr StuckExpr
 instance Show PrettyStuckExpr where
   show (PrettyStuckExpr x) = f x where
     f :: StuckExpr -> String
+    f x = case b2i x of
+      Just n -> show n
+      _ -> case x of
+        BasicEE (PairSF a b) -> "(" <> f a <> "," <> f b <> ")"
+        z -> show z
+
+newtype PrettyCompiledExpr = PrettyCompiledExpr CompiledExpr
+
+instance Show PrettyCompiledExpr where
+  show (PrettyCompiledExpr x) = f x where
+    f :: CompiledExpr -> String
     f x = case b2i x of
       Just n -> show n
       _ -> case x of

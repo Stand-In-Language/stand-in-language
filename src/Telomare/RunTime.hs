@@ -1,5 +1,8 @@
 {-# LANGUAGE FlexibleContexts    #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE FlexibleInstances    #-}
+{-# LANGUAGE PatternSynonyms #-}
 
 module Telomare.RunTime where
 
@@ -20,6 +23,8 @@ import System.Process (CreateProcess (std_out), StdStream (CreatePipe),
                        createProcess, shell)
 import Telomare
 import Text.Read (readMaybe)
+import Telomare.Possible (transformNoDefer, PPOut (..), basicStep, stuckStepDebug)
+import PrettyPrint (prettyPrint)
 
 debug :: Bool
 debug = False
@@ -89,3 +94,7 @@ llvmEval nexpr = do
 showPass :: (Show a, MonadIO m) => m a -> m a
 showPass a = a >>= liftIO . print >> a
 
+instance AbstractRunTime StuckExpr where
+  eval = pure . transformNoDefer step where
+    step = basicStep (stuckStepDebug unhandledError)
+    unhandledError x = error $ "CompiledExpr eval unhandled case " <> prettyPrint x

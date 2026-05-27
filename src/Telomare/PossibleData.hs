@@ -306,6 +306,41 @@ instance PrettyPrintable1 DeferredExprF where
 
 type DeferredExpr = Fix DeferredExprF
 
+data PartialExprF f
+  = PartialExprB (PartExprF f)
+  | PartialExprS (StuckF f)
+  | PartialExprD (DeferredEvalF f)
+  | PartialExprA (AbortableF f)
+  deriving (Functor, Foldable, Traversable)
+instance BasicBase PartialExprF where
+  embedB = PartialExprB
+  extractB = \case
+    PartialExprB x -> Just x
+    _ -> Nothing
+instance StuckBase PartialExprF where
+  embedS = PartialExprS
+  extractS = \case
+    PartialExprS x -> Just x
+    _ -> Nothing
+instance DeferredEvalBase PartialExprF where
+  embedD = PartialExprD
+  extractD = \case
+    PartialExprD x -> Just x
+    _ -> Nothing
+instance AbortBase PartialExprF where
+  embedA = PartialExprA
+  extractA = \case
+    PartialExprA x -> Just x
+    _ -> Nothing
+instance PrettyPrintable1 PartialExprF where
+  showP1 = \case
+    PartialExprB x -> showP1 x
+    PartialExprS x -> showP1 x
+    PartialExprA x -> showP1 x
+    PartialExprD x -> showP1 x
+
+type PartialExpr = Fix PartialExprF
+
 data StaticCheckExprF f
   = StaticCheckExprB (PartExprF f)
   | StaticCheckExprS (StuckF f)
