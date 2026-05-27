@@ -56,7 +56,7 @@ two_succ = buildTerm $ lamS (pure (pairB (varB 0) zeroB)) >>= \il -> appS (appS 
 church_type :: StuckExpr
 church_type = pairB (pairB zeroB zeroB) (pairB zeroB zeroB)
 
-c2d = buildTerm . lamS $ (lamS (pure (pairB (varB 0) zeroB)) >>= \il -> appS (appS (pure (varB 0)) (pure il)) (pure zeroB))
+c2d = buildTerm . lamS $ lamS (pure (pairB (varB 0) zeroB)) >>= \il -> appS (appS (pure (varB 0)) (pure il)) (pure zeroB)
 
 test_toChurch = buildTerm $ lamS (pure (pairB (varB 0) zeroB)) >>= \il -> appS (appS (pure (toChurch 2)) (pure il)) (pure zeroB)
 
@@ -380,14 +380,14 @@ unitTests parse = do
     unitTest "foldr" "13" . buildTerm $ appS (appS (appS (pure foldr_) (pure d_plus)) (pure (i2B 1))) (pure (foldr (pairB . i2B) zeroB [2,4,6]))
     unitTest "listlength0" "0" . buildTerm $ appS (pure list_length) (pure zeroB)
     unitTest "listlength3" "3" . buildTerm $ appS (pure list_length) (pure (foldr (pairB . i2B) zeroB [1,2,3]))
-    unitTest "zipwith" "((4,1),((5,1),((6,2),0)))" . buildTerm $ appS (appS (appS (pure zipWith_) (pure (buildTerm $ lamS . lamS . pure $ pairB (varB 1) (varB 0))))
+    unitTest "zipwith" "((4,1),((5,1),((6,2),0)))" . buildTerm $ appS (appS (appS (pure zipWith_) (pure (buildTerm . lamS . lamS . pure $ pairB (varB 1) (varB 0))))
                                (pure (foldr (pairB . i2B) zeroB [4,5,6])))
                          (pure (foldr (pairB . i2B) zeroB [1,1,2,3]))
     unitTest "listequal1" "1" . buildTerm $ appS (appS (pure list_equality) (pure (s2b "hey"))) (pure (s2b "hey"))
     unitTest "listequal0" "0" . buildTerm $ appS (appS (pure list_equality) (pure (s2b "hey"))) (pure (s2b "he"))
     unitTest "listequal00" "0" . buildTerm $ appS (appS (pure list_equality) (pure (s2b "hey"))) (pure (s2b "hel"))
   -- because of the way lists are represented, the last number will be prettyPrinted + 1
-    unitTest "map" "(2,(3,5))" . buildTerm $ appS (appS (pure map_) (pure (buildTerm $ lamS . pure $ pairB (varB 0) zeroB)))
+    unitTest "map" "(2,(3,5))" . buildTerm $ appS (appS (pure map_) (pure (buildTerm . lamS . pure $ pairB (varB 0) zeroB)))
                                                   (pure (foldr (pairB . i2B) zeroB [1,2,3]))
 
   describe "refinement" $ do

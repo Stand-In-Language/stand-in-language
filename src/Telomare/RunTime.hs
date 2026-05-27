@@ -1,8 +1,6 @@
 {-# LANGUAGE FlexibleContexts    #-}
-{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE FlexibleInstances   #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE FlexibleInstances    #-}
-{-# LANGUAGE PatternSynonyms #-}
 
 module Telomare.RunTime where
 
@@ -18,13 +16,14 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Debug.Trace
 import GHC.Exts (fromList)
+import PrettyPrint (prettyPrint)
 import System.IO (hGetContents)
 import System.Process (CreateProcess (std_out), StdStream (CreatePipe),
                        createProcess, shell)
 import Telomare
+import Telomare.Possible (PPOut (..), basicStep, stuckStepDebug,
+                          transformNoDefer)
 import Text.Read (readMaybe)
-import Telomare.Possible (transformNoDefer, PPOut (..), basicStep, stuckStepDebug)
-import PrettyPrint (prettyPrint)
 
 debug :: Bool
 debug = False

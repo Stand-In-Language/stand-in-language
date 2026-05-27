@@ -1,4 +1,4 @@
-{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE LambdaCase      #-}
 {-# LANGUAGE PatternSynonyms #-}
 
 module Telomare.TypeChecker where
@@ -15,14 +15,15 @@ import Data.Foldable (fold)
 import Data.Functor.Foldable
 import Data.Map (Map)
 import qualified Data.Map as Map
+import Data.Semigroup (Max (..))
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Debug.Trace
 import PrettyPrint
-import Telomare (FunctionIndex (FunctionIndex), LocTag (..), PartialType (..),
-                 PartExprF (..), StuckF (..), AbortableF (..), Term3, Term3F (..), TypeCheckError (..),
-                 pattern StuckFW, pattern BasicFW, pattern AbortFW, pattern ZeroB, pattern PairB)
-import Data.Semigroup (Max(..))
+import Telomare (AbortableF (..), FunctionIndex (FunctionIndex), LocTag (..),
+                 PartExprF (..), PartialType (..), StuckF (..), Term3,
+                 Term3F (..), TypeCheckError (..), pattern AbortFW,
+                 pattern BasicFW, pattern PairB, pattern StuckFW, pattern ZeroB)
 
 debug :: Bool
 debug = False

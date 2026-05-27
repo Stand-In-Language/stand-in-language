@@ -1,10 +1,10 @@
-{-# LANGUAGE DeriveGeneric              #-}
-{-# LANGUAGE DeriveTraversable          #-}
-{-# LANGUAGE FlexibleInstances          #-}
-{-# LANGUAGE LambdaCase                 #-}
-{-# LANGUAGE PatternSynonyms            #-}
-{-# LANGUAGE TypeFamilies               #-}
-{-# LANGUAGE ViewPatterns               #-}
+{-# LANGUAGE DeriveGeneric     #-}
+{-# LANGUAGE DeriveTraversable #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE LambdaCase        #-}
+{-# LANGUAGE PatternSynonyms   #-}
+{-# LANGUAGE TypeFamilies      #-}
+{-# LANGUAGE ViewPatterns      #-}
 
 module Telomare.PossibleData where
 
@@ -27,12 +27,12 @@ import GHC.Generics (Generic)
 
 import Data.Bifunctor (first)
 import PrettyPrint
-import Telomare (LocTag (..), PartialType (..), TelomareLike (..), FunctionIndex,
-                 UnsizedRecursionToken (..), convertAbortMessage,
-                 indentWithChildren', indentWithOneChild',
-                 indentWithTwoChildren', PartExprF (..), StuckF (..), AbortableF (..),
-                 BasicBase(..), StuckBase(..), AbortBase(..), CompiledExpr, convertBasic, convertStuck
-                )
+import Telomare (AbortBase (..), AbortableF (..), BasicBase (..), CompiledExpr,
+                 FunctionIndex, LocTag (..), PartExprF (..), PartialType (..),
+                 StuckBase (..), StuckF (..), TelomareLike (..),
+                 UnsizedRecursionToken (..), convertAbortMessage, convertBasic,
+                 convertStuck, indentWithChildren', indentWithOneChild',
+                 indentWithTwoChildren')
 
 debug' :: Bool
 debug' = False

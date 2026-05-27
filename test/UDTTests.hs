@@ -21,7 +21,6 @@ import Telomare.Eval (SizingOption (..), compile, compileUnitTest,
 import Telomare.Parser (AnnotatedUPT, TelomareParser, parseLongExpr,
                         parsePrelude)
 import Telomare.Possible (SizingSettings (SizingSettings))
-import Telomare (CompiledExpr)
 import Telomare.Resolver (process, pruneBindings)
 
 import Test.Tasty

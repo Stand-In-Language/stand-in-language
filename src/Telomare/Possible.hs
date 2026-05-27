@@ -54,27 +54,29 @@ import Debug
 import Debug.Trace
 import GHC.Generics (Generic)
 import PrettyPrint
-import Telomare (AbstractRunTime (..),
-                 LocTag (..), PartialType (..),
-                 RunTimeError (..), TelomareLike (fromTelomare, toTelomare),
-                 Term3 (..), AbortableF (..), StuckF (..), PartExprF (..),
-                 Term3F (..),
-                 pattern StuckFW, pattern BasicFW, pattern AbortFW,
-                 pattern StuckEE, pattern BasicEE, pattern AbortEE,
-                 pattern GateSwitch, pattern FillFunction,
-                 StuckBase(..), BasicBase(..), AbortBase(..),
-                 UnsizedRecursionToken (UnsizedRecursionToken),
-                 convertAbortMessage, forget, FunctionIndex (..),
-                 indentWithChildren', indentWithOneChild, indentWithOneChild',
-                 indentWithTwoChildren, indentWithTwoChildren',
-                 pattern AbortAny, pattern AbortRecursion,
+import Telomare (AbortBase (..), AbortableF (..), AbstractRunTime (..),
+                 BasicBase (..), BasicExpr, CompiledExpr, FunctionIndex (..),
+                 LocTag (..), PartExprF (..), PartialType (..),
+                 RunTimeError (..), StuckBase (..), StuckExpr, StuckExprF,
+                 StuckF (..), TelomareLike (fromTelomare, toTelomare),
+                 Term3 (..), Term3F (..),
+                 UnsizedRecursionToken (UnsizedRecursionToken), abortAny,
+                 abortEE, abortRecursion, abortUnsizeable, abortUser, b2i,
+                 basicEE, convertAbort, convertAbortMessage, convertBasic,
+                 convertStuck, envB, fillFunction, forget, gateB, gateSwitch,
+                 i2B, indentWithChildren', indentWithOneChild,
+                 indentWithOneChild', indentWithTwoChildren,
+                 indentWithTwoChildren', leftB, pairB, pattern AbortAny,
+                 pattern AbortEE, pattern AbortFW, pattern AbortRecursion,
                  pattern AbortUnsizeable, pattern AbortUser, pattern AppEE,
-                 sindent, toPartialType, CompiledExpr, envB, StuckExpr, abortAny, zeroB, abortEE, pairB, basicEE, abortRecursion, i2B, stuckEE, leftB, rightB, fillFunction, setEnvB, gateB, gateSwitch, convertBasic, convertStuck, convertAbort, abortUnsizeable, b2i, abortUser, s2b, StuckExprF, BasicExpr)
+                 pattern BasicEE, pattern BasicFW, pattern FillFunction,
+                 pattern GateSwitch, pattern StuckEE, pattern StuckFW, rightB,
+                 s2b, setEnvB, sindent, stuckEE, toPartialType, zeroB)
 import Telomare.PossibleData
 -- import Telomare.RunTime (hvmEval)
+import Data.Functor.Identity (Identity (Identity), runIdentity)
 import Test.QuickCheck (Arbitrary (..), Gen, oneof)
 import Test.QuickCheck.Gen (sized)
-import Data.Functor.Identity (runIdentity, Identity (Identity))
 
 debug :: Bool
 debug = False

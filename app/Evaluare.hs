@@ -14,13 +14,13 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Zipper as TZ
 import qualified Graphics.Vty as V
-import PrettyPrint (PrettierIExpr (..))
+import PrettyPrint (PrettyCompiledExpr (..))
 import Reflex
 import Reflex.Vty
 import System.Environment (getArgs)
 import qualified System.IO.Strict as Strict
 import qualified Telomare as Tel
-import Telomare (IExpr (..), IExprF (..))
+import Telomare (CompiledExpr, CompiledExprF (..), PartExprF (..), StuckF (..))
 import qualified Telomare.Eval as TE
 import Telomare.Parser (AnnotatedUPT, parseModule)
 import Text.Read (readMaybe)
@@ -120,7 +120,7 @@ nodeList e nodes0 = col $ do
   et <- grout flex $ nodes nodes0
   pure $ leftmost [e, et]
 
-nodify :: Cofree IExprF (Int, IExpr) -> [Node]
+nodify :: Cofree CompiledExprF (Int, CompiledExpr) -> [Node]
 nodify = removeExtraNumbers . fmap go . allNodes 0 where
   removeExtraNumbers :: [Node] -> [Node]
   removeExtraNumbers = \case
@@ -128,37 +128,37 @@ nodify = removeExtraNumbers . fmap go . allNodes 0 where
     (x:xs) -> case (readMaybe . T.unpack . _node_label $ x) :: Maybe Int of
                 Nothing -> x : removeExtraNumbers xs
                 Just i  -> x : removeExtraNumbers (drop (2 * i) xs)
-  go :: (Int, Cofree IExprF (Int, IExpr)) -> Node
+  go :: (Int, Cofree CompiledExprF (Int, CompiledExpr)) -> Node
   go (i, x@(anno :< _)) =
     Node ( T.pack
          . (join (replicate i "  ") <>)
          . head
          . lines
          . show
-         . PrettierIExpr
+         . PrettyCompiledExpr
          . Tel.forget
          $ x
          )
          ( T.pack
          . (join (replicate i "  ") <>)
-         . (show . PrettierIExpr)
+         . (show . PrettyCompiledExpr)
          . snd
          $ anno
          )
          False
   allNodes :: Int -- * Indentation
-           -> Cofree IExprF (Int, IExpr)
-           -> [(Int, Cofree IExprF (Int, IExpr))]
+           -> Cofree CompiledExprF (Int, CompiledExpr)
+           -> [(Int, Cofree CompiledExprF (Int, CompiledExpr))]
   allNodes i = \case
-    x@(_ :< ZeroF) -> [(i, x)]
-    x@(_ :< EnvF) -> [(i, x)]
-    x@(_ :< TraceF) -> [(i, x)]
-    x@(_ :< (SetEnvF a)) -> (i, x) : allNodes (i + 1) a
-    x@(_ :< (DeferF a)) -> (i, x) : allNodes (i + 1) a
-    x@(_ :< (PLeftF a)) -> (i, x) : allNodes (i + 1) a
-    x@(_ :< (PRightF a)) -> (i, x) : allNodes (i + 1) a
-    x@(_ :< (PairF a b)) -> (i, x) : allNodes (i + 1) a <> allNodes (i + 1) b
-    x@(_ :< (GateF a b)) -> (i, x) : allNodes (i + 1) a <> allNodes (i + 1) b
+    x@(_ :< CompiledExprB ZeroSF) -> [(i, x)]
+    x@(_ :< CompiledExprB EnvSF) -> [(i, x)]
+    x@(_ :< CompiledExprB (SetEnvSF a)) -> (i, x) : allNodes (i + 1) a
+    x@(_ :< CompiledExprS (DeferSF _ a)) -> (i, x) : allNodes (i + 1) a
+    x@(_ :< CompiledExprB (LeftSF a)) -> (i, x) : allNodes (i + 1) a
+    x@(_ :< CompiledExprB (RightSF a)) -> (i, x) : allNodes (i + 1) a
+    x@(_ :< CompiledExprB (PairSF a b)) -> (i, x) : allNodes (i + 1) a <> allNodes (i + 1) b
+    x@(_ :< CompiledExprB (GateSF a b)) -> (i, x) : allNodes (i + 1) a <> allNodes (i + 1) b
+    x -> [(i, x)]
 
 
 -- parseModule :: String -> Either String [Either AnnotatedUPT (String, AnnotatedUPT)]
@@ -207,7 +207,7 @@ main = do
           getout <- escOrCtrlcQuit
           tile flex . box (pure roundedBoxStyle) . row $ do
             rec
-              eEitherIExpr :: Event t (Either String IExpr) <- grout flex . col $ do
+              eEitherIExpr :: Event t (Either String CompiledExpr) <- grout flex . col $ do
                 telomareTextInput :: TextInput t <- grout flex textBox
                 pure . updated $ TE.eval2IExpr modules . T.unpack <$> _textInput_value telomareTextInput
               grout (fixed 2) . col . text $ ""

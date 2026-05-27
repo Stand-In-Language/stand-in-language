@@ -25,34 +25,31 @@ import System.IO
 import System.Process
 
 import qualified Control.Comonad.Trans.Cofree as CofreeT
+import Control.Lens (Identity (runIdentity))
 import Data.Functor.Foldable (Base, cata, embed, para)
 import PrettyPrint
-import Telomare (AbstractRunTime, EvalError (..),
-                 LocTag (..), LocatedName (..),
-                 PartialType (..), Pattern,
-                 ResolverError (..),
-                 RunTimeError (..), TelomareLike (..), Term2,
-                 UnprocessedParsedTerm (..),
-                 UnprocessedParsedTermF (..), UnsizedRecursionToken (..),
-                 deferS, abortEE, locStartLineColumn,
-                 convertAbortMessage, eval, forget, embedB, basicEE, stuckEE, pairB, zeroB, rightB, leftB, embedS, setEnvB, envB, b2s, s2b,
-                 insertAndGetKey, appS, pattern ZeroB, pattern PairB,
-                 tag, Term3, CompiledExpr, StuckF (..), pattern StuckFW, Term3F (..), pattern AbortFW, StuckExpr, BasicExpr, CompiledExprF,
-                 PartExprF (..), pattern BasicEE, pattern StuckEE, convertBasic, convertStuck, convertAbort,
-                 pattern BasicFW, pattern StuckFW, Term3Builder, AbortableF (AbortF))
+import Telomare (AbortableF (AbortF), AbstractRunTime, BasicExpr, CompiledExpr,
+                 CompiledExprF, EvalError (..), LocTag (..), LocatedName (..),
+                 PartExprF (..), PartialType (..), Pattern, ResolverError (..),
+                 RunTimeError (..), StuckExpr, StuckF (..), TelomareLike (..),
+                 Term2, Term3, Term3Builder, Term3F (..),
+                 UnprocessedParsedTerm (..), UnprocessedParsedTermF (..),
+                 UnsizedRecursionToken (..), abortEE, appS, b2s, basicEE,
+                 convertAbort, convertAbortMessage, convertBasic, convertStuck,
+                 deferS, embedB, embedS, envB, eval, forget, insertAndGetKey,
+                 leftB, locStartLineColumn, pairB, pattern AbortFW,
+                 pattern BasicEE, pattern BasicFW, pattern PairB,
+                 pattern StuckEE, pattern StuckFW, pattern ZeroB, rightB, s2b,
+                 setEnvB, stuckEE, tag, zeroB)
 import Telomare.Parser (AnnotatedUPT, parseModule, parseOneExprOrTopLevelDefs,
                         parsePrelude)
-import Telomare.Possible (SizingSettings (SizingSettings),
-                          appB, deferB, evalStaticCheck, basicEval,
-                          getSizesM, sizeTermM, term3ToUnsizedExpr,
-                          )
-import Telomare.PossibleData (SizedRecursion (..),
-                              VoidF,
-                              )
+import Telomare.Possible (SizingSettings (SizingSettings), appB, basicEval,
+                          deferB, evalStaticCheck, getSizesM, sizeTermM,
+                          term3ToUnsizedExpr)
+import Telomare.PossibleData (SizedRecursion (..), VoidF)
 import Telomare.Resolver (main2Term3, main2Term3let, process, resolveAllImports)
 import Telomare.TypeChecker (typeCheck)
 import Text.Megaparsec (errorBundlePretty, runParser)
-import Control.Lens (Identity(runIdentity))
 
 debug :: Bool
 debug = False

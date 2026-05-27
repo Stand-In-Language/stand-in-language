@@ -586,7 +586,7 @@ showAllTransformations input = do
 stepIEval :: StuckExpr -> IO StuckExpr
 stepIEval x = case eval (fromTelomare x :: CompiledExpr) of
   Right r -> case toTelomare r of
-    Just s -> pure s
+    Just s  -> pure s
     Nothing -> error "stepIEval: conversion failure"
   Left e -> error $ "stepIEval: " <> show e
 

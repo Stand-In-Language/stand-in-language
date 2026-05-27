@@ -1,4 +1,3 @@
-{-# LANGUAGE BangPatterns               #-}
 {-# LANGUAGE DeriveAnyClass             #-}
 {-# LANGUAGE DeriveGeneric              #-}
 {-# LANGUAGE DeriveTraversable          #-}
@@ -246,7 +245,7 @@ instance Eq1 StuckExprF where
   liftEq test a b = case (a,b) of
     (StuckExprB x, StuckExprB y) -> liftEq test x y
     (StuckExprS x, StuckExprS y) -> liftEq test x y
-    _ -> False
+    _                            -> False
 instance Show1 StuckExprF where
   liftShowsPrec showsPrec showList prec = \case
     StuckExprB x -> liftShowsPrec showsPrec showList prec x
@@ -848,7 +847,7 @@ convertAbortMessage = \case
   AbortRecursion t -> "recursion overflow (should be caught by other means) for rt: " <> show (b2i t)
   AbortUser s -> case b2s s of
     Nothing -> "user abort invalid data: " <> show s
-    Just m -> "user abort: " <> m
+    Just m  -> "user abort: " <> m
   AbortAny -> "user abort of all possible abort reasons (non-deterministic input)"
   x -> "unexpected abort: " <> show x
 

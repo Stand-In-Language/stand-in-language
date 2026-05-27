@@ -10,12 +10,12 @@ module Main where
 
 import Control.Comonad.Cofree (Cofree (..))
 import qualified Control.Exception as Exception
+import Control.Monad.Identity (Identity, runIdentity)
 import Control.Monad.IO.Class
 import qualified Control.Monad.State as State
 import Data.Bifunctor (first)
-import Data.Fix (Fix (..))
 import Data.Functor ((<&>))
-import Data.Functor.Foldable (cata, Corecursive (embed))
+import Data.Functor.Foldable (Corecursive (embed), cata)
 import Data.List (intercalate, isPrefixOf, singleton, stripPrefix)
 import qualified Data.Map as Map
 import Data.Set (Set)
@@ -31,14 +31,13 @@ import Telomare
 import Telomare.Eval (compileUnitTestNoAbort)
 import Telomare.Parser (TelomareParser, parseAssignment, parseLongExpr,
                         parsePrelude)
+import Telomare.Possible (evalPartial)
+import Telomare.PossibleData (DeferredEvalF (..), PartialExpr, deferredEE)
 import Telomare.Resolver (process)
 import Telomare.RunTime
 import Telomare.TypeChecker (inferType)
 import Text.Megaparsec
 import Text.Megaparsec.Char
-import Telomare.Possible (evalPartial)
-import Control.Monad.Identity (runIdentity, Identity)
-import Telomare.PossibleData (DeferredEvalF(..), deferredEE, PartialExpr)
 
 -- Parsers for assignments/expressions within REPL
 -- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

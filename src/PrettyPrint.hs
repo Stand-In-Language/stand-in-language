@@ -6,14 +6,14 @@ module PrettyPrint where
 
 import Control.Monad.State (State)
 import Data.Map (Map)
-import Telomare (DataType (..), LamType (..), LocTag, PartExprF (..),
-                 StuckF (..), AbortableF (..), StuckExprF (..),
-                 CompiledExprF (..), Term3F (..), FunctionIndex,
-                 ParserTermF (..), PartialType (..), Pattern (..),
-                 Term1, Term3 (..),
-                 UnprocessedParsedTerm (..), UnprocessedParsedTermF (..),
-                 forget, indentWithChildren', convertAbortMessage,
-                 indentWithOneChild', indentWithTwoChildren', StuckExpr, pattern BasicEE, b2i, locatedNameText, CompiledExpr)
+import Telomare (AbortableF (..), CompiledExpr, CompiledExprF (..),
+                 DataType (..), FunctionIndex, LamType (..), LocTag,
+                 ParserTermF (..), PartExprF (..), PartialType (..),
+                 Pattern (..), StuckExpr, StuckExprF (..), StuckF (..), Term1,
+                 Term3 (..), Term3F (..), UnprocessedParsedTerm (..),
+                 UnprocessedParsedTermF (..), b2i, convertAbortMessage, forget,
+                 indentWithChildren', indentWithOneChild',
+                 indentWithTwoChildren', locatedNameText, pattern BasicEE)
 
 import qualified Control.Comonad.Trans.Cofree as CofreeT (CofreeF (..))
 import qualified Control.Monad.State as State
@@ -296,7 +296,7 @@ instance Show PrettyStuckExpr where
       Just n -> show n
       _ -> case x of
         BasicEE (PairSF a b) -> "(" <> f a <> "," <> f b <> ")"
-        z -> show z
+        z                    -> show z
 
 newtype PrettyCompiledExpr = PrettyCompiledExpr CompiledExpr
 
@@ -307,4 +307,4 @@ instance Show PrettyCompiledExpr where
       Just n -> show n
       _ -> case x of
         BasicEE (PairSF a b) -> "(" <> f a <> "," <> f b <> ")"
-        z -> show z
+        z                    -> show z
