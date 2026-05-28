@@ -20,7 +20,7 @@ import Reflex.Vty
 import System.Environment (getArgs)
 import qualified System.IO.Strict as Strict
 import qualified Telomare as Tel
-import Telomare (CompiledExpr, CompiledExprF (..), PartExprF (..), StuckF (..))
+import Telomare (CompiledExpr, CompiledExprF (..), BasicExprF (..), StuckF (..))
 import qualified Telomare.Eval as TE
 import Telomare.Parser (AnnotatedUPT, parseModule)
 import Text.Read (readMaybe)
@@ -151,13 +151,13 @@ nodify = removeExtraNumbers . fmap go . allNodes 0 where
            -> [(Int, Cofree CompiledExprF (Int, CompiledExpr))]
   allNodes i = \case
     x@(_ :< CompiledExprB ZeroSF) -> [(i, x)]
-    x@(_ :< CompiledExprB EnvSF) -> [(i, x)]
-    x@(_ :< CompiledExprB (SetEnvSF a)) -> (i, x) : allNodes (i + 1) a
+    x@(_ :< CompiledExprS EnvSF) -> [(i, x)]
+    x@(_ :< CompiledExprS (SetEnvSF a)) -> (i, x) : allNodes (i + 1) a
     x@(_ :< CompiledExprS (DeferSF _ a)) -> (i, x) : allNodes (i + 1) a
-    x@(_ :< CompiledExprB (LeftSF a)) -> (i, x) : allNodes (i + 1) a
-    x@(_ :< CompiledExprB (RightSF a)) -> (i, x) : allNodes (i + 1) a
+    x@(_ :< CompiledExprS (LeftSF a)) -> (i, x) : allNodes (i + 1) a
+    x@(_ :< CompiledExprS (RightSF a)) -> (i, x) : allNodes (i + 1) a
     x@(_ :< CompiledExprB (PairSF a b)) -> (i, x) : allNodes (i + 1) a <> allNodes (i + 1) b
-    x@(_ :< CompiledExprB (GateSF a b)) -> (i, x) : allNodes (i + 1) a <> allNodes (i + 1) b
+    x@(_ :< CompiledExprS (GateSF a b)) -> (i, x) : allNodes (i + 1) a <> allNodes (i + 1) b
     x -> [(i, x)]
 
 
