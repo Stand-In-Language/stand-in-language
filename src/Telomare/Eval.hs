@@ -30,7 +30,7 @@ import Data.Functor.Foldable (Base, cata, embed, para)
 import PrettyPrint
 import Telomare (AbortableF (AbortF), AbstractRunTime, BasicExpr, CompiledExpr,
                  CompiledExprF, EvalError (..), LocTag (..), LocatedName (..),
-                 PartExprF (..), PartialType (..), Pattern, ResolverError (..),
+                 BasicExprF (..), PartialType (..), Pattern, ResolverError (..),
                  RunTimeError (..), StuckExpr, StuckF (..), TelomareLike (..),
                  Term2, Term3, Term3Builder, Term3F (..),
                  UnprocessedParsedTerm (..), UnprocessedParsedTermF (..),
@@ -330,35 +330,35 @@ tagIExprWithEval iexpr = evalState (para alg iexpr) 0 where
     BasicFW ZeroSF -> do
       i <- statePlus1
       pure ((i, basicEval zeroB) :< embedB ZeroSF)
-    BasicFW EnvSF -> do
+    StuckFW EnvSF -> do
       i <- statePlus1
-      pure ((i, basicEval zeroB) :< embedB EnvSF)
-    BasicFW (SetEnvSF (iexpr0, x)) -> do
+      pure ((i, basicEval zeroB) :< embedS EnvSF)
+    StuckFW (SetEnvSF (iexpr0, x)) -> do
       i <- statePlus1
       x' <- x
-      pure $ (i, basicEval $ setEnvB iexpr0) :< embedB (SetEnvSF x')
+      pure $ (i, basicEval $ setEnvB iexpr0) :< embedS (SetEnvSF x')
     StuckFW (DeferSF ind (iexpr0, x)) -> do
       i <- statePlus1
       x' <- x
       pure $ (i, basicEval . stuckEE $ DeferSF (toEnum (-1)) iexpr0) :< embedS (DeferSF (toEnum (-1)) x')
-    BasicFW (LeftSF (iexpr0, x)) -> do
+    StuckFW (LeftSF (iexpr0, x)) -> do
       i <- statePlus1
       x' <- x
-      pure $ (i, basicEval $ leftB iexpr0) :< embedB (LeftSF x')
-    BasicFW (RightSF (iexpr0, x)) -> do
+      pure $ (i, basicEval $ leftB iexpr0) :< embedS (LeftSF x')
+    StuckFW (RightSF (iexpr0, x)) -> do
       i <- statePlus1
       x' <- x
-      pure $ (i, basicEval $ rightB iexpr0) :< embedB (RightSF x')
+      pure $ (i, basicEval $ rightB iexpr0) :< embedS (RightSF x')
     BasicFW (PairSF (iexpr0, x) (iexpr1, y)) -> do
       i <- statePlus1
       x' <- x
       y' <- y
       pure $ (i, basicEval $ pairB iexpr0 iexpr1) :< embedB (PairSF x' y')
-    BasicFW (GateSF (iexpr0, x) (iexpr1, y)) -> do
+    StuckFW (GateSF (iexpr0, x) (iexpr1, y)) -> do
       i <- statePlus1
       x' <- x
       y' <- y
-      pure $ (i, basicEval . basicEE $ GateSF iexpr0 iexpr1) :< embedB (GateSF x' y')
+      pure $ (i, basicEval . stuckEE $ GateSF iexpr0 iexpr1) :< embedS (GateSF x' y')
 
 tagUPTwithIExpr :: [(String, AnnotatedUPT)]
                 -> UnprocessedParsedTerm

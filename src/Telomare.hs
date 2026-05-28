@@ -49,8 +49,8 @@ import Text.Show.Deriving (deriveShow1)
 
 
 class BasicBase g where
-  embedB :: PartExprF x -> g x
-  extractB :: g x -> Maybe (PartExprF x)
+  embedB :: BasicExprF x -> g x
+  extractB :: g x -> Maybe (BasicExprF x)
 
 class StuckBase g where
   embedS :: StuckF x -> g x
@@ -60,9 +60,9 @@ class AbortBase g where
   embedA :: AbortableF x -> g x
   extractA :: g x -> Maybe (AbortableF x)
 
-pattern BasicFW :: BasicBase g => PartExprF x -> g x
+pattern BasicFW :: BasicBase g => BasicExprF x -> g x
 pattern BasicFW x <- (extractB -> Just x)
-pattern BasicEE :: (Base g ~ f, BasicBase f, Recursive g) => PartExprF g -> g
+pattern BasicEE :: (Base g ~ f, BasicBase f, Recursive g) => BasicExprF g -> g
 pattern BasicEE x <- (project -> BasicFW x)
 pattern StuckFW :: (StuckBase g) => StuckF x -> g x
 pattern StuckFW x <- (extractS -> Just x)
@@ -77,14 +77,14 @@ pattern ZeroB :: (Base g ~ f, BasicBase f, Recursive g) => g
 pattern ZeroB <- BasicEE ZeroSF
 pattern PairB :: (Base g ~ f, BasicBase f, Recursive g) => g -> g -> g
 pattern PairB a b <- BasicEE (PairSF a b)
-pattern FillFunction :: (Base g ~ f, BasicBase f, Recursive g) => g -> g -> f g
-pattern FillFunction c e <- BasicFW (SetEnvSF (BasicEE (PairSF c e)))
-pattern GateSwitch :: (Base g ~ f, BasicBase f, Recursive g) => g -> g -> g -> f g
-pattern GateSwitch l r s <- FillFunction (BasicEE (GateSF l r)) s
+pattern FillFunction :: (Base g ~ f, BasicBase f, StuckBase f, Recursive g) => g -> g -> f g
+pattern FillFunction c e <- StuckFW (SetEnvSF (BasicEE (PairSF c e)))
+pattern GateSwitch :: (Base g ~ f, BasicBase f, StuckBase f, Recursive g) => g -> g -> g -> f g
+pattern GateSwitch l r s <- FillFunction (StuckEE (GateSF l r)) s
 pattern AppEE :: (Base g ~ f, BasicBase f, StuckBase f, Recursive g) => g -> g -> g
-pattern AppEE c i <- BasicEE (SetEnvSF (BasicEE (SetEnvSF (BasicEE (PairSF (StuckEE (DeferSF _ (BasicEE (PairSF (BasicEE (LeftSF (BasicEE (RightSF (BasicEE EnvSF))))) (BasicEE (PairSF (BasicEE (LeftSF (BasicEE EnvSF))) (BasicEE (RightSF (BasicEE (RightSF (BasicEE EnvSF))))))))))) (BasicEE (PairSF i c)))))))
+pattern AppEE c i <- StuckEE (SetEnvSF (StuckEE (SetEnvSF (BasicEE (PairSF (StuckEE (DeferSF _ (BasicEE (PairSF (StuckEE (LeftSF (StuckEE (RightSF (StuckEE EnvSF))))) (BasicEE (PairSF (StuckEE (LeftSF (StuckEE EnvSF))) (StuckEE (RightSF (StuckEE (RightSF (StuckEE EnvSF))))))))))) (BasicEE (PairSF i c)))))))
 
-basicEE :: (Base g ~ f, BasicBase f, Corecursive g) => PartExprF g -> g
+basicEE :: (Base g ~ f, BasicBase f, Corecursive g) => BasicExprF g -> g
 basicEE = embed . embedB
 stuckEE :: (Base g ~ f, StuckBase f, Corecursive g) => StuckF g -> g
 stuckEE = embed . embedS
@@ -95,38 +95,38 @@ zeroB :: (Base g ~ f, BasicBase f, Corecursive g) => g
 zeroB = basicEE ZeroSF
 pairB :: (Base g ~ f, BasicBase f, Corecursive g) => g -> g -> g
 pairB a b = basicEE $ PairSF a b
-envB :: (Base g ~ f, BasicBase f, Corecursive g) => g
-envB = basicEE EnvSF
-setEnvB :: (Base g ~ f, BasicBase f, Corecursive g) => g -> g
-setEnvB = basicEE . SetEnvSF
-gateB :: (Base g ~ f, BasicBase f, Corecursive g) => g -> g -> g
-gateB l r = basicEE $ GateSF l r
-leftB :: (Base g ~ f, BasicBase f, Corecursive g) => g -> g
-leftB = basicEE . LeftSF
-rightB :: (Base g ~ f, BasicBase f, Corecursive g) => g -> g
-rightB = basicEE . RightSF
+envB :: (Base g ~ f, StuckBase f, Corecursive g) => g
+envB = stuckEE EnvSF
+setEnvB :: (Base g ~ f, StuckBase f, Corecursive g) => g -> g
+setEnvB = stuckEE . SetEnvSF
+gateB :: (Base g ~ f, StuckBase f, Corecursive g) => g -> g -> g
+gateB l r = stuckEE $ GateSF l r
+leftB :: (Base g ~ f, StuckBase f, Corecursive g) => g -> g
+leftB = stuckEE . LeftSF
+rightB :: (Base g ~ f, StuckBase f, Corecursive g) => g -> g
+rightB = stuckEE . RightSF
 
-fillFunction :: (Base g ~ f, BasicBase f, Corecursive g) => g -> g -> g
+fillFunction :: (Base g ~ f, BasicBase f, StuckBase f, Corecursive g) => g -> g -> g
 fillFunction c e = setEnvB (pairB c e)
-gateSwitch :: (Base g ~ f, BasicBase f, Corecursive g) => g -> g -> g -> g
+gateSwitch :: (Base g ~ f, BasicBase f, StuckBase f, Corecursive g) => g -> g -> g -> g
 gateSwitch l r = fillFunction (gateB l r)
 
 abortB :: (Base g ~ f, AbortBase f, Corecursive g) => g
 abortB = abortEE AbortF
 
 -- TODO: remove in favor of varB
-firstArgB :: (Base g ~ f, BasicBase f, Corecursive g) => g
+firstArgB :: (Base g ~ f, BasicBase f, StuckBase f, Corecursive g) => g
 firstArgB = leftB envB
-secondArgB :: (Base g ~ f, BasicBase f, Corecursive g) => g
+secondArgB :: (Base g ~ f, BasicBase f, StuckBase f, Corecursive g) => g
 secondArgB = leftB $ rightB envB
-thirdArgB :: (Base g ~ f, BasicBase f, Corecursive g) => g
+thirdArgB :: (Base g ~ f, BasicBase f, StuckBase f, Corecursive g) => g
 thirdArgB = leftB . rightB $ rightB envB
-fourthArgB :: (Base g ~ f, BasicBase f, Corecursive g) => g
+fourthArgB :: (Base g ~ f, BasicBase f, StuckBase f, Corecursive g) => g
 fourthArgB = leftB . rightB . rightB $ rightB envB
-fifthArgB :: (Base g ~ f, BasicBase f, Corecursive g) => g
+fifthArgB :: (Base g ~ f, BasicBase f, StuckBase f, Corecursive g) => g
 fifthArgB = leftB . rightB . rightB . rightB $ rightB envB
 
-varB :: (Base g ~ f, BasicBase f, Corecursive g) => Int -> g
+varB :: (Base g ~ f, BasicBase f, StuckBase f, Corecursive g) => Int -> g
 varB n = if n < 0
   then error $ "varB invalid debruijin index " <> show n
   else leftB (iterate rightB envB !! n)
@@ -154,12 +154,33 @@ s2b :: forall g f. (Base g ~ f, BasicBase f, Corecursive g) => String -> g
 s2b = foldr (pairB . i2B . ord) zeroB
 
 -- note that this doesn't incorporate laziness necessary for things like sizing recursion
-iteB_ :: (Base g ~ f, BasicBase f, Corecursive g) => g -> g -> g -> g
+iteB_ :: (Base g ~ f, BasicBase f, StuckBase f, Corecursive g) => g -> g -> g -> g
 iteB_ i t e = setEnvB $ pairB (gateB e t) i
 
-data PartExprF f
+data BasicExprF f
   = ZeroSF
   | PairSF f f
+  deriving (Eq, Ord, Show, Functor, Foldable, Traversable, Generic)
+
+instance Eq1 BasicExprF where
+  liftEq test a b = case (a,b) of
+    (ZeroSF, ZeroSF)         -> True
+    (PairSF a b, PairSF c d) -> test a c && test b d
+    _                        -> False
+
+instance Show1 BasicExprF where
+  liftShowsPrec showsPrec' showList prec = \case
+    ZeroSF -> shows "ZeroSF"
+    PairSF a b -> shows "PairSF (" . showsPrec' 0 a . shows ", " . showsPrec' 0 b . shows ")"
+
+instance BasicBase BasicExprF where
+  embedB = id
+  extractB = pure
+
+type BasicExpr = Fix BasicExprF
+
+data StuckF f
+  = DeferSF FunctionIndex f
   | EnvSF
   | SetEnvSF f
   | GateSF f f
@@ -167,43 +188,22 @@ data PartExprF f
   | RightSF f
   deriving (Eq, Ord, Show, Functor, Foldable, Traversable, Generic)
 
-instance Eq1 PartExprF where
-  liftEq test a b = case (a,b) of
-    (ZeroSF, ZeroSF)         -> True
-    (EnvSF, EnvSF)           -> True
-    (PairSF a b, PairSF c d) -> test a c && test b d
-    (SetEnvSF x, SetEnvSF y) -> test x y
-    (GateSF a b, GateSF c d) -> test a c && test b d
-    (LeftSF x, LeftSF y)     -> test x y
-    (RightSF x, RightSF y)   -> test x y
-    _                        -> False
-
-instance Show1 PartExprF where
+instance Show1 StuckF where
   liftShowsPrec showsPrec' showList prec = \case
-    ZeroSF -> shows "ZeroSF"
-    PairSF a b -> shows "PairSF (" . showsPrec' 0 a . shows ", " . showsPrec' 0 b . shows ")"
+    DeferSF fi x -> shows "DeferSF " . shows fi . shows " (" . showsPrec' 0 x . shows ")"
     EnvSF -> shows "EnvSF"
     SetEnvSF x -> shows "SetEnvSF (" . showsPrec' 0 x . shows ")"
     GateSF l r -> shows "GateSF (" . showsPrec' 0 l . shows ", " . showsPrec' 0 r . shows ")"
     LeftSF x -> shows "LeftSF (" . showsPrec' 0 x . shows ")"
     RightSF x -> shows "RightSF (" . showsPrec' 0 x . shows ")"
-
-instance BasicBase PartExprF where
-  embedB = id
-  extractB = pure
-
-type BasicExpr = Fix PartExprF
-
-data StuckF f
-  = DeferSF FunctionIndex f
-  deriving (Eq, Ord, Show, Functor, Foldable, Traversable, Generic)
-
-instance Show1 StuckF where
-  liftShowsPrec showsPrec' showList prec = \case
-    DeferSF fi x -> shows "DeferSF " . shows fi . shows " (" . showsPrec' 0 x . shows ")"
 instance Eq1 StuckF where
   liftEq test a b = case (a,b) of
     (DeferSF ix _, DeferSF iy _) | ix == iy -> True -- test a b
+    (EnvSF, EnvSF)           -> True
+    (SetEnvSF x, SetEnvSF y) -> test x y
+    (GateSF a b, GateSF c d) -> test a c && test b d
+    (LeftSF x, LeftSF y)     -> test x y
+    (RightSF x, RightSF y)   -> test x y
     _                                       -> False
 
 newtype FunctionIndex = FunctionIndex { unFunctionIndex :: Int } deriving (Eq, Ord, Enum, Show, Generic)
@@ -228,7 +228,7 @@ instance Show1 AbortableF where
     AbortedF x -> shows "(AbortedF " . shows x . shows ")"
 
 data StuckExprF f
-  = StuckExprB (PartExprF f)
+  = StuckExprB (BasicExprF f)
   | StuckExprS (StuckF f)
   deriving (Eq, Ord, Show, Functor, Foldable, Traversable)
 instance BasicBase StuckExprF where
@@ -254,7 +254,7 @@ instance Show1 StuckExprF where
 type StuckExpr = Fix StuckExprF
 
 data CompiledExprF f
-  = CompiledExprB (PartExprF f)
+  = CompiledExprB (BasicExprF f)
   | CompiledExprS (StuckF f)
   | CompiledExprA (AbortableF f)
   deriving (Eq, Show, Functor, Foldable, Traversable, Generic)
@@ -324,7 +324,7 @@ instance Validity LocTag
 instance GenValid LocTag
 
 data Term3F f
-  = Term3B (PartExprF f)
+  = Term3B (BasicExprF f)
   | Term3S (StuckF f)
   | Term3A (AbortableF f)
   | Term3Unsized UnsizedRecursionToken

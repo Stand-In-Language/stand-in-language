@@ -28,7 +28,7 @@ import GHC.Generics (Generic)
 import Data.Bifunctor (first)
 import PrettyPrint
 import Telomare (AbortBase (..), AbortableF (..), BasicBase (..), CompiledExpr,
-                 FunctionIndex, LocTag (..), PartExprF (..), PartialType (..),
+                 FunctionIndex, LocTag (..), BasicExprF (..), PartialType (..),
                  StuckBase (..), StuckF (..), TelomareLike (..),
                  UnsizedRecursionToken (..), convertAbortMessage, convertBasic,
                  convertStuck, indentWithChildren', indentWithOneChild',
@@ -166,7 +166,7 @@ class ShallowEq a where
   shallowEq :: a -> a -> Bool
 class ShallowEq1 f where
   shallowEq1 :: f a -> f b -> Bool
-instance ShallowEq1 PartExprF where
+instance ShallowEq1 BasicExprF where
   shallowEq1 a b = case (a,b) of
     (ZeroSF, ZeroSF) -> True
     _                -> False
@@ -279,7 +279,7 @@ instance (Functor f, PrettyPrintable1 f) => PrettyPrintable (Fix f) where
 
 
 data DeferredExprF f
-  = DeferredExprB (PartExprF f)
+  = DeferredExprB (BasicExprF f)
   | DeferredExprS (StuckF f)
   | DeferredExprD (DeferredEvalF f)
   deriving (Functor, Foldable, Traversable)
@@ -307,7 +307,7 @@ instance PrettyPrintable1 DeferredExprF where
 type DeferredExpr = Fix DeferredExprF
 
 data PartialExprF f
-  = PartialExprB (PartExprF f)
+  = PartialExprB (BasicExprF f)
   | PartialExprS (StuckF f)
   | PartialExprD (DeferredEvalF f)
   | PartialExprA (AbortableF f)
@@ -342,7 +342,7 @@ instance PrettyPrintable1 PartialExprF where
 type PartialExpr = Fix PartialExprF
 
 data StaticCheckExprF f
-  = StaticCheckExprB (PartExprF f)
+  = StaticCheckExprB (BasicExprF f)
   | StaticCheckExprS (StuckF f)
   | StaticCheckExprA (AbortableF f)
   | StaticCheckExprD (DeferredEvalF f)
@@ -384,7 +384,7 @@ instance TelomareLike CompiledExpr where
   toTelomare = cata (convertBasic (convertStuck (const Nothing)))
 
 data UnsizedExprF f
-  = UnsizedExprB (PartExprF f)
+  = UnsizedExprB (BasicExprF f)
   | UnsizedExprS (StuckF f)
   | UnsizedExprP (SuperPositionF f)
   | UnsizedExprA (AbortableF f)
@@ -459,7 +459,7 @@ instance PrettyPrintable1 UnsizedExprF where
 type UnsizedExpr = Fix UnsizedExprF
 
 data AllExprF f
-  = AllExprB (PartExprF f)
+  = AllExprB (BasicExprF f)
   | AllExprS (StuckF f)
   | AllExprA (AbortableF f)
   | AllExprP (SuperPositionF f)
@@ -467,7 +467,7 @@ data AllExprF f
   | AllExprU (UnsizedRecursionF f)
 
 data InputSizingExprF f
-  = InputSizingB (PartExprF f)
+  = InputSizingB (BasicExprF f)
   | InputSizingS (StuckF f)
   | InputSizingA (AbortableF f)
   | InputSizingU (UnsizedRecursionF f)
@@ -618,32 +618,10 @@ class Annotatable a where
 class Annotatable1 f where
   liftAnno :: (a -> AnnotateState PartialType) -> f a -> AnnotateState PartialType
 
-instance Annotatable1 PartExprF where
+instance Annotatable1 BasicExprF where
   liftAnno anno = \case
      ZeroSF -> pure ZeroTypeP
      PairSF a b -> PairTypeP <$> anno a <*> anno b
-     EnvSF -> State.gets (\(t, _, _) -> t)
-     SetEnvSF x -> do
-       xt <- anno x
-       it <- newPartialType
-       ot <- newPartialType
-       associateVar (PairTypeP (ArrTypeP it ot) it) xt
-       pure ot
-     GateSF l r -> do
-       lt <- anno l
-       rt <- anno l
-       associateVar lt rt
-       pure $ ArrTypeP ZeroTypeP lt
-     LeftSF x -> do
-       xt <- anno x
-       la <- newPartialType
-       associateVar (PairTypeP la AnyType) xt
-       pure la
-     RightSF x -> do
-       xt <- anno x
-       ra <- newPartialType
-       associateVar (PairTypeP AnyType ra) xt
-       pure ra
 
 withNewEnv :: AnnotateState a -> AnnotateState (PartialType, a)
 withNewEnv action = do
@@ -658,6 +636,28 @@ instance Annotatable1 StuckF where
     DeferSF ind x -> do
       (it, ot) <- withNewEnv $ anno x
       pure $ ArrTypeP it ot
+    EnvSF -> State.gets (\(t, _, _) -> t)
+    SetEnvSF x -> do
+       xt <- anno x
+       it <- newPartialType
+       ot <- newPartialType
+       associateVar (PairTypeP (ArrTypeP it ot) it) xt
+       pure ot
+    GateSF l r -> do
+       lt <- anno l
+       rt <- anno l
+       associateVar lt rt
+       pure $ ArrTypeP ZeroTypeP lt
+    LeftSF x -> do
+       xt <- anno x
+       la <- newPartialType
+       associateVar (PairTypeP la AnyType) xt
+       pure la
+    RightSF x -> do
+       xt <- anno x
+       ra <- newPartialType
+       associateVar (PairTypeP AnyType ra) xt
+       pure ra
 
 instance Annotatable1 SuperPositionF where
   liftAnno anno = \case

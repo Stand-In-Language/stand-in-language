@@ -21,7 +21,7 @@ import qualified Data.Set as Set
 import Debug.Trace
 import PrettyPrint
 import Telomare (AbortableF (..), FunctionIndex (FunctionIndex), LocTag (..),
-                 PartExprF (..), PartialType (..), StuckF (..), Term3,
+                 BasicExprF (..), PartialType (..), StuckF (..), Term3,
                  Term3F (..), TypeCheckError (..), pattern AbortFW,
                  pattern BasicFW, pattern PairB, pattern StuckFW, pattern ZeroB)
 
@@ -120,8 +120,8 @@ annotate term =
         anno :< g -> case g of
           BasicFW ZeroSF -> pure ZeroTypeP
           BasicFW (PairSF a b) -> PairTypeP <$> annotate' a <*> annotate' b
-          BasicFW EnvSF -> State.gets (\(t, _, _) -> t)
-          BasicFW (SetEnvSF x) -> do
+          StuckFW EnvSF -> State.gets (\(t, _, _) -> t)
+          StuckFW (SetEnvSF x) -> do
             xt <- annotate' x
             (it, (ot, _)) <- withNewEnv anno . withNewEnv anno $ pure ()
             associateVar (debugTrace ("setenv result " <> show xt <> " -- and out type " <> show ot) $ PairTypeP (ArrTypeP it ot) it) xt
@@ -131,17 +131,17 @@ annotate term =
           AbortFW AbortF -> do
             (it, _) <- withNewEnv anno $ pure ()
             pure (ArrTypeP ZeroTypeP (ArrTypeP it it))
-          BasicFW (GateSF l r) -> do
+          StuckFW (GateSF l r) -> do
             lt <- annotate' l
             rt <- annotate' r
             associateVar lt rt
             pure $ ArrTypeP ZeroTypeP lt
-          BasicFW (LeftSF x) -> do
+          StuckFW (LeftSF x) -> do
             xt <- annotate' x
             (la, _) <- withNewEnv anno $ pure ()
             associateVar (PairTypeP la AnyType) xt
             pure la
-          BasicFW (RightSF x) -> do
+          StuckFW (RightSF x) -> do
             xt <- annotate' x
             (ra, _) <- withNewEnv anno $ pure ()
             associateVar (PairTypeP AnyType ra) xt

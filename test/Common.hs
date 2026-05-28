@@ -85,12 +85,12 @@ instance Arbitrary TestIExpr where
                     ]
   shrink (TestIExpr x) = case x of
     ZeroB -> []
-    BasicEE EnvSF -> []
-    BasicEE (GateSF a b) -> TestIExpr a : TestIExpr b :
+    StuckEE EnvSF -> []
+    StuckEE (GateSF a b) -> TestIExpr a : TestIExpr b :
       [lift2Texpr gateB a' b' | (a', b') <- shrink (TestIExpr a, TestIExpr b)]
-    BasicEE (LeftSF x) -> TestIExpr x : (fmap (lift1Texpr leftB) . shrink $ TestIExpr x)
-    BasicEE (RightSF x) -> TestIExpr x : (fmap (lift1Texpr rightB) . shrink $ TestIExpr x)
-    BasicEE (SetEnvSF x) -> TestIExpr x : (fmap (lift1Texpr setEnvB) . shrink $ TestIExpr x)
+    StuckEE (LeftSF x) -> TestIExpr x : (fmap (lift1Texpr leftB) . shrink $ TestIExpr x)
+    StuckEE (RightSF x) -> TestIExpr x : (fmap (lift1Texpr rightB) . shrink $ TestIExpr x)
+    StuckEE (SetEnvSF x) -> TestIExpr x : (fmap (lift1Texpr setEnvB) . shrink $ TestIExpr x)
     StuckEE (DeferSF fi x) -> TestIExpr x : (fmap (lift1Texpr (stuckEE . DeferSF fi)) . shrink $ TestIExpr x)
     PairB a b -> TestIExpr a : TestIExpr  b :
       [lift2Texpr pairB a' b' | (a', b') <- shrink (TestIExpr a, TestIExpr b)]

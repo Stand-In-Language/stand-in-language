@@ -21,7 +21,7 @@ import System.IO (hGetContents)
 import System.Process (CreateProcess (std_out), StdStream (CreatePipe),
                        createProcess, shell)
 import Telomare
-import Telomare.Possible (PPOut (..), basicStep, stuckStepDebug,
+import Telomare.Possible (PPOut (..), basicStep, stuckStep,
                           transformNoDefer)
 import Text.Read (readMaybe)
 
@@ -95,5 +95,5 @@ showPass a = a >>= liftIO . print >> a
 
 instance AbstractRunTime StuckExpr where
   eval = pure . transformNoDefer step where
-    step = basicStep (stuckStepDebug unhandledError)
+    step = basicStep (stuckStep unhandledError)
     unhandledError x = error $ "CompiledExpr eval unhandled case " <> prettyPrint x

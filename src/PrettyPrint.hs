@@ -8,7 +8,7 @@ import Control.Monad.State (State)
 import Data.Map (Map)
 import Telomare (AbortableF (..), CompiledExpr, CompiledExprF (..),
                  DataType (..), FunctionIndex, LamType (..), LocTag,
-                 ParserTermF (..), PartExprF (..), PartialType (..),
+                 ParserTermF (..), BasicExprF (..), PartialType (..),
                  Pattern (..), StuckExpr, StuckExprF (..), StuckF (..), Term1,
                  Term3 (..), Term3F (..), UnprocessedParsedTerm (..),
                  UnprocessedParsedTermF (..), b2i, convertAbortMessage, forget,
@@ -249,16 +249,16 @@ showFI = ("F" <>) . show . fromEnum
 instance PrettyPrintable1 StuckF where
   showP1 = \case
     DeferSF ind x -> indentWithOneChild' (showFI ind) $ showP x
-
-instance PrettyPrintable1 PartExprF where
-  showP1 = \case
-    ZeroSF     -> pure "Z"
-    PairSF a b -> indentWithTwoChildren' "P" (showP a) (showP b)
     EnvSF      -> pure "E"
     SetEnvSF x -> indentWithOneChild' "S" $ showP x
     GateSF l r -> indentWithTwoChildren' "G" (showP l) (showP r)
     LeftSF x   -> indentWithOneChild' "L" $ showP x
     RightSF x  -> indentWithOneChild' "R" $ showP x
+
+instance PrettyPrintable1 BasicExprF where
+  showP1 = \case
+    ZeroSF     -> pure "Z"
+    PairSF a b -> indentWithTwoChildren' "P" (showP a) (showP b)
 
 instance PrettyPrintable1 AbortableF where
   showP1 = \case
