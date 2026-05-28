@@ -55,8 +55,8 @@ import Debug.Trace
 import GHC.Generics (Generic)
 import PrettyPrint
 import Telomare (AbortBase (..), AbortableF (..), AbstractRunTime (..),
-                 BasicBase (..), BasicExpr, CompiledExpr, FunctionIndex (..),
-                 LocTag (..), BasicExprF (..), PartialType (..),
+                 BasicBase (..), BasicExpr, BasicExprF (..), CompiledExpr,
+                 FunctionIndex (..), LocTag (..), PartialType (..),
                  RunTimeError (..), StuckBase (..), StuckExpr, StuckExprF,
                  StuckF (..), TelomareLike (fromTelomare, toTelomare),
                  Term3 (..), Term3F (..),

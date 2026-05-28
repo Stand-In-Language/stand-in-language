@@ -20,10 +20,11 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Debug.Trace
 import PrettyPrint
-import Telomare (AbortableF (..), FunctionIndex (FunctionIndex), LocTag (..),
-                 BasicExprF (..), PartialType (..), StuckF (..), Term3,
-                 Term3F (..), TypeCheckError (..), pattern AbortFW,
-                 pattern BasicFW, pattern PairB, pattern StuckFW, pattern ZeroB)
+import Telomare (AbortableF (..), BasicExprF (..),
+                 FunctionIndex (FunctionIndex), LocTag (..), PartialType (..),
+                 StuckF (..), Term3, Term3F (..), TypeCheckError (..),
+                 pattern AbortFW, pattern BasicFW, pattern PairB,
+                 pattern StuckFW, pattern ZeroB)
 
 debug :: Bool
 debug = False

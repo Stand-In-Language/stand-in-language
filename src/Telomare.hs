@@ -199,11 +199,11 @@ instance Show1 StuckF where
 instance Eq1 StuckF where
   liftEq test a b = case (a,b) of
     (DeferSF ix _, DeferSF iy _) | ix == iy -> True -- test a b
-    (EnvSF, EnvSF)           -> True
-    (SetEnvSF x, SetEnvSF y) -> test x y
-    (GateSF a b, GateSF c d) -> test a c && test b d
-    (LeftSF x, LeftSF y)     -> test x y
-    (RightSF x, RightSF y)   -> test x y
+    (EnvSF, EnvSF)                          -> True
+    (SetEnvSF x, SetEnvSF y)                -> test x y
+    (GateSF a b, GateSF c d)                -> test a c && test b d
+    (LeftSF x, LeftSF y)                    -> test x y
+    (RightSF x, RightSF y)                  -> test x y
     _                                       -> False
 
 newtype FunctionIndex = FunctionIndex { unFunctionIndex :: Int } deriving (Eq, Ord, Enum, Show, Generic)

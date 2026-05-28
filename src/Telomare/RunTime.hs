@@ -21,8 +21,7 @@ import System.IO (hGetContents)
 import System.Process (CreateProcess (std_out), StdStream (CreatePipe),
                        createProcess, shell)
 import Telomare
-import Telomare.Possible (PPOut (..), basicStep, stuckStep,
-                          transformNoDefer)
+import Telomare.Possible (PPOut (..), basicStep, stuckStep, transformNoDefer)
 import Text.Read (readMaybe)
 
 debug :: Bool

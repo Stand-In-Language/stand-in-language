@@ -6,11 +6,11 @@ module PrettyPrint where
 
 import Control.Monad.State (State)
 import Data.Map (Map)
-import Telomare (AbortableF (..), CompiledExpr, CompiledExprF (..),
-                 DataType (..), FunctionIndex, LamType (..), LocTag,
-                 ParserTermF (..), BasicExprF (..), PartialType (..),
-                 Pattern (..), StuckExpr, StuckExprF (..), StuckF (..), Term1,
-                 Term3 (..), Term3F (..), UnprocessedParsedTerm (..),
+import Telomare (AbortableF (..), BasicExprF (..), CompiledExpr,
+                 CompiledExprF (..), DataType (..), FunctionIndex, LamType (..),
+                 LocTag, ParserTermF (..), PartialType (..), Pattern (..),
+                 StuckExpr, StuckExprF (..), StuckF (..), Term1, Term3 (..),
+                 Term3F (..), UnprocessedParsedTerm (..),
                  UnprocessedParsedTermF (..), b2i, convertAbortMessage, forget,
                  indentWithChildren', indentWithOneChild',
                  indentWithTwoChildren', locatedNameText, pattern BasicEE)

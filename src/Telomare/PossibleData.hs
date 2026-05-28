@@ -27,11 +27,12 @@ import GHC.Generics (Generic)
 
 import Data.Bifunctor (first)
 import PrettyPrint
-import Telomare (AbortBase (..), AbortableF (..), BasicBase (..), CompiledExpr,
-                 FunctionIndex, LocTag (..), BasicExprF (..), PartialType (..),
-                 StuckBase (..), StuckF (..), TelomareLike (..),
-                 UnsizedRecursionToken (..), convertAbortMessage, convertBasic,
-                 convertStuck, indentWithChildren', indentWithOneChild',
+import Telomare (AbortBase (..), AbortableF (..), BasicBase (..),
+                 BasicExprF (..), CompiledExpr, FunctionIndex, LocTag (..),
+                 PartialType (..), StuckBase (..), StuckF (..),
+                 TelomareLike (..), UnsizedRecursionToken (..),
+                 convertAbortMessage, convertBasic, convertStuck,
+                 indentWithChildren', indentWithOneChild',
                  indentWithTwoChildren')
 
 debug' :: Bool

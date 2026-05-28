@@ -28,11 +28,11 @@ import qualified Control.Comonad.Trans.Cofree as CofreeT
 import Control.Lens (Identity (runIdentity))
 import Data.Functor.Foldable (Base, cata, embed, para)
 import PrettyPrint
-import Telomare (AbortableF (AbortF), AbstractRunTime, BasicExpr, CompiledExpr,
-                 CompiledExprF, EvalError (..), LocTag (..), LocatedName (..),
-                 BasicExprF (..), PartialType (..), Pattern, ResolverError (..),
-                 RunTimeError (..), StuckExpr, StuckF (..), TelomareLike (..),
-                 Term2, Term3, Term3Builder, Term3F (..),
+import Telomare (AbortableF (AbortF), AbstractRunTime, BasicExpr,
+                 BasicExprF (..), CompiledExpr, CompiledExprF, EvalError (..),
+                 LocTag (..), LocatedName (..), PartialType (..), Pattern,
+                 ResolverError (..), RunTimeError (..), StuckExpr, StuckF (..),
+                 TelomareLike (..), Term2, Term3, Term3Builder, Term3F (..),
                  UnprocessedParsedTerm (..), UnprocessedParsedTermF (..),
                  UnsizedRecursionToken (..), abortEE, appS, b2s, basicEE,
                  convertAbort, convertAbortMessage, convertBasic, convertStuck,
