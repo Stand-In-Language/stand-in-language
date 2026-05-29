@@ -38,23 +38,6 @@ data AssignmentEntry
   = SingleAssignment LocatedName AnnotatedUPT
   | ListAssignment LocTag [LocatedName] AnnotatedUPT
 
-instance Plated UnprocessedParsedTerm where
-  plate f = \case
-    ITEUP i t e -> ITEUP <$> f i <*> f t <*> f e
-    LetUP l x   -> LetUP <$> traverse (traverse f) l <*> f x
-    CaseUP x l  -> CaseUP <$> f x <*> traverse (sequenceA . second f) l
-    ListUP l    -> ListUP <$> traverse f l
-    PairUP a b  -> PairUP <$> f a <*> f b
-    AppUP u x   -> AppUP <$> f u <*> f x
-    LamUP name x -> LamUP name <$> f x
-    LeftUP x    -> LeftUP <$> f x
-    RightUP x   -> RightUP <$> f x
-    TraceUP x   -> TraceUP <$> f x
-    HashUP x    -> HashUP <$> f x
-    CheckUP c x -> CheckUP <$> f c <*> f x
-    UnsizedRecursionUP x y z -> UnsizedRecursionUP <$> f x <*> f y <*> f z
-    x           -> pure x
-
 -- |TelomareParser :: * -> *
 type TelomareParser = Parsec Void String
 

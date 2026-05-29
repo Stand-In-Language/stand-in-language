@@ -275,9 +275,6 @@ instance PrettyPrintable PartialType where
         _            -> f a <> " -> " <> f b
       PairTypeP a b -> "(" <> f a <> "," <> f b <> ")"
 
-instance (Functor f, PrettyPrintable1 f) => PrettyPrintable (Fix f) where
-  showP = showP1 . project
-
 
 data DeferredExprF f
   = DeferredExprB (BasicExprF f)

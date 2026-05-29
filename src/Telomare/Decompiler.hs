@@ -5,6 +5,7 @@ module Telomare.Decompiler where
 import Control.Comonad.Cofree (Cofree ((:<)))
 import Control.Monad (foldM, liftM2)
 import qualified Control.Monad.State as State
+import Data.Functor.Foldable (embed, project)
 import Data.List (intercalate)
 import qualified Data.Map as Map
 import Data.Semigroup (Max (..))
@@ -19,30 +20,31 @@ decompileUPT =
       drawIndent = State.get >>= (\n -> pure $ replicate n ' ')
       drawList = fmap mconcat . sequence
       needsParens = \case -- will need parens if on right side of application
-        AppUP _ _ -> True
-        LamUP _ _ -> True
-        LeftUP _  -> True
-        RightUP _ -> True
-        TraceUP _ -> True
-        LetUP _ _ -> True
-        ITEUP {}  -> True
+        AppUPF _ _ -> True
+        LamUPF _ _ -> True
+        LeftUPF _  -> True
+        RightUPF _ -> True
+        TraceUPF _ -> True
+        LetUPF _ _ -> True
+        ITEUPF {}  -> True
         _         -> False
       needsFirstParens = \case
-        LamUP _ _ -> True
-        LetUP _ _ -> True
-        ITEUP {}  -> True
+        LamUPF _ _ -> True
+        LetUPF _ _ -> True
+        ITEUPF {}  -> True
         _         -> False
       drawParens x = if needsParens x
-        then drawList [showS " (", draw x, showS ")"]
-        else drawList [showS " ", draw x]
+        then drawList [showS " (", draw $ embed x, showS ")"]
+        else drawList [showS " ", draw $ embed x]
       drawFirstParens x = if needsFirstParens x
-        then drawList [showS "(", draw x, showS ")"]
-        else draw x
+        then drawList [showS "(", draw $ embed x, showS ")"]
+        else draw $ embed x
       draw :: UnprocessedParsedTerm -> State.State Int String
-      draw = \case
-          VarUP s -> showS s
-          ITEUP i t e -> drawList [showS "if ", draw i, showS " then ", draw t, showS " else ", draw e]
-          LetUP ((firstName, firstDef):bindingsXS) in_ -> if null bindingsXS
+      draw = draw' . project
+      draw' = \case
+          VarUPF s -> showS s
+          ITEUPF i t e -> drawList [showS "if ", draw i, showS " then ", draw t, showS " else ", draw e]
+          LetUPF ((firstName, firstDef):bindingsXS) in_ -> if null bindingsXS
             then drawList [showS "let ", showS (locatedNameText firstName), showS " = ", draw firstDef, showS " in ", draw in_]
             else do
             startIn <- State.get
@@ -55,22 +57,22 @@ decompileUPT =
             displayedBindings <- mconcat <$> traverse drawOne bindingsXS
             State.put startIn
             mconcat <$> sequence [pure l, pure fb, pure displayedBindings, drawIndent, showS "in ", draw in_]
-          ListUP l -> let insertCommas []     = []
-                          insertCommas [x]    = [x]
-                          insertCommas (x:xs) = x : showS "," : insertCommas xs
-                      in drawList [showS "[", fmap concat . sequence . insertCommas $ fmap draw l, showS "]" ]
-          IntUP x -> showS $ show x
-          StringUP s -> drawList [showS "\"", showS s, showS "\""]
-          PairUP a b -> drawList [showS "(", draw a, showS ",", draw b, showS ")"]
-          AppUP f x -> drawList [drawFirstParens f, drawParens x]
+          ListUPF l -> let insertCommas []     = []
+                           insertCommas [x]    = [x]
+                           insertCommas (x:xs) = x : showS "," : insertCommas xs
+                       in drawList [showS "[", fmap concat . sequence . insertCommas $ fmap draw l, showS "]" ]
+          IntUPF x -> showS $ show x
+          StringUPF s -> drawList [showS "\"", showS s, showS "\""]
+          PairUPF a b -> drawList [showS "(", draw a, showS ",", draw b, showS ")"]
+          AppUPF f x -> drawList [drawFirstParens $ project f, drawParens $ project x]
           -- TODO flatten nested lambdas
-          LamUP n x -> drawList [showS "\\", showS (locatedNameText n), showS " -> ", draw x]
-          ChurchUP n -> drawList [showS "$", showS $ show n]
-          UnsizedRecursionUP t r b -> drawList [showS "{", draw t, showS ",", draw r, showS ",", draw b, showS "}"]
-          LeftUP x -> drawList [showS "left ", drawParens x]
-          RightUP x -> drawList [showS "right ", drawParens x]
-          TraceUP x -> drawList [showS "trace ", drawParens x]
-          CheckUP c x -> drawList [draw x, showS " : ", draw c]
+          LamUPF n x -> drawList [showS "\\", showS (locatedNameText n), showS " -> ", draw x]
+          ChurchUPF n -> drawList [showS "$", showS $ show n]
+          UnsizedRecursionUPF t r b -> drawList [showS "{", draw t, showS ",", draw r, showS ",", draw b, showS "}"]
+          LeftUPF x -> drawList [showS "left ", drawParens $ project x]
+          RightUPF x -> drawList [showS "right ", drawParens $ project x]
+          TraceUPF x -> drawList [showS "trace ", drawParens $ project x]
+          CheckUPF c x -> drawList [draw x, showS " : ", draw c]
 
   in \x -> State.evalState (draw x) 0
   {-
@@ -96,18 +98,18 @@ decompileUPT =
 
 decompileTerm1 :: Term1 -> UnprocessedParsedTerm
 decompileTerm1 = \case
-  _ :< TZeroF -> IntUP 0
-  _ :< TPairF a b -> PairUP (decompileTerm1 a) (decompileTerm1 b)
-  _ :< TVarF n -> VarUP n
+  _ :< ParserTermB ZeroSF -> embed $ IntUPF 0
+  _ :< ParserTermB (PairSF a b) -> embed $ PairUPF (decompileTerm1 a) (decompileTerm1 b)
+  _ :< TVarF n -> embed $ VarUPF n
   _ :< TAppF f x -> AppUP (decompileTerm1 f) (decompileTerm1 x)
-  _ :< TCheckF c x -> CheckUP (decompileTerm1 c) (decompileTerm1 x)
+  _ :< TCheckF c x -> embed $ CheckUPF (decompileTerm1 c) (decompileTerm1 x)
   _ :< TITEF i t e ->ITEUP (decompileTerm1 i) (decompileTerm1 t) (decompileTerm1 e)
-  _ :< TLeftF x -> LeftUP (decompileTerm1 x)
-  _ :< TRightF x -> RightUP (decompileTerm1 x)
-  _ :< TTraceF x -> TraceUP (decompileTerm1 x)
-  loc :< TLamF (Open n) x -> LamUP (locatedName loc n) (decompileTerm1 x)
-  loc :< TLamF (Closed n) x -> LamUP (locatedName loc n) (decompileTerm1 x) -- not strictly equivalent
-  _ :< TLimitedRecursionF t r b -> UnsizedRecursionUP (decompileTerm1 t) (decompileTerm1 r) (decompileTerm1 b)
+  _ :< TLeftF x -> embed $ LeftUPF (decompileTerm1 x)
+  _ :< TRightF x -> embed $ RightUPF (decompileTerm1 x)
+  _ :< TTraceF x -> embed $ TraceUPF (decompileTerm1 x)
+  loc :< TLamF (Open n) x -> embed $ LamUPF (locatedName loc n) (decompileTerm1 x)
+  loc :< TLamF (Closed n) x -> embed $ LamUPF (locatedName loc n) (decompileTerm1 x) -- not strictly equivalent
+  _ :< TLimitedRecursionF t r b -> embed $ UnsizedRecursionUPF (decompileTerm1 t) (decompileTerm1 r) (decompileTerm1 b)
 
 decompileTerm2 :: Term2 -> Term1
 decompileTerm2 =
@@ -118,8 +120,8 @@ decompileTerm2 =
       go :: Term2
          -> (Max Int, Term1)
       go = \case
-        anno :< TZeroF -> pure $ anno :< TZeroF
-        anno :< TPairF a b -> (\x y -> anno :< TPairF x y) <$> go a <*> go b
+        anno :< ParserTermB ZeroSF -> pure $ anno :< ParserTermB ZeroSF
+        anno :< ParserTermB (PairSF a b) -> (\x y -> anno :< ParserTermB (PairSF x y)) <$> go a <*> go b
         anno :< TVarF n ->  (Max n, anno :< TVarF (getName n))
         anno :< TAppF f x -> (\y z -> anno :< TAppF y z) <$> go f <*> go x
         anno :< TCheckF c x -> (\y z -> anno :< TCheckF y z) <$> go c <*> go x

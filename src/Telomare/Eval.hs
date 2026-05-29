@@ -381,14 +381,14 @@ tagUPTwithIExpr prelude upt = evalState (para alg upt) 0 where
       x' <- x
       y' <- y
       z' <- z
-      pure $ (i, upt2iexpr $ ITEUP utp1 utp2 utp3) :< ITEUPF x' y' z'
+      pure $ (i, upt2iexpr . embed $ ITEUPF utp1 utp2 utp3) :< ITEUPF x' y' z'
     ListUPF l -> do
       i <- State.get
       State.modify (+ 1)
       let scupt :: State Int [Cofree UnprocessedParsedTermF (Int, Either String CompiledExpr)]
           scupt = mapM snd l
       cupt <- scupt
-      pure $ (i, upt2iexpr . ListUP $ fst <$> l) :< ListUPF cupt
+      pure $ (i, upt2iexpr . embed . ListUPF $ fst <$> l) :< ListUPF cupt
     LetUPF l (upt0, x) -> do
       i <- State.get
       State.modify (+ 1)
@@ -402,7 +402,7 @@ tagUPTwithIExpr prelude upt = evalState (para alg upt) 0 where
           slcupt = mapM snd (snd <$> l)
       lcupt <- slcupt
       x' <- x
-      pure $ (i, upt2iexpr $ LetUP lupt upt0) :< LetUPF (zip vnames lcupt) x'
+      pure $ (i, upt2iexpr . embed $ LetUPF lupt upt0) :< LetUPF (zip vnames lcupt) x'
     CaseUPF (upt0, x) l -> do
       i <- State.get
       State.modify (+ 1)
@@ -420,64 +420,64 @@ tagUPTwithIExpr prelude upt = evalState (para alg upt) 0 where
                     ]
           aux1 = mapM sequence aux0
       aux1' <- aux1
-      pure $ (i, upt2iexpr $ CaseUP upt0 aux) :< CaseUPF x' aux1'
+      pure $ (i, upt2iexpr . embed $ CaseUPF upt0 aux) :< CaseUPF x' aux1'
     LamUPF s (upt0, x) -> do
       i <- State.get
       State.modify (+ 1)
       x' <- x
-      pure $ (i, upt2iexpr $ LamUP s upt0) :< LamUPF s x'
+      pure $ (i, upt2iexpr . embed $ LamUPF s upt0) :< LamUPF s x'
     AppUPF (upt1, x) (upt2, y) -> do
       i <- State.get
       State.modify (+ 1)
       x' <- x
       y' <- y
-      pure $ (i, upt2iexpr $ AppUP upt1 upt2) :< AppUPF x' y'
+      pure $ (i, upt2iexpr . embed $ AppUPF upt1 upt2) :< AppUPF x' y'
     UnsizedRecursionUPF (upt1, x) (upt2, y) (upt3, z) -> do
       i <- State.get
       State.modify (+ 1)
       x' <- x
       y' <- y
       z' <- z
-      pure $ (i, upt2iexpr $
-                   UnsizedRecursionUP upt1 upt2 upt3) :<
+      pure $ (i, upt2iexpr . embed $
+                   UnsizedRecursionUPF upt1 upt2 upt3) :<
                      UnsizedRecursionUPF x' y' z'
     CheckUPF (upt1, x) (upt2, y) -> do
       i <- State.get
       State.modify (+ 1)
       x' <- x
       y' <- y
-      pure $ (i, upt2iexpr $ CheckUP upt1 upt2) :< CheckUPF x' y'
+      pure $ (i, upt2iexpr . embed $ CheckUPF upt1 upt2) :< CheckUPF x' y'
     LeftUPF (upt0, x) -> do
       i <- State.get
       State.modify (+ 1)
       x' <- x
-      pure $ (i, upt2iexpr $ LeftUP upt0) :< LeftUPF x'
+      pure $ (i, upt2iexpr . embed $ LeftUPF upt0) :< LeftUPF x'
     RightUPF (upt0, x) -> do
       i <- State.get
       State.modify (+ 1)
       x' <- x
-      pure $ (i, upt2iexpr $ RightUP upt0) :< RightUPF x'
+      pure $ (i, upt2iexpr . embed $ RightUPF upt0) :< RightUPF x'
     TraceUPF (upt0, x) -> do
       i <- State.get
       State.modify (+ 1)
       x' <- x
-      pure $ (i, upt2iexpr $ TraceUP upt0) :< TraceUPF x'
+      pure $ (i, upt2iexpr . embed $ TraceUPF upt0) :< TraceUPF x'
     HashUPF (upt0, x) -> do
       i <- State.get
       State.modify (+ 1)
       x' <- x
-      pure $ (i, upt2iexpr $ LeftUP upt0) :< LeftUPF x'
+      pure $ (i, upt2iexpr . embed $ LeftUPF upt0) :< LeftUPF x'
     IntUPF i -> do
       x <- State.get
       State.modify (+ 1)
-      pure ((x, upt2iexpr $ IntUP i) :< IntUPF i)
+      pure ((x, upt2iexpr . embed $ IntUPF i) :< IntUPF i)
     VarUPF s -> do
       x <- State.get
       State.modify (+ 1)
-      pure ((x, upt2iexpr $ VarUP s) :< VarUPF s)
+      pure ((x, upt2iexpr . embed $ VarUPF s) :< VarUPF s)
     PairUPF (upt1, x) (upt2, y) -> do
       i <- State.get
       State.modify (+ 1)
       x' <- x
       y' <- y
-      pure $ (i, upt2iexpr $ PairUP upt1 upt2) :< PairUPF x' y'
+      pure $ (i, upt2iexpr . embed $ PairUPF upt1 upt2) :< PairUPF x' y'

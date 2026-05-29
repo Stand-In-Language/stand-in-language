@@ -1,6 +1,5 @@
 {-# LANGUAGE DeriveFunctor         #-}
 {-# LANGUAGE FlexibleInstances     #-}
-{-# LANGUAGE LambdaCase            #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE ScopedTypeVariables   #-}
 
@@ -34,7 +33,7 @@ import Test.Tasty.QuickCheck as QC
 import Text.Megaparsec (eof)
 import Text.Show.Pretty (ppShow)
 
-type Term2' = ParserTerm () Int
+type Term2' = Term2
 
 main :: IO ()
 main = defaultMain tests
@@ -97,12 +96,10 @@ qcProps = testGroup "Property tests (QuickCheck)"
           Right res -> expectedError `isInfixOf` show res
   , QC.testProperty "Arbitrary UnprocessedParsedTerm to test hash uniqueness of HashUP's" $
       \x' -> withMaxSuccess 16 $
-        let x = forget x'
-        in containsTHash x QC.==> checkAllHashes . forget . generateAllHashes $ x'
+        containsTHash x' QC.==> checkAllHashes . generateAllHashes $ x'
   , QC.testProperty "See that generateAllHashes only changes HashUP to ListUP" $
       \(x' :: Term2) -> withMaxSuccess 16 $
-        let x = forget x'
-        in containsTHash x QC.==> onlyHashUPsChanged x
+        containsTHash x' QC.==> onlyHashUPsChanged x'
   , QC.testProperty "Check recursive imports work"
       . withMaxSuccess 16
       . QC.forAll genRecursiveImports $ \modules -> QC.idempotentIOProperty $ do
@@ -231,27 +228,27 @@ aux222 =
   ]
 
 containsTHash :: Term2' -> Bool
-containsTHash = \case
-  THash _    -> True
-  TLimitedRecursion a b c -> containsTHash a || containsTHash b || containsTHash c
-  TITE a b c -> containsTHash a || containsTHash b || containsTHash c
-  TPair a b  -> containsTHash a || containsTHash b
-  TApp a b   -> containsTHash a || containsTHash b
-  TCheck a b -> containsTHash a || containsTHash b
-  TLam _ a   -> containsTHash a
-  TLeft a    -> containsTHash a
-  TRight a   -> containsTHash a
-  TTrace a   -> containsTHash a
-  x          -> False
+containsTHash (_ :< termF) = case termF of
+  THashF _              -> True
+  TLimitedRecursionF a b c -> containsTHash a || containsTHash b || containsTHash c
+  TITEF a b c           -> containsTHash a || containsTHash b || containsTHash c
+  ParserTermB (PairSF a b) -> containsTHash a || containsTHash b
+  TAppF a b             -> containsTHash a || containsTHash b
+  TCheckF a b           -> containsTHash a || containsTHash b
+  TLamF _ a             -> containsTHash a
+  TLeftF a              -> containsTHash a
+  TRightF a             -> containsTHash a
+  TTraceF a             -> containsTHash a
+  _                     -> False
 
 onlyHashUPsChanged :: Term2' -> Bool
 onlyHashUPsChanged term2 = all (isHash . fst) diffList where
   diffList :: [(Term2', Term2')]
-  diffList = diffTerm2 (term2, forget . generateAllHashes . tag UnknownLoc $ term2)
+  diffList = diffTerm2 (term2, generateAllHashes term2)
   isHash :: Term2' -> Bool
-  isHash = \case
-    THash _ -> True
-    _       -> False
+  isHash (_ :< termF) = case termF of
+    THashF _ -> True
+    _        -> False
 
 checkAllHashes :: Term2' -> Bool
 checkAllHashes = noDups . allHashesToTerm2
@@ -263,35 +260,35 @@ noDups = not . f []
 
 allHashesToTerm2 :: Term2' -> [Term2']
 allHashesToTerm2 term2 =
-  let term2WithoutTHash = forget . generateAllHashes . tag UnknownLoc $ term2
+  let term2WithoutTHash = generateAllHashes term2
       interm :: (Term2', Term2') -> [Term2']
-      interm = \case
-        (THash _ , x) -> [x]
-        (TITE a b c, TITE a' b' c') -> interm (a, a') <> interm (b, b') <> interm (c, c')
-        (TLimitedRecursion a b c, TLimitedRecursion a' b' c') -> interm (a, a') <> interm (b, b') <> interm (c, c')
-        (TPair a b, TPair a' b') -> interm (a, a') <> interm (b, b')
-        (TApp a b, TApp a' b') -> interm (a, a') <> interm (b, b')
-        (TCheck a b, TCheck a' b') -> interm (a, a') <> interm (b, b')
-        (TLam _ a, TLam _ a') -> interm (a, a')
-        (TLeft a, TLeft a') -> interm (a, a')
-        (TRight a, TRight a') -> interm (a, a')
-        (TTrace a, TTrace a') -> interm (a, a')
-        (x, x') | x /= x' -> error "x and x' should be the same (inside of allHashesToTerm2, within interm)"
-        (x, x') -> []
-  in curry interm term2 term2WithoutTHash
+      interm (t1@(_ :< f1), t2@(_ :< f2)) = case (f1, f2) of
+        (THashF _,  _) -> [t2]
+        (TITEF a b c, TITEF a' b' c') -> interm (a, a') <> interm (b, b') <> interm (c, c')
+        (TLimitedRecursionF a b c, TLimitedRecursionF a' b' c') -> interm (a, a') <> interm (b, b') <> interm (c, c')
+        (ParserTermB (PairSF a b), ParserTermB (PairSF a' b')) -> interm (a, a') <> interm (b, b')
+        (TAppF a b, TAppF a' b') -> interm (a, a') <> interm (b, b')
+        (TCheckF a b, TCheckF a' b') -> interm (a, a') <> interm (b, b')
+        (TLamF _ a, TLamF _ a') -> interm (a, a')
+        (TLeftF a, TLeftF a') -> interm (a, a')
+        (TRightF a, TRightF a') -> interm (a, a')
+        (TTraceF a, TTraceF a') -> interm (a, a')
+        _ | t1 /= t2 -> error "t1 and t2 should be the same (inside of allHashesToTerm2, within interm)"
+        _ -> []
+  in interm (term2, term2WithoutTHash)
 
 diffTerm2 :: (Term2', Term2') -> [(Term2', Term2')]
-diffTerm2 = \case
-  (TITE a b c, TITE a' b' c') -> diffTerm2 (a, a') <> diffTerm2 (b, b') <> diffTerm2 (c, c')
-  (TLimitedRecursion a b c, TLimitedRecursion a' b' c') -> diffTerm2 (a, a') <> diffTerm2 (b, b') <> diffTerm2 (c, c')
-  (TPair a b, TPair a' b') -> diffTerm2 (a, a') <> diffTerm2 (b, b')
-  (TApp a b, TApp a' b') -> diffTerm2 (a, a') <> diffTerm2 (b, b')
-  (TCheck a b, TCheck a' b') -> diffTerm2 (a, a') <> diffTerm2 (b, b')
-  (TLam _ a, TLam _ a') -> diffTerm2 (a, a')
-  (TLeft a, TLeft a') -> diffTerm2 (a, a')
-  (TRight a, TRight a') -> diffTerm2 (a, a')
-  (TTrace a, TTrace a') -> diffTerm2 (a, a')
-  (x, x') | x /= x' -> [(x, x')]
+diffTerm2 (t1@(_ :< f1), t2@(_ :< f2)) = case (f1, f2) of
+  (TITEF a b c, TITEF a' b' c') -> diffTerm2 (a, a') <> diffTerm2 (b, b') <> diffTerm2 (c, c')
+  (TLimitedRecursionF a b c, TLimitedRecursionF a' b' c') -> diffTerm2 (a, a') <> diffTerm2 (b, b') <> diffTerm2 (c, c')
+  (ParserTermB (PairSF a b), ParserTermB (PairSF a' b')) -> diffTerm2 (a, a') <> diffTerm2 (b, b')
+  (TAppF a b, TAppF a' b') -> diffTerm2 (a, a') <> diffTerm2 (b, b')
+  (TCheckF a b, TCheckF a' b') -> diffTerm2 (a, a') <> diffTerm2 (b, b')
+  (TLamF _ a, TLamF _ a') -> diffTerm2 (a, a')
+  (TLeftF a, TLeftF a') -> diffTerm2 (a, a')
+  (TRightF a, TRightF a') -> diffTerm2 (a, a')
+  (TTraceF a, TTraceF a') -> diffTerm2 (a, a')
+  _ | t1 /= t2 -> [(t1, t2)]
   _ -> []
 
 -----------------
@@ -435,48 +432,6 @@ fullRunTicTacToeString = init . unlines $
   , "Player 2 wins!"
   , "done"
   ]
-
--- | Telomare Parser AST representation of: \x -> \y -> \z -> z
-expr6 =
-  TLam (Closed "x")
-       (TLam (Closed "y")
-         (TLam (Closed "z")
-           (TVar "z")))
-
--- | Telomare Parser AST representation of: \x -> (x, x)
-expr5 = TLam (Closed "x")
-          (TPair
-            (TVar "x")
-            (TVar "x"))
-
--- | Telomare Parser AST representation of: \x -> \x -> \x -> x
-expr4 = TLam (Closed "x")
-          (TLam (Closed "x")
-            (TLam (Closed "x")
-              (TVar "x")))
-
--- | Telomare Parser AST representation of: \x -> \y -> \z -> [x,y,z]
-expr3 = TLam (Closed "x")
-          (TLam (Open "y")
-            (TLam (Open "z")
-              (TPair
-                (TVar "x")
-                (TPair
-                  (TVar "y")
-                  (TPair
-                    (TVar "z")
-                    TZero)))))
-
--- | Telomare Parser AST representation of: \a -> (a, (\a -> (a,0)))
-expr2 = TLam (Closed "a")
-          (TPair
-            (TVar "a")
-            (TLam (Closed "a")
-              (TPair
-                (TVar "a")
-                TZero)))
-
-closedLambdaPair = TLam (Closed "x") (TLam (Open "y") (TPair (TVar "x") (TVar "y")))
 
 testUserDefAdHocTypes :: String -> IO String
 testUserDefAdHocTypes input = do

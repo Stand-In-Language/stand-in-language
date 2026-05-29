@@ -36,8 +36,6 @@ class PrettyPrintable1 p where
 instance (PrettyPrintable1 f, PrettyPrintable x) => PrettyPrintable (f x) where
   showP = showP1
 
--- instance (Base r ~ PrettyPrintable1 f, Recursive r) => PrettyPrintable r where
-
 prettyPrint :: PrettyPrintable p => p -> String
 prettyPrint x = State.evalState (showP x) 0
 
@@ -45,47 +43,22 @@ indentation :: Int -> String
 indentation 0 = []
 indentation n = ' ' : ' ' : indentation (n - 1)
 
--- termMap, function->type lookup, root frag type
--- data TypeDebugInfo = TypeDebugInfo Term3 (FragIndex -> PartialType) PartialType
-
-instance {-# OVERLAPPING #-} PrettyPrintable Term1 where
-  showP = cata fa where
-    fa (_ CofreeT.:< x) = case x of
-      TZeroF                   -> pure "0"
-      TPairF a b               -> indentWithTwoChildren' "(" a b
-      TVarF v                  -> pure v
-      TAppF c i                -> indentWithTwoChildren' "($)" c i
-      TCheckF cf i             -> indentWithTwoChildren' ":" cf i
-      TITEF i t e              -> indentWithChildren' "ITE" [i,t,e]
-      TLeftF x                 -> indentWithOneChild' "L" x
-      TRightF x                -> indentWithOneChild' "R" x
-      TTraceF x                -> indentWithOneChild' "T" x
-      THashF x                 -> indentWithOneChild' "#" x
-      TChurchF n               -> pure $ "$" <> show n
-      TLamF (Open v) x         -> indentWithOneChild' ("\\" <> v) x
-      TLamF (Closed v) x       -> indentWithOneChild' ("[\\" <> v) x
-      TLamF (LetBinding c v) x -> indentWithOneChild' ("{\\(" <> show c <> ") " <> v) x
-      TLimitedRecursionF t r b -> indentWithChildren' "TRB" [t,r,b]
-      TUnsizedRepeaterF        -> pure "*"
-
-instance {-# OVERLAPPING #-} (Show l, Show v) => PrettyPrintable (Fix (ParserTermF l v)) where
-  showP = cata f where
-    f = \case
-      TZeroF                   -> pure "0"
-      TPairF a b               -> indentWithTwoChildren' "(" a b
+instance (Show l, Show v) => PrettyPrintable1 (ParserTermF l v) where
+  showP1 = \case
+      ParserTermB x            -> showP1 x
       TVarF v                  -> pure $ show v
-      TAppF c i                -> indentWithTwoChildren' "($)" c i
-      TCheckF cf i             -> indentWithTwoChildren' ":" cf i
-      TITEF i t e              -> indentWithChildren' "ITE" [i,t,e]
-      TLeftF x                 -> indentWithOneChild' "L" x
-      TRightF x                -> indentWithOneChild' "R" x
-      TTraceF x                -> indentWithOneChild' "T" x
-      THashF x                 -> indentWithOneChild' "#" x
+      TAppF c i                -> indentWithTwoChildren' "($)" (showP c) (showP i)
+      TCheckF cf i             -> indentWithTwoChildren' ":" (showP cf)  (showP i)
+      TITEF i t e              -> indentWithChildren' "ITE" $ showP <$> [i,t,e]
+      TLeftF x                 -> indentWithOneChild' "L" $ showP x
+      TRightF x                -> indentWithOneChild' "R" $ showP x
+      TTraceF x                -> indentWithOneChild' "T" $ showP x
+      THashF x                 -> indentWithOneChild' "#" $ showP x
       TChurchF n               -> pure $ "$" <> show n
-      TLamF (Open v) x         -> indentWithOneChild' ("\\" <> show v) x
-      TLamF (Closed v) x       -> indentWithOneChild' ("[\\" <> show v) x
-      TLamF (LetBinding c v) x -> indentWithOneChild' ("{\\(" <> show c <> ") " <> show v) x
-      TLimitedRecursionF t r b -> indentWithChildren' "TRB" [t,r,b]
+      TLamF (Open v) x         -> indentWithOneChild' ("\\" <> show v) $ showP x
+      TLamF (Closed v) x       -> indentWithOneChild' ("[\\" <> show v) $ showP x
+      TLamF (LetBinding c v) x -> indentWithOneChild' ("{\\(" <> show c <> ") " <> show v) $ showP x
+      TLimitedRecursionF t r b -> indentWithChildren' "TRB" $ showP <$> [t,r,b]
       TUnsizedRepeaterF        -> pure "*"
 
 indentSansFirstLine :: Int -> String -> String
@@ -283,6 +256,9 @@ instance PrettyPrintable1 Term3F where
     Term3A x -> showP1 x
     Term3Unsized urt -> pure $ "#" <> show urt
     Term3CheckingWrapper _ t c -> indentWithTwoChildren' ":" (showP t) (showP c)
+
+instance (Functor f, PrettyPrintable1 f) => PrettyPrintable (Fix f) where
+  showP = showP1 . project
 
 instance {-# OVERLAPPING #-} (PrettyPrintable a, PrettyPrintable1 f) => PrettyPrintable (Cofree f a) where
   showP (a :< x) = (<>) <$> showP a <*> showP1 x
