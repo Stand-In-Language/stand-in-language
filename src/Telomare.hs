@@ -1,6 +1,7 @@
 {-# LANGUAGE DeriveAnyClass             #-}
 {-# LANGUAGE DeriveGeneric              #-}
 {-# LANGUAGE DeriveTraversable          #-}
+{-# LANGUAGE DerivingVia                #-}
 {-# LANGUAGE FlexibleInstances          #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE InstanceSigs               #-}
@@ -8,7 +9,6 @@
 {-# LANGUAGE PatternSynonyms            #-}
 {-# LANGUAGE ScopedTypeVariables        #-}
 {-# LANGUAGE StandaloneDeriving         #-}
-{-# LANGUAGE TemplateHaskell            #-}
 {-# LANGUAGE TypeFamilies               #-}
 {-# LANGUAGE ViewPatterns               #-}
 
@@ -39,8 +39,9 @@ import qualified Data.Set as Set
 import Data.Validity (Validity)
 import Data.Void (Void)
 import Debug.Trace (trace, traceShow, traceShowId)
-import GHC.Generics (Generic)
+import GHC.Generics (Generic, Generic1, Generically1(..))
 import Text.Show.Deriving (deriveShow1)
+import Data.Bifunctor (Bifunctor(..))
 
 {- top level TODO list
  - change AbortFrag form to something more convenient
@@ -354,49 +355,16 @@ instance Show1 Term3F where
     Term3Unsized urt -> shows $ "Term3Unsized" <> show urt
     Term3CheckingWrapper loc cf c -> shows "Term3CheckingWrapper(" . shows loc . shows ", " . showsPrec' 0 cf . shows ", " . showsPrec' 0 c . shows ")"
 
+instance Show o => Show1 (PatternF o) where
+  liftShowsPrec showsPrec' showList prec = \case
+    PatternVarF s -> showString "PatternVar " . shows s
+    PatternAnnotatedF p x -> showString "PatternAnnotated " . showsPrec' 0 p . showChar ' ' . shows x
+    PatternIntF x -> showString "PatternInt " . shows x
+    PatternStringF s -> showString "PatternString " . shows s
+    PatternIgnoreF -> showString "PatternIgnore"
+    PatternPairF a b -> showString "PatternPair " . showsPrec' 0 a . showChar ' ' . showsPrec' 0 b
 
-instance Eq1 UnprocessedParsedTermF where
-  liftEq eq (VarUPF s1) (VarUPF s2) = s1 == s2
-  liftEq eq (ITEUPF c1 t1 e1) (ITEUPF c2 t2 e2) =
-    eq c1 c2 && eq t1 t2 && eq e1 e2
-  liftEq eq (LetUPF binds1 body1) (LetUPF binds2 body2) =
-    liftEq (\(s1, t1) (s2, t2) -> locatedNameText s1 == locatedNameText s2 && eq t1 t2) binds1 binds2 && eq body1 body2
-  liftEq eq (ListUPF items1) (ListUPF items2) =
-    liftEq eq items1 items2
-  liftEq eq (IntUPF n1) (IntUPF n2) =
-    n1 == n2
-  liftEq eq (StringUPF s1) (StringUPF s2) =
-    s1 == s2
-  liftEq eq (PairUPF a1 b1) (PairUPF a2 b2) =
-    eq a1 a2 && eq b1 b2
-  liftEq eq (AppUPF f1 x1) (AppUPF f2 x2) =
-    eq f1 f2 && eq x1 x2
-  liftEq eq (LamUPF var1 body1) (LamUPF var2 body2) =
-    locatedNameText var1 == locatedNameText var2 && eq body1 body2
-  liftEq eq (ChurchUPF n1) (ChurchUPF n2) =
-    n1 == n2
-  liftEq eq (UnsizedRecursionUPF a1 b1 c1) (UnsizedRecursionUPF a2 b2 c2) =
-    eq a1 a2 && eq b1 b2 && eq c1 c2
-  liftEq eq (LeftUPF x1) (LeftUPF x2) =
-    eq x1 x2
-  liftEq eq (RightUPF x1) (RightUPF x2) =
-    eq x1 x2
-  liftEq eq (TraceUPF x1) (TraceUPF x2) =
-    eq x1 x2
-  liftEq eq (CheckUPF a1 b1) (CheckUPF a2 b2) =
-    eq a1 a2 && eq b1 b2
-  liftEq eq (HashUPF x1) (HashUPF x2) =
-    eq x1 x2
-  liftEq eq (CaseUPF scrutinee1 patterns1) (CaseUPF scrutinee2 patterns2) =
-    eq scrutinee1 scrutinee2 &&
-    liftEq (\(pat1, expr1) (pat2, expr2) -> pat1 == pat2 && eq expr1 expr2) patterns1 patterns2
-  liftEq eq (ImportQualifiedUPF mod1 alias1) (ImportQualifiedUPF mod2 alias2) =
-    mod1 == mod2 && alias1 == alias2
-  liftEq eq (ImportUPF mod1) (ImportUPF mod2) =
-    mod1 == mod2
-  liftEq _ _ _ = False
-
-instance Show1 UnprocessedParsedTermF where
+instance Show p => Show1 (UnprocessedParsedTermF p) where
   liftShowsPrec showsPrecFunc showList d term = case term of
     ImportQualifiedUPF s1 s2 -> showString "ImportQualifedUPF " . shows s1 . showString " " . shows s2
     ImportUPF s -> showString "ImportUPF " . shows s
@@ -442,17 +410,18 @@ instance Show1 UnprocessedParsedTermF where
          . showPatterns patterns
 
 -- |AST for patterns in `case` expressions
-data Pattern
-  = PatternVar String
-  | PatternAnnotated Pattern UnprocessedParsedTerm
-  | PatternInt Int
-  | PatternString String
-  | PatternIgnore
-  | PatternPair Pattern Pattern
-  deriving (Show, Eq)
+data PatternF t f
+  = PatternVarF String
+  | PatternAnnotatedF f t
+  | PatternIntF Int
+  | PatternStringF String
+  | PatternIgnoreF
+  | PatternPairF f f
+  deriving (Show, Eq, Functor, Foldable, Traversable, Generic1)
+  deriving Eq1 via (Generically1 (PatternF t))
 
 -- |Firstly parsed AST sans location annotations
-data UnprocessedParsedTermF f
+data UnprocessedParsedTermF p f
   = VarUPF String
   | ITEUPF f f f
   | LetUPF [(LocatedName, f)] f
@@ -470,13 +439,15 @@ data UnprocessedParsedTermF f
   | CheckUPF f f
   | HashUPF f -- ^ On ad hoc user defined types, this term will be substitued to a unique Int.
   | UDTUPF [String] f
-  | CaseUPF f [(Pattern, f)]
+  | CaseUPF f [(p, f)]
   -- TODO: check if adding this doesn't create partial functions
   | ImportQualifiedUPF String String
   | ImportUPF String
-  deriving (Eq, Show, Functor, Foldable, Traversable)
+  deriving (Eq, Show, Functor, Foldable, Traversable, Generic1)
+  deriving Eq1 via (Generically1 (UnprocessedParsedTermF p))
 
-type UnprocessedParsedTerm = Fix UnprocessedParsedTermF
+type Pattern = Fix (PatternF UnprocessedParsedTerm)
+newtype UnprocessedParsedTerm = UnprocessedParsedTerm { unUnprocessedParsedTerm :: Fix (UnprocessedParsedTermF Pattern)}
 
 -- | Lambdas can be closed if it's expresion does not depend on any
 --   outer binding.
@@ -485,6 +456,8 @@ data LamType l
   | Closed l
   | LetBinding Int l
   deriving (Eq, Show, Ord)
+
+
 
 -- | Parser AST
 data ParserTermF l v f
@@ -510,12 +483,7 @@ instance BasicBase (ParserTermF l v) where
     ParserTermB x -> Just x
     _              -> Nothing
 instance Show l => Show2 (ParserTermF l) where
-  -- p1Show2 = _
   liftShowsPrec2 showsPrecA showListA showsPrecB showListB prec = \case
-    {-
-    TZeroF -> shows "TZeroF"
-    TPairF a b -> shows "TPairF (" . showsPrecB 0 a . shows ", " . showsPrecB 0 b . shows ")"
--}
     TVarF v -> shows "TVarF " . showsPrecA 0 v
     ParserTermB x -> shows "ParserTermB (" . liftShowsPrec showsPrecB showListB 0 x . shows ")"
     TAppF c i -> shows "TAppF (" . showsPrecB 0 c . shows " " . showsPrecB 0 i . shows ")"
@@ -964,41 +932,57 @@ letBindingValue (_, value) = value
 letBindingLoc :: (LocatedName, a) -> LocTag
 letBindingLoc (name, _) = locatedNameLoc name
 
-makeBaseFunctor ''Pattern
-
 pattern AppUP :: UnprocessedParsedTerm -> UnprocessedParsedTerm -> UnprocessedParsedTerm
-pattern AppUP f i = Fix (AppUPF f i)
+pattern AppUP f i <- UnprocessedParsedTerm (Fix (AppUPF (UnprocessedParsedTerm -> f) (UnprocessedParsedTerm -> i))) where
+  AppUP f i = UnprocessedParsedTerm (Fix (AppUPF (unUnprocessedParsedTerm f) (unUnprocessedParsedTerm i)))
 pattern ITEUP :: UnprocessedParsedTerm -> UnprocessedParsedTerm -> UnprocessedParsedTerm -> UnprocessedParsedTerm
-pattern ITEUP i t e = Fix (ITEUPF i t e)
+pattern ITEUP i t e <- UnprocessedParsedTerm (Fix (ITEUPF (UnprocessedParsedTerm -> i) (UnprocessedParsedTerm -> t) (UnprocessedParsedTerm -> e))) where
+  ITEUP i t e = UnprocessedParsedTerm (Fix (ITEUPF (unUnprocessedParsedTerm i) (unUnprocessedParsedTerm t) (unUnprocessedParsedTerm e)))
 pattern VarUP :: String -> UnprocessedParsedTerm
-pattern VarUP s = Fix (VarUPF s)
+pattern VarUP s <- UnprocessedParsedTerm (Fix (VarUPF s)) where
+  VarUP s = UnprocessedParsedTerm (Fix (VarUPF s))
 pattern LetUP :: [(LocatedName, UnprocessedParsedTerm)] -> UnprocessedParsedTerm -> UnprocessedParsedTerm
-pattern LetUP binds body = Fix (LetUPF binds body)
+pattern LetUP binds body <- UnprocessedParsedTerm (Fix (LetUPF (map (second UnprocessedParsedTerm) -> binds) (UnprocessedParsedTerm -> body))) where
+  LetUP binds body = UnprocessedParsedTerm (Fix (LetUPF (map (second unUnprocessedParsedTerm) binds) (unUnprocessedParsedTerm body)))
 pattern ListUP :: [UnprocessedParsedTerm] -> UnprocessedParsedTerm
-pattern ListUP items = Fix (ListUPF items)
+pattern ListUP items <- UnprocessedParsedTerm (Fix (ListUPF (map UnprocessedParsedTerm -> items))) where
+  ListUP items = UnprocessedParsedTerm (Fix (ListUPF (map unUnprocessedParsedTerm items)))
 pattern IntUP :: Int -> UnprocessedParsedTerm
-pattern IntUP n = Fix (IntUPF n)
+pattern IntUP n <- UnprocessedParsedTerm (Fix (IntUPF n)) where
+  IntUP n = UnprocessedParsedTerm (Fix (IntUPF n))
 pattern StringUP :: String -> UnprocessedParsedTerm
-pattern StringUP s = Fix (StringUPF s)
+pattern StringUP s <- UnprocessedParsedTerm (Fix (StringUPF s)) where
+  StringUP s = UnprocessedParsedTerm (Fix (StringUPF s))
 pattern PairUP :: UnprocessedParsedTerm -> UnprocessedParsedTerm -> UnprocessedParsedTerm
-pattern PairUP a b = Fix (PairUPF a b)
+pattern PairUP a b <- UnprocessedParsedTerm (Fix (PairUPF (UnprocessedParsedTerm -> a) (UnprocessedParsedTerm -> b))) where
+  PairUP a b = UnprocessedParsedTerm (Fix (PairUPF (unUnprocessedParsedTerm a) (unUnprocessedParsedTerm b)))
 pattern LamUP :: LocatedName -> UnprocessedParsedTerm -> UnprocessedParsedTerm
-pattern LamUP v body = Fix (LamUPF v body)
+pattern LamUP v body <- UnprocessedParsedTerm (Fix (LamUPF v (UnprocessedParsedTerm -> body))) where
+  LamUP v body = UnprocessedParsedTerm (Fix (LamUPF v (unUnprocessedParsedTerm body)))
 pattern ChurchUP :: Int -> UnprocessedParsedTerm
-pattern ChurchUP n = Fix (ChurchUPF n)
+pattern ChurchUP n <- UnprocessedParsedTerm (Fix (ChurchUPF n)) where
+  ChurchUP n = UnprocessedParsedTerm (Fix (ChurchUPF n))
 pattern UnsizedRecursionUP :: UnprocessedParsedTerm -> UnprocessedParsedTerm -> UnprocessedParsedTerm -> UnprocessedParsedTerm
-pattern UnsizedRecursionUP t r b = Fix (UnsizedRecursionUPF t r b)
+pattern UnsizedRecursionUP t r b <- UnprocessedParsedTerm (Fix (UnsizedRecursionUPF (UnprocessedParsedTerm -> t) (UnprocessedParsedTerm -> r) (UnprocessedParsedTerm -> b))) where
+  UnsizedRecursionUP t r b = UnprocessedParsedTerm (Fix (UnsizedRecursionUPF (unUnprocessedParsedTerm t) (unUnprocessedParsedTerm r) (unUnprocessedParsedTerm b)))
 pattern LeftUP :: UnprocessedParsedTerm -> UnprocessedParsedTerm
-pattern LeftUP x = Fix (LeftUPF x)
+pattern LeftUP x <- UnprocessedParsedTerm (Fix (LeftUPF (UnprocessedParsedTerm -> x))) where
+  LeftUP x = UnprocessedParsedTerm (Fix (LeftUPF (unUnprocessedParsedTerm x)))
 pattern RightUP :: UnprocessedParsedTerm -> UnprocessedParsedTerm
-pattern RightUP x = Fix (RightUPF x)
+pattern RightUP x <- UnprocessedParsedTerm (Fix (RightUPF (UnprocessedParsedTerm -> x))) where
+  RightUP x = UnprocessedParsedTerm (Fix (RightUPF (unUnprocessedParsedTerm x)))
 pattern TraceUP :: UnprocessedParsedTerm -> UnprocessedParsedTerm
-pattern TraceUP x = Fix (TraceUPF x)
+pattern TraceUP x <- UnprocessedParsedTerm (Fix (TraceUPF (UnprocessedParsedTerm -> x))) where
+  TraceUP x = UnprocessedParsedTerm (Fix (TraceUPF (unUnprocessedParsedTerm x)))
 pattern HashUP :: UnprocessedParsedTerm -> UnprocessedParsedTerm
-pattern HashUP x = Fix (HashUPF x)
-pattern CaseUP :: UnprocessedParsedTerm -> [(Pattern, UnprocessedParsedTerm)] -> UnprocessedParsedTerm
-pattern CaseUP scrutinee alts = Fix (CaseUPF scrutinee alts)
+pattern HashUP x <- UnprocessedParsedTerm (Fix (HashUPF (UnprocessedParsedTerm -> x))) where
+  HashUP x = UnprocessedParsedTerm (Fix (HashUPF (unUnprocessedParsedTerm x)))
+pattern CaseUP :: UnprocessedParsedTerm -> [(Fix (PatternF UnprocessedParsedTerm), UnprocessedParsedTerm)] -> UnprocessedParsedTerm
+pattern CaseUP scrutinee alts <- UnprocessedParsedTerm (Fix (CaseUPF (UnprocessedParsedTerm -> scrutinee) (map (second UnprocessedParsedTerm) -> alts))) where
+  CaseUP scrutinee alts = UnprocessedParsedTerm (Fix (CaseUPF (unUnprocessedParsedTerm scrutinee) (map (second unUnprocessedParsedTerm) alts)))
 pattern ImportUP :: String -> UnprocessedParsedTerm
-pattern ImportUP s = Fix (ImportUPF s)
+pattern ImportUP s <- UnprocessedParsedTerm (Fix (ImportUPF s)) where
+  ImportUP s = UnprocessedParsedTerm (Fix (ImportUPF s))
 pattern ImportQualifiedUP :: String -> String -> UnprocessedParsedTerm
-pattern ImportQualifiedUP m a = Fix (ImportQualifiedUPF m a)
+pattern ImportQualifiedUP m a <- UnprocessedParsedTerm (Fix (ImportQualifiedUPF m a)) where
+  ImportQualifiedUP m a = UnprocessedParsedTerm (Fix (ImportQualifiedUPF m a))

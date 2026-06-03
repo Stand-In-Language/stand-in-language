@@ -11,6 +11,7 @@ import qualified Data.Map as Map
 import Data.Semigroup (Max (..))
 import Telomare
 
+{-
 decompileUPT :: UnprocessedParsedTerm -> String
 decompileUPT =
   let lineLimit = 120
@@ -75,6 +76,7 @@ decompileUPT =
           CheckUPF c x -> drawList [draw x, showS " : ", draw c]
 
   in \x -> State.evalState (draw x) 0
+-}
   {-
       safeTail s = if null s then [] else tail s
       showMem s = do
@@ -96,6 +98,7 @@ decompileUPT =
           drawLineOr x y = if not oneLine && draw
 -}
 
+{-
 decompileTerm1 :: Term1 -> UnprocessedParsedTerm
 decompileTerm1 = \case
   _ :< ParserTermB ZeroSF -> embed $ IntUPF 0
@@ -110,6 +113,7 @@ decompileTerm1 = \case
   loc :< TLamF (Open n) x -> embed $ LamUPF (locatedName loc n) (decompileTerm1 x)
   loc :< TLamF (Closed n) x -> embed $ LamUPF (locatedName loc n) (decompileTerm1 x) -- not strictly equivalent
   _ :< TLimitedRecursionF t r b -> embed $ UnsizedRecursionUPF (decompileTerm1 t) (decompileTerm1 r) (decompileTerm1 b)
+-}
 
 decompileTerm2 :: Term2 -> Term1
 decompileTerm2 =

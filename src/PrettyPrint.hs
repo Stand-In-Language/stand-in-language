@@ -8,7 +8,7 @@ import Control.Monad.State (State)
 import Data.Map (Map)
 import Telomare (AbortableF (..), BasicExprF (..), CompiledExpr,
                  CompiledExprF (..), DataType (..), FunctionIndex, LamType (..),
-                 LocTag, ParserTermF (..), PartialType (..), Pattern (..),
+                 LocTag, ParserTermF (..), PartialType (..), PatternF (..),
                  StuckExpr, StuckExprF (..), StuckF (..), Term1, Term3 (..),
                  Term3F (..), UnprocessedParsedTerm (..),
                  UnprocessedParsedTermF (..), b2i, convertAbortMessage, forget,
@@ -98,21 +98,22 @@ instance Show PrettyPartialType where
     (TypeVariable _ (-1)) -> "badType"
     (TypeVariable _ x) -> 'v' : show x
 
-newtype PrettyPattern = PrettyPattern Pattern
+prettyPrintPattern :: (s -> String) -> Fix (PatternF s) -> String
+prettyPrintPattern pp = go . project where
+  go = \case
+    (PatternIntF x) -> show x
+    (PatternVarF x) -> x
+    (PatternStringF x) ->  show x
+    (PatternPairF x y) -> "(" <> prettyPrintPattern pp x <> ", " <> prettyPrintPattern pp y <> ")"
+    PatternIgnoreF -> "_"
+    PatternAnnotatedF x upt -> "{anno " <> prettyPrintPattern pp x <> " }" <> pp upt
 
-instance Show PrettyPattern where
-  show = \case
-    (PrettyPattern (PatternInt x)) -> show x
-    (PrettyPattern (PatternVar x)) -> x
-    (PrettyPattern (PatternString x)) ->  show x
-    (PrettyPattern (PatternPair x y)) -> "(" <> (show . PrettyPattern $ x) <> ", " <> (show . PrettyPattern $ y) <> ")"
-    (PrettyPattern PatternIgnore) -> "_"
 
 newtype MultiLineShowUPT = MultiLineShowUPT UnprocessedParsedTerm
 instance Show MultiLineShowUPT where
-  show (MultiLineShowUPT upt) = cata alg upt where
-    alg :: Base UnprocessedParsedTerm String -> String
+  show (MultiLineShowUPT (UnprocessedParsedTerm upt)) = cata alg upt where
     ind = indentSansFirstLine 2
+    -- alg :: Base UnprocessedParsedTerm String -> String
     alg = \case
       IntUPF i -> "IntUP " <> show i
       VarUPF str -> "VarUP " <> str
@@ -156,7 +157,7 @@ instance Show MultiLineShowUPT where
                          "  " <> ind x
       (CaseUPF x ls) -> "CaseUP\n" <>
                           "  " <> ind x <> "\n" <>
-                          concatMap (\(p,v) -> "  , (" <> show p <> ",\n    " <> ind v <> ")\n") ls <>
+                          concatMap (\(p,v) -> "  , (" <> prettyPrintPattern (show . MultiLineShowUPT) p <> ",\n    " <> ind v <> ")\n") ls <>
                           "  ]"
       (UDTUPF ss x) -> "UDTUP " <> show ss <> "\n" <>
                         "  " <> ind x
@@ -166,8 +167,8 @@ instance Show MultiLineShowUPT where
 newtype PrettyUPT = PrettyUPT UnprocessedParsedTerm
 
 instance Show PrettyUPT where
-  show (PrettyUPT upt) = cata alg upt where
-    alg :: Base UnprocessedParsedTerm String -> String
+  show (PrettyUPT (UnprocessedParsedTerm upt)) = cata alg upt where
+    -- alg :: Base UnprocessedParsedTerm String -> String
     alg = \case
       IntUPF i -> show i
       VarUPF str -> str
@@ -207,7 +208,8 @@ instance Show PrettyUPT where
                                      "}"
       (HashUPF x) -> "# " <> indentSansFirstLine 2 x
       (CaseUPF x ls) -> "case " <> x <> " of\n" <>
-                        "  " <> indentSansFirstLine 2 (unlines ((\(p, r) -> indentSansFirstLine 2 (show (PrettyPattern p) <> " -> " <> r)) <$> ls))
+                        "  " <> indentSansFirstLine 2 (unlines ((\(p, r) -> indentSansFirstLine 2 (prettyPrintPattern (show . PrettyUPT) p <> " -> " <> r))
+                                                                <$> ls))
       (CheckUPF x y) -> if length (lines (x <> y)) > 1
                           then "(" <> indentSansFirstLine 2 y <> " : " <> "\n" <>
                                "    " <> indentSansFirstLine 4 y <> ")"

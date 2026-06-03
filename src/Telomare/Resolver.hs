@@ -37,7 +37,7 @@ import qualified Data.Set as Set
 import Debug.Trace (trace, traceShow, traceShowId)
 import PrettyPrint (prettyPrint)
 import Telomare
-import Telomare.Parser (AnnotatedUPT, TelomareParser, identifier)
+import Telomare.Parser (AnnotatedUPT (unAnnotatedUPT, AnnotatedUPT), TelomareParser, identifier, PatternA, AUPT, appAUPT, iteAUPT)
 import Text.Megaparsec (errorBundlePretty, runParser)
 
 debug :: Bool
@@ -67,10 +67,8 @@ instance MonadFail (Either ResolverError) where
 -- in the form of a combination of RightUP and LeftUP from the root
 -- e.g. PatternPair (PatternVar "x") (PatternPair (PatternInt 0) (PatternVar "y"))
 --      will return [LeftUP . RightUP]
-findInts :: LocTag -> Pattern -> [AnnotatedUPT -> AnnotatedUPT]
+findInts :: LocTag -> PatternA -> [AUPT -> AUPT]
 findInts anno = cata alg where
-  alg :: Base Pattern [AnnotatedUPT -> AnnotatedUPT]
-      -> [AnnotatedUPT -> AnnotatedUPT]
   alg = \case
     PatternPairF x y      -> ((. (anno :< ) . LeftUPF) <$> x) <> ((. (anno :< ) . RightUPF) <$> y)
     PatternIntF x         -> [id]
@@ -81,23 +79,21 @@ findInts anno = cata alg where
 -- in the form of a combination of RightUP and LeftUP from the root
 -- e.g. PatternPair (PatternVar "x") (PatternPair (PatternString "Hello, world!") (PatternVar "y"))
 --      will return [LeftUP . RightUP]
-findStrings :: LocTag -> Pattern -> [AnnotatedUPT -> AnnotatedUPT]
+findStrings :: LocTag -> PatternA -> [AUPT -> AUPT]
 findStrings anno = cata alg where
-  alg :: Base Pattern [AnnotatedUPT -> AnnotatedUPT]
-      -> [AnnotatedUPT -> AnnotatedUPT]
   alg = \case
     PatternPairF x y      -> ((. (anno :< ) . LeftUPF) <$> x) <> ((. (anno :< ) . RightUPF) <$> y)
     PatternStringF x      -> [id]
     PatternAnnotatedF x _ -> x
     _                     -> []
 
-fitPatternVarsToCasedUPT :: Pattern -> AnnotatedUPT -> AnnotatedUPT
+fitPatternVarsToCasedUPT :: PatternA -> AUPT -> AUPT
 fitPatternVarsToCasedUPT p aupt@(anno :< _) = applyVars2UPT varsOnUPT $ pattern2UPT anno p where
-  varsOnUPT :: Map String AnnotatedUPT
+  varsOnUPT :: Map String AUPT
   varsOnUPT = ($ aupt) <$> findPatternVars anno p
-  applyVars2UPT :: Map String AnnotatedUPT
-                -> AnnotatedUPT
-                -> AnnotatedUPT
+  applyVars2UPT :: Map String AUPT
+                -> AUPT
+                -> AUPT
   applyVars2UPT m = \case
     anno :< LamUPF str x ->
       case Map.lookup (locatedNameText str) m of
@@ -106,9 +102,9 @@ fitPatternVarsToCasedUPT p aupt@(anno :< _) = applyVars2UPT varsOnUPT $ pattern2
     x -> x
 
 -- |Collect all free variable names in a `AnnotatedUPT` expresion
-varsUPT :: UnprocessedParsedTerm -> Set String
-varsUPT = cata alg where
-  alg :: Base UnprocessedParsedTerm (Set String) -> Set String
+varsUPT :: AUPT -> Set String
+varsUPT = cata alg' where
+  alg' (_ C.:< x) = alg x
   alg (VarUPF n)     = Set.singleton n
   alg (LamUPF str x) = del (locatedNameText str) x
   alg e              = F.fold e
@@ -117,9 +113,9 @@ varsUPT = cata alg where
 
 -- |Like 'varsUPT' but also descends into 'Pattern' type annotations so that
 -- names referenced via @: T@ patterns (e.g. UDT validators) are included.
-freeVarsDeep :: UnprocessedParsedTerm -> Set String
-freeVarsDeep = cata alg where
-  alg :: Base UnprocessedParsedTerm (Set String) -> Set String
+freeVarsDeep :: AUPT -> Set String
+freeVarsDeep = cata alg' where
+  alg' (_ C.:< x) = alg x
   alg (VarUPF n)           = Set.singleton n
   alg (LamUPF n body)      = Set.delete (locatedNameText n) body
   alg (CaseUPF scrut alts) = scrut <> foldMap (\(p, body) -> patternRefs p <> body) alts <> caseRefs
@@ -127,10 +123,10 @@ freeVarsDeep = cata alg where
       caseRefs = Set.fromList ["and", "listEqual", "foldl", "abort"]
   alg e                    = F.fold e
 
-  patternRefs :: Pattern -> Set String
+  patternRefs :: PatternA -> Set String
   patternRefs = cata palg where
-    palg :: Base Pattern (Set String) -> Set String
-    palg (PatternAnnotatedF inner ty) = inner <> freeVarsDeep ty
+    palg :: PatternF AnnotatedUPT (Set String) -> Set String
+    palg (PatternAnnotatedF inner ty) = inner <> freeVarsDeep (unAnnotatedUPT ty)
     palg e                            = F.fold e
 
 -- |Keep only bindings transitively reachable from @root@. Unreachable
@@ -141,27 +137,23 @@ freeVarsDeep = cata alg where
 -- inside 'process') injects into case alternatives: @and@, @listEqual@,
 -- @foldl@, @abort@. Without these the pruned LetUPF would fail with
 -- MissingDefinitions after case expansion.
-pruneBindings :: AnnotatedUPT -> [(String, AnnotatedUPT)] -> [(String, AnnotatedUPT)]
+pruneBindings :: AUPT -> [(String, AUPT)] -> [(String, AUPT)]
 pruneBindings root bs = filter ((`Set.member` reachable) . fst) bs
   where
-    seed      = freeVarsDeep (forget root)
-    bmap      = Map.fromList $ fmap (second (freeVarsDeep . forget)) bs
+    seed      = freeVarsDeep root
+    bmap      = Map.fromList $ fmap (second freeVarsDeep) bs
     expand r  = r <> F.fold (Map.restrictKeys bmap r)
     reachable = until (\s -> expand s == s) expand seed
 
-mkLambda4FreeVarUPs :: AnnotatedUPT -> AnnotatedUPT
-mkLambda4FreeVarUPs aupt@(anno :< _) = tag anno $ go upt freeVars where
-  upt = forget aupt
-  freeVars = Set.toList . varsUPT $ upt
-  go :: UnprocessedParsedTerm -> [String] -> UnprocessedParsedTerm
+mkLambda4FreeVarUPs :: AUPT -> AUPT
+mkLambda4FreeVarUPs aupt@(anno :< _) = go aupt freeVars where
+  freeVars = Set.toList . varsUPT $ aupt
   go x = \case
     []     -> x
-    (y:ys) -> embed . LamUPF (locatedName UnknownLoc y) $ go x ys
+    (y:ys) -> embed . (anno C.:<) . LamUPF (locatedName UnknownLoc y) $ go x ys
 
-findPatternVars :: LocTag -> Pattern -> Map String (AnnotatedUPT -> AnnotatedUPT)
+findPatternVars :: LocTag -> PatternA -> Map String (AUPT -> AUPT)
 findPatternVars anno = cata alg where
-  alg :: Base Pattern (Map String (AnnotatedUPT -> AnnotatedUPT))
-      -> Map String (AnnotatedUPT -> AnnotatedUPT)
   alg = \case
     PatternPairF x y      -> ((. (anno :< ). LeftUPF) <$> x) <> ((. (anno :< ). RightUPF) <$> y)
     PatternVarF str       -> Map.singleton str id
@@ -169,98 +161,95 @@ findPatternVars anno = cata alg where
     _                     -> Map.empty
 
 -- TODO: Annotate without so much fuzz
-pairStructureCheck :: Pattern -> UnprocessedParsedTerm -> UnprocessedParsedTerm
-pairStructureCheck p upt =
-  AppUP (AppUP (AppUP (embed $ VarUPF "foldl")
-                      (embed $ VarUPF "and"))
-               (embed $ IntUPF 1))
-        (embed . ListUPF $ ($ upt) <$> pairRoute2Dirs p)
+pairStructureCheck :: PatternA -> AUPT -> AUPT
+pairStructureCheck p upt = let a = GeneratedLoc "pairStructureCheck" Nothing
+                               appAUPT' = appAUPT "pairStructureCheck"
+  in
+  appAUPT' (appAUPT' (appAUPT' (a :< VarUPF "foldl")
+                      (a :< VarUPF "and"))
+               (a :< IntUPF 1))
+        ((a :<) . ListUPF $ ($ upt) <$> pairRoute2Dirs p)
 
-pairRoute2Dirs :: Pattern -> [UnprocessedParsedTerm -> UnprocessedParsedTerm]
+pairRoute2Dirs :: PatternA -> [AUPT -> AUPT]
 pairRoute2Dirs = cata alg where
-  alg :: Base Pattern [UnprocessedParsedTerm -> UnprocessedParsedTerm]
-      -> [UnprocessedParsedTerm -> UnprocessedParsedTerm]
+  anno = (GeneratedLoc "pairRoute2Dirs" Nothing :<)
   alg = \case
-    PatternPairF x y      -> [id] <> ((. embed . LeftUPF) <$> x) <> ((. embed . RightUPF) <$> y)
+    PatternPairF x y      -> [id] <> ((. anno . LeftUPF) <$> x) <> ((. anno . RightUPF) <$> y)
     PatternAnnotatedF x _ -> x
     _                     -> []
 
-pattern2UPT :: LocTag -> Pattern -> AnnotatedUPT
-pattern2UPT anno = tag anno . cata alg where
-  alg :: Base Pattern UnprocessedParsedTerm -> UnprocessedParsedTerm
+pattern2UPT :: LocTag -> PatternA -> AUPT
+pattern2UPT anno = cata alg where
   alg = \case
-    PatternPairF x y       -> embed $ PairUPF x y
-    PatternIntF i          -> embed $ IntUPF i
-    PatternStringF str     -> embed $ StringUPF str
-    PatternVarF str        -> embed $ IntUPF 0
-    PatternIgnoreF         -> embed $ IntUPF 0
+    PatternPairF x y       -> anno :< PairUPF x y
+    PatternIntF i          -> anno :< IntUPF i
+    PatternStringF str     -> anno :< StringUPF str
+    PatternVarF str        -> anno :< IntUPF 0
+    PatternIgnoreF         -> anno :< IntUPF 0
     PatternAnnotatedF x _  -> x
       -- Note that "__ignore" is a special variable name and not accessible to users because
       -- parsing of VarUPs doesn't allow variable names to start with `_`
 
-mkCaseAlternative :: AnnotatedUPT -- ^ UPT to be cased
-                  -> AnnotatedUPT -- ^ Case result to be made lambda and applied
-                  -> Pattern -- ^ Pattern
-                  -> AnnotatedUPT -- ^ case result as a lambda applied to the appropirate part of the UPT to be cased
+mkCaseAlternative :: AUPT -- ^ UPT to be cased
+                  -> AUPT -- ^ Case result to be made lambda and applied
+                  -> PatternA -- ^ Pattern
+                  -> AUPT -- ^ case result as a lambda applied to the appropirate part of the UPT to be cased
 mkCaseAlternative casedUPT@(anno :< _) caseResult p = appVars2ResultLambdaAlts patternVarsOnUPT . makeLambdas caseResult . keys $ patternVarsOnUPT where
-  patternVarsOnUPT :: Map String AnnotatedUPT
+  patternVarsOnUPT :: Map String AUPT
   patternVarsOnUPT = ($ casedUPT) <$> findPatternVars anno p
-  appVars2ResultLambdaAlts :: Map String AnnotatedUPT
-                           -> AnnotatedUPT -- ^ case result as lambda
-                           -> AnnotatedUPT
+  appVars2ResultLambdaAlts :: Map String AUPT
+                           -> AUPT -- ^ case result as lambda
+                           -> AUPT
   appVars2ResultLambdaAlts m = \case
     lam@(_ :< LamUPF varName upt) ->
       case Map.lookup (locatedNameText varName) m of
         Nothing -> lam
         Just x -> anno :< AppUPF (anno :< LamUPF varName (appVars2ResultLambdaAlts (Map.delete (locatedNameText varName) m) upt)) x
     x -> x
-  makeLambdas :: AnnotatedUPT
+  makeLambdas :: AUPT
               -> [String]
-              -> AnnotatedUPT
+              -> AUPT
   makeLambdas aupt@(anno' :< _) = \case
     []     -> aupt
     (x:xs) -> anno' :< LamUPF (locatedName anno' x) (makeLambdas aupt xs)
 
-case2annidatedIfs :: AnnotatedUPT -- ^ Term to be pattern matched
-                  -> [Pattern] -- ^ All patterns in a case expression
-                  -> [AnnotatedUPT] -- ^ Int leaves as ListUPs on UPT
-                  -> [AnnotatedUPT] -- ^ Int leaves as ListUPs on pattern
-                  -> [AnnotatedUPT] -- ^ String leaves as ListUPs on UPT
-                  -> [AnnotatedUPT] -- ^ String leaves as ListUPs on pattern
-                  -> [AnnotatedUPT] -- ^ Case's alternatives
-                  -> AnnotatedUPT
-case2annidatedIfs (anno :< _) [] [] [] [] [] [] = tag anno $
-  ITEUP (embed $ IntUPF 1)
-        (AppUP (embed $ VarUPF "abort") . embed $ StringUPF "Non-exhaustive patterns in case")
-        (embed $ IntUPF 0)
-case2annidatedIfs x (aPattern:as) ((_ :< ListUPF []) : bs) ((_ :< ListUPF []) :cs) (dirs2StringOnUPT:ds) (dirs2StringOnPattern:es) (resultAlternative@(anno :< _):fs) =
-  tag anno $
-    ITEUP (AppUP (AppUP (embed $ VarUPF "and")
-                        (AppUP (AppUP (embed $ VarUPF "listEqual") (forget dirs2StringOnUPT)) (forget dirs2StringOnPattern)))
-                 (pairStructureCheck aPattern (forget x)))
-          (forget $ mkCaseAlternative x resultAlternative aPattern)
-          (forget $ case2annidatedIfs x as bs cs ds es fs)
-case2annidatedIfs x (aPattern:as) (dirs2IntOnUPT:bs) (dirs2IntOnPattern:cs) ((_ :< ListUPF []) : ds) ((_ :< ListUPF []) : es) (resultAlternative@(anno :< _):fs) =
-  tag anno $
-    ITEUP (AppUP (AppUP (embed $ VarUPF "and")
-                        (AppUP (AppUP (embed $ VarUPF "listEqual") (forget dirs2IntOnUPT)) (forget dirs2IntOnPattern)))
-                 (pairStructureCheck aPattern (forget x)))
-          (forget $ mkCaseAlternative x resultAlternative aPattern)
-          (forget $ case2annidatedIfs x as bs cs ds es fs)
-case2annidatedIfs x (aPattern:as) (dirs2IntOnUPT:bs) (dirs2IntOnPattern:cs) (dirs2StringOnUPT:ds) (dirs2StringOnPattern:es) (resultAlternative@(anno :< _):fs) =
-  tag anno $
-    ITEUP (AppUP (AppUP (AppUP (embed $ VarUPF "foldl")
-                                (embed $ VarUPF "and"))
-                        (embed $ IntUPF 1))
-                 (embed $ ListUPF [ AppUP (AppUP (embed $ VarUPF "listEqual") (forget dirs2IntOnUPT)) (forget dirs2IntOnPattern)
-                                  , AppUP (AppUP (embed $ VarUPF "listEqual") (forget dirs2StringOnUPT)) (forget dirs2StringOnPattern)
-                                  , pairStructureCheck aPattern (forget x)
+case2annidatedIfs :: AUPT -- ^ Term to be pattern matched
+                  -> [PatternA] -- ^ All patterns in a case expression
+                  -> [AUPT] -- ^ Int leaves as ListUPs on UPT
+                  -> [AUPT] -- ^ Int leaves as ListUPs on pattern
+                  -> [AUPT] -- ^ String leaves as ListUPs on UPT
+                  -> [AUPT] -- ^ String leaves as ListUPs on pattern
+                  -> [AUPT] -- ^ Case's alternatives
+                  -> AUPT
+case2annidatedIfs (anno :< _) [] [] [] [] [] [] =
+  iteAUPT "case2annidatedIfs" (anno :< IntUPF 1)
+        (appAUPT "case2annidatedIfs" (anno :< VarUPF "abort") (anno :< StringUPF "Non-exhaustive patterns in case"))
+        (anno :< IntUPF 0)
+case2annidatedIfs x (aPattern:as) ((_ :< ListUPF []) : bs) ((_ :< ListUPF []) :cs) (dirs2StringOnUPT:ds) (dirs2StringOnPattern:es) (resultAlternative@(anno :< _):fs) = let appAUPT' = appAUPT "case2annidatedIfs" in
+    iteAUPT "case2annidatedIfs" (appAUPT' (appAUPT' (anno :< VarUPF "and")
+                        (appAUPT' (appAUPT' (anno :< VarUPF "listEqual") dirs2StringOnUPT) dirs2StringOnPattern))
+                 (pairStructureCheck aPattern x))
+          (mkCaseAlternative x resultAlternative aPattern)
+          (case2annidatedIfs x as bs cs ds es fs)
+case2annidatedIfs x (aPattern:as) (dirs2IntOnUPT:bs) (dirs2IntOnPattern:cs) ((_ :< ListUPF []) : ds) ((_ :< ListUPF []) : es) (resultAlternative@(anno :< _):fs) = let appAUPT' = appAUPT "case2annidatedIfs" in
+    iteAUPT "case2annidatedIfs" (appAUPT' (appAUPT' (anno :< VarUPF "and")
+                        (appAUPT' (appAUPT' (anno :< VarUPF "listEqual") dirs2IntOnUPT) dirs2IntOnPattern))
+                 (pairStructureCheck aPattern x))
+          (mkCaseAlternative x resultAlternative aPattern)
+          (case2annidatedIfs x as bs cs ds es fs)
+case2annidatedIfs x (aPattern:as) (dirs2IntOnUPT:bs) (dirs2IntOnPattern:cs) (dirs2StringOnUPT:ds) (dirs2StringOnPattern:es) (resultAlternative@(anno :< _):fs) = let appAUPT' = appAUPT "case2annidatedIfs" in
+    iteAUPT "case2annidatedIfs" (appAUPT' (appAUPT' (appAUPT' (anno :< VarUPF "foldl")
+                                (anno :< VarUPF "and"))
+                        (anno :< IntUPF 1))
+                 (anno :< ListUPF [ appAUPT' (appAUPT' (anno :< VarUPF "listEqual") dirs2IntOnUPT) dirs2IntOnPattern
+                                  , appAUPT' (appAUPT' (anno :< VarUPF "listEqual") dirs2StringOnUPT) dirs2StringOnPattern
+                                  , pairStructureCheck aPattern x
                                   ]))
-          (forget $ mkCaseAlternative x resultAlternative aPattern)
-          (forget $ case2annidatedIfs x as bs cs ds es fs)
+          (mkCaseAlternative x resultAlternative aPattern)
+          (case2annidatedIfs x as bs cs ds es fs)
 case2annidatedIfs _ _ _ _ _ _ _ = error "case2annidatedIfs: lists don't match in size"
 
-removeCaseUPs :: AnnotatedUPT -> AnnotatedUPT
+removeCaseUPs :: AUPT -> AUPT
 removeCaseUPs = cata go where
   go = \case
     anno C.:< CaseUPF x ls ->
@@ -269,11 +258,7 @@ removeCaseUPs = cata go where
           pairApplyList x = ($ snd x) <$> fst x
           patterns = fst <$> ls
           resultCaseAlts = snd <$> ls
-          dirs2LeavesOnUPT :: (Pattern -> [AnnotatedUPT -> AnnotatedUPT])
-                           -> [AnnotatedUPT]
           dirs2LeavesOnUPT f = fmap (\y -> anno :< ListUPF y) $ (($ x) <$>) . f <$> patterns
-          dirs2LeavesOnPattern :: (Pattern -> [AnnotatedUPT -> AnnotatedUPT])
-                               -> [AnnotatedUPT]
           dirs2LeavesOnPattern f = ((\a -> anno :< ListUPF a) . pairApplyList . bimap f (pattern2UPT anno) . duplicate <$> patterns)
       in case2annidatedIfs x
                            patterns
@@ -386,9 +371,8 @@ closedLambda name body@(anno :< _) = anno :< TLamF (Closed name) body
 -- |Transformation from `AnnotatedUPT` to `Term1` validating and inlining `VarUP`s
 validateVariables :: AnnotatedUPT
                   -> Either ResolverError Term1
-validateVariables term =
-  let validateWithEnvironment :: AnnotatedUPT
-                              -> State.StateT (Map String Term1) (Either ResolverError) Term1
+validateVariables (AnnotatedUPT term) =
+  let
       validateWithEnvironment = \case
         anno :< LetUPF preludeMap inner -> do
           oldPrelude <- State.get
@@ -401,9 +385,7 @@ validateVariables term =
               -- Get direct variable dependencies (only those defined in this let block)
               -- Uses Set to properly handle lambda-bound variable shadowing
               letBindingNames = Set.fromList (letBindingName <$> preludeMap)
-              getDirectDeps :: AnnotatedUPT -> [String]
               getDirectDeps = Set.toList . cata alg where
-                alg :: CofreeF UnprocessedParsedTermF LocTag (Set String) -> Set String
                 alg = \case
                     (_ C.:< VarUPF n) -> if Set.member n letBindingNames then Set.singleton n else Set.empty
                     (_ C.:< LamUPF v body) -> Set.delete (locatedNameText v) body
@@ -510,10 +492,8 @@ validateVariables term =
         anno :< HashUPF x -> (\y -> anno :< THashF y) <$> validateWithEnvironment x
   in State.evalStateT (validateWithEnvironment term) Map.empty
 
-annotateUnsizedCount :: AnnotatedUPT -> Cofree UnprocessedParsedTermF (LocTag, Int)
+annotateUnsizedCount :: AUPT -> Cofree (UnprocessedParsedTermF PatternA) (LocTag, Int)
 annotateUnsizedCount = capTop . flip evalStateT 0 . cata f where
-  f :: CofreeF UnprocessedParsedTermF LocTag (StateT Int ((,) (Set Int)) (Cofree UnprocessedParsedTermF (LocTag, Int)))
-       -> StateT Int ((,) (Set Int)) (Cofree UnprocessedParsedTermF (LocTag, Int))
   f = \case
     anno C.:< x -> case x of
       ur@(UnsizedRecursionUPF _ _ _) -> sequence ur >>= \nur -> do
@@ -531,7 +511,7 @@ annotateUnsizedCount = capTop . flip evalStateT 0 . cata f where
 
 -- convert let bindings to nested lambda/app brackets
 letsToApps :: AnnotatedUPT -> Either ResolverError Term1
-letsToApps term =
+letsToApps (AnnotatedUPT term) =
    -- Topological sort with cycle detection
   let topologicalSort :: [String] -> Map String (Set String) -> Either ResolverError [String]
       topologicalSort names deps = go [] Set.empty names
@@ -568,8 +548,6 @@ letsToApps term =
         Left s           -> Left s
         Right (nx, refs) -> pure (locatedNameText name, (nx,refs))
       -- f algebra builds Term1 wrapped with metadata (WriterT) of unbound refs (Set String) or ResolverError
-      buildRefs :: CofreeF UnprocessedParsedTermF (LocTag, Int) (WriterT (Set String) (Either ResolverError) (Cofree (ParserTermF String String) (LocTag, Int)))
-                   -> WriterT (Set String) (Either ResolverError) (Cofree (ParserTermF String String) (LocTag, Int))
       buildRefs ((anno, urC) C.:< upf) = case upf of
         VarUPF n -> writer ((anno, urC) :< TVarF n, Set.singleton n)
         LamUPF v x -> f (runWriterT x) where
@@ -629,7 +607,7 @@ letsToApps term =
         f ((a,c) C.:< x) = a :< x
   in cleanup . runWriterT . cata buildRefs $ annotateUnsizedCount term
 
-optimizeBuiltinFunctions :: AnnotatedUPT -> AnnotatedUPT
+optimizeBuiltinFunctions :: AUPT -> AUPT
 optimizeBuiltinFunctions = transform optimize where
   optimize = \case
     twoApp@(anno0 :< AppUPF (_ :< AppUPF (_ :< f) x) y) ->
@@ -664,7 +642,7 @@ generateAllHashes x@(anno :< _) = transform interm x where
     (anno :< THashF term1) -> bs2Term2 . term2Hash $ term1
     x                      -> x
 
-addBuiltins :: AnnotatedUPT -> AnnotatedUPT
+addBuiltins :: AUPT -> AUPT
 addBuiltins aupt = GeneratedLoc "addBuiltins" Nothing :< LetUPF
   [ bind "zero" (builtin "zero" :< IntUPF 0)
   , bind "left" (builtin "left" :< LamUPF (locatedName (builtin "left") "x") (builtin "left" :< LeftUPF (builtin "left" :< VarUPF "x")))
@@ -693,17 +671,21 @@ process2Term2 :: AnnotatedUPT
               -> Either ResolverError Term2
 process2Term2 = fmap generateAllHashes
               . debruijinize [] <=< (fmap tf . validateVariables)
+              . AnnotatedUPT
               . removeCaseUPs
               . optimizeBuiltinFunctions
               . addBuiltins
+              . unAnnotatedUPT
                  where tf x = debugTrace ("reg Term1:\n" <> prettyPrint x) x
 
 process2Term2let :: AnnotatedUPT -> Either ResolverError Term2
 process2Term2let = fmap generateAllHashes
                  . debruijinizeApp <=< fmap tf . letsToApps
+                 . AnnotatedUPT
                  . removeCaseUPs
                  . optimizeBuiltinFunctions
                  . addBuiltins
+                 . unAnnotatedUPT
                  where tf x = debugTrace ("wLet Term1:\n" <> prettyPrint x) x
 
 -- |Helper function to compile to Term2
@@ -713,9 +695,9 @@ runTelomareParser2Term2 :: TelomareParser AnnotatedUPT -- ^Parser to run
 runTelomareParser2Term2 parser str =
   first (ParseError . errorBundlePretty) (runParser parser "" str) >>= process2Term2
 
-resolveImports' :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
-                -> [Either AnnotatedUPT (String, AnnotatedUPT)] -- ^Main module with both Import and Assignment
-                -> [Either AnnotatedUPT (String, AnnotatedUPT)]
+resolveImports' :: [(String, [Either AUPT (String, AUPT)])]
+                -> [Either AUPT (String, AUPT)] -- ^Main module with both Import and Assignment
+                -> [Either AUPT (String, AUPT)]
 resolveImports' modules xs = lefts <> rights
   where
     lefts' = reverse . filter isLeft $ xs
@@ -737,39 +719,39 @@ resolveImports' modules xs = lefts <> rights
     isRight (Right _) = True
     isRight _         = False
 
-resolveAllImports' :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
-                   -> [Either AnnotatedUPT (String, AnnotatedUPT)]
-                   -> [Either AnnotatedUPT (String, AnnotatedUPT)]
+resolveAllImports' :: [(String, [Either AUPT (String, AUPT)])]
+                   -> [Either AUPT (String, AUPT)]
+                   -> [Either AUPT (String, AUPT)]
 resolveAllImports' modules x =
   let resolved = resolveImports' modules x
   in if resolved == x
      then resolved
      else resolveAllImports' modules resolved
 
-resolveAllImports :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -- ^All the modules
-                  -> [Either AnnotatedUPT (String, AnnotatedUPT)] -- ^Module to be resolved (i.e. list of either Import_UPT or top level definitions)
-                  -> [(String, AnnotatedUPT)]
+resolveAllImports :: [(String, [Either AUPT (String, AUPT)])] -- ^All the modules
+                  -> [Either AUPT (String, AUPT)] -- ^Module to be resolved (i.e. list of either Import_UPT or top level definitions)
+                  -> [(String, AUPT)]
 resolveAllImports x y = removeRights <$> resolveAllImports' x y
   where
     removeRights = \case
       Left x -> error $ "resolveImports: Left when should be all Right: " <> show x -- TODO make return Either and get rid of this
       Right x -> x
 
-resolveImports :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
+resolveImports :: [(String, [Either AUPT (String, AUPT)])]
                -> String
-               -> [(String, AnnotatedUPT)]
+               -> [(String, AUPT)]
 resolveImports modules moduleName = resolveAllImports modules principal
   where
     principal = case lookup moduleName modules of
       Nothing -> error $ "resolveImports: Module " <> moduleName <> " not found" -- TODO make return Either and get rid of this
       Just x  -> x
 
-resolveMain :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -- ^Modules: [(ModuleName, [Either Import (VariableName, BindedUPT)])]
+resolveMain :: [(String, [Either AUPT (String, AUPT)])] -- ^Modules: [(ModuleName, [Either Import (VariableName, BindedUPT)])]
             -> String -- ^Module name with main
-            -> Either ResolverError AnnotatedUPT
+            -> Either ResolverError AUPT
 resolveMain allModules mainModule = case lookup mainModule allModules of
   Nothing -> Left $ ModuleNotFound mainModule
-  Just lst -> let resolved :: [(String, AnnotatedUPT)]
+  Just lst -> let resolved :: [(String, AUPT)]
                   resolved = resolveImports allModules mainModule
                   maybeMain = lookup "main" resolved
               in case maybeMain of
@@ -779,12 +761,12 @@ resolveMain allModules mainModule = case lookup mainModule allModules of
                          locatedBindings = first (locatedName (GeneratedLoc "resolveMain.binding" (Just loc))) <$> pruneBindings x resolved
                      in Right $ GeneratedLoc "resolveMain" (Just loc) :< LetUPF locatedBindings x
 
-main2Term3 :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -- ^Modules: [(ModuleName, [Either Import (VariableName, BindedUPT)])]
+main2Term3 :: [(String, [Either AUPT (String, AUPT)])] -- ^Modules: [(ModuleName, [Either Import (VariableName, BindedUPT)])]
            -> String -- ^Module name with main
            -> Either ResolverError Term3 -- ^Error on Left
-main2Term3 moduleBindings s = resolveMain moduleBindings s >>= process
+main2Term3 moduleBindings s = resolveMain moduleBindings s >>= process . AnnotatedUPT
 
-main2Term3let :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -- ^Modules: [(ModuleName, [Either Import (VariableName, BindedUPT)])]
+main2Term3let :: [(String, [Either AUPT (String, AUPT)])] -- ^Modules: [(ModuleName, [Either Import (VariableName, BindedUPT)])]
            -> String -- ^Module name with main
            -> Either ResolverError Term3 -- ^Error on Left
-main2Term3let moduleBindings s = resolveMain moduleBindings s >>= processWlet
+main2Term3let moduleBindings s = resolveMain moduleBindings s >>= processWlet . AnnotatedUPT
