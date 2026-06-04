@@ -6,7 +6,7 @@ import Control.Comonad.Cofree (Cofree ((:<)))
 import qualified Control.Exception as Exception
 import Control.Monad
 import Control.Monad.Fix (MonadFix)
-import Data.Bifunctor (first)
+import Data.Bifunctor (bimap, first, second)
 import Data.Either (fromLeft)
 import Data.Map (Map)
 import qualified Data.Map as Map
@@ -22,7 +22,7 @@ import qualified System.IO.Strict as Strict
 import qualified Telomare as Tel
 import Telomare (BasicExprF (..), CompiledExpr, CompiledExprF (..), StuckF (..))
 import qualified Telomare.Eval as TE
-import Telomare.Parser (AnnotatedUPT, parseModule)
+import Telomare.Parser (AnnotatedUPT (..), AUPT, parseModule)
 import Text.Read (readMaybe)
 
 type VtyExample t m =
@@ -163,12 +163,14 @@ nodify = removeExtraNumbers . fmap go . allNodes 0 where
 
 -- parseModule :: String -> Either String [Either AnnotatedUPT (String, AnnotatedUPT)]
 -- TODO: Load modules qualifed
-loadModules :: [String] -> IO [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
+loadModules :: [String] -> IO [(String, [Either AUPT (String, AUPT)])]
 loadModules filenames = do
   filesStrings :: [String] <- mapM Strict.readFile filenames
   case mapM parseModule filesStrings of
-    Right p -> pure $ zip filesStrings p
+    Right p -> pure $ zip filesStrings (fmap convertModule p)
     Left pe -> error pe
+  where
+    convertModule = fmap (bimap unAnnotatedUPT (second unAnnotatedUPT))
 
 mainWidgetInit
   :: (forall t m.
@@ -185,7 +187,7 @@ mainWidgetInit w = mainWidget (initManager_ w)
 
 main :: IO ()
 main = do
-  modules :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] <- getArgs >>= loadModules
+  modules :: [(String, [Either AUPT (String, AUPT)])] <- getArgs >>= loadModules
   let go :: Text -> IO ()
       go textErr =
         mainWidgetInit $ do

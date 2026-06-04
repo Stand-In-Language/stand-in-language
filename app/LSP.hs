@@ -14,8 +14,9 @@ import Control.Concurrent.STM
 import Control.Exception (IOException, try)
 import Control.Monad (join, void)
 import Control.Monad.IO.Class (MonadIO (liftIO))
-import Data.Bifunctor (first)
+import Data.Bifunctor (bimap, first, second)
 import Data.Char (isAsciiLower, isAsciiUpper, isDigit)
+import Data.Fix (Fix (..))
 import Data.List (find, sortOn)
 import qualified Data.List.NonEmpty as NE
 import qualified Data.Map.Strict as Map
@@ -41,13 +42,14 @@ import Language.LSP.Protocol.Types (NormalizedUri, Position (..), Range (..),
 import qualified Language.LSP.Protocol.Types as LSPTypes
 import Language.LSP.Server
 
-import Telomare (LocTag (..), Pattern (..), ResolverError (..),
+import Telomare (LocTag (..), PatternF (..), ResolverError (..),
                  SourcePosition (..), SourceSpan (..),
                  UnprocessedParsedTermF (..), letBindingName, letBindingValue,
                  locStartLineColumn, locatedNameLoc, locatedNameText,
                  renderResolverError)
 import Telomare.Eval (eval2IExpr)
-import Telomare.Parser (AnnotatedUPT, parseModule, parseModuleDetailed)
+import Telomare.Parser (AnnotatedUPT (..), AUPT, PatternA, parseModule,
+                        parseModuleDetailed)
 import Telomare.Resolver (main2Term3)
 import Text.Megaparsec.Error (ParseErrorBundle (..), errorBundlePretty,
                               errorOffset)
@@ -57,7 +59,8 @@ import Text.Megaparsec.Error (ParseErrorBundle (..), errorBundlePretty,
 
 -- Results of parseModule:
 --   Either errorString or a list of either imports or (name, binding) pairs.
-type ParseResult = [Either AnnotatedUPT (String, AnnotatedUPT)]
+type ParseResult = [Either AUPT (String, AUPT)]
+type AnnotatedParseResult = [Either AnnotatedUPT (String, AnnotatedUPT)]
 
 -- Store module bindings for evaluation context
 type ModuleBindings = [(String, ParseResult)]
@@ -129,7 +132,7 @@ loadPrelude = do
         Left err -> do
           putStrLn $ "Warning: Failed to parse Prelude.tel: " <> err
           return []
-        Right parsed -> return [("Prelude", parsed)]
+        Right parsed -> return [("Prelude", convertParseResult parsed)]
   where
     tryLoadFiles :: [FilePath] -> IO (Maybe String)
     tryLoadFiles [] = return Nothing
@@ -249,10 +252,13 @@ formatTimestampMinutesUTC rawTimestamp = do
 -- Helpers: centralize parsing through parseModule
 
 parseTelomareModule :: T.Text -> Either String ParseResult
-parseTelomareModule = parseModule . T.unpack
+parseTelomareModule = fmap convertParseResult . parseModule . T.unpack
 
 parseTelomareModuleDetailed :: T.Text -> Either (ParseErrorBundle String Void) ParseResult
-parseTelomareModuleDetailed = parseModuleDetailed . T.unpack
+parseTelomareModuleDetailed = fmap convertParseResult . parseModuleDetailed . T.unpack
+
+convertParseResult :: AnnotatedParseResult -> ParseResult
+convertParseResult = fmap (bimap unAnnotatedUPT (second unAnnotatedUPT))
 
 storeParsedDoc
   :: GlobalState
@@ -396,7 +402,7 @@ unresolvedReferences :: Set.Set String -> ParseResult -> [(String, Range)]
 unresolvedReferences globals parsed =
   concatMap (unresolvedTerm globals) [term | Right (_, term) <- parsed]
 
-unresolvedTerm :: Set.Set String -> AnnotatedUPT -> [(String, Range)]
+unresolvedTerm :: Set.Set String -> AUPT -> [(String, Range)]
 unresolvedTerm globals = go Set.empty
   where
     go bound (loc :< term) = case term of
@@ -698,7 +704,7 @@ findIdentifierInLhs name lineText = go 0 lhs
       let afterName = T.drop (T.length name) remaining
       in T.null afterName || not (lspIdentChar $ T.head afterName)
 
-termReferences :: [String] -> AnnotatedUPT -> [(String, Range)]
+termReferences :: [String] -> AUPT -> [(String, Range)]
 termReferences bound (loc :< term) =
   let children = case term of
         VarUPF name
@@ -735,7 +741,7 @@ localDefinitionAt uri position parsed =
 localTermDefinitionAt :: LSPTypes.Uri
                       -> Position
                       -> Map.Map String (Maybe LSPTypes.Location)
-                      -> AnnotatedUPT
+                      -> AUPT
                       -> Maybe LSPTypes.Location
 localTermDefinitionAt uri position env (loc :< term) = case term of
   VarUPF name
@@ -786,11 +792,11 @@ localTermDefinitionAt uri position env (loc :< term) = case term of
   where
     firstJust = listToMaybe . mapMaybe (localTermDefinitionAt uri position env)
 
-patternBoundNames :: Pattern -> [String]
-patternBoundNames = \case
-  PatternVar name -> [name]
-  PatternAnnotated pat _ -> patternBoundNames pat
-  PatternPair left right -> patternBoundNames left <> patternBoundNames right
+patternBoundNames :: PatternA -> [String]
+patternBoundNames (Fix patternF) = case patternF of
+  PatternVarF name -> [name]
+  PatternAnnotatedF pat _ -> patternBoundNames pat
+  PatternPairF left right -> patternBoundNames left <> patternBoundNames right
   _ -> []
 
 lspIdentChar :: Char -> Bool

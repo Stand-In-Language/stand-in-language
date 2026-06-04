@@ -170,6 +170,7 @@ executable telomare-lsp
 
   build-depends:       base
                       , containers
+                      , data-fix
                       , directory
                       , filepath
                       , free
@@ -224,6 +225,7 @@ test-suite telomare-parser-test
   build-depends:       QuickCheck
                      , base
                      , containers
+                     , data-fix
                      , free
                      , lens
                      , megaparsec
@@ -250,6 +252,7 @@ test-suite telomare-resolver-test
                      , QuickCheck
                      , base
                      , containers
+                     , data-fix
                      , free
                      , megaparsec
                      , mtl

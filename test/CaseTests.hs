@@ -1,11 +1,13 @@
-{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE LambdaCase        #-}
+{-# LANGUAGE TypeSynonymInstances #-}
 
 module CaseTests (unitTestsCase, qcPropsCase) where
 
 import Common
 import Control.Comonad.Cofree (Cofree ((:<)))
+import Data.Fix (Fix (..))
 import qualified Control.Monad.State as State
-import Data.Functor.Foldable (Base, Recursive (cata))
 import PrettyPrint
 import qualified System.IO.Strict as Strict
 import Telomare
@@ -26,31 +28,43 @@ tests = testGroup "Tests" [unitTestsCase, qcPropsCase]
 ------ Property Tests
 ---------------------
 
-caseExprStrWithPattern :: Pattern -> String
+caseExprStrWithPattern :: PatternA -> String
 caseExprStrWithPattern p = unlines
   [ "import Prelude"
   , "main ="
-  , "  let toCase = " <> (show . PrettyUPT . forget . pattern2UPT UnknownLoc $ p)
+  , "  let toCase = " <> showPatternTerm p
   , "      caseTest ="
   , "        case toCase of"
-  , "          " <> (show . PrettyPattern $ p) <> " -> \"True\""
+  , "          " <> prettyPrintPattern (const "") p <> " -> \"True\""
   , "          _ -> \"False\""
   , "  in \\input -> (caseTest, 0)"
   ]
 
-caseExprStrWithPatternIgnore :: Pattern -> String
+caseExprStrWithPatternIgnore :: PatternA -> String
 caseExprStrWithPatternIgnore p = unlines
   [ "import Prelude"
   , "main ="
-  , "  let toCase = " <> (show . PrettyUPT . forget . pattern2UPT UnknownLoc $ p)
+  , "  let toCase = " <> showPatternTerm p
   , "      caseTest ="
   , "        case toCase of"
   , "          _ -> \"True\""
-  , "          " <> (show . PrettyPattern $ p) <> " -> \"False\""
+  , "          " <> prettyPrintPattern (const "") p <> " -> \"False\""
   , "  in \\input -> (caseTest, 0)"
   ]
 
-runCaseExpWithPattern :: (Pattern -> String) -> Pattern -> IO String
+showPatternTerm :: PatternA -> String
+showPatternTerm = prettyAUPT . pattern2UPT UnknownLoc
+
+prettyAUPT :: AUPT -> String
+prettyAUPT (_ :< term) = case term of
+  IntUPF i -> show i
+  VarUPF str -> str
+  StringUPF str -> show str
+  PairUPF x y -> "(" <> prettyAUPT x <> "," <> prettyAUPT y <> ")"
+  AppUPF x y -> prettyAUPT x <> " " <> prettyAUPT y
+  _ -> error $ "unexpected generated case test term: " <> show term
+
+runCaseExpWithPattern :: (PatternA -> String) -> PatternA -> IO String
 runCaseExpWithPattern p2s p = runTelomareStr $ p2s p
 
 qcPropsCase = testGroup "Property tests on case expressions (QuickCheck)"
@@ -125,40 +139,41 @@ caseExprAllLeavesStr = unlines
   , "  in \\input -> (caseTest, 0)"
   ]
 
-instance Arbitrary Pattern where
+instance Arbitrary PatternA where
   arbitrary = sanitizePatternVars <$> sized genTree where
-    sanitizePatternVars :: Pattern -> Pattern
+    sanitizePatternVars :: PatternA -> PatternA
     sanitizePatternVars p = State.evalState (go p) 0 where
-      go :: Pattern -> State.State Int Pattern
-      go = \case
-        PatternVar _ -> do
+      go :: PatternA -> State.State Int PatternA
+      go (Fix patternF) = case patternF of
+        PatternVarF _ -> do
           s <- State.get
           State.modify (+ 1)
-          pure . PatternVar $ "var" <> show s
-        PatternPair x y -> PatternPair <$> go x <*> go y
-        x -> pure x
-    leaves :: Gen Pattern
+          pure . Fix . PatternVarF $ "var" <> show s
+        PatternPairF x y -> Fix <$> (PatternPairF <$> go x <*> go y)
+        other -> pure $ Fix other
+    leaves :: Gen PatternA
     leaves = oneof
-      [ PatternString <$> elements (fmap (("s" <>) . show) [1..9])
-      , PatternInt <$> elements [0..9]
-      , pure $ PatternVar ""
+      [ Fix . PatternStringF <$> elements (fmap (("s" <>) . show) [1..9])
+      , Fix . PatternIntF <$> elements [0..9]
+      , pure $ Fix $ PatternVarF ""
       ]
-    genTree :: Int -> Gen Pattern
+    genTree :: Int -> Gen PatternA
     genTree = \case
       0 -> leaves
       x -> oneof
         [ leaves
-        , PatternPair <$> genTree (div x 2) <*> genTree (div x 2)
+        , Fix <$> (PatternPairF <$> genTree (div x 2) <*> genTree (div x 2))
         ]
 
-  shrink = \case
-    PatternVar str -> case str of
+  shrink (Fix patternF) = case patternF of
+    PatternVarF str -> case str of
       "" -> []
-      _  -> pure . PatternVar $ tail str
-    PatternString s -> case s of
+      _  -> pure . Fix . PatternVarF $ tail str
+    PatternStringF s -> case s of
       "" -> []
-      _  -> pure . PatternString $ tail s
-    PatternInt i -> case i of
+      _  -> pure . Fix . PatternStringF $ tail s
+    PatternIntF i -> case i of
       0 -> []
-      x -> pure . PatternInt $ x - 1
-    PatternPair a b -> a : b : [PatternPair na nb | (na, nb) <- shrink (a,b)]
+      x -> pure . Fix . PatternIntF $ x - 1
+    PatternPairF a b -> a : b : [Fix $ PatternPairF na nb | (na, nb) <- shrink (a,b)]
+    _ -> []

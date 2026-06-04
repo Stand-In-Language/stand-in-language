@@ -512,14 +512,14 @@ main = do
     prelude' = case parsePrelude preludeFile of
       Right p -> p
       Left pe -> error $ show pe
-    prelude :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
-    prelude = [("Prelude", Right <$> prelude')]
-    parseAuxModule :: String -> (String, [Either AnnotatedUPT (String, AnnotatedUPT)])
+    prelude :: [(String, [Either AUPT (String, AUPT)])]
+    prelude = [("Prelude", Right . second unAnnotatedUPT <$> prelude')]
+    parseAuxModule :: String -> (String, [Either AUPT (String, AUPT)])
     parseAuxModule str =
       case sequence ("AuxModule", parseModule ("import Prelude\n" <> str)) of
       -- case sequence ("AuxModule", parseModule str) of
         Left e    -> error $ show e
-        Right pam -> pam
+        Right pam -> second (fmap (bimap unAnnotatedUPT (second unAnnotatedUPT))) pam
     parse :: Bool -> String -> Either String Term3
     parse appLet str = if appLet
       then first show $ main2Term3let (parseAuxModule str:prelude) "AuxModule"

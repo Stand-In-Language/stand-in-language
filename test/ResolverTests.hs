@@ -334,12 +334,12 @@ unitTests = testGroup "Unit tests"
         Left err -> trimEnd (removeCallStack (show err)) @?= trimEnd runForwardCycleLet
         Right res -> trimEnd res @?= trimEnd runForwardCycleLet
   , testCase "different values get different hashes" $ do
-      let res1 = generateAllHashes <$> runTelomareParser2Term2 parseLet hashtest0
-          res2 = generateAllHashes <$> runTelomareParser2Term2 parseLet hashtest1
+      let res1 = generateAllHashes <$> runTelomareParser2Term2 (AnnotatedUPT <$> parseLet) hashtest0
+          res2 = generateAllHashes <$> runTelomareParser2Term2 (AnnotatedUPT <$> parseLet) hashtest1
       (res1 == res2) `compare` False @?= EQ
   , testCase "same functions have the same hash even with different variable names" $ do
-     let res1 = generateAllHashes <$> runTelomareParser2Term2 parseLet hashtest2
-         res2 = generateAllHashes <$> runTelomareParser2Term2 parseLet hashtest3
+     let res1 = generateAllHashes <$> runTelomareParser2Term2 (AnnotatedUPT <$> parseLet) hashtest2
+         res2 = generateAllHashes <$> runTelomareParser2Term2 (AnnotatedUPT <$> parseLet) hashtest3
      res1 @?= res2
   , testCase "Ad hoc user defined types success" $ do
       res <- testUserDefAdHocTypes userDefAdHocTypesSuccess
@@ -501,8 +501,8 @@ showAllTransformations input = do
               Left x  -> error x
   section "Input" input
   section "UnprocessedParsedTerm" $ show upt
-  section "optimizeBuiltinFunctions" . show . optimizeBuiltinFunctions $ upt
-  let optimizeBuiltinFunctionsVar = optimizeBuiltinFunctions upt
+  section "optimizeBuiltinFunctions" . show . optimizeBuiltinFunctions . unAnnotatedUPT $ upt
+  let optimizeBuiltinFunctionsVar = optimizeBuiltinFunctions (unAnnotatedUPT upt)
       str1 = lines . show $ optimizeBuiltinFunctionsVar
       str0 = lines . show $ upt
       diff = getGroupedDiff str0 str1
@@ -512,7 +512,7 @@ showAllTransformations input = do
   --     diff = getGroupedDiff str1 str2
   -- section "optimizeBindingsReference" . show $ optimizeBindingsReferenceVar
   -- section "Diff optimizeBindingsReference" $ ppDiff diff
-  let validateVariablesVar = validateVariables optimizeBuiltinFunctionsVar
+  let validateVariablesVar = validateVariables (AnnotatedUPT optimizeBuiltinFunctionsVar)
       str3 = lines . show $ validateVariablesVar
       diff = getGroupedDiff str3 str1
   section "validateVariables" . show $ validateVariablesVar

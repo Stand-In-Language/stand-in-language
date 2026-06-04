@@ -10,13 +10,13 @@ module NatUDTTests (natUDTTests) where
 
 import Control.Comonad.Cofree (Cofree ((:<)))
 import Control.Monad (unless)
-import Data.Bifunctor (Bifunctor (first))
+import Data.Bifunctor (Bifunctor (first, second))
 import Data.List (isInfixOf)
 import PrettyPrint
 import qualified System.IO.Strict as Strict
 import Telomare
 import Telomare.Eval (SizingOption (..), compile, runStaticChecks)
-import Telomare.Parser (AnnotatedUPT, parseLongExpr, parsePrelude)
+import Telomare.Parser (AnnotatedUPT (..), parseLongExpr, parsePrelude)
 import Telomare.Possible (SizingSettings (SizingSettings))
 import Telomare.Resolver (process, pruneBindings)
 import Test.Tasty
@@ -57,10 +57,11 @@ evalUDTExpr input = do
   case runParser (parseLongExpr <* eof) "" input of
     Left err -> pure $ Left (errorBundlePretty err)
     Right aupt -> do
-      let term = UnknownLoc :< LetUPF (first (locatedName UnknownLoc) <$> pruneBindings aupt allBindings) aupt
+      let bindings = fmap (second unAnnotatedUPT) allBindings
+          term = UnknownLoc :< LetUPF (first (locatedName UnknownLoc) <$> pruneBindings aupt bindings) aupt
           compile' :: Term3 -> Either EvalError CompiledExpr
           compile' = compile (DebugSizing (SizingSettings 255 False)) runStaticChecks
-      case first RE (process term) >>= compile' of
+      case first RE (process $ AnnotatedUPT term) >>= compile' of
         Left err -> pure $ Left (show err)
         Right iexpr -> case eval iexpr of
           Left e       -> pure . Left . show $ e

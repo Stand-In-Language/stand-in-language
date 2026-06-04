@@ -13,7 +13,7 @@ import Control.Monad.Fix (fix)
 import Control.Monad.IO.Class (liftIO)
 import qualified Control.Monad.State as State
 import Data.Bifunctor
-import Data.Either (fromRight)
+import Data.Fix (Fix (..))
 import Data.Functor.Foldable
 import Data.List
 import qualified Data.List.NonEmpty as NE
@@ -227,49 +227,62 @@ unitTests = testGroup "Unit tests"
       res `compare` False @?= EQ
   , testCase "Case within top level definitions" $ do
       res' <- runTelomareParser parseTopLevel caseExpr0
-      let res = stripParserLocs $ forget res'
+      let res = stripParserLocs res'
       res @?= caseExpr0UPT
   , testCase "Simple import parsing" $ do
       res' <- runTelomareParser parseImport importExpr0str
-      forget res' @?= importExpr0
+      stripParserLocs res' @?= importExpr0
   , testCase "Simple import qualified parsing" $ do
       res' <- runTelomareParser parseImportQualified importQualifiedExpr0str
-      forget res' @?= importQualifiedExpr0
+      stripParserLocs res' @?= importQualifiedExpr0
   , testCase "Simple import parsing with ." $ do
       res' <- runTelomareParser parseImport importExpr1str
-      forget res' @?= importExpr1
+      stripParserLocs res' @?= importExpr1
   , testCase "Simple import qualified parsing with ." $ do
       res' <- runTelomareParser parseImportQualified importQualifiedExpr1str
-      forget res' @?= importQualifiedExpr1
+      stripParserLocs res' @?= importQualifiedExpr1
   ]
 
 importQualifiedExpr1str = "import qualified Data.List as L"
-importQualifiedExpr1 = ImportQualifiedUP "L" "Data.List"
+importQualifiedExpr1 = UnknownLoc :< ImportQualifiedUPF "L" "Data.List"
 
 importExpr1str = "import Control.Monad"
-importExpr1 = ImportUP "Control.Monad"
+importExpr1 = UnknownLoc :< ImportUPF "Control.Monad"
 
 importQualifiedExpr0str = "import qualified Foo as F"
-importQualifiedExpr0 = ImportQualifiedUP "F" "Foo"
+importQualifiedExpr0 = UnknownLoc :< ImportQualifiedUPF "F" "Foo"
 
 importExpr0str = "import Foo"
-importExpr0 = ImportUP "Foo"
+importExpr0 = UnknownLoc :< ImportUPF "Foo"
 
-stripParserLocs :: UnprocessedParsedTerm -> UnprocessedParsedTerm
-stripParserLocs = cata $ \case
-  LetUPF bindings body -> LetUP ((\(name, value) -> (locatedName UnknownLoc $ locatedNameText name, value)) <$> bindings) body
-  LamUPF name body -> LamUP (locatedName UnknownLoc $ locatedNameText name) body
-  other -> embed other
+stripParserLocs :: AUPT -> AUPT
+stripParserLocs (loc :< term) = UnknownLoc :< case term of
+  LetUPF bindings body -> LetUPF ((\(name, value) -> (locatedName UnknownLoc $ locatedNameText name, stripParserLocs value)) <$> bindings) (stripParserLocs body)
+  LamUPF name body -> LamUPF (locatedName UnknownLoc $ locatedNameText name) (stripParserLocs body)
+  CaseUPF scrutinee cases -> CaseUPF (stripParserLocs scrutinee) ((first stripPatternLocs . second stripParserLocs) <$> cases)
+  other -> stripParserLocs <$> other
+
+stripPatternLocs :: PatternA -> PatternA
+stripPatternLocs (Fix patternF) = Fix $ case patternF of
+  PatternAnnotatedF pat term -> PatternAnnotatedF (stripPatternLocs pat) (AnnotatedUPT $ stripParserLocs $ unAnnotatedUPT term)
+  other -> stripPatternLocs <$> other
 
 caseExpr0UPT =
-  LetUP [ (locatedName UnknownLoc "foo", LamUP (locatedName UnknownLoc "a") (CaseUP (VarUP "a")
-                               [ (PatternInt 0,VarUP "a")
-                               , (PatternVar "x",AppUP (VarUP "succ") (VarUP "a"))
-                               ]))
-        , (locatedName UnknownLoc "main", LamUP (locatedName UnknownLoc "i") (PairUP (StringUP "Success")
-                                     (IntUP 0)))
-        ]
-        (LamUP (locatedName UnknownLoc "i") (PairUP (StringUP "Success") (IntUP 0)))
+  UnknownLoc :< LetUPF
+    [ ( locatedName UnknownLoc "foo"
+      , UnknownLoc :< LamUPF (locatedName UnknownLoc "a")
+          (UnknownLoc :< CaseUPF (UnknownLoc :< VarUPF "a")
+            [ (Fix $ PatternIntF 0, UnknownLoc :< VarUPF "a")
+            , (Fix $ PatternVarF "x", UnknownLoc :< AppUPF (UnknownLoc :< VarUPF "succ") (UnknownLoc :< VarUPF "a"))
+            ])
+      )
+    , ( locatedName UnknownLoc "main"
+      , UnknownLoc :< LamUPF (locatedName UnknownLoc "i")
+          (UnknownLoc :< PairUPF (UnknownLoc :< StringUPF "Success") (UnknownLoc :< IntUPF 0))
+      )
+    ]
+    (UnknownLoc :< LamUPF (locatedName UnknownLoc "i")
+      (UnknownLoc :< PairUPF (UnknownLoc :< StringUPF "Success") (UnknownLoc :< IntUPF 0)))
 caseExpr0 = unlines
   [ "foo = \\a -> case a of"
   , "              0 -> a"

@@ -8,7 +8,6 @@ module Common where
 import Control.Applicative
 import Control.Comonad.Cofree (Cofree ((:<)))
 import Data.Bifunctor
-import Data.Functor.Foldable (embed, project)
 import qualified Data.Map as Map
 import System.IO
 import System.Posix.IO
@@ -169,7 +168,7 @@ instance Arbitrary UnprocessedParsedTerm where
     leaves :: [String] -> Gen UnprocessedParsedTerm
     leaves varList =
       oneof $
-          (if not (null varList) then ((embed . VarUPF <$> elements varList) :) else id)
+          (if not (null varList) then ((VarUP <$> elements varList) :) else id)
           [ StringUP <$> elements (fmap (("s" <>) . show) [1..9]) -- chooseAny
           , IntUP <$> elements [0..9]
           , ChurchUP <$> elements [0..9]
@@ -227,44 +226,45 @@ instance Arbitrary UnprocessedParsedTerm where
                                    , PairUP <$> recur half <*> recur half
                                    , AppUP <$> recur half <*> recur half
                                    ]
-  shrink = fmap embed . shrink' . project where
-    shrink' = \case
-      StringUPF s -> case s of
+  shrink x = case x of
+      StringUP s -> case s of
         [] -> []
-        _  -> pure . StringUPF $ tail s
-      IntUPF i -> case i of
+        _  -> pure . StringUP $ tail s
+      IntUP i -> case i of
         0 -> []
-        x -> pure . IntUPF $ x - 1
-      ChurchUPF i -> case i of
+        n -> pure . IntUP $ n - 1
+      ChurchUP i -> case i of
         0 -> []
-        x -> pure . ChurchUPF $ x - 1
-      UnsizedRecursionUPF t r b -> project t : project r : project b : [UnsizedRecursionUPF nt nr nb | (nt, nr, nb) <- shrink (t,r,b)]
-      VarUPF _ -> []
-      HashUPF x -> project x : fmap HashUPF (shrink x)
-      LeftUPF x -> project x : fmap LeftUPF (shrink x)
-      RightUPF x -> project x : fmap RightUPF (shrink x)
-      TraceUPF x -> project x : fmap TraceUPF (shrink x)
-      LamUPF v x -> project x : fmap (LamUPF v) (shrink x)
-      ITEUPF i t e -> project i : project t : project e : [ITEUPF ni nt ne | (ni, nt, ne) <- shrink (i,t,e)]
-      ListUPF l -> case l of
-        [e] -> if null $ shrink e then [project e] else project e : fmap (ListUPF . pure) (shrink e)
-        _   -> project (head l) : ListUPF (tail l) : fmap (ListUPF . shrink) l
+        n -> pure . ChurchUP $ n - 1
+      UnsizedRecursionUP t r b -> t : r : b : [UnsizedRecursionUP nt nr nb | (nt, nr, nb) <- shrink (t,r,b)]
+      VarUP _ -> []
+      HashUP x' -> x' : fmap HashUP (shrink x')
+      LeftUP x' -> x' : fmap LeftUP (shrink x')
+      RightUP x' -> x' : fmap RightUP (shrink x')
+      TraceUP x' -> x' : fmap TraceUP (shrink x')
+      LamUP v x' -> x' : fmap (LamUP v) (shrink x')
+      ITEUP i t e -> i : t : e : [ITEUP ni nt ne | (ni, nt, ne) <- shrink (i,t,e)]
+      ListUP l -> case l of
+        []  -> []
+        [e] -> if null $ shrink e then [e] else e : fmap (ListUP . pure) (shrink e)
+        _   -> head l : ListUP (tail l) : fmap (ListUP . shrink) l
     {-
       LetUP l i -> i : case l of -- TODO make this do proper, full enumeration
         [(v,e)] -> if null $ shrink e then [e] else e : map (flip LetUP i . pure . (v,)) (shrink e) <> (map (LetUP l) (shrink i))
         _ -> let shrinkBinding (n, v) = map (n,) $ shrink v
             in snd (head l) : LetUP (tail l) i : map (flip LetUP i . second shrink) l
   -}
-      LetUPF l i -> let shrinkBinding (n, v) = (n,) <$> shrink v
-                        removeAt n x = let (f,s) = splitAt n x in (f <> tail s)
-                        makeOptions f n [] = error "debugging split here"
-                        makeOptions f n x = let (pa,c:pz) = splitAt n x in ((pa ++) . (:pz) <$> f c)
-                        lessBindings = if length l > 1
-                          then [LetUPF (removeAt n l) i | n <- [0..length l - 1]]
-                          else []
-                    in project i : (lessBindings <> concat [(`LetUPF` i) <$> makeOptions shrinkBinding n l | n <- [0..length l - 1]])
-      PairUPF a b -> project a : project b : [PairUPF na nb | (na, nb) <- shrink (a,b)]
-      AppUPF f i -> project f : project i : [AppUPF nf ni | (nf, ni) <- shrink (f,i)]
+      LetUP l i -> let shrinkBinding (n, v) = (n,) <$> shrink v
+                       removeAt n xs = let (f,s) = splitAt n xs in (f <> tail s)
+                       makeOptions _ _ [] = error "debugging split here"
+                       makeOptions f n xs = let (pa,c:pz) = splitAt n xs in ((pa ++) . (:pz) <$> f c)
+                       lessBindings = if length l > 1
+                         then [LetUP (removeAt n l) i | n <- [0..length l - 1]]
+                         else []
+                   in i : (lessBindings <> concat [(`LetUP` i) <$> makeOptions shrinkBinding n l | n <- [0..length l - 1]])
+      PairUP a b -> a : b : [PairUP na nb | (na, nb) <- shrink (a,b)]
+      AppUP f i -> f : i : [AppUP nf ni | (nf, ni) <- shrink (f,i)]
+      _ -> []
 
 instance Arbitrary Term1 where
   arbitrary = sized (genTree []) where
