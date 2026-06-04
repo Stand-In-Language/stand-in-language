@@ -29,7 +29,7 @@ import System.Exit (exitSuccess)
 import qualified System.IO.Strict as Strict
 import Telomare
 import Telomare.Eval (compileUnitTestNoAbort)
-import Telomare.Parser (AnnotatedUPT (..), AUPT, TelomareParser,
+import Telomare.Parser (AUPT, AnnotatedUPT (..), TelomareParser,
                         parseAssignment, parseLongExpr, parsePrelude)
 import Telomare.Possible (evalPartial)
 import Telomare.PossibleData (DeferredEvalF (..), PartialExpr, deferredEE)

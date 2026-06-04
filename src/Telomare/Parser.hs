@@ -11,12 +11,14 @@ import Control.Monad (join, void)
 import Control.Monad.State (State)
 import Data.Bifunctor (Bifunctor (first, second), bimap)
 import Data.Char (isUpper)
+import Data.Fix (Fix (..))
 import Data.Functor (($>))
-import Data.Functor.Foldable (Base, cata, para, embed, project)
+import Data.Functor.Foldable (Base, cata, embed, para, project)
 import Data.Functor.Foldable.TH (MakeBaseFunctor (makeBaseFunctor))
 import Data.Maybe (fromJust)
 import Data.Void (Void)
 import Data.Word (Word8)
+import GHC.Desugar (AnnotationWrapper (AnnotationWrapper))
 import PrettyPrint (indentSansFirstLine)
 import qualified System.IO.Strict as Strict
 import Telomare
@@ -32,8 +34,6 @@ import Text.Megaparsec.Debug (dbg)
 import Text.Megaparsec.Pos (Pos)
 import Text.Read (readMaybe)
 import Text.Show.Deriving (deriveShow1)
-import GHC.Desugar (AnnotationWrapper(AnnotationWrapper))
-import Data.Fix (Fix(..))
 
 newtype AnnotatedUPT = AnnotatedUPT { unAnnotatedUPT :: AUPT }
   deriving (Eq, Show)
@@ -282,20 +282,20 @@ parseLocatedPatternOther = do
                                ]
   pure (loc, pattern')
 
-parsePatternPair :: TelomareParser (PatternA)
+parsePatternPair :: TelomareParser PatternA
 parsePatternPair = parens $ do
   p <- scn *> parsePattern <* scn
   _ <- symbol "," <* scn
   b <- parsePattern <* scn
   pure . embed $ PatternPairF p b
 
-parsePatternInt :: TelomareParser (PatternA)
+parsePatternInt :: TelomareParser PatternA
 parsePatternInt = embed . PatternIntF . fromInteger <$> integer
 
-parsePatternString :: TelomareParser (PatternA)
+parsePatternString :: TelomareParser PatternA
 parsePatternString =  embed . PatternStringF <$> (char '"' >> manyTill L.charLiteral (char '"'))
 
-parsePatternVar :: TelomareParser (PatternA)
+parsePatternVar :: TelomareParser PatternA
 parsePatternVar =  embed . PatternVarF <$> (identifier <* scn)
 -- Pattern annotations are only accepted in parenthesised form
 -- (parsePatternAnnotated). Allowing a bare @v : T@ here would shadow
@@ -303,14 +303,14 @@ parsePatternVar =  embed . PatternVarF <$> (identifier <* scn)
 -- parsePattern's @choice@.
 
 
-parsePatternIgnore :: TelomareParser (PatternA)
+parsePatternIgnore :: TelomareParser PatternA
 parsePatternIgnore = symbol "_" >> pure (embed PatternIgnoreF)
 
 -- |Parse a parenthesised pattern with a type/refinement annotation,
 -- e.g. @(aa : Nat)@. The stored typeExpr is the raw check function;
 -- 'buildMultiLambda' applies it to the bound value and uses the result as
 -- the case scrutinee, forcing runtime validation before destructuring.
-parsePatternAnnotated :: TelomareParser (PatternA)
+parsePatternAnnotated :: TelomareParser PatternA
 parsePatternAnnotated = parens body <?> "annotated pattern"
   where
     body = do
@@ -714,26 +714,26 @@ runParseLongExpr str = bimap errorBundlePretty convert $ runParser parseLongExpr
     convert = UnprocessedParsedTerm . cata f where
       f :: C.CofreeF (UnprocessedParsedTermF PatternA) LocTag (Fix (UnprocessedParsedTermF Pattern)) -> Fix (UnprocessedParsedTermF Pattern)
       f (_ C.:< f') = embed $ case f' of
-        VarUPF s -> VarUPF s
-        ITEUPF i t e -> ITEUPF i t e
-        LetUPF bindings x -> LetUPF bindings x
-        ListUPF x -> ListUPF x
-        IntUPF n -> IntUPF n
-        StringUPF s -> StringUPF s
-        PairUPF a b -> PairUPF a b
-        AppUPF c i -> AppUPF c i
-        LamUPF n x -> LamUPF n x
-        ChurchUPF n -> ChurchUPF n
+        VarUPF s                  -> VarUPF s
+        ITEUPF i t e              -> ITEUPF i t e
+        LetUPF bindings x         -> LetUPF bindings x
+        ListUPF x                 -> ListUPF x
+        IntUPF n                  -> IntUPF n
+        StringUPF s               -> StringUPF s
+        PairUPF a b               -> PairUPF a b
+        AppUPF c i                -> AppUPF c i
+        LamUPF n x                -> LamUPF n x
+        ChurchUPF n               -> ChurchUPF n
         UnsizedRecursionUPF t r b -> UnsizedRecursionUPF t r b
-        LeftUPF x -> LeftUPF x
-        RightUPF x -> RightUPF x
-        TraceUPF x -> TraceUPF x
-        CheckUPF c x -> CheckUPF c x
-        HashUPF x -> HashUPF x
-        UDTUPF names x -> UDTUPF names x
-        CaseUPF x matches -> CaseUPF x $ fmap cp matches
-        ImportQualifiedUPF a b -> ImportQualifiedUPF a b
-        ImportUPF s -> ImportUPF s
+        LeftUPF x                 -> LeftUPF x
+        RightUPF x                -> RightUPF x
+        TraceUPF x                -> TraceUPF x
+        CheckUPF c x              -> CheckUPF c x
+        HashUPF x                 -> HashUPF x
+        UDTUPF names x            -> UDTUPF names x
+        CaseUPF x matches         -> CaseUPF x $ fmap cp matches
+        ImportQualifiedUPF a b    -> ImportQualifiedUPF a b
+        ImportUPF s               -> ImportUPF s
       cp (p, b) = (cata (embed . pf) p, b)
       pf = \case
         PatternVarF s ->PatternVarF s

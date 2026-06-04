@@ -48,7 +48,7 @@ import Telomare (LocTag (..), PatternF (..), ResolverError (..),
                  locStartLineColumn, locatedNameLoc, locatedNameText,
                  renderResolverError)
 import Telomare.Eval (eval2IExpr)
-import Telomare.Parser (AnnotatedUPT (..), AUPT, PatternA, parseModule,
+import Telomare.Parser (AUPT, AnnotatedUPT (..), PatternA, parseModule,
                         parseModuleDetailed)
 import Telomare.Resolver (main2Term3)
 import Text.Megaparsec.Error (ParseErrorBundle (..), errorBundlePretty,
@@ -794,10 +794,10 @@ localTermDefinitionAt uri position env (loc :< term) = case term of
 
 patternBoundNames :: PatternA -> [String]
 patternBoundNames (Fix patternF) = case patternF of
-  PatternVarF name -> [name]
+  PatternVarF name        -> [name]
   PatternAnnotatedF pat _ -> patternBoundNames pat
   PatternPairF left right -> patternBoundNames left <> patternBoundNames right
-  _ -> []
+  _                       -> []
 
 lspIdentChar :: Char -> Bool
 lspIdentChar c = isAsciiLower c || isAsciiUpper c || isDigit c || c == '_' || c == '.' || c == '\''

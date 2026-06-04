@@ -37,7 +37,8 @@ import qualified Data.Set as Set
 import Debug.Trace (trace, traceShow, traceShowId)
 import PrettyPrint (prettyPrint)
 import Telomare
-import Telomare.Parser (AnnotatedUPT (unAnnotatedUPT, AnnotatedUPT), TelomareParser, identifier, PatternA, AUPT, appAUPT, iteAUPT)
+import Telomare.Parser (AUPT, AnnotatedUPT (AnnotatedUPT, unAnnotatedUPT),
+                        PatternA, TelomareParser, appAUPT, identifier, iteAUPT)
 import Text.Megaparsec (errorBundlePretty, runParser)
 
 debug :: Bool

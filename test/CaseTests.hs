@@ -1,13 +1,12 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE LambdaCase        #-}
-{-# LANGUAGE TypeSynonymInstances #-}
 
 module CaseTests (unitTestsCase, qcPropsCase) where
 
 import Common
 import Control.Comonad.Cofree (Cofree ((:<)))
-import Data.Fix (Fix (..))
 import qualified Control.Monad.State as State
+import Data.Fix (Fix (..))
 import PrettyPrint
 import qualified System.IO.Strict as Strict
 import Telomare
@@ -57,12 +56,12 @@ showPatternTerm = prettyAUPT . pattern2UPT UnknownLoc
 
 prettyAUPT :: AUPT -> String
 prettyAUPT (_ :< term) = case term of
-  IntUPF i -> show i
-  VarUPF str -> str
+  IntUPF i      -> show i
+  VarUPF str    -> str
   StringUPF str -> show str
-  PairUPF x y -> "(" <> prettyAUPT x <> "," <> prettyAUPT y <> ")"
-  AppUPF x y -> prettyAUPT x <> " " <> prettyAUPT y
-  _ -> error $ "unexpected generated case test term: " <> show term
+  PairUPF x y   -> "(" <> prettyAUPT x <> "," <> prettyAUPT y <> ")"
+  AppUPF x y    -> prettyAUPT x <> " " <> prettyAUPT y
+  _             -> error $ "unexpected generated case test term: " <> show term
 
 runCaseExpWithPattern :: (PatternA -> String) -> PatternA -> IO String
 runCaseExpWithPattern p2s p = runTelomareStr $ p2s p
@@ -155,7 +154,7 @@ instance Arbitrary PatternA where
     leaves = oneof
       [ Fix . PatternStringF <$> elements (fmap (("s" <>) . show) [1..9])
       , Fix . PatternIntF <$> elements [0..9]
-      , pure $ Fix $ PatternVarF ""
+      , pure . Fix $ PatternVarF ""
       ]
     genTree :: Int -> Gen PatternA
     genTree = \case

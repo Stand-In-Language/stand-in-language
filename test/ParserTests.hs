@@ -1,4 +1,3 @@
-{-# LANGUAGE LambdaCase          #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Main where
@@ -259,12 +258,12 @@ stripParserLocs :: AUPT -> AUPT
 stripParserLocs (loc :< term) = UnknownLoc :< case term of
   LetUPF bindings body -> LetUPF ((\(name, value) -> (locatedName UnknownLoc $ locatedNameText name, stripParserLocs value)) <$> bindings) (stripParserLocs body)
   LamUPF name body -> LamUPF (locatedName UnknownLoc $ locatedNameText name) (stripParserLocs body)
-  CaseUPF scrutinee cases -> CaseUPF (stripParserLocs scrutinee) ((first stripPatternLocs . second stripParserLocs) <$> cases)
+  CaseUPF scrutinee cases -> CaseUPF (stripParserLocs scrutinee) (bimap stripPatternLocs stripParserLocs <$> cases)
   other -> stripParserLocs <$> other
 
 stripPatternLocs :: PatternA -> PatternA
 stripPatternLocs (Fix patternF) = Fix $ case patternF of
-  PatternAnnotatedF pat term -> PatternAnnotatedF (stripPatternLocs pat) (AnnotatedUPT $ stripParserLocs $ unAnnotatedUPT term)
+  PatternAnnotatedF pat term -> PatternAnnotatedF (stripPatternLocs pat) (AnnotatedUPT . stripParserLocs $ unAnnotatedUPT term)
   other -> stripPatternLocs <$> other
 
 caseExpr0UPT =

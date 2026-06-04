@@ -22,6 +22,7 @@ import Control.Lens.Combinators (Plated (..), makePrisms, transform)
 import Control.Monad.Except (ExceptT)
 import Control.Monad.State (State)
 import qualified Control.Monad.State as State
+import Data.Bifunctor (Bifunctor (..))
 import Data.Bool (bool)
 import Data.Char (chr, ord)
 import Data.Eq.Deriving (deriveEq1)
@@ -39,9 +40,8 @@ import qualified Data.Set as Set
 import Data.Validity (Validity)
 import Data.Void (Void)
 import Debug.Trace (trace, traceShow, traceShowId)
-import GHC.Generics (Generic, Generic1, Generically1(..))
+import GHC.Generics (Generic, Generic1, Generically1 (..))
 import Text.Show.Deriving (deriveShow1)
-import Data.Bifunctor (Bifunctor(..))
 
 {- top level TODO list
  - change AbortFrag form to something more convenient
@@ -942,11 +942,11 @@ pattern VarUP :: String -> UnprocessedParsedTerm
 pattern VarUP s <- UnprocessedParsedTerm (Fix (VarUPF s)) where
   VarUP s = UnprocessedParsedTerm (Fix (VarUPF s))
 pattern LetUP :: [(LocatedName, UnprocessedParsedTerm)] -> UnprocessedParsedTerm -> UnprocessedParsedTerm
-pattern LetUP binds body <- UnprocessedParsedTerm (Fix (LetUPF (map (second UnprocessedParsedTerm) -> binds) (UnprocessedParsedTerm -> body))) where
-  LetUP binds body = UnprocessedParsedTerm (Fix (LetUPF (map (second unUnprocessedParsedTerm) binds) (unUnprocessedParsedTerm body)))
+pattern LetUP binds body <- UnprocessedParsedTerm (Fix (LetUPF (fmap (second UnprocessedParsedTerm) -> binds) (UnprocessedParsedTerm -> body))) where
+  LetUP binds body = UnprocessedParsedTerm (Fix (LetUPF (fmap (second unUnprocessedParsedTerm) binds) (unUnprocessedParsedTerm body)))
 pattern ListUP :: [UnprocessedParsedTerm] -> UnprocessedParsedTerm
-pattern ListUP items <- UnprocessedParsedTerm (Fix (ListUPF (map UnprocessedParsedTerm -> items))) where
-  ListUP items = UnprocessedParsedTerm (Fix (ListUPF (map unUnprocessedParsedTerm items)))
+pattern ListUP items <- UnprocessedParsedTerm (Fix (ListUPF (fmap UnprocessedParsedTerm -> items))) where
+  ListUP items = UnprocessedParsedTerm (Fix (ListUPF (fmap unUnprocessedParsedTerm items)))
 pattern IntUP :: Int -> UnprocessedParsedTerm
 pattern IntUP n <- UnprocessedParsedTerm (Fix (IntUPF n)) where
   IntUP n = UnprocessedParsedTerm (Fix (IntUPF n))
@@ -978,8 +978,8 @@ pattern HashUP :: UnprocessedParsedTerm -> UnprocessedParsedTerm
 pattern HashUP x <- UnprocessedParsedTerm (Fix (HashUPF (UnprocessedParsedTerm -> x))) where
   HashUP x = UnprocessedParsedTerm (Fix (HashUPF (unUnprocessedParsedTerm x)))
 pattern CaseUP :: UnprocessedParsedTerm -> [(Fix (PatternF UnprocessedParsedTerm), UnprocessedParsedTerm)] -> UnprocessedParsedTerm
-pattern CaseUP scrutinee alts <- UnprocessedParsedTerm (Fix (CaseUPF (UnprocessedParsedTerm -> scrutinee) (map (second UnprocessedParsedTerm) -> alts))) where
-  CaseUP scrutinee alts = UnprocessedParsedTerm (Fix (CaseUPF (unUnprocessedParsedTerm scrutinee) (map (second unUnprocessedParsedTerm) alts)))
+pattern CaseUP scrutinee alts <- UnprocessedParsedTerm (Fix (CaseUPF (UnprocessedParsedTerm -> scrutinee) (fmap (second UnprocessedParsedTerm) -> alts))) where
+  CaseUP scrutinee alts = UnprocessedParsedTerm (Fix (CaseUPF (unUnprocessedParsedTerm scrutinee) (fmap (second unUnprocessedParsedTerm) alts)))
 pattern ImportUP :: String -> UnprocessedParsedTerm
 pattern ImportUP s <- UnprocessedParsedTerm (Fix (ImportUPF s)) where
   ImportUP s = UnprocessedParsedTerm (Fix (ImportUPF s))

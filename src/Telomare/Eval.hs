@@ -11,7 +11,7 @@ import Control.Lens.Plated (Plated (..), transformM)
 import Control.Monad (void)
 import Control.Monad.State (State, evalState)
 import qualified Control.Monad.State as State
-import Data.Bifunctor (first, second, bimap)
+import Data.Bifunctor (bimap, first, second)
 import Data.Foldable (fold)
 import Data.List (partition)
 import Data.Map (Map)
@@ -41,8 +41,9 @@ import Telomare (AbortableF (AbortF), AbstractRunTime, BasicExpr,
                  pattern BasicEE, pattern BasicFW, pattern PairB,
                  pattern StuckEE, pattern StuckFW, pattern ZeroB, rightB, s2b,
                  setEnvB, stuckEE, tag, zeroB)
-import Telomare.Parser (AnnotatedUPT (AnnotatedUPT, unAnnotatedUPT), parseModule, parseOneExprOrTopLevelDefs,
-                        parsePrelude, PatternA, AUPT)
+import Telomare.Parser (AUPT, AnnotatedUPT (AnnotatedUPT, unAnnotatedUPT),
+                        PatternA, parseModule, parseOneExprOrTopLevelDefs,
+                        parsePrelude)
 import Telomare.Possible (SizingSettings (SizingSettings), appB, basicEval,
                           deferB, evalStaticCheck, getSizesM, sizeTermM,
                           term3ToUnsizedExpr)
