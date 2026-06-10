@@ -13,7 +13,7 @@ import Telomare (AbortableF (..), BasicExprF (..), CompiledExpr,
                  Term3F (..), UnprocessedParsedTerm (..),
                  UnprocessedParsedTermF (..), b2i, convertAbortMessage, forget,
                  indentWithChildren', indentWithOneChild',
-                 indentWithTwoChildren', locatedNameText, pattern BasicEE)
+                 indentWithTwoChildren', locatedNameText, pattern BasicEE, HighTermF (..), BasicExprF (..), LamTermF(..))
 
 import qualified Control.Comonad.Trans.Cofree as CofreeT (CofreeF (..))
 import qualified Control.Monad.State as State
@@ -43,22 +43,31 @@ indentation :: Int -> String
 indentation 0 = []
 indentation n = ' ' : ' ' : indentation (n - 1)
 
-instance (Show l, Show v) => PrettyPrintable1 (ParserTermF l v) where
+instance (Show l, Show v) => PrettyPrintable1 (LamTermF l v) where
   showP1 = \case
-      ParserTermB x            -> showP1 x
-      TVarF v                  -> pure $ show v
-      TAppF c i                -> indentWithTwoChildren' "($)" (showP c) (showP i)
-      TCheckF cf i             -> indentWithTwoChildren' ":" (showP cf)  (showP i)
-      TITEF i t e              -> indentWithChildren' "ITE" $ showP <$> [i,t,e]
-      TLeftF x                 -> indentWithOneChild' "L" $ showP x
-      TRightF x                -> indentWithOneChild' "R" $ showP x
-      TTraceF x                -> indentWithOneChild' "T" $ showP x
-      THashF x                 -> indentWithOneChild' "#" $ showP x
-      TChurchF n               -> pure $ "$" <> show n
+      VarF v                  -> pure $ show v
+      AppF c i                -> indentWithTwoChildren' "($)" (showP c) (showP i)
+      LamF l x -> indentWithOneChild' ("\\" <> show l) $ showP x
+
+instance PrettyPrintable1 HighTermF where
+  showP1 = \case
+      CheckF cf i             -> indentWithTwoChildren' ":" (showP cf)  (showP i)
+      ITEF i t e              -> indentWithChildren' "ITE" $ showP <$> [i,t,e]
+      HLeftF x                 -> indentWithOneChild' "L" $ showP x
+      HRightF x                -> indentWithOneChild' "R" $ showP x
+      HTraceF x                -> indentWithOneChild' "T" $ showP x
+      HashF x                 -> indentWithOneChild' "#" $ showP x
+      ChurchF n               -> pure $ "$" <> show n
+  {-
       TLamF (Open v) x         -> indentWithOneChild' ("\\" <> show v) $ showP x
       TLamF (Closed v) x       -> indentWithOneChild' ("[\\" <> show v) $ showP x
       TLamF (LetBinding c v) x -> indentWithOneChild' ("{\\(" <> show c <> ") " <> show v) $ showP x
-      TLimitedRecursionF t r b -> indentWithChildren' "TRB" $ showP <$> [t,r,b]
+-}
+      RecursionF t r b -> indentWithChildren' "TRB" $ showP <$> [t,r,b]
+
+instance (Show l, Show v) => PrettyPrintable1 (ParserTermF l v) where
+  showP1 = \case
+      ParserTermB x            -> showP1 x
       TUnsizedRepeaterF        -> pure "*"
 
 indentSansFirstLine :: Int -> String -> String
@@ -115,37 +124,40 @@ instance Show MultiLineShowUPT where
     ind = indentSansFirstLine 2
     -- alg :: Base UnprocessedParsedTerm String -> String
     alg = \case
+      UnprocessedParsedTermB x -> case x of
+        PairSF x y -> "PairUP\n" <>
+                          "  " <> ind x <> "\n" <>
+                          "  " <> ind y
+      UnprocessedParsedTermH x -> case x of
+        (ITEF x y z) -> "ITEUP\n" <>
+                          "  " <> ind x <> "\n" <>
+                          "  " <> ind y <> "\n" <>
+                          "  " <> ind z
+        (ChurchF x) -> "ChurchUP " <> show x
+        (HLeftF x) -> "LeftUP\n" <>
+                        "  " <> ind x
+        (HRightF x) -> "RightUP\n" <>
+                          "  " <> ind x
+        (HTraceF x) -> "TraceUP\n" <>
+                          "  " <> ind x
+        (RecursionF x y z) -> "UnsizedRecursionUP\n" <>
+                          "  " <> ind x <> "\n" <>
+                          "  " <> ind y <> "\n" <>
+                          "  " <> ind z
+        (HashF x) -> "HashUP\n" <>
+                        "  " <> ind x
+        (CheckF x y) -> "CheckUP\n" <>
+                          "  " <> ind x <> "\n" <>
+                          "  " <> ind y
+      UnprocessedParsedTermL x -> case x of
+        VarF str -> "VarUP " <> str
+        (AppF x y) -> "AppUP\n" <>
+                          "  " <> ind x <> "\n" <>
+                          "  " <> ind y
+        (LamF str y) -> "LamUP " <> locatedNameText str <> "\n" <>
+                          "  " <> ind y
       IntUPF i -> "IntUP " <> show i
-      VarUPF str -> "VarUP " <> str
       StringUPF str -> "StringUP " <> show str
-      PairUPF x y -> "PairUP\n" <>
-                        "  " <> ind x <> "\n" <>
-                        "  " <> ind y
-      (ITEUPF x y z) -> "ITEUP\n" <>
-                        "  " <> ind x <> "\n" <>
-                        "  " <> ind y <> "\n" <>
-                        "  " <> ind z
-      (AppUPF x y) -> "AppUP\n" <>
-                        "  " <> ind x <> "\n" <>
-                        "  " <> ind y
-      (LamUPF str y) -> "LamUP " <> locatedNameText str <> "\n" <>
-                        "  " <> ind y
-      (ChurchUPF x) -> "ChurchUP " <> show x
-      (LeftUPF x) -> "LeftUP\n" <>
-                       "  " <> ind x
-      (RightUPF x) -> "RightUP\n" <>
-                        "  " <> ind x
-      (TraceUPF x) -> "TraceUP\n" <>
-                        "  " <> ind x
-      (UnsizedRecursionUPF x y z) -> "UnsizedRecursionUP\n" <>
-                        "  " <> ind x <> "\n" <>
-                        "  " <> ind y <> "\n" <>
-                        "  " <> ind z
-      (HashUPF x) -> "HashUP\n" <>
-                       "  " <> ind x
-      (CheckUPF x y) -> "CheckUP\n" <>
-                        "  " <> ind x <> "\n" <>
-                        "  " <> ind y
       (ListUPF []) -> "ListUP []"
       (ListUPF [x]) -> "ListUP [" <> x <> "]"
       (ListUPF ls) -> "ListUP\n" <>
@@ -170,17 +182,36 @@ instance Show PrettyUPT where
   show (PrettyUPT (UnprocessedParsedTerm upt)) = cata alg upt where
     -- alg :: Base UnprocessedParsedTerm String -> String
     alg = \case
+      UnprocessedParsedTermB x -> case x of
+        PairSF x y -> if length (lines (x <> y)) > 1
+                        then "( " <> indentSansFirstLine 2 x <> "\n" <>
+                              ", " <> indentSansFirstLine 2 y <> "\n" <>
+                              ")"
+                        else "(" <> x <> ", " <> y <>")"
+      UnprocessedParsedTermL x -> case x of
+        VarF str -> str
+        (AppF x y) -> (if (length . words $ x) == 1 then x else "(" <> x <> ")") <> " " <>
+                        if (length . words $ y) == 1 then y else "(" <> y <> ")"
+        (LamF str y) -> "\\ " <> locatedNameText str <> " -> " <> indentSansFirstLine (6 + length (locatedNameText str)) y
+      UnprocessedParsedTermH x -> case x of
+        (ITEF x y z) -> "if " <> indentSansFirstLine 3 x <> "\n" <>
+                            "  then " <> indentSansFirstLine 7 y <> "\n" <>
+                            "  else " <> indentSansFirstLine 7 z
+        (ChurchF x) -> "$" <> show x
+        (HLeftF x) -> "left (" <> indentSansFirstLine 6 x <> ")"
+        (HRightF x) -> "right (" <> indentSansFirstLine 7 x <> ")"
+        (HTraceF x) -> "trace (" <> indentSansFirstLine 7 x <> ")"
+        (RecursionF x y z) -> "{ " <> indentSansFirstLine 2 x <>
+                                      ", " <> indentSansFirstLine 2 y <>
+                                      ", " <> indentSansFirstLine 2 z <>
+                                      "}"
+        (HashF x) -> "# " <> indentSansFirstLine 2 x
+        (CheckF x y) -> if length (lines (x <> y)) > 1
+                            then "(" <> indentSansFirstLine 2 y <> " : " <> "\n" <>
+                                "    " <> indentSansFirstLine 4 y <> ")"
+                            else "(" <> y <> " : " <> x <> ")"
       IntUPF i -> show i
-      VarUPF str -> str
       StringUPF str -> show str
-      PairUPF x y -> if length (lines (x <> y)) > 1
-                       then "( " <> indentSansFirstLine 2 x <> "\n" <>
-                            ", " <> indentSansFirstLine 2 y <> "\n" <>
-                            ")"
-                       else "(" <> x <> ", " <> y <>")"
-      (ITEUPF x y z) -> "if " <> indentSansFirstLine 3 x <> "\n" <>
-                          "  then " <> indentSansFirstLine 7 y <> "\n" <>
-                          "  else " <> indentSansFirstLine 7 z
       (LetUPF ls x) ->
         "let " <> indentSansFirstLine 4 (unlines (assignList <$> ls)) <> "\n" <>
         "in " <> indentSansFirstLine 3 x
@@ -195,25 +226,9 @@ instance Show PrettyUPT where
             removeFirstComma = \case
               (',':str) -> str
               _         -> error "removeFirstComma: input does not start with a comma"
-      (AppUPF x y) -> (if (length . words $ x) == 1 then x else "(" <> x <> ")") <> " " <>
-                      if (length . words $ y) == 1 then y else "(" <> y <> ")"
-      (LamUPF str y) -> "\\ " <> locatedNameText str <> " -> " <> indentSansFirstLine (6 + length (locatedNameText str)) y
-      (ChurchUPF x) -> "$" <> show x
-      (LeftUPF x) -> "left (" <> indentSansFirstLine 6 x <> ")"
-      (RightUPF x) -> "right (" <> indentSansFirstLine 7 x <> ")"
-      (TraceUPF x) -> "trace (" <> indentSansFirstLine 7 x <> ")"
-      (UnsizedRecursionUPF x y z) -> "{ " <> indentSansFirstLine 2 x <>
-                                     ", " <> indentSansFirstLine 2 y <>
-                                     ", " <> indentSansFirstLine 2 z <>
-                                     "}"
-      (HashUPF x) -> "# " <> indentSansFirstLine 2 x
       (CaseUPF x ls) -> "case " <> x <> " of\n" <>
                         "  " <> indentSansFirstLine 2 (unlines ((\(p, r) -> indentSansFirstLine 2 (prettyPrintPattern (show . PrettyUPT) p <> " -> " <> r))
                                                                 <$> ls))
-      (CheckUPF x y) -> if length (lines (x <> y)) > 1
-                          then "(" <> indentSansFirstLine 2 y <> " : " <> "\n" <>
-                               "    " <> indentSansFirstLine 4 y <> ")"
-                          else "(" <> y <> " : " <> x <> ")"
 
 instance PrettyPrintable LocTag where
   showP = const $ pure ""

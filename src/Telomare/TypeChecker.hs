@@ -23,8 +23,8 @@ import PrettyPrint
 import Telomare (AbortableF (..), BasicExprF (..),
                  FunctionIndex (FunctionIndex), LocTag (..), PartialType (..),
                  StuckF (..), Term3, Term3F (..), TypeCheckError (..),
-                 pattern AbortFW, pattern BasicFW, pattern PairB,
-                 pattern StuckFW, pattern ZeroB)
+                 pattern AbortFW, pattern BasicFW,
+                 pattern StuckFW)
 
 debug :: Bool
 debug = False

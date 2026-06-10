@@ -35,19 +35,16 @@ import Text.Megaparsec.Pos (Pos)
 import Text.Read (readMaybe)
 import Text.Show.Deriving (deriveShow1)
 
-newtype AnnotatedUPT = AnnotatedUPT { unAnnotatedUPT :: AUPT }
-  deriving (Eq, Show)
-type AUPT = Cofree (UnprocessedParsedTermF PatternA) LocTag
-type PatternA = Fix (PatternF AnnotatedUPT)
-
 data AssignmentEntry
   = SingleAssignment LocatedName AUPT
   | ListAssignment LocTag [LocatedName] AUPT
 
+{-
 appAUPT :: String -> AUPT -> AUPT -> AUPT
 appAUPT s c i = GeneratedLoc s Nothing :< AppUPF c i
 iteAUPT :: String -> AUPT -> AUPT -> AUPT -> AUPT
 iteAUPT s i t e = GeneratedLoc s Nothing :< ITEUPF i t e
+-}
 
 -- |TelomareParser :: * -> *
 type TelomareParser = Parsec Void String
@@ -56,7 +53,7 @@ type TelomareParser = Parsec Void String
 parseVariable :: TelomareParser AUPT
 parseVariable = do
   (loc, str) <- withSourceSpan identifierRaw
-  pure $ loc :< VarUPF str
+  pure $ loc :< embedL (VarF str)
 
 -- |Line comments start with "--".
 lineComment :: TelomareParser ()
@@ -181,7 +178,7 @@ parsePair = parens $ do
   a <- scn *> parseLongExpr <* scn
   _ <- symbol "," <* scn
   b <- parseLongExpr <* scn
-  pure $ x :< PairUPF a b
+  pure $ x :< embedB (PairSF a b)
 
 -- |Parse unsized recursion triple
 parseUnsizedRecursion :: TelomareParser AUPT
@@ -192,7 +189,7 @@ parseUnsizedRecursion = curlies $ do
   b <- parseLongExpr <* scn
   _ <- symbol "," <* scn
   c <- parseLongExpr <* scn
-  pure $ x :< UnsizedRecursionUPF a b c
+  pure $ x :< embedH (RecursionF a b c)
 
 -- |Parse a list.
 parseList :: TelomareParser AUPT
@@ -212,14 +209,14 @@ parseITE = do
   thenExpr <- (parseLongExpr <|> parseSingleExpr) <* scn
   reserved "else" <* scn
   elseExpr <- parseLongExpr <* scn
-  pure $ x :< ITEUPF cond thenExpr elseExpr
+  pure $ x :< embedH (ITEF cond thenExpr elseExpr)
 
 parseHash :: TelomareParser AUPT
 parseHash = do
   x <- getSourceLoc
   symbol "#" <* scn
   upt <- parseSingleExpr
-  pure $ x :< HashUPF upt
+  pure $ x :< embedH (HashF upt)
 
 parseListAssignment :: TelomareParser AssignmentEntry
 parseListAssignment = do
@@ -340,7 +337,7 @@ parseApplied = do
     parseSingleExpr `sepBy` try sc'
   case fargs of
     (f:args) ->
-      pure $ foldl (\a b -> x :< AppUPF a b) f args
+      pure $ foldl (\a b -> x :< embedL (AppF a b)) f args
     _ -> fail "expected expression"
 
 -- |Generate a fresh-looking variable name from a pattern's shape, used
@@ -380,13 +377,14 @@ buildMultiLambda :: LocTag -> [(LocTag, PatternA)] -> AUPT -> AUPT
 buildMultiLambda lt patterns body =
   let varNames = lambdaVarName <$> patterns
       destructured = foldr applyDestructure body (zip (snd <$> patterns) (locatedNameText <$> varNames))
-      lamWrapped = foldr (\v inner -> lt :< LamUPF v inner) destructured varNames
+      -- lamWrapped = foldr (\v inner -> lt :< LamUPF v inner) destructured varNames
+      lamWrapped = foldr (\v inner -> LamP v inner) destructured varNames
   in lamWrapped
   where
     applyDestructure (p, varName) inner =
-      let bound = lt :< VarUPF varName
-          abort = lt :< AppUPF
-                    (lt :< VarUPF "abort")
+      let bound = lt :< embedL (VarF varName)
+          abort = AppP
+                    (lt :< embedL (VarF "abort"))
                     (lt :< StringUPF "buildMultiLambda: pattern not reached")
       in case project p of
            PatternVarF _ -> inner
@@ -394,7 +392,7 @@ buildMultiLambda lt patterns body =
              -- Use the validator result as the case scrutinee instead of
              -- CheckUPF: hash-based UDT validators are runtime values that
              -- the static refinement analyzer cannot symbolically evaluate.
-             let tyApplied = lt :< AppUPF (unAnnotatedUPT typeExpr) bound
+             let tyApplied = AppP (unAnnotatedUPT typeExpr) bound
              in lt :< CaseUPF tyApplied [(innerPat, inner)]
            _ ->
              lt :< CaseUPF bound
@@ -451,13 +449,13 @@ parseLongExpr = choice $ try <$> [ parseLet
 parseChurch :: TelomareParser AUPT
 parseChurch = do
   (x, upt) <- withSourceSpan (char '$' *> integerRaw)
-  pure . (x :<) . ChurchUPF $ fromInteger upt
+  pure . (x :<) . embedH . ChurchF $ fromInteger upt
 
 -- |Parse refinement check.
 parseRefinementCheck :: TelomareParser (AUPT -> AUPT)
 parseRefinementCheck = do
   x <- getSourceLoc
-  (\a b -> x :< CheckUPF a b) <$> (symbol ":" *> parseLongExpr)
+  (\a b -> x :< embedH (CheckF a b)) <$> (symbol ":" *> parseLongExpr)
 
 -- |Parse assignment add adding binding to ParserState.
 parseAssignment :: TelomareParser (String, AUPT)
@@ -534,8 +532,9 @@ expandAssignmentEntry = \case
     where
       names = locatedNameText <$> locatedNames
 
+-- TODO rethink this
 isUDTAssignment :: [String] -> AUPT -> Bool
-isUDTAssignment (name:_) (_ :< LamUPF _ _) = case name of
+isUDTAssignment (name:_) (LamP _ _) = case name of
   firstChar:_ -> isUpper firstChar
   _           -> False
 isUDTAssignment _ _ = False
@@ -551,7 +550,7 @@ expandPlainListAssignment loc locatedNames body =
         <> " names for " <> show (length slots) <> " values"
     Nothing ->
       let intermediate = listAssignmentIntermediate loc
-          source = loc :< VarUPF intermediate
+          source = loc :< embedL (VarF intermediate)
           mkAccessorBinding idx name = (name, accessAt loc idx source)
       in (locatedName (GeneratedLoc "listAssignmentIntermediate" (Just loc)) intermediate, body)
        : zipWith mkAccessorBinding [0 ..] locatedNames
@@ -565,9 +564,10 @@ listAssignmentSlots = go where
   go (l :< LetUPF binds inner) = do
     (xs, wrapBody) <- go inner
     pure (xs, \expr -> l :< LetUPF binds (wrapBody expr))
-  go (l :< LamUPF var inner) = do
+  -- go (l :< (embedL (LamF var inner))) = do
+  go (l :< UnprocessedParsedTermL (LamF var inner)) = do
     (xs, wrapBody) <- go inner
-    pure (xs, \expr -> l :< LamUPF var (wrapBody expr))
+    pure (xs, \expr -> l :< embedL (LamF var (wrapBody expr)))
   go _ = Nothing
 
 listAssignmentIntermediate :: LocTag -> String
@@ -576,8 +576,8 @@ listAssignmentIntermediate loc = case locStartLineColumn loc of
   Nothing             -> "__list_assignment"
 
 accessAt :: LocTag -> Int -> AUPT -> AUPT
-accessAt loc 0 e = loc :< LeftUPF e
-accessAt loc n e = loc :< LeftUPF (iterate (\x -> loc :< RightUPF x) e !! n)
+accessAt loc 0 e = loc :< embedH (HLeftF e)
+accessAt loc n e = loc :< embedH (HLeftF (iterate (\x -> loc :< embedH (HRightF x)) e !! n))
 
 -- |Expand a UDT declaration into a list of top-level bindings.
 --
@@ -619,7 +619,7 @@ expandUDTLocated loc locatedNames body =
 expandUDTLocated' :: LocTag -> [LocatedName] -> String -> AUPT -> [(LocatedName, AUPT)]
 expandUDTLocated' loc locatedNames tname body =
   case body of
-    (_ :< LamUPF hParam inner) ->
+    (LamP hParam inner) ->
       let (slots, wrapBody) = udtSlots tname inner
           hParamName = locatedNameText hParam
           (coreSlots, hoistedSlots) = splitAt 2 slots
@@ -628,17 +628,17 @@ expandUDTLocated' loc locatedNames tname body =
           validator    = autoValidator loc tname hParamName
           intermediate = "__udt_" <> tname
           hashName     = intermediate <> "_hash"
-          hashVar      = loc :< VarUPF hashName
-          coreList     = loc :< ListUPF ((loc :< VarUPF hParamName)
-                                      : (loc :< VarUPF tname)
+          hashVar      = loc :< embedL (VarF hashName)
+          coreList     = loc :< ListUPF ((loc :< embedL (VarF hParamName))
+                                      : (loc :< embedL (VarF tname))
                                       : coreSlots)
           wrappedInner = loc :< LetUPF [(locatedName loc tname, validator)] (wrapBody coreList)
-          wrapper      = loc :< LamUPF hParam wrappedInner
-          udtTuple     = loc :< AppUPF wrapper (loc :< HashUPF wrapper)
+          wrapper      = LamP hParam wrappedInner
+          udtTuple     = AppP wrapper (loc :< embedH (HashF wrapper))
           generated parent name = locatedName (GeneratedLoc name (Just parent)) name
-          hashBinding  = (generated loc hashName, accessAt loc 0 (loc :< VarUPF intermediate))
+          hashBinding  = (generated loc hashName, accessAt loc 0 (loc :< embedL (VarF intermediate)))
           mkAccessorBinding idx name =
-            (name, accessAt loc idx (loc :< VarUPF intermediate))
+            (name, accessAt loc idx (loc :< embedL (VarF intermediate)))
           mkHoistedBinding name slot =
             ( name
             , loc :< LetUPF [ (locatedName (locatedNameLoc hParam) hParamName, hashVar)
@@ -674,6 +674,7 @@ udtSlots tname = go where
 -- extra ITE.
 autoValidator :: LocTag -> String -> String -> AUPT
 autoValidator loc tname hParam =
+  {-
   loc :< LamUPF (locatedName (GeneratedLoc "annotated pattern lambda" (Just loc)) "__udt_v")
     (loc :< ITEUPF
        (loc :< AppUPF
@@ -684,6 +685,18 @@ autoValidator loc tname hParam =
        (loc :< RightUPF (loc :< VarUPF "__udt_v"))
         (loc :< AppUPF
            (loc :< VarUPF "abort")
+           (loc :< StringUPF ("not " <> tname))))
+-}
+  LamP (locatedName (GeneratedLoc "annotated pattern lambda" (Just loc)) "__udt_v")
+    (ITEP
+       (AppP
+          (AppP
+             (loc :< embedL (VarF "dEqual"))
+             (loc :< embedH (HLeftF (loc :< embedL (VarF "__udt_v")))))
+          (loc :< embedL (VarF hParam)))
+       (loc :< embedH (HRightF (loc :< embedL (VarF "__udt_v"))))
+        (AppP
+           (loc :< embedL (VarF "abort"))
            (loc :< StringUPF ("not " <> tname))))
 
 -- |Helper function to test parsers without a result.
@@ -714,22 +727,12 @@ runParseLongExpr str = bimap errorBundlePretty convert $ runParser parseLongExpr
     convert = UnprocessedParsedTerm . cata f where
       f :: C.CofreeF (UnprocessedParsedTermF PatternA) LocTag (Fix (UnprocessedParsedTermF Pattern)) -> Fix (UnprocessedParsedTermF Pattern)
       f (_ C.:< f') = embed $ case f' of
-        VarUPF s                  -> VarUPF s
-        ITEUPF i t e              -> ITEUPF i t e
+        UnprocessedParsedTermB x  -> UnprocessedParsedTermB x
+        UnprocessedParsedTermH x  -> UnprocessedParsedTermH x
         LetUPF bindings x         -> LetUPF bindings x
         ListUPF x                 -> ListUPF x
         IntUPF n                  -> IntUPF n
         StringUPF s               -> StringUPF s
-        PairUPF a b               -> PairUPF a b
-        AppUPF c i                -> AppUPF c i
-        LamUPF n x                -> LamUPF n x
-        ChurchUPF n               -> ChurchUPF n
-        UnsizedRecursionUPF t r b -> UnsizedRecursionUPF t r b
-        LeftUPF x                 -> LeftUPF x
-        RightUPF x                -> RightUPF x
-        TraceUPF x                -> TraceUPF x
-        CheckUPF c x              -> CheckUPF c x
-        HashUPF x                 -> HashUPF x
         UDTUPF names x            -> UDTUPF names x
         CaseUPF x matches         -> CaseUPF x $ fmap cp matches
         ImportQualifiedUPF a b    -> ImportQualifiedUPF a b

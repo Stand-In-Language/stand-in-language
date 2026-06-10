@@ -38,11 +38,11 @@ import Telomare (AbortableF (AbortF), AbstractRunTime, BasicExpr,
                  convertAbort, convertAbortMessage, convertBasic, convertStuck,
                  deferS, embedB, embedS, envB, eval, forget, insertAndGetKey,
                  leftB, locStartLineColumn, pairB, pattern AbortFW,
-                 pattern BasicEE, pattern BasicFW, pattern PairB,
-                 pattern StuckEE, pattern StuckFW, pattern ZeroB, rightB, s2b,
+                 AnnotatedUPT (..), PatternA,
+                 pattern BasicEE, pattern BasicFW, pattern PairP, AUPT,
+                 pattern StuckEE, pattern StuckFW, pattern ZeroP, rightB, s2b,
                  setEnvB, stuckEE, tag, zeroB)
-import Telomare.Parser (AUPT, AnnotatedUPT (AnnotatedUPT, unAnnotatedUPT),
-                        PatternA, parseModule, parseOneExprOrTopLevelDefs,
+import Telomare.Parser (parseModule, parseOneExprOrTopLevelDefs,
                         parsePrelude)
 import Telomare.Possible (SizingSettings (SizingSettings), appB, basicEval,
                           deferB, evalStaticCheck, getSizesM, sizeTermM,
@@ -148,9 +148,9 @@ funWrap fun app inp =
   in case eval (app fun $ fromTelomare iexpInp) of
     Right x -> case toTelomare x of
       Nothing -> ("error converting iteration value:\n" <> show x, Left $ AbortRunTime zeroB)
-      Just ZeroB -> ("aborted", Left $ AbortRunTime zeroB)
+      Just ZeroP -> ("aborted", Left $ AbortRunTime zeroB)
       -- Just (PairB disp newState) -> (b2s disp, pure $ fromTelomare newState)
-      Just (PairB disp newState) -> case b2s disp of
+      Just (PairP disp newState) -> case b2s disp of
         Just d -> (d, pure $ conv3 newState)
         _ -> ("error converting display value:\n" <> prettyPrint disp, Left . GenericRunTimeError "" $ conv2 disp)
     Left e -> ("runtime error:\n" <> show e, Left e)
@@ -225,7 +225,7 @@ evalLoopCore expr accumFn initAcc manualInput =
         newAcc <- accumFn acc out
         case nextState of
           Left e -> pure $ newAcc <> "\n" <> show e
-          Right ZeroB -> pure $ newAcc <> "\n" <> "done"
+          Right ZeroP -> pure $ newAcc <> "\n" <> "done"
           Right ns -> do
 
             (inp, rest) <-

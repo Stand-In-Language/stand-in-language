@@ -115,6 +115,7 @@ decompileTerm1 = \case
   _ :< TLimitedRecursionF t r b -> embed $ UnsizedRecursionUPF (decompileTerm1 t) (decompileTerm1 r) (decompileTerm1 b)
 -}
 
+{-
 decompileTerm2 :: Term2 -> Term1
 decompileTerm2 =
   let nameSupply = (fmap (:[]) ['a'..'z'] <> ([x <> y | x <- nameSupply, y <- nameSupply]))
@@ -137,3 +138,4 @@ decompileTerm2 =
         anno :< TLamF (Closed ()) x -> (\(Max n, r) -> (Max 0, (anno :<) $ TLamF (Closed (getName n)) r)) $ go x
         anno :< TLimitedRecursionF t r b -> (\x y z -> anno :< TLimitedRecursionF x y z) <$> go t <*> go r <*> go b
   in snd . go
+-}
