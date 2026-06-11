@@ -34,14 +34,14 @@ import Telomare (AbortableF (AbortF), AbstractRunTime, BasicExpr,
                  ResolverError (..), RunTimeError (..), StuckExpr, StuckF (..),
                  TelomareLike (..), Term2, Term3, Term3Builder, Term3F (..),
                  UnprocessedParsedTerm (..), UnprocessedParsedTermF (..),
-                 UnsizedRecursionToken (..), abortEE, appS, b2s, basicEE,
+                 UnsizedRecursionToken (..), pattern AbortEE, appS, b2s, pattern BasicEE,
                  convertAbort, convertAbortMessage, convertBasic, convertStuck,
-                 deferS, embedB, embedS, envB, eval, forget, insertAndGetKey,
-                 leftB, locStartLineColumn, pairB, pattern AbortFW,
+                 deferS, embedB, embedS, pattern EnvB, eval, forget, insertAndGetKey,
+                 pattern LeftB, locStartLineColumn, pattern PairB, pattern AbortFW,
                  AnnotatedUPT (..), PatternA,
                  pattern BasicEE, pattern BasicFW, pattern PairP, AUPT,
-                 pattern StuckEE, pattern StuckFW, pattern ZeroP, rightB, s2b,
-                 setEnvB, stuckEE, tag, zeroB)
+                 pattern StuckEE, pattern StuckFW, pattern RightB, s2b,
+                 pattern SetEnvB, pattern StuckEE, tag, pattern ZeroB)
 import Telomare.Parser (parseModule, parseOneExprOrTopLevelDefs,
                         parsePrelude)
 import Telomare.Possible (SizingSettings (SizingSettings), appB, basicEval,
@@ -63,14 +63,14 @@ convertPT :: (UnsizedRecursionToken -> Int) -> Term3 -> CompiledExpr
 convertPT ll = forget . flip State.evalState (toEnum 0, toEnum 0) . cata (f (convertBasic (convertAbort failConvert))) where
   failConvert = error "convertPT failed"
   appTC :: Term3Builder (Cofree CompiledExprF LocTag)
-  appTC = appS (pure $ leftB envB) (pure $ rightB envB)
+  appTC = appS (pure $ LeftB EnvB) (pure $ RightB EnvB)
   f convertOther (_ CofreeT.:< g)= case g of
     StuckFW (DeferSF _ x) -> x >>= deferS
-    Term3Unsized urt -> pure $ iterate setEnvB envB !! ll urt
+    Term3Unsized urt -> pure $ iterate SetEnvB EnvB !! ll urt
     Term3CheckingWrapper _ tc c ->
-      let performTC = (>>= deferS) ((\ia -> setEnvB (pairB (setEnvB (pairB (abortEE AbortF) ia))
-                                                     (rightB envB))) <$> appTC)
-      in (\tc' c' ptc -> setEnvB (pairB ptc (pairB  tc' c'))) <$> tc <*> c <*> performTC
+      let performTC = (>>= deferS) ((\ia -> SetEnvB (PairB (SetEnvB (PairB (AbortEE AbortF) ia))
+                                                     (RightB EnvB))) <$> appTC)
+      in (\tc' c' ptc -> SetEnvB (PairB ptc (PairB  tc' c'))) <$> tc <*> c <*> performTC
     x -> convertOther x
 
 data SizingOption
@@ -129,7 +129,7 @@ compileUnitTest = compile UnitTestSizing runStaticChecks
 compileUnitTestNoAbort :: Term3 -> Either EvalError CompiledExpr
 compileUnitTestNoAbort = fmap (cata f) . compileUnitTest where
   f = \case
-    AbortFW _ -> deferB (toEnum (-9)) envB
+    AbortFW _ -> deferB (toEnum (-9)) EnvB
     x -> embed x
 
 compile :: SizingOption -> (CompiledExpr -> Either EvalError CompiledExpr) -> Term3 -> Either EvalError CompiledExpr
@@ -140,17 +140,17 @@ compile so staticCheck t = debugTrace ("compiling term3:\n" <> prettyPrint t)
 funWrap :: forall a. (Show a, AbstractRunTime a) => a -> (a -> a -> a) -> Maybe (String, BasicExpr) -> (String, Either RunTimeError BasicExpr)
 funWrap fun app inp =
   let iexpInp = conv $ case inp of
-        Nothing                  -> zeroB
-        Just (userInp, oldState) -> pairB (s2b userInp) oldState
+        Nothing                  -> ZeroB
+        Just (userInp, oldState) -> PairB (s2b userInp) oldState
       conv = runIdentity . cata (convertBasic (\_ -> error "funWrap conversion error"))
       conv2 = runIdentity . cata (convertBasic (convertStuck (\_ -> error "funWrap conversion error2")))
       conv3 = runIdentity . cata (convertBasic (\_ -> error "funWrap conversion error3"))
   in case eval (app fun $ fromTelomare iexpInp) of
     Right x -> case toTelomare x of
-      Nothing -> ("error converting iteration value:\n" <> show x, Left $ AbortRunTime zeroB)
-      Just ZeroP -> ("aborted", Left $ AbortRunTime zeroB)
+      Nothing -> ("error converting iteration value:\n" <> show x, Left $ AbortRunTime ZeroB)
+      Just ZeroB -> ("aborted", Left $ AbortRunTime ZeroB)
       -- Just (PairB disp newState) -> (b2s disp, pure $ fromTelomare newState)
-      Just (PairP disp newState) -> case b2s disp of
+      Just (PairB disp newState) -> case b2s disp of
         Just d -> (d, pure $ conv3 newState)
         _ -> ("error converting display value:\n" <> prettyPrint disp, Left . GenericRunTimeError "" $ conv2 disp)
     Left e -> ("runtime error:\n" <> show e, Left e)
@@ -225,7 +225,7 @@ evalLoopCore expr accumFn initAcc manualInput =
         newAcc <- accumFn acc out
         case nextState of
           Left e -> pure $ newAcc <> "\n" <> show e
-          Right ZeroP -> pure $ newAcc <> "\n" <> "done"
+          Right ZeroB -> pure $ newAcc <> "\n" <> "done"
           Right ns -> do
 
             (inp, rest) <-
@@ -331,34 +331,34 @@ tagIExprWithEval iexpr = evalState (para alg iexpr) 0 where
   alg = \case
     BasicFW ZeroSF -> do
       i <- statePlus1
-      pure ((i, basicEval zeroB) :< embedB ZeroSF)
+      pure ((i, basicEval ZeroB) :< embedB ZeroSF)
     StuckFW EnvSF -> do
       i <- statePlus1
-      pure ((i, basicEval zeroB) :< embedS EnvSF)
+      pure ((i, basicEval ZeroB) :< embedS EnvSF)
     StuckFW (SetEnvSF (iexpr0, x)) -> do
       i <- statePlus1
       x' <- x
-      pure $ (i, basicEval $ setEnvB iexpr0) :< embedS (SetEnvSF x')
+      pure $ (i, basicEval $ SetEnvB iexpr0) :< embedS (SetEnvSF x')
     StuckFW (DeferSF ind (iexpr0, x)) -> do
       i <- statePlus1
       x' <- x
-      pure $ (i, basicEval . stuckEE $ DeferSF (toEnum (-1)) iexpr0) :< embedS (DeferSF (toEnum (-1)) x')
+      pure $ (i, basicEval . StuckEE $ DeferSF (toEnum (-1)) iexpr0) :< embedS (DeferSF (toEnum (-1)) x')
     StuckFW (LeftSF (iexpr0, x)) -> do
       i <- statePlus1
       x' <- x
-      pure $ (i, basicEval $ leftB iexpr0) :< embedS (LeftSF x')
+      pure $ (i, basicEval $ LeftB iexpr0) :< embedS (LeftSF x')
     StuckFW (RightSF (iexpr0, x)) -> do
       i <- statePlus1
       x' <- x
-      pure $ (i, basicEval $ rightB iexpr0) :< embedS (RightSF x')
+      pure $ (i, basicEval $ RightB iexpr0) :< embedS (RightSF x')
     BasicFW (PairSF (iexpr0, x) (iexpr1, y)) -> do
       i <- statePlus1
       x' <- x
       y' <- y
-      pure $ (i, basicEval $ pairB iexpr0 iexpr1) :< embedB (PairSF x' y')
+      pure $ (i, basicEval $ PairB iexpr0 iexpr1) :< embedB (PairSF x' y')
     StuckFW (GateSF (iexpr0, x) (iexpr1, y)) -> do
       i <- statePlus1
       x' <- x
       y' <- y
-      pure $ (i, basicEval . stuckEE $ GateSF iexpr0 iexpr1) :< embedS (GateSF x' y')
+      pure $ (i, basicEval . StuckEE $ GateSF iexpr0 iexpr1) :< embedS (GateSF x' y')
 

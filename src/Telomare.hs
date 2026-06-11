@@ -65,17 +65,23 @@ class AbortBase g where
 
 -- TODO make these bidirectional
 pattern BasicFW :: BasicBase g => BasicExprF x -> g x
-pattern BasicFW x <- (extractB -> Just x)
-pattern BasicEE :: (Base g ~ f, BasicBase f, Recursive g) => BasicExprF g -> g
-pattern BasicEE x <- (project -> BasicFW x)
+pattern BasicFW x <- (extractB -> Just x) where
+  BasicFW x = embedB x
+pattern BasicEE :: (Base g ~ f, BasicBase f, Recursive g, Corecursive g) => BasicExprF g -> g
+-- pattern BasicEE x <- (project -> BasicFW x) where
+pattern BasicEE x = GFix (BasicFW x)
 pattern StuckFW :: (StuckBase g) => StuckF x -> g x
-pattern StuckFW x <- (extractS -> Just x)
-pattern StuckEE :: (Base g ~ f, StuckBase f, Recursive g) => StuckF g -> g
-pattern StuckEE x <- (project -> StuckFW x)
+pattern StuckFW x <- (extractS -> Just x) where
+  StuckFW x = embedS x
+pattern StuckEE :: (Base g ~ f, StuckBase f, Recursive g, Corecursive g) => StuckF g -> g
+-- pattern StuckEE x <- (project -> StuckFW x)
+pattern StuckEE x = GFix (StuckFW x)
 pattern AbortFW :: AbortBase g => AbortableF x -> g x
-pattern AbortFW x <- (extractA -> Just x)
-pattern AbortEE :: (Base g ~ f, AbortBase f, Recursive g) => AbortableF g -> g
-pattern AbortEE x <- (project -> (AbortFW x))
+pattern AbortFW x <- (extractA -> Just x) where
+  AbortFW x = embedA x
+pattern AbortEE :: (Base g ~ f, AbortBase f, Recursive g, Corecursive g) => AbortableF g -> g
+-- pattern AbortEE x <- (project -> (AbortFW x))
+pattern AbortEE x = GFix (AbortFW x)
 
 {-
 pattern ZeroB :: (Base g ~ f, BasicBase f, Recursive g) => g
@@ -83,14 +89,38 @@ pattern ZeroB <- BasicEE ZeroSF
 pattern PairB :: (Base g ~ f, BasicBase f, Recursive g) => g -> g -> g
 pattern PairB a b <- BasicEE (PairSF a b)
 -}
-pattern FillFunction :: (Base g ~ f, BasicBase f, StuckBase f, Recursive g) => g -> g -> f g
-pattern FillFunction c e <- StuckFW (SetEnvSF (BasicEE (PairSF c e)))
-pattern GateSwitch :: (Base g ~ f, BasicBase f, StuckBase f, Recursive g) => g -> g -> g -> f g
-pattern GateSwitch l r s <- FillFunction (StuckEE (GateSF l r)) s
-pattern AppEE :: (Base g ~ f, BasicBase f, StuckBase f, Recursive g) => g -> g -> g
+pattern FillFunction :: (Base g ~ f, BasicBase f, StuckBase f, Recursive g, Corecursive g) => g -> g -> f g
+pattern FillFunction c e = StuckFW (SetEnvSF (BasicEE (PairSF c e)))
+pattern FillFunctionEE :: (Base g ~ f, BasicBase f, StuckBase f, Recursive g, Corecursive g) => g -> g -> g
+pattern FillFunctionEE c i = GFix (FillFunction c i)
+pattern GateSwitch :: (Base g ~ f, BasicBase f, StuckBase f, Recursive g, Corecursive g) => g -> g -> g -> f g
+pattern GateSwitch l r s = FillFunction (GateB l r) s
+pattern GateSwitchEE :: (Base g ~ f, BasicBase f, StuckBase f, Recursive g, Corecursive g) => g -> g -> g -> g
+pattern GateSwitchEE l r s = GFix (GateSwitch l r s)
+pattern AppEE :: (Base g ~ f, BasicBase f, StuckBase f, Recursive g, Corecursive g) => g -> g -> g
 pattern AppEE c i <- StuckEE (SetEnvSF (StuckEE (SetEnvSF (BasicEE (PairSF (StuckEE (DeferSF _ (BasicEE (PairSF (StuckEE (LeftSF (StuckEE (RightSF (StuckEE EnvSF))))) (BasicEE (PairSF (StuckEE (LeftSF (StuckEE EnvSF))) (StuckEE (RightSF (StuckEE (RightSF (StuckEE EnvSF))))))))))) (BasicEE (PairSF i c)))))))
 
+pattern EnvB :: (Recursive g, Corecursive g, Base g ~ f, StuckBase f) => g
+pattern EnvB = StuckEE EnvSF
+pattern SetEnvB :: (Recursive g, Corecursive g, Base g ~ f, StuckBase f) => g -> g
+pattern SetEnvB x = StuckEE (SetEnvSF x)
+pattern GateB :: (Recursive g, Corecursive g, Base g ~ f, StuckBase f) => g -> g -> g
+pattern GateB l r = StuckEE (GateSF l r)
+pattern LeftB :: (Recursive g, Corecursive g, Base g ~ f, StuckBase f) => g -> g
+pattern LeftB x = StuckEE (LeftSF x)
+pattern RightB :: (Recursive g, Corecursive g, Base g ~ f, StuckBase f) => g -> g
+pattern RightB x = StuckEE (RightSF x)
+pattern ZeroB :: (Recursive g, Corecursive g, Base g ~ f, BasicBase f) => g
+pattern ZeroB = BasicEE ZeroSF
+pattern AbortB :: (Recursive g, Corecursive g, Base g ~ f, AbortBase f) => g
+pattern AbortB = AbortEE AbortF
+-- note: only use this where annotations don't matter
+pattern PairB :: (Recursive g, Corecursive g, Base g ~ f, BasicBase f) => g -> g -> g
+pattern PairB a b = BasicEE (PairSF a b)
+
+
 -- TODO remove these in favor of patterns above
+{-
 basicEE :: (Base g ~ f, BasicBase f, Corecursive g) => BasicExprF g -> g
 basicEE = embed . embedB
 stuckEE :: (Base g ~ f, StuckBase f, Corecursive g) => StuckF g -> g
@@ -120,8 +150,10 @@ gateSwitch l r = fillFunction (gateB l r)
 
 abortB :: (Base g ~ f, AbortBase f, Corecursive g) => g
 abortB = abortEE AbortF
+-}
 
 -- TODO: remove in favor of varB
+{-
 firstArgB :: (Base g ~ f, BasicBase f, StuckBase f, Corecursive g) => g
 firstArgB = leftB envB
 secondArgB :: (Base g ~ f, BasicBase f, StuckBase f, Corecursive g) => g
@@ -132,16 +164,17 @@ fourthArgB :: (Base g ~ f, BasicBase f, StuckBase f, Corecursive g) => g
 fourthArgB = leftB . rightB . rightB $ rightB envB
 fifthArgB :: (Base g ~ f, BasicBase f, StuckBase f, Corecursive g) => g
 fifthArgB = leftB . rightB . rightB . rightB $ rightB envB
+-}
 
-varB :: (Base g ~ f, BasicBase f, StuckBase f, Corecursive g) => Int -> g
+varB :: (Base g ~ f, BasicBase f, StuckBase f, Recursive g, Corecursive g) => Int -> g
 varB n = if n < 0
   then error $ "varB invalid debruijin index " <> show n
-  else leftB (iterate rightB envB !! n)
+  else LeftB (iterate RightB EnvB !! n)
 
-i2B :: (Base g ~ f, BasicBase f, Corecursive g) => Int -> g
+i2B :: (Base g ~ f, BasicBase f, Recursive g, Corecursive g, CarryAnno g, CarryWrap g ~ w, BasicBase w) => Int -> g
 i2B = \case
-  0 -> zeroB
-  n -> pairB (i2B $ n - 1) zeroB
+  0 -> ZeroB
+  n -> PairP (i2B $ n - 1) ZeroB
 
 b2i :: (Base g ~ f, BasicBase f, Recursive g) => g -> Maybe Int
 b2i = cata f where
@@ -154,15 +187,15 @@ b2s :: forall g f. (Base g ~ f, CarryWrap g ~ f, BasicBase f, Recursive g, Corec
 b2s = fmap (fmap chr) . f where
   f = \case
     PairP x xs -> (:) <$> b2i x <*> f xs
-    ZeroP -> pure []
+    ZeroB -> pure []
     _ -> Nothing
 
-s2b :: forall g f. (Base g ~ f, BasicBase f, Corecursive g) => String -> g
-s2b = foldr (pairB . i2B . ord) zeroB
+s2b :: forall g f w. (Base g ~ f, BasicBase f, Recursive g, Corecursive g, CarryAnno g, CarryWrap g ~ w, BasicBase w) => String -> g
+s2b = foldr (PairP . i2B . ord) ZeroB
 
 -- note that this doesn't incorporate laziness necessary for things like sizing recursion
-iteB_ :: (Base g ~ f, BasicBase f, StuckBase f, Corecursive g) => g -> g -> g -> g
-iteB_ i t e = setEnvB $ pairB (gateB e t) i
+iteB_ :: (Base g ~ f, BasicBase f, StuckBase f, Recursive g, Corecursive g, CarryAnno g, CarryWrap g ~ w, BasicBase w) => g -> g -> g -> g
+iteB_ i t e = SetEnvB $ PairP (GateB e t) i
 
 data BasicExprF f
   = ZeroSF
@@ -797,11 +830,11 @@ type Term3Builder g = State (FunctionIndex, UnsizedRecursionToken) g
 buildTerm :: (Corecursive g) => Term3Builder g -> g
 buildTerm = flip State.evalState (toEnum 0, toEnum 0)
 
-deferS :: (Base g ~ f, StuckBase f, Corecursive g) => g -> Term3Builder g
+deferS :: (Base g ~ f, StuckBase f, Recursive g, Corecursive g) => g -> Term3Builder g
 deferS x = do
   fi <- State.gets fst
   State.modify (\(_, urt) -> (succ fi, urt))
-  pure . stuckEE $ DeferSF fi x
+  pure . StuckEE $ DeferSF fi x
 
 -- TODO: replace with PairP?
 pairS :: (Base g ~ CofreeT.CofreeF f a, BasicBase f, Recursive g, Corecursive g, Monad m) => m g -> m g -> m g
@@ -813,18 +846,19 @@ pairS a b = do
 
 clamS :: forall g f. (Base g ~ CofreeT.CofreeF f LocTag, StuckBase f, BasicBase f, Recursive g, Corecursive g)
   => Term3Builder g -> Term3Builder g
-clamS x = pairS (x >>= deferS) $ pure zeroB
+clamS x = pairS (x >>= deferS) $ pure ZeroB
 
 lamS :: forall g f. (Base g ~ CofreeT.CofreeF f LocTag, StuckBase f, BasicBase f, Recursive g, Corecursive g)
   => Term3Builder g -> Term3Builder g
-lamS x = pairS (x >>= deferS) $ pure envB
+lamS x = pairS (x >>= deferS) $ pure EnvB
 
-twiddleS :: forall g f. (Base g ~ CofreeT.CofreeF f LocTag, StuckBase f, BasicBase f, Corecursive g) => Term3Builder g
-twiddleS = deferS . pairB (leftB $ rightB envB) . pairB (leftB envB) $ rightB (rightB envB)
+twiddleS :: forall g f w. (Base g ~ CofreeT.CofreeF f LocTag, StuckBase f, BasicBase f, Recursive g, Corecursive g, CarryAnno g, CarryWrap g ~ w, BasicBase w)
+  => Term3Builder g
+twiddleS = deferS . PairP (LeftB $ RightB EnvB) . PairP (LeftB EnvB) $ RightB (RightB EnvB)
 
-appS :: forall g f. (Base g ~ CofreeT.CofreeF f LocTag, StuckBase f, BasicBase f, Recursive g, Corecursive g)
+appS :: forall g f w. (Base g ~ CofreeT.CofreeF f LocTag, StuckBase f, BasicBase f, Recursive g, Corecursive g, CarryAnno g, CarryWrap g ~ w, BasicBase w)
   => Term3Builder g -> Term3Builder g -> Term3Builder g
-appS c i = setEnvB . setEnvB <$> pairS twiddleS (pairS i c)
+appS c i = SetEnvB . SetEnvB <$> pairS twiddleS (pairS i c)
 
 -- inside three lambdas (\r f x -> ...)
 -- r is the repeater function
@@ -833,50 +867,52 @@ appS c i = setEnvB . setEnvB <$> pairS twiddleS (pairS i c)
 -- (f',env') is f (since f may contain a saved environment/closure env we want to use for each iteration)
 repeatFunctionS :: LocTag -> Term3Builder Term3
 repeatFunctionS l =
-  let applyF = setEnvB $ rightB envB
-      env' = rightB . rightB $ rightB envB
+  let applyF = SetEnvB $ RightB EnvB
+      env' = RightB . RightB $ RightB EnvB
       -- takes (rf, (f', (x, env'))), executes f' with (x, env') and creates a new frame
-      rf = deferS $ pairB (leftB envB)
-                          (pairB (leftB envB)
-                                 (pairB (leftB (rightB envB))
-                                        (pairB applyF env')))
-      r = leftB . leftB . rightB $ rightB envB
-      x = leftB envB
-      f' = leftB . leftB $ rightB envB
-      fenv = rightB . leftB $ rightB envB
+      rf = deferS $ PairP (LeftB EnvB)
+                          (PairP (LeftB EnvB)
+                                 (PairP (LeftB (RightB EnvB))
+                                        (PairP applyF env')))
+      r = LeftB . LeftB . RightB $ RightB EnvB
+      x = LeftB EnvB
+      f' = LeftB . LeftB $ RightB EnvB
+      fenv = RightB . LeftB $ RightB EnvB
       -- (r, (x, ((f', fenv), 0))) -> (rf, (rf, (f', (x, fenv))))
-      frameSetup = pairS rf (pairS rf (pure $ pairB f' (pairB x fenv)))
-  in clamS . lamS . lamS $ setEnvB <$> pairS (pure r) frameSetup
+      frameSetup = pairS rf (pairS rf (pure $ PairP f' (PairP x fenv)))
+  in clamS . lamS . lamS $ SetEnvB <$> pairS (pure r) frameSetup
 
 unsizedRepeater :: LocTag -> UnsizedRecursionToken -> Term3Builder Term3
-unsizedRepeater l tok = clamS . pure . leftB . rightB . rightB . rightB . embed $ l CofreeT.:< Term3Unsized tok
+unsizedRepeater l tok = clamS . pure . LeftB . RightB . RightB . RightB . embed $ l CofreeT.:< Term3Unsized tok
 
 repeaterAndAbort :: LocTag -> UnsizedRecursionToken -> Term3Builder Term3
 repeaterAndAbort l tok = pairS (unsizedRepeater l tok) abrt where
   -- args are (i, (b, ...)) since trb is on the stack
-  abrt = (>>= deferS) $ setEnvB . pairB (setEnvB $ pairB abortB abortToken) <$> appS (pure secondArgB) (pure firstArgB)
-  abortToken = pairB zeroB . i2B $ fromEnum tok
+  -- abrt = (>>= deferS) $ SetEnvB . PairP (SetEnvB $ PairP AbortB abortToken) <$> appS (pure secondArgB) (pure firstArgB)
+  abrt = (>>= deferS) $ SetEnvB . PairP (SetEnvB $ PairP AbortB abortToken) <$> appS (pure $ varB 1) (pure $ varB 0)
+  abortToken = PairP ZeroB . i2B $ fromEnum tok
 
 -- to construct a church numeral (\f x -> f ... (f x))
 -- the core is nested setenvs around an env, where the number of setenvs is magnitude of church numeral
 i2CB :: LocTag -> Int -> Term3Builder Term3
-i2CB l n = appS (repeatFunctionS l) . clamS . pure . leftB . rightB . rightB . rightB $ iterate setEnvB envB !! n
+i2CB l n = appS (repeatFunctionS l) . clamS . pure . LeftB . RightB . RightB . RightB $ iterate SetEnvB EnvB !! n
 
 -- function is called with (r,a), where r is the repeating function, and a is the abort function
 unsizedRecursionWrapper :: LocTag -> Term3Builder Term3 -> Term3Builder Term3 -> Term3Builder Term3 -> Term3Builder Term3
 unsizedRecursionWrapper loc t r b =
-  let repeater = leftB $ leftB envB
-      abrt = pairB (rightB $ leftB envB) envB
+  let repeater = LeftB $ LeftB EnvB
+      abrt = PairP (RightB $ LeftB EnvB) EnvB
       -- drop first arg (repeater)
       nsLamS :: Term3Builder Term3 -> Term3Builder Term3
-      nsLamS x = pairS (x >>= deferS) (pure $ rightB envB)
+      nsLamS x = pairS (x >>= deferS) (pure $ RightB EnvB)
       -- \t r b r' i -> if t i then r r' i else b i -- t r b are already on the stack when this is evaluated
-      rWrap = nsLamS . lamS $ iteB_ <$> appS (pure fifthArgB) (pure firstArgB)
-                                    <*> appS (appS (pure fourthArgB) (pure secondArgB)) (pure firstArgB)
-                                    <*> appS (pure thirdArgB) (pure firstArgB)
+      -- rWrap = nsLamS . lamS $ iteB_ <$> appS (pure fifthArgB) (pure firstArgB)
+      rWrap = nsLamS . lamS $ iteB_ <$> appS (pure $ varB 4) (pure $ varB 0)
+                                    <*> appS (appS (pure $ varB 3) (pure $ varB 1)) (pure $ varB 0)
+                                    <*> appS (pure $ varB 2) (pure $ varB 0)
       -- hack to make sure recursion test wrapper can be put in a definite place when sizing
-      tWrap = pairS ((>>= deferS) (appS (pure secondArgB) (pure firstArgB))) (pairS t $ pure zeroB)
-      trb = pairS b . pairS r . pairS tWrap $ pure zeroB
+      tWrap = pairS ((>>= deferS) (appS (pure $ varB 1) (pure $ varB 0))) (pairS t $ pure ZeroB)
+      trb = pairS b . pairS r . pairS tWrap $ pure ZeroB
   in pairS (appS (appS (appS (repeatFunctionS loc) (pure repeater)) rWrap) (pure abrt) >>= deferS) trb
 
 data DataType
@@ -946,17 +982,17 @@ tag :: Recursive a => anno -> a -> Cofree (Base a) anno
 tag anno x = anno :< (tag anno <$> project x)
 
 
-convertBasic :: (BasicBase g, BasicBase h, Base x ~ h, Corecursive x, Monad m) => (g (m x) -> m x) -> g (m x) -> m x
+convertBasic :: (BasicBase g, BasicBase h, Base x ~ h, Recursive x, Corecursive x, Monad m) => (g (m x) -> m x) -> g (m x) -> m x
 convertBasic convertOther = \case
-  BasicFW x -> basicEE <$> sequence x
+  BasicFW x -> BasicEE <$> sequence x
   x -> convertOther x
-convertStuck :: (StuckBase g, StuckBase h, Base x ~ h, Corecursive x, Monad m) => (g (m x) -> m x) -> g (m x) -> m x
+convertStuck :: (StuckBase g, StuckBase h, Base x ~ h, Recursive x, Corecursive x, Monad m) => (g (m x) -> m x) -> g (m x) -> m x
 convertStuck convertOther = \case
-  StuckFW x -> stuckEE <$> sequence x
+  StuckFW x -> StuckEE <$> sequence x
   x -> convertOther x
-convertAbort :: (AbortBase g, AbortBase h, Base x ~ h, Corecursive x, Monad m) => (g (m x) -> m x) -> g (m x) -> m x
+convertAbort :: (AbortBase g, AbortBase h, Base x ~ h, Recursive x, Corecursive x, Monad m) => (g (m x) -> m x) -> g (m x) -> m x
 convertAbort convertOther = \case
-  AbortFW x -> abortEE <$> sequence x
+  AbortFW x -> AbortEE <$> sequence x
   x -> convertOther x
 
 instance TelomareLike Term3 where
@@ -986,14 +1022,19 @@ insertAndGetKey v = do
   pure nextKey
 
 pattern AbortRecursion :: (Base g ~ f, CarryWrap g ~ f, BasicBase f, CarryAnno g, Recursive g, Corecursive g) => g -> g
-pattern AbortRecursion t <- PairP ZeroP t
+-- pattern AbortRecursion t <- PairP ZeroB t
+pattern AbortRecursion t = PairP ZeroB t
 pattern AbortUser :: (Base g ~ f, CarryWrap g ~ f, BasicBase f, CarryAnno g, Recursive g, Corecursive g) => g -> g
-pattern AbortUser m  <- PairP (PairP ZeroP ZeroP) m
+-- pattern AbortUser m  <- PairP (PairP ZeroB ZeroB) m
+pattern AbortUser m  = PairP (PairP ZeroB ZeroB) m
 pattern AbortAny :: (Base g ~ f, CarryWrap g ~ f, BasicBase f, CarryAnno g, Recursive g, Corecursive g) => g
-pattern AbortAny <- PairP (PairP (PairP ZeroP ZeroP) ZeroP) ZeroP
+--pattern AbortAny <- PairP (PairP (PairP ZeroB ZeroB) ZeroB) ZeroB
+pattern AbortAny = PairP (PairP (PairP ZeroB ZeroB) ZeroB) ZeroB
 pattern AbortUnsizeable :: (Base g ~ f, CarryWrap g ~ f, BasicBase f, CarryAnno g, Recursive g, Corecursive g) => g -> g
-pattern AbortUnsizeable t <- PairP (PairP (PairP (PairP ZeroP ZeroP) ZeroP) ZeroP) t
+-- pattern AbortUnsizeable t <- PairP (PairP (PairP (PairP ZeroB ZeroB) ZeroB) ZeroB) t
+pattern AbortUnsizeable t = PairP (PairP (PairP (PairP ZeroB ZeroB) ZeroB) ZeroB) t
 
+{-
 abortRecursion :: (Base g ~ f, BasicBase f, Corecursive g) => g -> g
 abortRecursion = pairB zeroB
 abortUser :: (Base g ~ f, BasicBase f, Corecursive g) => g -> g
@@ -1002,6 +1043,7 @@ abortAny :: (Base g ~ f, BasicBase f, Corecursive g) => g
 abortAny = pairB (pairB (pairB zeroB zeroB) zeroB) zeroB
 abortUnsizeable :: (Base g ~ f, BasicBase f, Corecursive g) => g -> g
 abortUnsizeable = pairB (pairB (pairB (pairB zeroB zeroB) zeroB) zeroB)
+-}
 
 convertAbortMessage :: (Base g ~ f, CarryWrap g ~ f, BasicBase f, Recursive g, Corecursive g, CarryAnno g, Show g) => g -> String
 convertAbortMessage = \case
@@ -1063,7 +1105,15 @@ instance CarryAnno (Cofree (ParserTermF (LamType l) v) LocTag) where
   type CarryWrap (Cofree (ParserTermF (LamType l) v) LocTag) = ParserTermF (LamType l) v
 
   getEmbed (a :< _) = (a :<)
--- Term1 = Cofree (ParserTermF (LamType String) String) LocTag
+
+instance CarryAnno Term3 where
+  type CarryWrap Term3 = Term3F
+
+  getEmbed (a :< _) = (a :<)
+instance CarryAnno (Cofree CompiledExprF LocTag) where
+  type CarryWrap (Cofree CompiledExprF LocTag) = CompiledExprF
+
+  getEmbed (a :< _) = (a :<)
 
 pattern GFix :: (Recursive g, Corecursive g, Base g ~ f) => f g -> g
 pattern GFix x <- (project -> x) where
@@ -1121,9 +1171,6 @@ pattern PairAFP a x y <- (a CofreeT.:< (extractB -> Just (PairSF x y))) where
 pattern PairP :: (Recursive g, CarryAnno g, Base g ~ f, CarryWrap g ~ w, BasicBase f, BasicBase w) => g -> g -> g
 pattern PairP a b <- (project -> (extractB -> Just (PairSF a b))) where
   PairP a b = getEmbed a (embedB (PairSF a b))
-pattern ZeroP :: (Recursive g, Corecursive g, Base g ~ f, BasicBase f) => g
-pattern ZeroP <- (project -> (extractB -> Just ZeroSF)) where
-  ZeroP = embed (embedB ZeroSF)
 
 
 {-

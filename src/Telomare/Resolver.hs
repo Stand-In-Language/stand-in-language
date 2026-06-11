@@ -468,7 +468,7 @@ splitExpr :: Term2 -> Term3
 splitExpr = flip State.evalState (toEnum 0, toEnum 0) . cata f where
   f = \case
     (anno C.:< g) -> rewriteOuterTag anno <$> case g of
-      ParserTermB ZeroSF -> pure zeroB
+      ParserTermB ZeroSF -> pure ZeroB
       ParserTermB (PairSF a b) -> pairS a b
       ParserTermL x -> case x of
         VarF n -> pure $ varB n
@@ -478,8 +478,8 @@ splitExpr = flip State.evalState (toEnum 0, toEnum 0) . cata f where
       ParserTermH h -> case h of
         CheckF tc c -> (\tc' c' -> anno :< Term3CheckingWrapper anno tc' c') <$> tc <*> c
         ITEF i t e -> iteB_ <$> i <*> t <*> e
-        HLeftF x -> leftB <$> x
-        HRightF x -> rightB <$> x
+        HLeftF x -> LeftB <$> x
+        HRightF x -> RightB <$> x
         HTraceF x -> x -- TODO add trace back in, or rethink
         ChurchF n -> i2CB anno n
         RecursionF t r b -> unsizedRecursionWrapper anno t r b
