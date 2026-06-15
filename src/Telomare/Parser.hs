@@ -370,7 +370,7 @@ buildMultiLambda :: LocTag -> [(LocTag, PatternA)] -> AUPT -> AUPT
 buildMultiLambda lt patterns body =
   let varNames = lambdaVarName <$> patterns
       destructured = foldr applyDestructure body (zip (snd <$> patterns) (locatedNameText <$> varNames))
-      lamWrapped = foldr (\v inner -> LamP v inner) destructured varNames
+      lamWrapped = foldr LamP destructured varNames
   in lamWrapped
   where
     applyDestructure (p, varName) inner =
@@ -705,16 +705,16 @@ runParseLongExpr str = bimap errorBundlePretty convert $ runParser parseLongExpr
     convert = UnprocessedParsedTerm . cata f where
       f :: C.CofreeF (UnprocessedParsedTermF PatternA) LocTag (Fix (UnprocessedParsedTermF Pattern)) -> Fix (UnprocessedParsedTermF Pattern)
       f (_ C.:< f') = embed $ case f' of
-        UnprocessedParsedTermB x  -> UnprocessedParsedTermB x
-        UnprocessedParsedTermH x  -> UnprocessedParsedTermH x
-        LetUPF bindings x         -> LetUPF bindings x
-        ListUPF x                 -> ListUPF x
-        IntUPF n                  -> IntUPF n
-        StringUPF s               -> StringUPF s
-        UDTUPF names x            -> UDTUPF names x
-        CaseUPF x matches         -> CaseUPF x $ fmap cp matches
-        ImportQualifiedUPF a b    -> ImportQualifiedUPF a b
-        ImportUPF s               -> ImportUPF s
+        UnprocessedParsedTermB x -> UnprocessedParsedTermB x
+        UnprocessedParsedTermH x -> UnprocessedParsedTermH x
+        LetUPF bindings x        -> LetUPF bindings x
+        ListUPF x                -> ListUPF x
+        IntUPF n                 -> IntUPF n
+        StringUPF s              -> StringUPF s
+        UDTUPF names x           -> UDTUPF names x
+        CaseUPF x matches        -> CaseUPF x $ fmap cp matches
+        ImportQualifiedUPF a b   -> ImportQualifiedUPF a b
+        ImportUPF s              -> ImportUPF s
       cp (p, b) = (cata (embed . pf) p, b)
       pf = \case
         PatternVarF s ->PatternVarF s

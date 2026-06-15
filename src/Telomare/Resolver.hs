@@ -37,9 +37,9 @@ import qualified Data.Set as Set
 import Debug.Trace (trace, traceShow, traceShowId)
 import PrettyPrint (prettyPrint)
 import Telomare
-import Telomare.Parser (TelomareParser,  identifier)
+import Telomare.Parser (TelomareParser, identifier)
+import Telomare.PossibleData (UnsizedRecursionF (TraceF))
 import Text.Megaparsec (errorBundlePretty, runParser)
-import Telomare.PossibleData (UnsizedRecursionF(TraceF))
 
 debug :: Bool
 debug = False
@@ -107,7 +107,7 @@ varsUPT :: AUPT -> Set String
 varsUPT = cata alg where
   alg (VarAFP _ n)     = Set.singleton n
   alg (LamAFP _ str x) = del (locatedNameText str) x
-  alg e              = F.fold e
+  alg e                = F.fold e
   del :: String -> Set String -> Set String
   del n x = if Set.member n x then Set.delete n x else x
 
@@ -288,7 +288,7 @@ debruijinize = ($ []) . runReaderT . cata f where
   findElem :: LocTag -> String -> [LamType String] -> m Term2
   findElem anno n vl = case find (ff n) (zip [0..] vl) of
     Just (i, _) -> pure $ VarP i
-    _ -> fail $ "undefined identifier " <> n
+    _           -> fail $ "undefined identifier " <> n
   ff n = \case
     (_, Open n') | n' == n -> True
     (_, Closed n') | n' == n -> True
@@ -344,9 +344,9 @@ splitExpr = flip State.evalState (toEnum 0, toEnum 0) . cata f where
       ParserTermB ZeroSF -> pure ZeroB
       ParserTermB (PairSF a b) -> pairS a b
       ParserTermL x -> case x of
-        VarF n -> pure $ varB n
-        AppF c i -> appS c i
-        LamF (Open ()) x -> lamS x
+        VarF n             -> pure $ varB n
+        AppF c i           -> appS c i
+        LamF (Open ()) x   -> lamS x
         LamF (Closed ()) x -> clamS x
       ParserTermH h -> case h of
         CheckF tc c -> (\tc' c' -> anno :< Term3CheckingWrapper anno tc' c') <$> tc <*> c
@@ -601,8 +601,8 @@ optimizeBuiltinFunctions = cata f where
     twoApp@(AppAFP a (GFix (AppAFP _ f x)) y) ->
       case project f of
         VarAFP _ "pair" -> embed $ PairAFP a x y
-        VarAFP _ "app" -> embed $ AppAFP a x y
-        _ -> embed twoApp
+        VarAFP _ "app"  -> embed $ AppAFP a x y
+        _               -> embed twoApp
     oneApp@(AppAFP a f x) ->
       case project f of
         VarAFP _ "left" -> HLeft x

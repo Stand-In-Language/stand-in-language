@@ -1,5 +1,3 @@
-{-# LANGUAGE LambdaCase #-}
-
 module Telomare.Decompiler where
 
 import Control.Comonad.Cofree (Cofree ((:<)))

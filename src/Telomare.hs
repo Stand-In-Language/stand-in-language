@@ -16,7 +16,9 @@ module Telomare where
 
 import Control.Applicative (Applicative (liftA2), liftA, liftA3)
 import Control.Comonad.Cofree (Cofree ((:<)))
-import qualified Control.Comonad.Trans.Cofree as CofreeT (CofreeF (..), ComonadCofree)
+import Control.Comonad.Trans.Cofree (CofreeF)
+import qualified Control.Comonad.Trans.Cofree as CofreeT (CofreeF (..),
+                                                          ComonadCofree)
 import Control.DeepSeq (NFData (..))
 import Control.Lens.Combinators (Plated (..), makePrisms, transform)
 import Control.Monad.Except (ExceptT)
@@ -27,8 +29,8 @@ import Data.Bool (bool)
 import Data.Char (chr, ord)
 import Data.Eq.Deriving (deriveEq1)
 import Data.Fix (Fix (..))
-import Data.Functor.Classes (Eq1 (..), Eq2 (..), Show1 (..), Show2 (..), eq1,
-                             showsUnary1, Ord1)
+import Data.Functor.Classes (Eq1 (..), Eq2 (..), Ord1, Show1 (..), Show2 (..),
+                             eq1, showsUnary1)
 import Data.Functor.Foldable (Base, Corecursive (embed),
                               Recursive (cata, project))
 import Data.Functor.Foldable.TH (MakeBaseFunctor (makeBaseFunctor))
@@ -42,7 +44,6 @@ import Data.Void (Void)
 import Debug.Trace (trace, traceShow, traceShowId)
 import GHC.Generics (Generic, Generic1, Generically1 (..))
 import Text.Show.Deriving (deriveShow1)
-import Control.Comonad.Trans.Cofree (CofreeF)
 
 {- top level TODO list
  - change AbortFrag form to something more convenient
@@ -527,11 +528,11 @@ instance LamBase (ParserTermF l v) where
 
 deriving instance (Eq l, Eq v, Eq a) => Eq (ParserTermF l v a)
 instance (Eq l, Eq v) => Eq1 (ParserTermF l v) where
-  liftEq eq (ParserTermB x) (ParserTermB y) = liftEq eq x y
-  liftEq eq (ParserTermH x) (ParserTermH y) = liftEq eq x y
-  liftEq eq (ParserTermL x) (ParserTermL y) = liftEq eq x y
+  liftEq eq (ParserTermB x) (ParserTermB y)    = liftEq eq x y
+  liftEq eq (ParserTermH x) (ParserTermH y)    = liftEq eq x y
+  liftEq eq (ParserTermL x) (ParserTermL y)    = liftEq eq x y
   liftEq _ TUnsizedRepeaterF TUnsizedRepeaterF = True
-  liftEq _ _ _ = False
+  liftEq _ _ _                                 = False
 
 
 -- |Helper function to indent. Usefull for indented Show instances.
@@ -839,7 +840,7 @@ type PartialType = Fix PartialTypeF
 
 toPartialType :: DataType -> PartialType
 toPartialType = \case
-  ZeroType -> embed $ ZeroTypeP
+  ZeroType -> embed ZeroTypeP
   ArrType i o -> embed $ ArrTypeP (toPartialType i) (toPartialType o)
   PairType a b -> embed $ PairTypeP (toPartialType a) (toPartialType b)
 

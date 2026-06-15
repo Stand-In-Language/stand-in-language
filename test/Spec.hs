@@ -32,7 +32,7 @@ import Test.QuickCheck
 
 -- Common datatypes for generating Telomare AST.
 import Common
-import Data.Functor.Foldable (Corecursive(..))
+import Data.Functor.Foldable (Corecursive (..))
 
 toChurch :: Int -> Term3
 toChurch x =

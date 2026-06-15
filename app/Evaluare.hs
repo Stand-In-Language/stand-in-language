@@ -20,9 +20,9 @@ import Reflex.Vty
 import System.Environment (getArgs)
 import qualified System.IO.Strict as Strict
 import qualified Telomare as Tel
-import Telomare (BasicExprF (..), CompiledExpr, CompiledExprF (..), StuckF (..))
+import Telomare (AUPT, AnnotatedUPT (..), BasicExprF (..), CompiledExpr,
+                 CompiledExprF (..), StuckF (..))
 import qualified Telomare.Eval as TE
-import Telomare (AUPT, AnnotatedUPT (..))
 import Telomare.Parser (parseModule)
 import Text.Read (readMaybe)
 

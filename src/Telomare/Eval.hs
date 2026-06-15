@@ -28,22 +28,21 @@ import qualified Control.Comonad.Trans.Cofree as CofreeT
 import Control.Lens (Identity (runIdentity))
 import Data.Functor.Foldable (Base, cata, embed, para)
 import PrettyPrint
-import Telomare (AbortableF (AbortF), AbstractRunTime, BasicExpr,
-                 BasicExprF (..), CompiledExpr, CompiledExprF, EvalError (..),
-                 LocTag (..), LocatedName (..), PartialTypeF (..), Pattern,
-                 ResolverError (..), RunTimeError (..), StuckExpr, StuckF (..),
-                 TelomareLike (..), Term2, Term3, Term3Builder, Term3F (..),
+import Telomare (AUPT, AbortableF (AbortF), AbstractRunTime, AnnotatedUPT (..),
+                 BasicExpr, BasicExprF (..), CompiledExpr, CompiledExprF,
+                 EvalError (..), LocTag (..), LocatedName (..),
+                 PartialTypeF (..), Pattern, PatternA, ResolverError (..),
+                 RunTimeError (..), StuckExpr, StuckF (..), TelomareLike (..),
+                 Term2, Term3, Term3Builder, Term3F (..),
                  UnprocessedParsedTerm (..), UnprocessedParsedTermF (..),
-                 UnsizedRecursionToken (..), pattern AbortEE, appS, b2s, pattern BasicEE,
-                 convertAbort, convertAbortMessage, convertBasic, convertStuck,
-                 deferS, embedB, embedS, pattern EnvB, eval, forget, insertAndGetKey,
-                 pattern LeftB, locStartLineColumn, pattern PairB, pattern AbortFW,
-                 AnnotatedUPT (..), PatternA,
-                 pattern BasicEE, pattern BasicFW, pattern PairP, AUPT,
-                 pattern StuckEE, pattern StuckFW, pattern RightB, s2b,
-                 pattern SetEnvB, pattern StuckEE, tag, pattern ZeroB)
-import Telomare.Parser (parseModule, parseOneExprOrTopLevelDefs,
-                        parsePrelude)
+                 UnsizedRecursionToken (..), appS, b2s, convertAbort,
+                 convertAbortMessage, convertBasic, convertStuck, deferS,
+                 embedB, embedS, eval, forget, insertAndGetKey,
+                 locStartLineColumn, pattern AbortEE, pattern AbortFW,
+                 pattern BasicEE, pattern BasicFW, pattern EnvB, pattern LeftB,
+                 pattern PairB, pattern PairP, pattern RightB, pattern SetEnvB,
+                 pattern StuckEE, pattern StuckFW, pattern ZeroB, s2b, tag)
+import Telomare.Parser (parseModule, parseOneExprOrTopLevelDefs, parsePrelude)
 import Telomare.Possible (SizingSettings (SizingSettings), appB, basicEval,
                           deferB, evalStaticCheck, getSizesM, sizeTermM,
                           term3ToUnsizedExpr)

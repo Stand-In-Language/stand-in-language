@@ -12,8 +12,10 @@ import Control.Monad.State (State)
 import qualified Control.Monad.State as State
 import Data.Bifunctor (second)
 import qualified Data.DList as DList
+import Data.Fix (Fix (..))
 import Data.Foldable (fold)
 import Data.Functor.Foldable
+import Data.List (nub, sort)
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Semigroup (Max (..))
@@ -22,12 +24,10 @@ import qualified Data.Set as Set
 import Debug.Trace
 import PrettyPrint
 import Telomare (AbortableF (..), BasicExprF (..),
-                 FunctionIndex (FunctionIndex), LocTag (..), PartialTypeF (..), PartialType,
-                 StuckF (..), Term3, Term3F (..), TypeCheckError (..),
-                 pattern AbortFW, pattern BasicFW,
+                 FunctionIndex (FunctionIndex), LocTag (..), PartialType,
+                 PartialTypeF (..), StuckF (..), Term3, Term3F (..),
+                 TypeCheckError (..), pattern AbortFW, pattern BasicFW,
                  pattern StuckFW)
-import Data.List (sort, nub)
-import Data.Fix (Fix(..))
 
 debug :: Bool
 debug = False

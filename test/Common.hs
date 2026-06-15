@@ -9,6 +9,7 @@ import Control.Applicative
 import Control.Comonad.Cofree (Cofree ((:<)))
 import Data.Bifunctor
 import Data.Fix (Fix (..))
+import Data.Functor.Foldable (Corecursive (..))
 import qualified Data.Map as Map
 import System.IO
 import System.Posix.IO
@@ -20,7 +21,6 @@ import Telomare.Resolver
 import Telomare.TypeChecker
 import Test.QuickCheck
 import Test.QuickCheck.Gen
-import Data.Functor.Foldable (Corecursive(..))
 
 class TestableIExpr a where
   getIExpr :: a -> StuckExpr -- maybe this should be StuckExpr
@@ -80,7 +80,7 @@ instance Arbitrary TestIExpr where
                     , pure2 EnvB
                     , lift2Texpr PairB <$> tree half <*> tree half
                     , lift1Texpr SetEnvB <$> tree (i - 1)
-                    , lift1Texpr (\x -> StuckEE (DeferSF (toEnum (-1)) x)) <$> tree (i - 1)
+                    , lift1Texpr (StuckEE  . DeferSF (toEnum (-1))) <$> tree (i - 1)
                     , lift2Texpr GateB <$> tree half <*> tree half
                     , lift1Texpr LeftB <$> tree (i - 1)
                     , lift1Texpr RightB <$> tree (i - 1)
@@ -93,7 +93,7 @@ instance Arbitrary TestIExpr where
     StuckEE (LeftSF x) -> TestIExpr x : (fmap (lift1Texpr LeftB) . shrink $ TestIExpr x)
     StuckEE (RightSF x) -> TestIExpr x : (fmap (lift1Texpr RightB) . shrink $ TestIExpr x)
     StuckEE (SetEnvSF x) -> TestIExpr x : (fmap (lift1Texpr SetEnvB) . shrink $ TestIExpr x)
-    StuckEE (DeferSF fi x) -> TestIExpr x : (fmap (lift1Texpr (\y -> StuckEE (DeferSF fi y))) . shrink $ TestIExpr x)
+    StuckEE (DeferSF fi x) -> TestIExpr x : (fmap (lift1Texpr (StuckEE . DeferSF fi)) . shrink $ TestIExpr x)
     PairB a b -> TestIExpr a : TestIExpr  b :
       [lift2Texpr PairB a' b' | (a', b') <- shrink (TestIExpr a, TestIExpr b)]
 
@@ -139,7 +139,7 @@ genTypedTree ti t i =
                           , rightOption (PairType ta tb)
                           ]
                     ArrType ti' to ->
-                      ((\x -> StuckEE (DeferSF (toEnum (-1)) x)) <$> genTypedTree (Just ti') to (i - 1)) :
+                      (StuckEE . DeferSF (toEnum (-1)) <$> genTypedTree (Just ti') to (i - 1)) :
                       if i < 1
                       then []
                       else optionGate ti' to
@@ -170,10 +170,10 @@ instance Arbitrary UnprocessedParsedTerm where
     leaves :: [String] -> Gen UnprocessedParsedTerm
     leaves varList =
       oneof $
-          (if not (null varList) then (((\s -> UnprocessedParsedTerm . Fix . UnprocessedParsedTermL $ VarF s) <$> elements varList) :) else id)
-          [ (\s -> UnprocessedParsedTerm . Fix . StringUPF $ s) <$> elements (fmap (("s" <>) . show) [1..9]) -- chooseAny
-          , (\n -> UnprocessedParsedTerm . Fix . IntUPF $ n) <$> elements [0..9]
-          , (\n -> UnprocessedParsedTerm . Fix . UnprocessedParsedTermH . ChurchF $ n) <$> elements [0..9]
+          (if not (null varList) then ((UnprocessedParsedTerm . Fix . UnprocessedParsedTermL . VarF <$> elements varList) :) else id)
+          [ UnprocessedParsedTerm . Fix . StringUPF <$> elements (fmap (("s" <>) . show) [1..9]) -- chooseAny
+          , UnprocessedParsedTerm . Fix . IntUPF <$> elements [0..9]
+          , UnprocessedParsedTerm . Fix . UnprocessedParsedTermH . ChurchF <$> elements [0..9]
           ]
     lambdaTerms = ["w", "x", "y", "z"]
     letTerms = fmap (("l" <>) . show) [1..255]
@@ -211,14 +211,14 @@ instance Arbitrary UnprocessedParsedTerm where
                                    [ leaves varList
                                    , mkUPT . ImportUPF <$> genImportName
                                    , (\m a -> mkUPT (ImportQualifiedUPF m a)) <$> genImportName <*> genImportName
-                                   , (\x' -> mkUPT (UnprocessedParsedTermH (HashF (wrap x')))) <$> recur (i - 1)
-                                   , (\x' -> mkUPT (UnprocessedParsedTermH (HLeftF (wrap x')))) <$> recur (i - 1)
-                                   , (\x' -> mkUPT (UnprocessedParsedTermH (HRightF (wrap x')))) <$> recur (i - 1)
-                                   , (\x' -> mkUPT (UnprocessedParsedTermH (HTraceF (wrap x')))) <$> recur (i - 1)
-                                   , elements lambdaTerms >>= \var -> (\body -> mkUPT (UnprocessedParsedTermL (LamF (locatedName UnknownLoc var) (wrap body)))) <$> genTree (var : varList) (i - 1)
+                                   , mkUPT . UnprocessedParsedTermH . HashF . wrap <$> recur (i - 1)
+                                   , mkUPT . UnprocessedParsedTermH . HLeftF . wrap <$> recur (i - 1)
+                                   , mkUPT . UnprocessedParsedTermH . HRightF . wrap <$> recur (i - 1)
+                                   , mkUPT . UnprocessedParsedTermH . HTraceF . wrap <$> recur (i - 1)
+                                   , elements lambdaTerms >>= \var -> mkUPT . UnprocessedParsedTermL . LamF (locatedName UnknownLoc var) . wrap <$> genTree (var : varList) (i - 1)
                                    , (\a b c -> mkUPT (UnprocessedParsedTermH (ITEF (wrap a) (wrap b) (wrap c)))) <$> recur third <*> recur third <*> recur third
                                    , (\a b c -> mkUPT (UnprocessedParsedTermH (RecursionF (wrap a) (wrap b) (wrap c)))) <$> recur third <*> recur third <*> recur third
-                                   , (\items -> mkUPT (ListUPF (fmap wrap items))) <$> childList
+                                   , mkUPT . ListUPF . fmap wrap <$> childList
                                    , do { listSize <- choose (2, max i 2)
                                         ; let childShare = div i listSize
                                               makeList [] = pure []
