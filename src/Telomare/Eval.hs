@@ -30,7 +30,7 @@ import Data.Functor.Foldable (Base, cata, embed, para)
 import PrettyPrint
 import Telomare (AbortableF (AbortF), AbstractRunTime, BasicExpr,
                  BasicExprF (..), CompiledExpr, CompiledExprF, EvalError (..),
-                 LocTag (..), LocatedName (..), PartialType (..), Pattern,
+                 LocTag (..), LocatedName (..), PartialTypeF (..), Pattern,
                  ResolverError (..), RunTimeError (..), StuckExpr, StuckF (..),
                  TelomareLike (..), Term2, Term3, Term3Builder, Term3F (..),
                  UnprocessedParsedTerm (..), UnprocessedParsedTermF (..),
@@ -113,8 +113,9 @@ runStaticChecks t =
 compileMain :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -> String -> Either EvalError CompiledExpr
 compileMain modules term = do
   let modules' = second (fmap (bimap unAnnotatedUPT (second unAnnotatedUPT))) <$> modules
+      mainType = embed $ PairTypeP (embed $ ArrTypeP (embed ZeroTypeP) (embed ZeroTypeP)) (embed AnyType)
   tcTerm <- first RE $ main2Term3 modules' term
-  case typeCheck (PairTypeP (ArrTypeP ZeroTypeP ZeroTypeP) AnyType) tcTerm of
+  case typeCheck mainType tcTerm of
     Just e -> Left $ TCE e
     _      -> first RE (main2Term3let modules' term) >>= compile MainSizing pure
 

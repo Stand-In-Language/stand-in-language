@@ -361,6 +361,7 @@ debruijinize = ($ []) . runReaderT . cata f where
   f = \case
     LamAFP a lt x -> embed . LamAFP a (convLam lt) <$> local (lt:) x
     VarAFP a n -> ask >>= \vl -> lift $ findElem a n vl
+    AppAFP a f i -> fmap embed . sequence $ AppAFP a f i
     -- x           -> fmap (anno :<) . sequence $ conv x
     x           -> fmap embed . sequence $ liftC conv x
   liftC f (a C.:< x) = a C.:< f x
@@ -426,6 +427,7 @@ debruijinizeApp = fmap closeLams . ($ []) . runReaderT . cata f where
 -}
     LamAFP a lt x -> embed . LamAFP a (convLam lt) <$> local (lt:) x
     VarAFP a n -> ask >>= \vl -> lift $ findElem a n vl
+    AppAFP a f i -> fmap embed . sequence $ AppAFP a f i
     -- x           -> fmap (anno :<) . sequence $ conv x
     x           -> fmap embed . sequence $ liftC conv x
   liftC f (a C.:< x) = a C.:< f x
@@ -720,6 +722,7 @@ letsToApps (AnnotatedUPT term) =
             CheckUPF cf x -> TCheckF cf x
             HashUPF x -> THashF x
 -}
+            UnprocessedParsedTermL (AppF f x) -> ParserTermL $ AppF f x
             UnprocessedParsedTermB x -> ParserTermB x
             UnprocessedParsedTermH x -> ParserTermH x
             IntUPF n -> unwrap $ i2t (anno, urC) n
@@ -776,6 +779,8 @@ optimizeBuiltinFunctions = cata f where
         VarAFP _ "trace" -> a :< UnprocessedParsedTermH (HTraceF x)
         VarAFP _ "pair" -> embed $ LamAFP a (locatedName a "y") (PairP x (embed $ VarAFP a "y"))
         VarAFP _ "app" -> embed $ LamAFP a (locatedName a "y") (AppP x (embed $ VarAFP a "y"))
+        _             -> embed oneApp
+    x -> embed x
 
 -- |Process an `Term2` to have all `HashUP` replaced by a unique number.
 -- The unique number is constructed by doing a SHA1 hash of the Term2 and

@@ -200,6 +200,7 @@ test-suite telomare-test
   build-depends:       QuickCheck
                      , base
                      , containers
+                     , data-fix
                      , dlist
                      , free
                      , hspec

@@ -264,18 +264,6 @@ instance PrettyPrintable1 DeferredEvalF where
     ManyLefts n x -> indentWithOneChild' ("L" <> show n) $ showP x
     ManyRights n x -> indentWithOneChild' ("R" <> show n) $ showP x
 
-instance PrettyPrintable PartialType where
-  showP x = pure $ f x where
-    f = \case
-      ZeroTypeP -> "Z"
-      AnyType -> "A"
-      TypeVariable _ n -> "V" <> show (fromEnum n)
-      ArrTypeP a b -> case a of
-        ArrTypeP _ _ -> "(" <> f a <> ") -> " <> f b
-        _            -> f a <> " -> " <> f b
-      PairTypeP a b -> "(" <> f a <> "," <> f b <> ")"
-
-
 data DeferredExprF f
   = DeferredExprB (BasicExprF f)
   | DeferredExprS (StuckF f)
@@ -581,6 +569,7 @@ data TypeCheckError
   | RecursiveType Int
   deriving (Eq, Ord, Show)
 
+{-
 newPartialType :: AnnotateState PartialType
 newPartialType = do
   (env, typeMap, v) <- State.get
@@ -704,3 +693,5 @@ instance Annotatable (Cofree g PartialType) where
 
 anno1 :: (Annotatable1 f, Annotatable g) => f g -> AnnotateState PartialType
 anno1 = liftAnno anno
+
+-}

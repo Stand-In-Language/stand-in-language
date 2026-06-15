@@ -28,7 +28,7 @@ import Data.Char (chr, ord)
 import Data.Eq.Deriving (deriveEq1)
 import Data.Fix (Fix (..))
 import Data.Functor.Classes (Eq1 (..), Eq2 (..), Show1 (..), Show2 (..), eq1,
-                             showsUnary1)
+                             showsUnary1, Ord1)
 import Data.Functor.Foldable (Base, Corecursive (embed),
                               Recursive (cata, project))
 import Data.Functor.Foldable.TH (MakeBaseFunctor (makeBaseFunctor))
@@ -489,6 +489,11 @@ instance LamBase (UnprocessedParsedTermF p) where
   type LamVar (UnprocessedParsedTermF p) = String
   type LamT (UnprocessedParsedTermF p) = LocatedName
 
+  embedL = UnprocessedParsedTermL
+  extractL = \case
+    UnprocessedParsedTermL x -> Just x
+    _                        -> Nothing
+
 type Pattern = Fix (PatternF UnprocessedParsedTerm)
 newtype UnprocessedParsedTerm = UnprocessedParsedTerm { unUnprocessedParsedTerm :: UPT}
 type UPT = Fix (UnprocessedParsedTermF Pattern)
@@ -930,6 +935,7 @@ instance Plated DataType where
     PairType a b -> PairType <$> f a <*> f b
     x            -> pure x
 
+{-
 data PartialType
   = ZeroTypeP
   | AnyType
@@ -943,15 +949,37 @@ instance Plated PartialType where
     ArrTypeP i o  -> ArrTypeP <$> f i <*> f o
     PairTypeP a b -> PairTypeP <$> f a <*> f b
     x             -> pure x
+-}
+data PartialTypeF f
+  = ZeroTypeP
+  | AnyType
+  | TypeVariable LocTag Int
+  | ArrTypeP f f
+  | PairTypeP f f
+  deriving (Eq, Ord, Show, Generic1, Functor, Foldable, Traversable)
+  deriving Eq1 via (Generically1 PartialTypeF)
+  deriving Ord1 via (Generically1 PartialTypeF)
+-- deriving instance (Show f) => Show (PartialTypeF f)
+instance Show1 PartialTypeF where
+  liftShowsPrec showsPrecFunc showList d = \case
+    ZeroTypeP -> showString "ZeroTypeP"
+    AnyType -> showString "AnyType"
+    TypeVariable l i -> showString "TypeVariable " . shows l . showString " " . shows i
+    ArrTypeP i o -> showString "ArrTypeP (" . showsPrecFunc 0 i . showString " -> " . showsPrecFunc 0 o . showString ")"
+    PairTypeP a b -> showString "PairTypeP (" . showsPrecFunc 0 b . showString ", " . showsPrecFunc 0 b . showString ")"
 
+type PartialType = Fix PartialTypeF
+
+{-
 instance Validity PartialType
 instance GenValid PartialType
+-}
 
 toPartialType :: DataType -> PartialType
 toPartialType = \case
-  ZeroType -> ZeroTypeP
-  ArrType i o -> ArrTypeP (toPartialType i) (toPartialType o)
-  PairType a b -> PairTypeP (toPartialType a) (toPartialType b)
+  ZeroType -> embed $ ZeroTypeP
+  ArrType i o -> embed $ ArrTypeP (toPartialType i) (toPartialType o)
+  PairType a b -> embed $ PairTypeP (toPartialType a) (toPartialType b)
 
 mergePairType :: DataType -> DataType
 mergePairType = transform f where
@@ -959,21 +987,40 @@ mergePairType = transform f where
   f x                            = x
 
 mergePairTypeP :: PartialType -> PartialType
+{-
 mergePairTypeP = transform f where
   f (PairTypeP ZeroTypeP ZeroTypeP) = ZeroTypeP
   f x                               = x
+-}
+mergePairTypeP = cata f where
+  f = \case
+    (PairTypeP (Fix ZeroTypeP) (Fix ZeroTypeP)) -> embed ZeroTypeP
+    x -> embed x
 
 containsFunction :: PartialType -> Bool
+{-
 containsFunction = \case
   ArrTypeP _ _  -> True
   PairTypeP a b -> containsFunction a || containsFunction b
   _             -> False
+-}
+containsFunction = cata f where
+  f = \case
+    ArrTypeP _ _ -> True
+    x -> or x
 
 cleanType :: PartialType -> Bool
+{-
 cleanType = \case
   ZeroTypeP     -> True
   PairTypeP a b -> cleanType a && cleanType b
   _             -> False
+-}
+cleanType = cata f where
+  f = \case
+    ZeroTypeP -> True
+    PairTypeP a b -> a && b
+    _ -> False
 
 forget :: Corecursive a => Cofree (Base a) anno -> a
 forget = cata (\(_ CofreeT.:< z) -> embed z)

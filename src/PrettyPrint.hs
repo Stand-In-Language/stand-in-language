@@ -8,9 +8,9 @@ import Control.Monad.State (State)
 import Data.Map (Map)
 import Telomare (AbortableF (..), BasicExprF (..), CompiledExpr,
                  CompiledExprF (..), DataType (..), FunctionIndex, LamType (..),
-                 LocTag, ParserTermF (..), PartialType (..), PatternF (..),
+                 LocTag, ParserTermF (..), PartialTypeF (..), PatternF (..),
                  StuckExpr, StuckExprF (..), StuckF (..), Term1, Term3 (..),
-                 Term3F (..), UnprocessedParsedTerm (..),
+                 Term3F (..), UnprocessedParsedTerm (..), PartialType,
                  UnprocessedParsedTermF (..), b2i, convertAbortMessage, forget,
                  indentWithChildren', indentWithOneChild',
                  indentWithTwoChildren', locatedNameText, pattern BasicEE, HighTermF (..), BasicExprF (..), LamTermF(..))
@@ -20,7 +20,7 @@ import qualified Control.Monad.State as State
 import qualified Data.Map as Map
 
 import Control.Comonad.Cofree
-import Data.Fix (Fix)
+import Data.Fix (Fix (..))
 import Data.Functor.Foldable
 import Data.List (elemIndex)
 import Text.Read (readMaybe)
@@ -94,11 +94,11 @@ instance Show PrettyDataType where
 newtype PrettyPartialType = PrettyPartialType PartialType
 
 showInternalP :: PartialType -> String
-showInternalP at@(ArrTypeP _ _) = concat ["(", show $ PrettyPartialType at, ")"]
+showInternalP at@(Fix (ArrTypeP _ _)) = concat ["(", show $ PrettyPartialType at, ")"]
 showInternalP t                 = show . PrettyPartialType $ t
 
 instance Show PrettyPartialType where
-  show (PrettyPartialType dt) = case dt of
+  show (PrettyPartialType dt) = case project dt of
     ZeroTypeP -> "Z"
     AnyType -> "A"
     (ArrTypeP a b) -> concat [showInternalP a, " -> ", showInternalP b]
@@ -117,6 +117,19 @@ prettyPrintPattern pp = go . project where
     PatternIgnoreF -> "_"
     PatternAnnotatedF x upt -> "{anno " <> prettyPrintPattern pp x <> " }" <> pp upt
 
+instance PrettyPrintable1 PartialTypeF where
+  showP1 = \case
+      ZeroTypeP -> pure "Z"
+      AnyType -> pure "A"
+      TypeVariable _ n -> pure $ "V" <> show (fromEnum n)
+  {-
+      ArrTypeP a b -> case project a of
+        -- ArrTypeP _ _ -> "(" <> showP a <> ") -> " <> showP b
+        ArrTypeP _ _ -> (\a' b' -> "(" <> a' <> ") -> " <> b') <$> showP a <*> showP b
+        _            -> f a <> " -> " <> f b
+-}
+      ArrTypeP a b -> (\a' b' -> "(" <> a' <> ") -> " <> b') <$> showP a <*> showP b
+      PairTypeP a b -> (\a' b' -> "(" <> a' <> "," <> b' <> ")") <$> showP a <*> showP b
 
 newtype MultiLineShowUPT = MultiLineShowUPT UnprocessedParsedTerm
 instance Show MultiLineShowUPT where

@@ -1237,6 +1237,7 @@ evalPartialUnsized zeroes = cata gatherLimits . transformNoDefer step where
     UnsizedFW (SizeStageF sm x) -> sm <> x
     x -> Data.Foldable.fold x
 
+{-
 fullyResolve :: (Int -> Maybe PartialType) -> PartialType -> PartialType
 fullyResolve resolve = convert where
     convert = transform endo
@@ -1424,3 +1425,5 @@ tcAnnotatedProp exp = validate . pa $ cata f exp where
   validate = \case
     Right _ -> True
     _ -> False
+
+-}
