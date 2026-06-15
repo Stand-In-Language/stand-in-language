@@ -39,13 +39,6 @@ data AssignmentEntry
   = SingleAssignment LocatedName AUPT
   | ListAssignment LocTag [LocatedName] AUPT
 
-{-
-appAUPT :: String -> AUPT -> AUPT -> AUPT
-appAUPT s c i = GeneratedLoc s Nothing :< AppUPF c i
-iteAUPT :: String -> AUPT -> AUPT -> AUPT -> AUPT
-iteAUPT s i t e = GeneratedLoc s Nothing :< ITEUPF i t e
--}
-
 -- |TelomareParser :: * -> *
 type TelomareParser = Parsec Void String
 
@@ -377,7 +370,6 @@ buildMultiLambda :: LocTag -> [(LocTag, PatternA)] -> AUPT -> AUPT
 buildMultiLambda lt patterns body =
   let varNames = lambdaVarName <$> patterns
       destructured = foldr applyDestructure body (zip (snd <$> patterns) (locatedNameText <$> varNames))
-      -- lamWrapped = foldr (\v inner -> lt :< LamUPF v inner) destructured varNames
       lamWrapped = foldr (\v inner -> LamP v inner) destructured varNames
   in lamWrapped
   where
@@ -564,7 +556,6 @@ listAssignmentSlots = go where
   go (l :< LetUPF binds inner) = do
     (xs, wrapBody) <- go inner
     pure (xs, \expr -> l :< LetUPF binds (wrapBody expr))
-  -- go (l :< (embedL (LamF var inner))) = do
   go (l :< UnprocessedParsedTermL (LamF var inner)) = do
     (xs, wrapBody) <- go inner
     pure (xs, \expr -> l :< embedL (LamF var (wrapBody expr)))
@@ -674,19 +665,6 @@ udtSlots tname = go where
 -- extra ITE.
 autoValidator :: LocTag -> String -> String -> AUPT
 autoValidator loc tname hParam =
-  {-
-  loc :< LamUPF (locatedName (GeneratedLoc "annotated pattern lambda" (Just loc)) "__udt_v")
-    (loc :< ITEUPF
-       (loc :< AppUPF
-          (loc :< AppUPF
-             (loc :< VarUPF "dEqual")
-             (loc :< LeftUPF (loc :< VarUPF "__udt_v")))
-          (loc :< VarUPF hParam))
-       (loc :< RightUPF (loc :< VarUPF "__udt_v"))
-        (loc :< AppUPF
-           (loc :< VarUPF "abort")
-           (loc :< StringUPF ("not " <> tname))))
--}
   LamP (locatedName (GeneratedLoc "annotated pattern lambda" (Just loc)) "__udt_v")
     (ITEP
        (AppP

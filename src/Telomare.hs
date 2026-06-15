@@ -68,27 +68,18 @@ pattern BasicFW :: BasicBase g => BasicExprF x -> g x
 pattern BasicFW x <- (extractB -> Just x) where
   BasicFW x = embedB x
 pattern BasicEE :: (Base g ~ f, BasicBase f, Recursive g, Corecursive g) => BasicExprF g -> g
--- pattern BasicEE x <- (project -> BasicFW x) where
 pattern BasicEE x = GFix (BasicFW x)
 pattern StuckFW :: (StuckBase g) => StuckF x -> g x
 pattern StuckFW x <- (extractS -> Just x) where
   StuckFW x = embedS x
 pattern StuckEE :: (Base g ~ f, StuckBase f, Recursive g, Corecursive g) => StuckF g -> g
--- pattern StuckEE x <- (project -> StuckFW x)
 pattern StuckEE x = GFix (StuckFW x)
 pattern AbortFW :: AbortBase g => AbortableF x -> g x
 pattern AbortFW x <- (extractA -> Just x) where
   AbortFW x = embedA x
 pattern AbortEE :: (Base g ~ f, AbortBase f, Recursive g, Corecursive g) => AbortableF g -> g
--- pattern AbortEE x <- (project -> (AbortFW x))
 pattern AbortEE x = GFix (AbortFW x)
 
-{-
-pattern ZeroB :: (Base g ~ f, BasicBase f, Recursive g) => g
-pattern ZeroB <- BasicEE ZeroSF
-pattern PairB :: (Base g ~ f, BasicBase f, Recursive g) => g -> g -> g
-pattern PairB a b <- BasicEE (PairSF a b)
--}
 pattern FillFunction :: (Base g ~ f, BasicBase f, StuckBase f, Recursive g, Corecursive g) => g -> g -> f g
 pattern FillFunction c e = StuckFW (SetEnvSF (BasicEE (PairSF c e)))
 pattern FillFunctionEE :: (Base g ~ f, BasicBase f, StuckBase f, Recursive g, Corecursive g) => g -> g -> g
@@ -117,54 +108,6 @@ pattern AbortB = AbortEE AbortF
 -- note: only use this where annotations don't matter
 pattern PairB :: (Recursive g, Corecursive g, Base g ~ f, BasicBase f) => g -> g -> g
 pattern PairB a b = BasicEE (PairSF a b)
-
-
--- TODO remove these in favor of patterns above
-{-
-basicEE :: (Base g ~ f, BasicBase f, Corecursive g) => BasicExprF g -> g
-basicEE = embed . embedB
-stuckEE :: (Base g ~ f, StuckBase f, Corecursive g) => StuckF g -> g
-stuckEE = embed . embedS
-abortEE :: (Base g ~ f, AbortBase f, Corecursive g) => AbortableF g -> g
-abortEE = embed . embedA
-
-zeroB :: (Base g ~ f, BasicBase f, Corecursive g) => g
-zeroB = basicEE ZeroSF
-pairB :: (Base g ~ f, BasicBase f, Corecursive g) => g -> g -> g
-pairB a b = basicEE $ PairSF a b
-envB :: (Base g ~ f, StuckBase f, Corecursive g) => g
-envB = stuckEE EnvSF
-setEnvB :: (Base g ~ f, StuckBase f, Corecursive g) => g -> g
-setEnvB = stuckEE . SetEnvSF
-gateB :: (Base g ~ f, StuckBase f, Corecursive g) => g -> g -> g
-gateB l r = stuckEE $ GateSF l r
-leftB :: (Base g ~ f, StuckBase f, Corecursive g) => g -> g
-leftB = stuckEE . LeftSF
-rightB :: (Base g ~ f, StuckBase f, Corecursive g) => g -> g
-rightB = stuckEE . RightSF
-
-fillFunction :: (Base g ~ f, BasicBase f, StuckBase f, Corecursive g) => g -> g -> g
-fillFunction c e = setEnvB (pairB c e)
-gateSwitch :: (Base g ~ f, BasicBase f, StuckBase f, Corecursive g) => g -> g -> g -> g
-gateSwitch l r = fillFunction (gateB l r)
-
-abortB :: (Base g ~ f, AbortBase f, Corecursive g) => g
-abortB = abortEE AbortF
--}
-
--- TODO: remove in favor of varB
-{-
-firstArgB :: (Base g ~ f, BasicBase f, StuckBase f, Corecursive g) => g
-firstArgB = leftB envB
-secondArgB :: (Base g ~ f, BasicBase f, StuckBase f, Corecursive g) => g
-secondArgB = leftB $ rightB envB
-thirdArgB :: (Base g ~ f, BasicBase f, StuckBase f, Corecursive g) => g
-thirdArgB = leftB . rightB $ rightB envB
-fourthArgB :: (Base g ~ f, BasicBase f, StuckBase f, Corecursive g) => g
-fourthArgB = leftB . rightB . rightB $ rightB envB
-fifthArgB :: (Base g ~ f, BasicBase f, StuckBase f, Corecursive g) => g
-fifthArgB = leftB . rightB . rightB . rightB $ rightB envB
--}
 
 varB :: (Base g ~ f, BasicBase f, StuckBase f, Recursive g, Corecursive g) => Int -> g
 varB n = if n < 0
@@ -407,6 +350,7 @@ instance (Show p) => Show1 (UnprocessedParsedTermF p) where
 
     UnprocessedParsedTermB x -> liftShowsPrec showsPrecFunc showList d x
     UnprocessedParsedTermH x -> liftShowsPrec showsPrecFunc showList d x
+    UnprocessedParsedTermL x -> liftShowsPrec showsPrecFunc showList d x
     ImportQualifiedUPF s1 s2 -> showString "ImportQualifedUPF " . shows s1 . showString " " . shows s2
     ImportUPF s -> showString "ImportUPF " . shows s
     LetUPF bindings body ->
@@ -421,10 +365,6 @@ instance (Show p) => Show1 (UnprocessedParsedTermF p) where
                      showChar ']'
     IntUPF n -> showString "IntUPF " . shows n
     StringUPF s -> showString "StringUPF " . shows s
-  {-
-    PairUPF a b -> showString "PairUPF " . showsPrecFunc 11 a . showChar ' '
-                   . showsPrecFunc 11 b
--}
     UDTUPF ss x -> showString "UDTUPF " . shows ss . showChar ' ' . showsPrecFunc 11 x
     CaseUPF scrutinee patterns ->
       let showPattern (pat, x) = showChar '(' . shows pat . showString ", "
@@ -447,27 +387,13 @@ data PatternF t f
 
 -- |Firstly parsed AST
 data UnprocessedParsedTermF p f
-  -- = VarUPF String
   = UnprocessedParsedTermH (HighTermF f)
   | UnprocessedParsedTermL (LamTermF LocatedName String f)
   | UnprocessedParsedTermB (BasicExprF f)
-  {-
-  | AppUPF f f
-  | CheckUPF f f
-  | ITEUPF f f f
-  | LeftUPF f
-  | RightUPF f
-  | TraceUPF f
-  | HashUPF f -- ^ On ad hoc user defined types, this term will be substitued to a unique Int.
-  | ChurchUPF Int
-  | LamUPF LocatedName f
-  | UnsizedRecursionUPF f f f
--}
   | LetUPF [(LocatedName, f)] f
   | ListUPF [f]
   | IntUPF Int
   | StringUPF String
-  --  | PairUPF f f
   | UDTUPF [String] f
   | CaseUPF f [(p, f)]
   -- TODO: check if adding this doesn't create partial functions
@@ -571,19 +497,6 @@ data ParserTermF l v f
   = ParserTermB (BasicExprF f)
   | ParserTermH (HighTermF f)
   | ParserTermL (LamTermF l v f)
-  {-
-  | TVarF v
-  | TAppF f f
-  | TCheckF f f
-  | TITEF f f f
-  | TLeftF f
-  | TRightF f
-  | TTraceF f
-  | THashF f
-  | TChurchF Int
-  | TLamF (LamType l) f
-  | TLimitedRecursionF f f f
--}
   | TUnsizedRepeaterF
   deriving (Functor, Foldable, Traversable)
 deriving instance (Show l, Show v, Show a) => Show (ParserTermF l v a)
@@ -591,6 +504,7 @@ instance (Show l, Show v) => Show1 (ParserTermF l v) where
   liftShowsPrec showsPrecFunc showList d = \case
     ParserTermB x -> liftShowsPrec showsPrecFunc showList d x
     ParserTermH x -> liftShowsPrec showsPrecFunc showList d x
+    ParserTermL x -> liftShowsPrec showsPrecFunc showList d x
     TUnsizedRepeaterF -> showString "TUnsizedRepeaterF"
 instance BasicBase (ParserTermF l v) where
   embedB = ParserTermB
@@ -610,44 +524,14 @@ instance LamBase (ParserTermF l v) where
   extractL = \case
     ParserTermL x -> Just x
     _             -> Nothing
-{-
-instance Show l => Show2 (ParserTermF l) where
-  liftShowsPrec2 showsPrecA showListA showsPrecB showListB prec = \case
-    TVarF v -> shows "TVarF " . showsPrecA 0 v
-    ParserTermB x -> shows "ParserTermB (" . liftShowsPrec showsPrecB showListB 0 x . shows ")"
-    TAppF c i -> shows "TAppF (" . showsPrecB 0 c . shows " " . showsPrecB 0 i . shows ")"
-    TCheckF cf c -> shows "TCheckF( " . showsPrecB 0 cf . shows ": " . showsPrecB 0 c . shows ")"
-    TITEF i t e -> shows "( " . showsPrecB 0 i . shows " ? " . showsPrecB 0 t . shows " : " . showsPrecB 0 e . shows " )"
-    TLeftF x -> shows "TLeftF (" . showsPrecB 0 x . shows ")"
-    TRightF x -> shows "TRightF (" . showsPrecB 0 x . shows ")"
-    TTraceF x -> shows "TTraceF (" . showsPrecB 0 x . shows ")"
-    THashF x -> shows "THashF (" . showsPrecB 0 x . shows ")"
-    TChurchF n -> shows "TChurchF " . shows n
-    TLamF t x -> shows "TLamF " . shows t . shows " (" . showsPrecB 0 x . shows ")"
-    TLimitedRecursionF t r b -> shows "{" . showsPrecB 0 t . shows ", " . showsPrecB 0 r . shows ", " . showsPrecB 0 b . shows "}"
-    TUnsizedRepeaterF -> shows "TUnsizedRepeaterF"
 
 deriving instance (Eq l, Eq v, Eq a) => Eq (ParserTermF l v a)
-instance Eq l => Eq2 (ParserTermF l) where
-  liftEq2 eqv eqa (BasicFW ZeroSF) (BasicFW ZeroSF) = True
-  liftEq2 eqv eqa (BasicFW (PairSF x1 y1)) (BasicFW (PairSF x2 y2)) = eqa x1 x2 && eqa y1 y2
-  liftEq2 eqv eqa (TVarF v1) (TVarF v2) = eqv v1 v2
-  liftEq2 eqv eqa (TAppF x1 y1) (TAppF x2 y2) = eqa x1 x2 && eqa y1 y2
-  liftEq2 eqv eqa (TCheckF x1 y1) (TCheckF x2 y2) = eqa x1 x2 && eqa y1 y2
-  liftEq2 eqv eqa (TITEF c1 t1 e1) (TITEF c2 t2 e2) = eqa c1 c2 && eqa t1 t2 && eqa e1 e2
-  liftEq2 eqv eqa (TLeftF x1) (TLeftF x2) = eqa x1 x2
-  liftEq2 eqv eqa (TRightF x1) (TRightF x2) = eqa x1 x2
-  liftEq2 eqv eqa (TTraceF x1) (TTraceF x2) = eqa x1 x2
-  liftEq2 eqv eqa (THashF x1) (THashF x2) = eqa x1 x2
-  liftEq2 eqv eqa (TChurchF n1) (TChurchF n2) = n1 == n2
-  liftEq2 eqv eqa (TLamF l1 x1) (TLamF l2 x2) = l1 == l2 && eqa x1 x2
-  liftEq2 eqv eqa (TLimitedRecursionF a1 b1 c1) (TLimitedRecursionF a2 b2 c2) =
-    eqa a1 a2 && eqa b1 b2 && eqa c1 c2
-  liftEq2 _ _ TUnsizedRepeaterF TUnsizedRepeaterF = True
-  liftEq2 _ _ _ _ = False
-deriving instance (Eq l, Eq v) => Eq1 (ParserTermF l v)
-deriving instance (Ord l, Ord v, Ord a) => Ord (ParserTermF l v a)
--}
+instance (Eq l, Eq v) => Eq1 (ParserTermF l v) where
+  liftEq eq (ParserTermB x) (ParserTermB y) = liftEq eq x y
+  liftEq eq (ParserTermH x) (ParserTermH y) = liftEq eq x y
+  liftEq eq (ParserTermL x) (ParserTermL y) = liftEq eq x y
+  liftEq _ TUnsizedRepeaterF TUnsizedRepeaterF = True
+  liftEq _ _ _ = False
 
 
 -- |Helper function to indent. Usefull for indented Show instances.
@@ -911,7 +795,6 @@ unsizedRecursionWrapper loc t r b =
       nsLamS :: Term3Builder Term3 -> Term3Builder Term3
       nsLamS x = pairS (x >>= deferS) (pure $ RightB EnvB)
       -- \t r b r' i -> if t i then r r' i else b i -- t r b are already on the stack when this is evaluated
-      -- rWrap = nsLamS . lamS $ iteB_ <$> appS (pure fifthArgB) (pure firstArgB)
       rWrap = nsLamS . lamS $ iteB_ <$> appS (pure $ varB 4) (pure $ varB 0)
                                     <*> appS (appS (pure $ varB 3) (pure $ varB 1)) (pure $ varB 0)
                                     <*> appS (pure $ varB 2) (pure $ varB 0)
@@ -935,21 +818,6 @@ instance Plated DataType where
     PairType a b -> PairType <$> f a <*> f b
     x            -> pure x
 
-{-
-data PartialType
-  = ZeroTypeP
-  | AnyType
-  | TypeVariable LocTag Int
-  | ArrTypeP PartialType PartialType
-  | PairTypeP PartialType PartialType
-  deriving (Show, Eq, Ord, Generic)
-
-instance Plated PartialType where
-  plate f = \case
-    ArrTypeP i o  -> ArrTypeP <$> f i <*> f o
-    PairTypeP a b -> PairTypeP <$> f a <*> f b
-    x             -> pure x
--}
 data PartialTypeF f
   = ZeroTypeP
   | AnyType
@@ -959,7 +827,6 @@ data PartialTypeF f
   deriving (Eq, Ord, Show, Generic1, Functor, Foldable, Traversable)
   deriving Eq1 via (Generically1 PartialTypeF)
   deriving Ord1 via (Generically1 PartialTypeF)
--- deriving instance (Show f) => Show (PartialTypeF f)
 instance Show1 PartialTypeF where
   liftShowsPrec showsPrecFunc showList d = \case
     ZeroTypeP -> showString "ZeroTypeP"
@@ -969,11 +836,6 @@ instance Show1 PartialTypeF where
     PairTypeP a b -> showString "PairTypeP (" . showsPrecFunc 0 b . showString ", " . showsPrecFunc 0 b . showString ")"
 
 type PartialType = Fix PartialTypeF
-
-{-
-instance Validity PartialType
-instance GenValid PartialType
--}
 
 toPartialType :: DataType -> PartialType
 toPartialType = \case
@@ -987,35 +849,18 @@ mergePairType = transform f where
   f x                            = x
 
 mergePairTypeP :: PartialType -> PartialType
-{-
-mergePairTypeP = transform f where
-  f (PairTypeP ZeroTypeP ZeroTypeP) = ZeroTypeP
-  f x                               = x
--}
 mergePairTypeP = cata f where
   f = \case
     (PairTypeP (Fix ZeroTypeP) (Fix ZeroTypeP)) -> embed ZeroTypeP
     x -> embed x
 
 containsFunction :: PartialType -> Bool
-{-
-containsFunction = \case
-  ArrTypeP _ _  -> True
-  PairTypeP a b -> containsFunction a || containsFunction b
-  _             -> False
--}
 containsFunction = cata f where
   f = \case
     ArrTypeP _ _ -> True
     x -> or x
 
 cleanType :: PartialType -> Bool
-{-
-cleanType = \case
-  ZeroTypeP     -> True
-  PairTypeP a b -> cleanType a && cleanType b
-  _             -> False
--}
 cleanType = cata f where
   f = \case
     ZeroTypeP -> True
@@ -1069,28 +914,13 @@ insertAndGetKey v = do
   pure nextKey
 
 pattern AbortRecursion :: (Base g ~ f, CarryWrap g ~ f, BasicBase f, CarryAnno g, Recursive g, Corecursive g) => g -> g
--- pattern AbortRecursion t <- PairP ZeroB t
 pattern AbortRecursion t = PairP ZeroB t
 pattern AbortUser :: (Base g ~ f, CarryWrap g ~ f, BasicBase f, CarryAnno g, Recursive g, Corecursive g) => g -> g
--- pattern AbortUser m  <- PairP (PairP ZeroB ZeroB) m
 pattern AbortUser m  = PairP (PairP ZeroB ZeroB) m
 pattern AbortAny :: (Base g ~ f, CarryWrap g ~ f, BasicBase f, CarryAnno g, Recursive g, Corecursive g) => g
---pattern AbortAny <- PairP (PairP (PairP ZeroB ZeroB) ZeroB) ZeroB
 pattern AbortAny = PairP (PairP (PairP ZeroB ZeroB) ZeroB) ZeroB
 pattern AbortUnsizeable :: (Base g ~ f, CarryWrap g ~ f, BasicBase f, CarryAnno g, Recursive g, Corecursive g) => g -> g
--- pattern AbortUnsizeable t <- PairP (PairP (PairP (PairP ZeroB ZeroB) ZeroB) ZeroB) t
 pattern AbortUnsizeable t = PairP (PairP (PairP (PairP ZeroB ZeroB) ZeroB) ZeroB) t
-
-{-
-abortRecursion :: (Base g ~ f, BasicBase f, Corecursive g) => g -> g
-abortRecursion = pairB zeroB
-abortUser :: (Base g ~ f, BasicBase f, Corecursive g) => g -> g
-abortUser = pairB (pairB zeroB zeroB)
-abortAny :: (Base g ~ f, BasicBase f, Corecursive g) => g
-abortAny = pairB (pairB (pairB zeroB zeroB) zeroB) zeroB
-abortUnsizeable :: (Base g ~ f, BasicBase f, Corecursive g) => g -> g
-abortUnsizeable = pairB (pairB (pairB (pairB zeroB zeroB) zeroB) zeroB)
--}
 
 convertAbortMessage :: (Base g ~ f, CarryWrap g ~ f, BasicBase f, Recursive g, Corecursive g, CarryAnno g, Show g) => g -> String
 convertAbortMessage = \case
@@ -1168,29 +998,17 @@ pattern GFix x <- (project -> x) where
 pattern VarFP :: (LamBase f, LamVar f ~ n) => n -> f x
 pattern VarFP n <- (extractL -> Just (VarF n)) where
   VarFP n = embedL $ VarF n
--- pattern VarAFP :: (HighBase f, HighName f ~ n) => LocTag -> n -> CofreeF f LocTag x
 pattern VarAFP :: (LamBase f, LamVar f ~ n) => a -> n -> CofreeF f a x
 pattern VarAFP a n <- (a CofreeT.:< (extractL -> Just (VarF n))) where
   VarAFP a n = a CofreeT.:< embedL (VarF n)
 pattern VarP :: (Recursive g, Corecursive g, Base g ~ f, LamBase f, LamVar f ~ n) => n -> g
 pattern VarP n = GFix (VarFP n)
-{-
-pattern AppFP :: (HighBase f) => b -> b -> f b
-pattern AppFP f i <- (extractH -> Just (AppF f i)) where
-  AppFP f i = embedH $ AppF f i
--}
--- pattern AppAFP :: (HighBase f) => LocTag -> b -> b -> CofreeF f LocTag b
 pattern AppAFP :: (LamBase f) => a -> b -> b -> CofreeF f a b
 pattern AppAFP a f i <- (a CofreeT.:< (extractL -> Just (AppF f i))) where
   AppAFP a f i = a CofreeT.:< embedL (AppF f i)
 pattern AppP :: (Recursive g, CarryAnno g, Base g ~ f, CarryWrap g ~ w, LamBase w, LamBase f) => g -> g -> g
 pattern AppP f i <- (project -> (extractL -> Just (AppF f i))) where
   AppP f i = getEmbed f (embedL (AppF f i))
-{-
-pattern LamFP :: (HighBase f, HighLam f ~ n) => n -> b -> CofreeF f LocTag b
-pattern LamFP n x <- (extractH -> Just (LamF n x))
--}
--- pattern LamAFP :: (HighBase f, HighLam f ~ n) => LocTag -> n -> b -> CofreeF f LocTag b
 pattern LamAFP :: (LamBase f, LamT f ~ n) => a -> n -> b -> CofreeF f a b
 pattern LamAFP a n x <- (a CofreeT.:< (extractL -> Just (LamF n x))) where
   LamAFP a n x = (a CofreeT.:<) . embedL $ LamF n x
@@ -1218,62 +1036,3 @@ pattern PairAFP a x y <- (a CofreeT.:< (extractB -> Just (PairSF x y))) where
 pattern PairP :: (Recursive g, CarryAnno g, Base g ~ f, CarryWrap g ~ w, BasicBase f, BasicBase w) => g -> g -> g
 pattern PairP a b <- (project -> (extractB -> Just (PairSF a b))) where
   PairP a b = getEmbed a (embedB (PairSF a b))
-
-
-{-
-pattern AppUP :: UnprocessedParsedTerm -> UnprocessedParsedTerm -> UnprocessedParsedTerm
-pattern AppUP f i <- UnprocessedParsedTerm (Fix (AppUPF (UnprocessedParsedTerm -> f) (UnprocessedParsedTerm -> i))) where
-  AppUP f i = UnprocessedParsedTerm (Fix (AppUPF (unUnprocessedParsedTerm f) (unUnprocessedParsedTerm i)))
-pattern ITEUP :: UnprocessedParsedTerm -> UnprocessedParsedTerm -> UnprocessedParsedTerm -> UnprocessedParsedTerm
-pattern ITEUP i t e <- UnprocessedParsedTerm (Fix (ITEUPF (UnprocessedParsedTerm -> i) (UnprocessedParsedTerm -> t) (UnprocessedParsedTerm -> e))) where
-  ITEUP i t e = UnprocessedParsedTerm (Fix (ITEUPF (unUnprocessedParsedTerm i) (unUnprocessedParsedTerm t) (unUnprocessedParsedTerm e)))
-pattern VarUP :: String -> UnprocessedParsedTerm
-pattern VarUP s <- UnprocessedParsedTerm (Fix (VarUPF s)) where
-  VarUP s = UnprocessedParsedTerm (Fix (VarUPF s))
-pattern LetUP :: [(LocatedName, UnprocessedParsedTerm)] -> UnprocessedParsedTerm -> UnprocessedParsedTerm
-pattern LetUP binds body <- UnprocessedParsedTerm (Fix (LetUPF (fmap (second UnprocessedParsedTerm) -> binds) (UnprocessedParsedTerm -> body))) where
-  LetUP binds body = UnprocessedParsedTerm (Fix (LetUPF (fmap (second unUnprocessedParsedTerm) binds) (unUnprocessedParsedTerm body)))
-pattern ListUP :: [UnprocessedParsedTerm] -> UnprocessedParsedTerm
-pattern ListUP items <- UnprocessedParsedTerm (Fix (ListUPF (fmap UnprocessedParsedTerm -> items))) where
-  ListUP items = UnprocessedParsedTerm (Fix (ListUPF (fmap unUnprocessedParsedTerm items)))
-pattern IntUP :: Int -> UnprocessedParsedTerm
-pattern IntUP n <- UnprocessedParsedTerm (Fix (IntUPF n)) where
-  IntUP n = UnprocessedParsedTerm (Fix (IntUPF n))
-pattern StringUP :: String -> UnprocessedParsedTerm
-pattern StringUP s <- UnprocessedParsedTerm (Fix (StringUPF s)) where
-  StringUP s = UnprocessedParsedTerm (Fix (StringUPF s))
-pattern PairUP :: UnprocessedParsedTerm -> UnprocessedParsedTerm -> UnprocessedParsedTerm
-pattern PairUP a b <- UnprocessedParsedTerm (Fix (PairUPF (UnprocessedParsedTerm -> a) (UnprocessedParsedTerm -> b))) where
-  PairUP a b = UnprocessedParsedTerm (Fix (PairUPF (unUnprocessedParsedTerm a) (unUnprocessedParsedTerm b)))
-pattern LamUP :: LocatedName -> UnprocessedParsedTerm -> UnprocessedParsedTerm
-pattern LamUP v body <- UnprocessedParsedTerm (Fix (LamUPF v (UnprocessedParsedTerm -> body))) where
-  LamUP v body = UnprocessedParsedTerm (Fix (LamUPF v (unUnprocessedParsedTerm body)))
-pattern ChurchUP :: Int -> UnprocessedParsedTerm
-pattern ChurchUP n <- UnprocessedParsedTerm (Fix (ChurchUPF n)) where
-  ChurchUP n = UnprocessedParsedTerm (Fix (ChurchUPF n))
-pattern UnsizedRecursionUP :: UnprocessedParsedTerm -> UnprocessedParsedTerm -> UnprocessedParsedTerm -> UnprocessedParsedTerm
-pattern UnsizedRecursionUP t r b <- UnprocessedParsedTerm (Fix (UnsizedRecursionUPF (UnprocessedParsedTerm -> t) (UnprocessedParsedTerm -> r) (UnprocessedParsedTerm -> b))) where
-  UnsizedRecursionUP t r b = UnprocessedParsedTerm (Fix (UnsizedRecursionUPF (unUnprocessedParsedTerm t) (unUnprocessedParsedTerm r) (unUnprocessedParsedTerm b)))
-pattern LeftUP :: UnprocessedParsedTerm -> UnprocessedParsedTerm
-pattern LeftUP x <- UnprocessedParsedTerm (Fix (LeftUPF (UnprocessedParsedTerm -> x))) where
-  LeftUP x = UnprocessedParsedTerm (Fix (LeftUPF (unUnprocessedParsedTerm x)))
-pattern RightUP :: UnprocessedParsedTerm -> UnprocessedParsedTerm
-pattern RightUP x <- UnprocessedParsedTerm (Fix (RightUPF (UnprocessedParsedTerm -> x))) where
-  RightUP x = UnprocessedParsedTerm (Fix (RightUPF (unUnprocessedParsedTerm x)))
-pattern TraceUP :: UnprocessedParsedTerm -> UnprocessedParsedTerm
-pattern TraceUP x <- UnprocessedParsedTerm (Fix (TraceUPF (UnprocessedParsedTerm -> x))) where
-  TraceUP x = UnprocessedParsedTerm (Fix (TraceUPF (unUnprocessedParsedTerm x)))
-pattern HashUP :: UnprocessedParsedTerm -> UnprocessedParsedTerm
-pattern HashUP x <- UnprocessedParsedTerm (Fix (HashUPF (UnprocessedParsedTerm -> x))) where
-  HashUP x = UnprocessedParsedTerm (Fix (HashUPF (unUnprocessedParsedTerm x)))
-pattern CaseUP :: UnprocessedParsedTerm -> [(Fix (PatternF UnprocessedParsedTerm), UnprocessedParsedTerm)] -> UnprocessedParsedTerm
-pattern CaseUP scrutinee alts <- UnprocessedParsedTerm (Fix (CaseUPF (UnprocessedParsedTerm -> scrutinee) (fmap (second UnprocessedParsedTerm) -> alts))) where
-  CaseUP scrutinee alts = UnprocessedParsedTerm (Fix (CaseUPF (unUnprocessedParsedTerm scrutinee) (fmap (second unUnprocessedParsedTerm) alts)))
-pattern ImportUP :: String -> UnprocessedParsedTerm
-pattern ImportUP s <- UnprocessedParsedTerm (Fix (ImportUPF s)) where
-  ImportUP s = UnprocessedParsedTerm (Fix (ImportUPF s))
-pattern ImportQualifiedUP :: String -> String -> UnprocessedParsedTerm
-pattern ImportQualifiedUP m a <- UnprocessedParsedTerm (Fix (ImportQualifiedUPF m a)) where
-  ImportQualifiedUP m a = UnprocessedParsedTerm (Fix (ImportQualifiedUPF m a))
-
--}

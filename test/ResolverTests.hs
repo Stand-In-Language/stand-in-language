@@ -229,17 +229,17 @@ aux222 =
 
 containsTHash :: Term2' -> Bool
 containsTHash (_ :< termF) = case termF of
-  THashF _              -> True
-  TLimitedRecursionF a b c -> containsTHash a || containsTHash b || containsTHash c
-  TITEF a b c           -> containsTHash a || containsTHash b || containsTHash c
-  ParserTermB (PairSF a b) -> containsTHash a || containsTHash b
-  TAppF a b             -> containsTHash a || containsTHash b
-  TCheckF a b           -> containsTHash a || containsTHash b
-  TLamF _ a             -> containsTHash a
-  TLeftF a              -> containsTHash a
-  TRightF a             -> containsTHash a
-  TTraceF a             -> containsTHash a
-  _                     -> False
+  ParserTermH (HashF _)            -> True
+  ParserTermH (RecursionF a b c)   -> containsTHash a || containsTHash b || containsTHash c
+  ParserTermH (ITEF a b c)         -> containsTHash a || containsTHash b || containsTHash c
+  ParserTermB (PairSF a b)         -> containsTHash a || containsTHash b
+  ParserTermL (AppF a b)           -> containsTHash a || containsTHash b
+  ParserTermH (CheckF a b)         -> containsTHash a || containsTHash b
+  ParserTermL (LamF _ a)           -> containsTHash a
+  ParserTermH (HLeftF a)           -> containsTHash a
+  ParserTermH (HRightF a)          -> containsTHash a
+  ParserTermH (HTraceF a)          -> containsTHash a
+  _                                -> False
 
 onlyHashUPsChanged :: Term2' -> Bool
 onlyHashUPsChanged term2 = all (isHash . fst) diffList where
@@ -247,8 +247,8 @@ onlyHashUPsChanged term2 = all (isHash . fst) diffList where
   diffList = diffTerm2 (term2, generateAllHashes term2)
   isHash :: Term2' -> Bool
   isHash (_ :< termF) = case termF of
-    THashF _ -> True
-    _        -> False
+    ParserTermH (HashF _) -> True
+    _                     -> False
 
 checkAllHashes :: Term2' -> Bool
 checkAllHashes = noDups . allHashesToTerm2
@@ -263,31 +263,31 @@ allHashesToTerm2 term2 =
   let term2WithoutTHash = generateAllHashes term2
       interm :: (Term2', Term2') -> [Term2']
       interm (t1@(_ :< f1), t2@(_ :< f2)) = case (f1, f2) of
-        (THashF _,  _) -> [t2]
-        (TITEF a b c, TITEF a' b' c') -> interm (a, a') <> interm (b, b') <> interm (c, c')
-        (TLimitedRecursionF a b c, TLimitedRecursionF a' b' c') -> interm (a, a') <> interm (b, b') <> interm (c, c')
+        (ParserTermH (HashF _),  _) -> [t2]
+        (ParserTermH (ITEF a b c), ParserTermH (ITEF a' b' c')) -> interm (a, a') <> interm (b, b') <> interm (c, c')
+        (ParserTermH (RecursionF a b c), ParserTermH (RecursionF a' b' c')) -> interm (a, a') <> interm (b, b') <> interm (c, c')
         (ParserTermB (PairSF a b), ParserTermB (PairSF a' b')) -> interm (a, a') <> interm (b, b')
-        (TAppF a b, TAppF a' b') -> interm (a, a') <> interm (b, b')
-        (TCheckF a b, TCheckF a' b') -> interm (a, a') <> interm (b, b')
-        (TLamF _ a, TLamF _ a') -> interm (a, a')
-        (TLeftF a, TLeftF a') -> interm (a, a')
-        (TRightF a, TRightF a') -> interm (a, a')
-        (TTraceF a, TTraceF a') -> interm (a, a')
+        (ParserTermL (AppF a b), ParserTermL (AppF a' b')) -> interm (a, a') <> interm (b, b')
+        (ParserTermH (CheckF a b), ParserTermH (CheckF a' b')) -> interm (a, a') <> interm (b, b')
+        (ParserTermL (LamF _ a), ParserTermL (LamF _ a')) -> interm (a, a')
+        (ParserTermH (HLeftF a), ParserTermH (HLeftF a')) -> interm (a, a')
+        (ParserTermH (HRightF a), ParserTermH (HRightF a')) -> interm (a, a')
+        (ParserTermH (HTraceF a), ParserTermH (HTraceF a')) -> interm (a, a')
         _ | t1 /= t2 -> error "t1 and t2 should be the same (inside of allHashesToTerm2, within interm)"
         _ -> []
   in interm (term2, term2WithoutTHash)
 
 diffTerm2 :: (Term2', Term2') -> [(Term2', Term2')]
 diffTerm2 (t1@(_ :< f1), t2@(_ :< f2)) = case (f1, f2) of
-  (TITEF a b c, TITEF a' b' c') -> diffTerm2 (a, a') <> diffTerm2 (b, b') <> diffTerm2 (c, c')
-  (TLimitedRecursionF a b c, TLimitedRecursionF a' b' c') -> diffTerm2 (a, a') <> diffTerm2 (b, b') <> diffTerm2 (c, c')
+  (ParserTermH (ITEF a b c), ParserTermH (ITEF a' b' c')) -> diffTerm2 (a, a') <> diffTerm2 (b, b') <> diffTerm2 (c, c')
+  (ParserTermH (RecursionF a b c), ParserTermH (RecursionF a' b' c')) -> diffTerm2 (a, a') <> diffTerm2 (b, b') <> diffTerm2 (c, c')
   (ParserTermB (PairSF a b), ParserTermB (PairSF a' b')) -> diffTerm2 (a, a') <> diffTerm2 (b, b')
-  (TAppF a b, TAppF a' b') -> diffTerm2 (a, a') <> diffTerm2 (b, b')
-  (TCheckF a b, TCheckF a' b') -> diffTerm2 (a, a') <> diffTerm2 (b, b')
-  (TLamF _ a, TLamF _ a') -> diffTerm2 (a, a')
-  (TLeftF a, TLeftF a') -> diffTerm2 (a, a')
-  (TRightF a, TRightF a') -> diffTerm2 (a, a')
-  (TTraceF a, TTraceF a') -> diffTerm2 (a, a')
+  (ParserTermL (AppF a b), ParserTermL (AppF a' b')) -> diffTerm2 (a, a') <> diffTerm2 (b, b')
+  (ParserTermH (CheckF a b), ParserTermH (CheckF a' b')) -> diffTerm2 (a, a') <> diffTerm2 (b, b')
+  (ParserTermL (LamF _ a), ParserTermL (LamF _ a')) -> diffTerm2 (a, a')
+  (ParserTermH (HLeftF a), ParserTermH (HLeftF a')) -> diffTerm2 (a, a')
+  (ParserTermH (HRightF a), ParserTermH (HRightF a')) -> diffTerm2 (a, a')
+  (ParserTermH (HTraceF a), ParserTermH (HTraceF a')) -> diffTerm2 (a, a')
   _ | t1 /= t2 -> [(t1, t2)]
   _ -> []
 
@@ -517,7 +517,7 @@ showAllTransformations input = do
       diff = getGroupedDiff str3 str1
   section "validateVariables" . show $ validateVariablesVar
   section "Diff validateVariables" $ ppDiff diff
-  let Right debruijinizeVar = (>>= debruijinize []) validateVariablesVar
+  let Right debruijinizeVar = (>>= debruijinize) validateVariablesVar
       str4 = lines . show $ debruijinizeVar
       diff = getGroupedDiff str4 str3
   section "debruijinize" . show $ debruijinizeVar

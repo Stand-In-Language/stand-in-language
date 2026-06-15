@@ -18,8 +18,7 @@ import qualified System.IO.Strict as Strict
 import Telomare
 import Telomare.Eval (SizingOption (..), compile, compileUnitTest,
                       compileUnitTestNoAbort, runStaticChecks)
-import Telomare.Parser (AnnotatedUPT (..), TelomareParser, parseLongExpr,
-                        parsePrelude)
+import Telomare.Parser (TelomareParser, parseLongExpr, parsePrelude)
 import Telomare.Possible (SizingSettings (SizingSettings))
 import Telomare.Resolver (process, pruneBindings)
 

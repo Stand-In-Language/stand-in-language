@@ -16,7 +16,7 @@ import PrettyPrint
 import qualified System.IO.Strict as Strict
 import Telomare
 import Telomare.Eval (SizingOption (..), compile, runStaticChecks)
-import Telomare.Parser (AnnotatedUPT (..), parseLongExpr, parsePrelude)
+import Telomare.Parser (parseLongExpr, parsePrelude)
 import Telomare.Possible (SizingSettings (SizingSettings))
 import Telomare.Resolver (process, pruneBindings)
 import Test.Tasty

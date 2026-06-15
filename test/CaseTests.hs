@@ -57,10 +57,10 @@ showPatternTerm = prettyAUPT . pattern2UPT UnknownLoc
 prettyAUPT :: AUPT -> String
 prettyAUPT (_ :< term) = case term of
   IntUPF i      -> show i
-  VarUPF str    -> str
+  UnprocessedParsedTermL (VarF str) -> str
   StringUPF str -> show str
-  PairUPF x y   -> "(" <> prettyAUPT x <> "," <> prettyAUPT y <> ")"
-  AppUPF x y    -> prettyAUPT x <> " " <> prettyAUPT y
+  UnprocessedParsedTermB (PairSF x y) -> "(" <> prettyAUPT x <> "," <> prettyAUPT y <> ")"
+  UnprocessedParsedTermL (AppF x y)   -> prettyAUPT x <> " " <> prettyAUPT y
   _             -> error $ "unexpected generated case test term: " <> show term
 
 runCaseExpWithPattern :: (PatternA -> String) -> PatternA -> IO String

@@ -42,14 +42,14 @@ import Language.LSP.Protocol.Types (NormalizedUri, Position (..), Range (..),
 import qualified Language.LSP.Protocol.Types as LSPTypes
 import Language.LSP.Server
 
-import Telomare (LocTag (..), PatternF (..), ResolverError (..),
-                 SourcePosition (..), SourceSpan (..),
+import Telomare (AUPT, AnnotatedUPT (..), BasicExprF (..), HighTermF (..),
+                 LamTermF (..), LocTag (..), PatternA, PatternF (..),
+                 ResolverError (..), SourcePosition (..), SourceSpan (..),
                  UnprocessedParsedTermF (..), letBindingName, letBindingValue,
                  locStartLineColumn, locatedNameLoc, locatedNameText,
                  renderResolverError)
 import Telomare.Eval (eval2IExpr)
-import Telomare.Parser (AUPT, AnnotatedUPT (..), PatternA, parseModule,
-                        parseModuleDetailed)
+import Telomare.Parser (parseModule, parseModuleDetailed)
 import Telomare.Resolver (main2Term3)
 import Text.Megaparsec.Error (ParseErrorBundle (..), errorBundlePretty,
                               errorOffset)
@@ -406,27 +406,27 @@ unresolvedTerm :: Set.Set String -> AUPT -> [(String, Range)]
 unresolvedTerm globals = go Set.empty
   where
     go bound (loc :< term) = case term of
-      VarUPF name
+      UnprocessedParsedTermL (VarF name)
         | name `Set.member` bound || name `Set.member` globals -> []
         | otherwise -> [(name, locTagToRange loc)]
       LetUPF bindings body ->
         let localNames = Set.fromList $ letBindingName <$> bindings
             bound' = localNames <> bound
         in concatMap (go bound' . letBindingValue) bindings <> go bound' body
-      LamUPF name body -> go (Set.insert (locatedNameText name) bound) body
+      UnprocessedParsedTermL (LamF name body) -> go (Set.insert (locatedNameText name) bound) body
       UDTUPF names body -> go (Set.union (Set.fromList names) bound) body
       CaseUPF scrutinee cases ->
         go bound scrutinee <> concatMap (caseRefs bound) cases
-      ITEUPF i t e -> concatMap (go bound) [i, t, e]
+      UnprocessedParsedTermH (ITEF i t e) -> concatMap (go bound) [i, t, e]
       ListUPF items -> concatMap (go bound) items
-      PairUPF a b -> concatMap (go bound) [a, b]
-      AppUPF f x -> concatMap (go bound) [f, x]
-      LeftUPF x -> go bound x
-      RightUPF x -> go bound x
-      TraceUPF x -> go bound x
-      CheckUPF checkExpr body -> go bound checkExpr <> go bound body
-      HashUPF x -> go bound x
-      UnsizedRecursionUPF t r b -> concatMap (go bound) [t, r, b]
+      UnprocessedParsedTermB (PairSF a b) -> concatMap (go bound) [a, b]
+      UnprocessedParsedTermL (AppF f x) -> concatMap (go bound) [f, x]
+      UnprocessedParsedTermH (HLeftF x) -> go bound x
+      UnprocessedParsedTermH (HRightF x) -> go bound x
+      UnprocessedParsedTermH (HTraceF x) -> go bound x
+      UnprocessedParsedTermH (CheckF checkExpr body) -> go bound checkExpr <> go bound body
+      UnprocessedParsedTermH (HashF x) -> go bound x
+      UnprocessedParsedTermH (RecursionF t r b) -> concatMap (go bound) [t, r, b]
       _ -> []
 
     caseRefs bound (pat, body) =
@@ -707,23 +707,23 @@ findIdentifierInLhs name lineText = go 0 lhs
 termReferences :: [String] -> AUPT -> [(String, Range)]
 termReferences bound (loc :< term) =
   let children = case term of
-        VarUPF name
+        UnprocessedParsedTermL (VarF name)
           | name `elem` bound -> []
           | otherwise         -> [(name, locTagToRange loc)]
-        ITEUPF i t e -> termReferences bound i <> termReferences bound t <> termReferences bound e
+        UnprocessedParsedTermH (ITEF i t e) -> termReferences bound i <> termReferences bound t <> termReferences bound e
         LetUPF bindings body ->
           let localNames = letBindingName <$> bindings
               bound' = localNames <> bound
           in concatMap (termReferences bound' . letBindingValue) bindings <> termReferences bound' body
         ListUPF items -> concatMap (termReferences bound) items
-        PairUPF a b -> termReferences bound a <> termReferences bound b
-        AppUPF f x -> termReferences bound f <> termReferences bound x
-        LamUPF var body -> termReferences (locatedNameText var : bound) body
-        LeftUPF x -> termReferences bound x
-        RightUPF x -> termReferences bound x
-        TraceUPF x -> termReferences bound x
-        CheckUPF checkExpr body -> termReferences bound checkExpr <> termReferences bound body
-        HashUPF x -> termReferences bound x
+        UnprocessedParsedTermB (PairSF a b) -> termReferences bound a <> termReferences bound b
+        UnprocessedParsedTermL (AppF f x) -> termReferences bound f <> termReferences bound x
+        UnprocessedParsedTermL (LamF var body) -> termReferences (locatedNameText var : bound) body
+        UnprocessedParsedTermH (HLeftF x) -> termReferences bound x
+        UnprocessedParsedTermH (HRightF x) -> termReferences bound x
+        UnprocessedParsedTermH (HTraceF x) -> termReferences bound x
+        UnprocessedParsedTermH (CheckF checkExpr body) -> termReferences bound checkExpr <> termReferences bound body
+        UnprocessedParsedTermH (HashF x) -> termReferences bound x
         UDTUPF names body -> termReferences (names <> bound) body
         CaseUPF scrutinee cases -> termReferences bound scrutinee <> concatMap caseReferences cases
         _ -> []
@@ -744,7 +744,7 @@ localTermDefinitionAt :: LSPTypes.Uri
                       -> AUPT
                       -> Maybe LSPTypes.Location
 localTermDefinitionAt uri position env (loc :< term) = case term of
-  VarUPF name
+  UnprocessedParsedTermL (VarF name)
     | positionInRange position (locTagToRange loc) -> join $ Map.lookup name env
     | otherwise -> Nothing
   LetUPF bindings body ->
@@ -764,22 +764,22 @@ localTermDefinitionAt uri position env (loc :< term) = case term of
           , location <- foldMap pure $ localTermDefinitionAt uri position env' (letBindingValue binding)
           ]
     in bindingDefinition <|> bindingRefs <|> localTermDefinitionAt uri position env' body
-  ITEUPF i t e -> firstJust [i, t, e]
+  UnprocessedParsedTermH (ITEF i t e) -> firstJust [i, t, e]
   ListUPF items -> firstJust items
-  PairUPF a b -> firstJust [a, b]
-  AppUPF f x -> firstJust [f, x]
-  LamUPF name body ->
+  UnprocessedParsedTermB (PairSF a b) -> firstJust [a, b]
+  UnprocessedParsedTermL (AppF f x) -> firstJust [f, x]
+  UnprocessedParsedTermL (LamF name body) ->
     let nameLoc = locatedNameLoc name
         location = LSPTypes.Location uri (locTagToRange nameLoc)
         env' = Map.insert (locatedNameText name) (Just location) env
     in if positionInRange position (locTagToRange nameLoc)
          then Just location
          else localTermDefinitionAt uri position env' body
-  LeftUPF x -> localTermDefinitionAt uri position env x
-  RightUPF x -> localTermDefinitionAt uri position env x
-  TraceUPF x -> localTermDefinitionAt uri position env x
-  CheckUPF checkExpr body -> firstJust [checkExpr, body]
-  HashUPF x -> localTermDefinitionAt uri position env x
+  UnprocessedParsedTermH (HLeftF x) -> localTermDefinitionAt uri position env x
+  UnprocessedParsedTermH (HRightF x) -> localTermDefinitionAt uri position env x
+  UnprocessedParsedTermH (HTraceF x) -> localTermDefinitionAt uri position env x
+  UnprocessedParsedTermH (CheckF checkExpr body) -> firstJust [checkExpr, body]
+  UnprocessedParsedTermH (HashF x) -> localTermDefinitionAt uri position env x
   UDTUPF names body -> localTermDefinitionAt uri position (foldr (`Map.insert` Nothing) env names) body
   CaseUPF scrutinee cases ->
     localTermDefinitionAt uri position env scrutinee

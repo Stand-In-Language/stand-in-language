@@ -61,7 +61,7 @@ unitTests = testGroup "Unit tests"
   , testCase "variable source spans exclude trailing whitespace" $ do
       case runParser parseVariable "" "foo   0" of
         Left err -> assertFailure $ errorBundlePretty err
-        Right (SourceLoc span :< VarUPF "foo") -> do
+        Right (SourceLoc span :< UnprocessedParsedTermL (VarF "foo")) -> do
           sourcePositionLine (sourceSpanStart span) @?= 1
           sourcePositionColumn (sourceSpanStart span) @?= 1
           sourcePositionLine (sourceSpanEnd span) @?= 1
@@ -80,7 +80,7 @@ unitTests = testGroup "Unit tests"
   , testCase "lambda binding source spans exclude trailing whitespace" $ do
       case runParser parseLongExpr "" "\\foo   -> foo" of
         Left err -> assertFailure $ errorBundlePretty err
-        Right (_ :< LamUPF binder _) -> case locatedNameLoc binder of
+        Right (_ :< UnprocessedParsedTermL (LamF binder _)) -> case locatedNameLoc binder of
           SourceLoc span -> do
             locatedNameText binder @?= "foo"
             sourcePositionLine (sourceSpanStart span) @?= 1
@@ -257,7 +257,7 @@ importExpr0 = UnknownLoc :< ImportUPF "Foo"
 stripParserLocs :: AUPT -> AUPT
 stripParserLocs (loc :< term) = UnknownLoc :< case term of
   LetUPF bindings body -> LetUPF ((\(name, value) -> (locatedName UnknownLoc $ locatedNameText name, stripParserLocs value)) <$> bindings) (stripParserLocs body)
-  LamUPF name body -> LamUPF (locatedName UnknownLoc $ locatedNameText name) (stripParserLocs body)
+  UnprocessedParsedTermL (LamF name body) -> UnprocessedParsedTermL (LamF (locatedName UnknownLoc $ locatedNameText name) (stripParserLocs body))
   CaseUPF scrutinee cases -> CaseUPF (stripParserLocs scrutinee) (bimap stripPatternLocs stripParserLocs <$> cases)
   other -> stripParserLocs <$> other
 
@@ -269,19 +269,19 @@ stripPatternLocs (Fix patternF) = Fix $ case patternF of
 caseExpr0UPT =
   UnknownLoc :< LetUPF
     [ ( locatedName UnknownLoc "foo"
-      , UnknownLoc :< LamUPF (locatedName UnknownLoc "a")
-          (UnknownLoc :< CaseUPF (UnknownLoc :< VarUPF "a")
-            [ (Fix $ PatternIntF 0, UnknownLoc :< VarUPF "a")
-            , (Fix $ PatternVarF "x", UnknownLoc :< AppUPF (UnknownLoc :< VarUPF "succ") (UnknownLoc :< VarUPF "a"))
-            ])
+      , UnknownLoc :< UnprocessedParsedTermL (LamF (locatedName UnknownLoc "a")
+          (UnknownLoc :< CaseUPF (UnknownLoc :< UnprocessedParsedTermL (VarF "a"))
+            [ (Fix $ PatternIntF 0, UnknownLoc :< UnprocessedParsedTermL (VarF "a"))
+            , (Fix $ PatternVarF "x", UnknownLoc :< UnprocessedParsedTermL (AppF (UnknownLoc :< UnprocessedParsedTermL (VarF "succ")) (UnknownLoc :< UnprocessedParsedTermL (VarF "a"))))
+            ]))
       )
     , ( locatedName UnknownLoc "main"
-      , UnknownLoc :< LamUPF (locatedName UnknownLoc "i")
-          (UnknownLoc :< PairUPF (UnknownLoc :< StringUPF "Success") (UnknownLoc :< IntUPF 0))
+      , UnknownLoc :< UnprocessedParsedTermL (LamF (locatedName UnknownLoc "i")
+          (UnknownLoc :< UnprocessedParsedTermB (PairSF (UnknownLoc :< StringUPF "Success") (UnknownLoc :< IntUPF 0))))
       )
     ]
-    (UnknownLoc :< LamUPF (locatedName UnknownLoc "i")
-      (UnknownLoc :< PairUPF (UnknownLoc :< StringUPF "Success") (UnknownLoc :< IntUPF 0)))
+    (UnknownLoc :< UnprocessedParsedTermL (LamF (locatedName UnknownLoc "i")
+      (UnknownLoc :< UnprocessedParsedTermB (PairSF (UnknownLoc :< StringUPF "Success") (UnknownLoc :< IntUPF 0)))))
 caseExpr0 = unlines
   [ "foo = \\a -> case a of"
   , "              0 -> a"

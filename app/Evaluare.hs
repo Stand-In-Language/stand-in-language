@@ -22,7 +22,8 @@ import qualified System.IO.Strict as Strict
 import qualified Telomare as Tel
 import Telomare (BasicExprF (..), CompiledExpr, CompiledExprF (..), StuckF (..))
 import qualified Telomare.Eval as TE
-import Telomare.Parser (AUPT, AnnotatedUPT (..), parseModule)
+import Telomare (AUPT, AnnotatedUPT (..))
+import Telomare.Parser (parseModule)
 import Text.Read (readMaybe)
 
 type VtyExample t m =

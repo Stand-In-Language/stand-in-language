@@ -277,6 +277,7 @@ test-suite telomare-sizing-test
                      , SizingTests
   build-depends:       base
                      , containers
+                     , data-fix
                      , dlist
                      , hspec
                      , hspec-core
@@ -298,6 +299,7 @@ test-suite telomare-udt-test
                      , NatUDTTests
   build-depends:       base
                      , containers
+                     , data-fix
                      , free
                      , megaparsec
                      , QuickCheck

@@ -71,7 +71,6 @@ instance MonadFail (Either ResolverError) where
 findInts :: LocTag -> PatternA -> [AUPT -> AUPT]
 findInts anno = cata alg where
   alg = \case
-    -- PatternPairF x y      -> ((. (anno :< ) . LeftUPF) <$> x) <> ((. (anno :< ) . RightUPF) <$> y)
     PatternPairF x y      -> ((. HLeft) <$> x) <> ((. HRight) <$> y)
     PatternIntF x         -> [id]
     PatternAnnotatedF x _ -> x
@@ -84,7 +83,6 @@ findInts anno = cata alg where
 findStrings :: LocTag -> PatternA -> [AUPT -> AUPT]
 findStrings anno = cata alg where
   alg = \case
-    -- PatternPairF x y      -> ((. (anno :< ) . LeftUPF) <$> x) <> ((. (anno :< ) . RightUPF) <$> y)
     PatternPairF x y      -> ((. HLeft) <$> x) <> ((. HRight) <$> y)
     PatternStringF x      -> [id]
     PatternAnnotatedF x _ -> x
@@ -100,25 +98,12 @@ fitPatternVarsToCasedUPT p aupt@(anno :< _) = applyVars2UPT varsOnUPT $ pattern2
   applyVars2UPT m = \case
     LamP str x ->
       case Map.lookup (locatedNameText str) m of
-        {-
-        Just a  -> anno :< AppUPF (anno :< LamUPF str (applyVars2UPT m x)) a
-        Nothing -> anno :< LamUPF str x
--}
         Just a  -> AppP (LamP str (applyVars2UPT m x)) a
         Nothing -> LamP str x
     x -> x
 
 -- |Collect all free variable names in a `AnnotatedUPT` expresion
 varsUPT :: AUPT -> Set String
-{-
-varsUPT = cata alg' where
-  alg' (_ C.:< x) = alg x
-  alg (VarUPF n)     = Set.singleton n
-  alg (LamUPF str x) = del (locatedNameText str) x
-  alg e              = F.fold e
-  del :: String -> Set String -> Set String
-  del n x = if Set.member n x then Set.delete n x else x
--}
 varsUPT = cata alg where
   alg (VarAFP _ n)     = Set.singleton n
   alg (LamAFP _ str x) = del (locatedNameText str) x
@@ -129,13 +114,6 @@ varsUPT = cata alg where
 -- |Like 'varsUPT' but also descends into 'Pattern' type annotations so that
 -- names referenced via @: T@ patterns (e.g. UDT validators) are included.
 freeVarsDeep :: AUPT -> Set String
-{-
-freeVarsDeep = cata alg' where
-  alg' (_ C.:< x) = alg x
-  alg (VarUPF n)           = Set.singleton n
-  alg (LamUPF n body)      = Set.delete (locatedNameText n) body
-  alg (CaseUPF scrut alts) = scrut <> foldMap (\(p, body) -> patternRefs p <> body) alts <> caseRefs
--}
 freeVarsDeep = cata alg where
   alg (VarAFP _ n)           = Set.singleton n
   alg (LamAFP _ n body)      = Set.delete (locatedNameText n) body
@@ -172,7 +150,6 @@ mkLambda4FreeVarUPs aupt@(anno :< _) = go aupt freeVars where
   go :: AUPT -> [String] -> AUPT
   go x = \case
     []     -> x
-    -- (y:ys) -> embed . (anno C.:<) . LamUPF (locatedName UnknownLoc y) $ go x ys
     (y:ys) -> LamP (locatedName UnknownLoc y) $ go x ys
 
 findPatternVars :: LocTag -> PatternA -> Map String (AUPT -> AUPT)
@@ -185,15 +162,6 @@ findPatternVars anno = cata alg where
 
 -- TODO: Annotate without so much fuzz
 pairStructureCheck :: PatternA -> AUPT -> AUPT
-{-
-pairStructureCheck p upt = let a = GeneratedLoc "pairStructureCheck" Nothing
-                               appAUPT' = appAUPT "pairStructureCheck"
-  in
-  appAUPT' (appAUPT' (appAUPT' (a :< VarUPF "foldl")
-                      (a :< VarUPF "and"))
-               (a :< IntUPF 1))
-        ((a :<) . ListUPF $ ($ upt) <$> pairRoute2Dirs p)
--}
 pairStructureCheck p upt = let a = GeneratedLoc "pairStructureCheck" Nothing in
   AppP (AppP (AppP (rewriteOuterTag a $ VarP "foldl")
                       (VarP "and"))
@@ -231,11 +199,9 @@ mkCaseAlternative casedUPT@(anno :< _) caseResult p = appVars2ResultLambdaAlts p
                            -> AUPT -- ^ case result as lambda
                            -> AUPT
   appVars2ResultLambdaAlts m = \case
-    -- lam@(_ :< LamUPF varName upt) ->
     lam@(LamP varName upt) ->
       case Map.lookup (locatedNameText varName) m of
         Nothing -> lam
-        -- Just x -> anno :< AppUPF (anno :< LamUPF varName (appVars2ResultLambdaAlts (Map.delete (locatedNameText varName) m) upt)) x
         Just x -> AppP (LamP varName (appVars2ResultLambdaAlts (Map.delete (locatedNameText varName) m) upt)) x
     x -> x
   makeLambdas :: AUPT
@@ -254,51 +220,22 @@ case2annidatedIfs :: AUPT -- ^ Term to be pattern matched
                   -> [AUPT] -- ^ Case's alternatives
                   -> AUPT
 case2annidatedIfs (anno :< _) [] [] [] [] [] [] =
-  {-
-  iteAUPT "case2annidatedIfs" (anno :< IntUPF 1)
-        (appAUPT "case2annidatedIfs" (anno :< VarUPF "abort") (anno :< StringUPF "Non-exhaustive patterns in case"))
-        (anno :< IntUPF 0)
--}
   ITEP (anno :< IntUPF 1)
         (AppP (VarP "abort") (anno :< StringUPF "Non-exhaustive patterns in case"))
         (anno :< IntUPF 0)
-case2annidatedIfs x (aPattern:as) ((_ :< ListUPF []) : bs) ((_ :< ListUPF []) :cs) (dirs2StringOnUPT:ds) (dirs2StringOnPattern:es) (resultAlternative@(anno :< _):fs) = {-let appAUPT' = appAUPT "case2annidatedIfs" in
-    iteAUPT "case2annidatedIfs" (appAUPT' (appAUPT' (anno :< VarUPF "and")
-                        (appAUPT' (appAUPT' (anno :< VarUPF "listEqual") dirs2StringOnUPT) dirs2StringOnPattern))
-                 (pairStructureCheck aPattern x))
-          (mkCaseAlternative x resultAlternative aPattern)
-          (case2annidatedIfs x as bs cs ds es fs)
--}
+case2annidatedIfs x (aPattern:as) ((_ :< ListUPF []) : bs) ((_ :< ListUPF []) :cs) (dirs2StringOnUPT:ds) (dirs2StringOnPattern:es) (resultAlternative@(anno :< _):fs) =
   ITEP (AppP (AppP (rewriteOuterTag anno $ VarP "and")
                    (AppP (AppP (VarP "listEqual") dirs2StringOnUPT) dirs2StringOnPattern))
              (pairStructureCheck aPattern x))
        (mkCaseAlternative x resultAlternative aPattern)
        (case2annidatedIfs x as bs cs ds es fs)
-case2annidatedIfs x (aPattern:as) (dirs2IntOnUPT:bs) (dirs2IntOnPattern:cs) ((_ :< ListUPF []) : ds) ((_ :< ListUPF []) : es) (resultAlternative@(anno :< _):fs) = {-let appAUPT' = appAUPT "case2annidatedIfs" in
-    iteAUPT "case2annidatedIfs" (appAUPT' (appAUPT' (anno :< VarUPF "and")
-                        (appAUPT' (appAUPT' (anno :< VarUPF "listEqual") dirs2IntOnUPT) dirs2IntOnPattern))
-                 (pairStructureCheck aPattern x))
-          (mkCaseAlternative x resultAlternative aPattern)
-          (case2annidatedIfs x as bs cs ds es fs)
--}
+case2annidatedIfs x (aPattern:as) (dirs2IntOnUPT:bs) (dirs2IntOnPattern:cs) ((_ :< ListUPF []) : ds) ((_ :< ListUPF []) : es) (resultAlternative@(anno :< _):fs) =
     ITEP (AppP (AppP (rewriteOuterTag anno $ VarP "and")
                         (AppP (AppP (VarP "listEqual") dirs2IntOnUPT) dirs2IntOnPattern))
                  (pairStructureCheck aPattern x))
           (mkCaseAlternative x resultAlternative aPattern)
           (case2annidatedIfs x as bs cs ds es fs)
 case2annidatedIfs x (aPattern:as) (dirs2IntOnUPT:bs) (dirs2IntOnPattern:cs) (dirs2StringOnUPT:ds) (dirs2StringOnPattern:es) (resultAlternative@(anno :< _):fs) =
-  {-
-  let appAUPT' = appAUPT "case2annidatedIfs" in
-    iteAUPT "case2annidatedIfs" (appAUPT' (appAUPT' (appAUPT' (anno :< VarUPF "foldl")
-                                (anno :< VarUPF "and"))
-                        (anno :< IntUPF 1))
-                 (anno :< ListUPF [ appAUPT' (appAUPT' (anno :< VarUPF "listEqual") dirs2IntOnUPT) dirs2IntOnPattern
-                                  , appAUPT' (appAUPT' (anno :< VarUPF "listEqual") dirs2StringOnUPT) dirs2StringOnPattern
-                                  , pairStructureCheck aPattern x
-                                  ]))
-          (mkCaseAlternative x resultAlternative aPattern)
-          (case2annidatedIfs x as bs cs ds es fs)
--}
     ITEP (AppP (AppP (AppP (rewriteOuterTag anno $ VarP "foldl")
                            (VarP "and"))
                      (anno :< IntUPF 1))
@@ -332,61 +269,18 @@ removeCaseUPs = cata go where
 
 type VarList = [String]
 
-{-
-debruijinize :: forall m. (Monad m, MonadFail m) => VarList -> Term1 -> m Term2
-debruijinize vl = \case
-  (anno :< (ParserTermB ZeroSF)) -> pure $ anno :< ParserTermB ZeroSF
-  (anno :< (ParserTermB (PairSF a b))) -> (\x y -> anno :< ParserTermB (PairSF x y)) <$> debruijinize vl a <*> debruijinize vl b
-  (anno :< TVarF n) -> case elemIndex n vl of
-               Just i  -> pure $ anno :< TVarF i
-               Nothing -> fail ("undefined identifier " <> n)
-  (anno :< TAppF i c) -> (\x y -> anno :< TAppF x y) <$> debruijinize vl i <*> debruijinize vl c
-  (anno :< TCheckF c tc) -> (\x y -> anno :< TCheckF x y) <$> debruijinize vl c <*> debruijinize vl tc
-  (anno :< TITEF i t e) -> (\x y z -> anno :< TITEF x y z) <$> debruijinize vl i
-                                                           <*> debruijinize vl t
-                                                           <*> debruijinize vl e
-  (anno :< TLeftF x) -> (\y -> anno :< TLeftF y) <$> debruijinize vl x
-  (anno :< TRightF x) -> (\y -> anno :< TRightF y) <$> debruijinize vl x
-  (anno :< TTraceF x) -> (\y -> anno :< TTraceF y) <$> debruijinize vl x
-  (anno :< THashF x) -> (\y -> anno :< THashF y) <$> debruijinize vl x
-  (anno :< TLamF (Open n) x) -> (\y -> anno :< TLamF (Open ()) y) <$> debruijinize (n : vl) x
-  (anno :< TLamF (Closed n) x) -> (\y -> anno :< TLamF (Closed ()) y) <$> debruijinize (n : vl) x
-  (anno :< TChurchF n) -> pure $ anno :< TChurchF n
-  (anno :< TLimitedRecursionF t r b) -> (\x y z -> anno :< TLimitedRecursionF x y z) <$> debruijinize vl t <*> debruijinize vl r <*> debruijinize vl b
-  (anno :< TUnsizedRepeaterF) -> pure $ anno :< TUnsizedRepeaterF
--}
 debruijinize :: forall m. (Monad m, MonadFail m) => Term1 -> m Term2
 debruijinize = ($ []) . runReaderT . cata f where
-  -- f :: CofreeF (ParserTermF (LamType String) String) LocTag (ReaderT [LamType String] m Term2) -> ReaderT [LamType String] m Term2
   f = \case
     LamAFP a lt x -> embed . LamAFP a (convLam lt) <$> local (lt:) x
     VarAFP a n -> ask >>= \vl -> lift $ findElem a n vl
     AppAFP a f i -> fmap embed . sequence $ AppAFP a f i
-    -- x           -> fmap (anno :<) . sequence $ conv x
     x           -> fmap embed . sequence $ liftC conv x
   liftC f (a C.:< x) = a C.:< f x
-  -- conv :: ParserTermF (LamType String) String (ReaderT [LamType String] m Term2) -> ParserTermF (LamType ()) Int (ReaderT [LamType String] m Term2)
   conv = \case
     ParserTermB x -> ParserTermB x
     ParserTermH x -> ParserTermH x
-    -- ParserTermH x -> ParserTermH $ convH x
-  {-
-    ParserTermH x -> ParserTermH $ case x of
-      CheckF c x -> CheckF c x
-      ITEF i t e -> ITEF i t e
-      HLeftF x -> HLeftF x
-      HRightF x -> HRightF x
-      HTraceF x -> HTraceF x
-      HashF x -> HashF x
-      ChurchF n -> ChurchF n
-      RecursionF t r b -> RecursionF t r b
--}
     TUnsizedRepeaterF -> TUnsizedRepeaterF
-  {-
-  convH :: HighTermF String (LamType String) Term2 -> HighTermF Int (LamType ()) Term2
-  convH = \case
-    AppF f i -> AppF f i
--}
   convLam = \case
     Open _ -> Open ()
     Closed _ -> Closed ()
@@ -408,10 +302,6 @@ closeLams = runIdentity .($ True) . runReaderT . cata f where
   f = \case
     anno C.:< x -> case x of
       ParserTermL (LamF lt ix) -> ask >>= \naked -> if naked
-        {-
-        then (\x' -> anno :< TLamF (Closed ()) x') <$> local (const False) ix
-        else (\x' -> anno :< TLamF lt x') <$> local (const False) ix
--}
         then LamP (Closed ()) <$> local (const False) ix
         else LamP lt <$> local (const False) ix
       x' -> (anno :<) <$> sequence x'
@@ -419,33 +309,14 @@ closeLams = runIdentity .($ True) . runReaderT . cata f where
 debruijinizeApp :: forall m. (Monad m, MonadFail m) => Term1 -> m Term2
 debruijinizeApp = fmap closeLams . ($ []) . runReaderT . cata f where
   f = \case
-  {-
-    anno C.:< x -> case x of
-      TLamF lt ix -> (\lx -> anno :< TLamF (convLam lt) lx) <$> local (lt:) ix
-      TVarF n     -> ask >>= \vl -> lift $ findElem anno n vl
-      x           -> fmap (anno :<) . sequence $ conv x
--}
     LamAFP a lt x -> embed . LamAFP a (convLam lt) <$> local (lt:) x
     VarAFP a n -> ask >>= \vl -> lift $ findElem a n vl
     AppAFP a f i -> fmap embed . sequence $ AppAFP a f i
-    -- x           -> fmap (anno :<) . sequence $ conv x
     x           -> fmap embed . sequence $ liftC conv x
   liftC f (a C.:< x) = a C.:< f x
   conv = \case
     ParserTermB x -> ParserTermB x
     ParserTermH x -> ParserTermH x
-  {-
-    ParserTermH x -> ParserTermH $ case x of
-      AppF f i -> AppF f i
-      CheckF c x -> CheckF c x
-      ITEF i t e -> ITEF i t e
-      HLeftF x -> HLeftF x
-      HRightF x -> HRightF x
-      HTraceF x -> HTraceF x
-      HashF x -> HashF x
-      ChurchF n -> ChurchF n
-      RecursionF t r b -> RecursionF t r b
--}
     TUnsizedRepeaterF -> TUnsizedRepeaterF
   convLam = \case
     Open _ -> Open ()
@@ -641,10 +512,8 @@ annotateUnsizedCount = capTop . flip evalStateT 0 . cata f where
 letsToApps :: AnnotatedUPT -> Either ResolverError Term1
 letsToApps (AnnotatedUPT term) =
    -- Topological sort with cycle detection
-  let -- topologicalSort :: [String] -> Map String (Set String) -> Either ResolverError [String]
-      topologicalSort names deps = go [] Set.empty names
+  let topologicalSort names deps = go [] Set.empty names
         where
-          -- go :: [String] -> Set String -> [String] -> Either ResolverError [String]
           go result _ [] = Right result
           go result inProgress remaining =
             case find (canProcess remaining inProgress) remaining of
@@ -667,7 +536,6 @@ letsToApps (AnnotatedUPT term) =
             all (`notElem` rn) (Set.toList $ Map.findWithDefault Set.empty name deps)
 
           delete x = filter (/= x)
-      -- getTransitive :: Map String (Set String) -> String -> Set String
       getTransitive deps n = Set.singleton n <> case Map.lookup n deps of
         Just s | not (null s) -> mconcat . fmap (getTransitive deps) $ Set.toList s
         _ -> Set.empty
@@ -692,13 +560,11 @@ letsToApps (AnnotatedUPT term) =
             nBindings <- traverse makeBindingsAsoc bindings
             let originalOrder = letBindingName <$> bindings
                 dependencies = Map.fromList $ fmap (second snd) nBindings
-                -- sortedBindings :: Either ResolverError [(String, Cofree (ParserTermF String String) (LocTag, Int))]
                 sortedBindings =
                   case topologicalSort originalOrder dependencies of
                     Left cycle -> Left cycle
                     Right sortedNames ->
                       pure [(name, def) | name <- sortedNames, (name', (def, _)) <- nBindings, name == name']
-                -- makeBinding (n,d@((_, c) :< _)) inner@(a :< _) = a :< TAppF (a :< TLamF (LetBinding c n) inner) d
                 makeBinding (n,d@((_, c) :< _)) inner@(a :< _) = embed $ AppAFP a (embed $ LamAFP a (LetBinding c n) inner) d
             sortedBindings >>= \sb -> let trans = getTransitive' dependencies refs
                                           sb' = [(n,t) | (n,t) <- sb,  n `elem` trans]
@@ -707,21 +573,6 @@ letsToApps (AnnotatedUPT term) =
                                       in pure (foldr makeBinding nInner $ reverse sb', newRefs)
         x -> WriterT . fmap (first (((anno, urC) :<) . brt)) . runWriterT $ sequence x where
           brt = \case
-            {-
-            ITEUPF i t e -> TITEF i t e
-            IntUPF n -> unwrap $ i2t (anno, urC) n
-            StringUPF s -> unwrap $ s2t (anno, urC) s
-            PairUPF a b -> ParserTermB $ PairSF a b
-            ListUPF l -> unwrap $ foldr (\x y -> (anno, urC) :< ParserTermB (PairSF x y)) ((anno, urC) :< ParserTermB ZeroSF) l
-            AppUPF f x -> TAppF f x
-            UnsizedRecursionUPF t r b -> TLimitedRecursionF t r b
-            ChurchUPF n -> TChurchF n
-            LeftUPF x -> TLeftF x
-            RightUPF x -> TRightF x
-            TraceUPF x -> TTraceF x
-            CheckUPF cf x -> TCheckF cf x
-            HashUPF x -> THashF x
--}
             UnprocessedParsedTermL (AppF f x) -> ParserTermL $ AppF f x
             UnprocessedParsedTermB x -> ParserTermB x
             UnprocessedParsedTermH x -> ParserTermH x
@@ -740,31 +591,11 @@ letsToApps (AnnotatedUPT term) =
           _ -> Left . MissingDefinitions $ Set.toList refs
         _ -> Left . MissingDefinitions $ Set.toList refs
 
-      -- forgetURCount :: Cofree (ParserTermF String String) (LocTag, Int) -> Term1
       forgetURCount = cata f where
         f ((a,c) C.:< x) = a :< x
   in cleanup . runWriterT . cata buildRefs $ annotateUnsizedCount term
 
 optimizeBuiltinFunctions :: AUPT -> AUPT
-{-
-optimizeBuiltinFunctions = transform optimize where
-  optimize = \case
-    twoApp@(anno0 :< AppUPF (_ :< AppUPF (_ :< f) x) y) ->
-      case f of
-        VarUPF "pair" -> anno0 :< PairUPF x y
-        VarUPF "app"  -> anno0 :< AppUPF x y
-        _             -> twoApp
-    oneApp@(anno0 :< AppUPF (anno1 :< f) x) ->
-      case f of
-        VarUPF "left"  -> anno0 :< LeftUPF x
-        VarUPF "right" -> anno0 :< RightUPF x
-        VarUPF "trace" -> anno0 :< TraceUPF x
-        VarUPF "pair"  -> anno0 :< LamUPF (locatedName anno0 "y") (anno1 :< PairUPF x (anno1 :< VarUPF "y"))
-        VarUPF "app"   -> anno0 :< LamUPF (locatedName anno0 "y") (anno1 :< AppUPF x (anno1 :< VarUPF "y"))
-        _             -> oneApp
-        -- VarUP "check" TODO
-    x -> x
--}
 optimizeBuiltinFunctions = cata f where
   f = \case
     twoApp@(AppAFP a (GFix (AppAFP _ f x)) y) ->

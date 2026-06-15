@@ -8,6 +8,7 @@ module Common where
 import Control.Applicative
 import Control.Comonad.Cofree (Cofree ((:<)))
 import Data.Bifunctor
+import Data.Fix (Fix (..))
 import qualified Data.Map as Map
 import System.IO
 import System.Posix.IO
@@ -19,6 +20,7 @@ import Telomare.Resolver
 import Telomare.TypeChecker
 import Test.QuickCheck
 import Test.QuickCheck.Gen
+import Data.Functor.Foldable (Corecursive(..))
 
 class TestableIExpr a where
   getIExpr :: a -> StuckExpr -- maybe this should be StuckExpr
@@ -72,28 +74,28 @@ instance Arbitrary TestIExpr where
     tree i = let half = div i 2
                  pure2 = pure . TestIExpr
              in case i of
-                  0 -> oneof $ fmap pure2 [zeroB, envB]
+                  0 -> oneof $ fmap pure2 [ZeroB, EnvB]
                   x -> oneof
-                    [ pure2 zeroB
-                    , pure2 envB
-                    , lift2Texpr pairB <$> tree half <*> tree half
-                    , lift1Texpr setEnvB <$> tree (i - 1)
-                    , lift1Texpr (stuckEE . DeferSF (toEnum (-1))) <$> tree (i - 1)
-                    , lift2Texpr gateB <$> tree half <*> tree half
-                    , lift1Texpr leftB <$> tree (i - 1)
-                    , lift1Texpr rightB <$> tree (i - 1)
+                    [ pure2 ZeroB
+                    , pure2 EnvB
+                    , lift2Texpr PairB <$> tree half <*> tree half
+                    , lift1Texpr SetEnvB <$> tree (i - 1)
+                    , lift1Texpr (\x -> StuckEE (DeferSF (toEnum (-1)) x)) <$> tree (i - 1)
+                    , lift2Texpr GateB <$> tree half <*> tree half
+                    , lift1Texpr LeftB <$> tree (i - 1)
+                    , lift1Texpr RightB <$> tree (i - 1)
                     ]
   shrink (TestIExpr x) = case x of
     ZeroB -> []
     StuckEE EnvSF -> []
     StuckEE (GateSF a b) -> TestIExpr a : TestIExpr b :
-      [lift2Texpr gateB a' b' | (a', b') <- shrink (TestIExpr a, TestIExpr b)]
-    StuckEE (LeftSF x) -> TestIExpr x : (fmap (lift1Texpr leftB) . shrink $ TestIExpr x)
-    StuckEE (RightSF x) -> TestIExpr x : (fmap (lift1Texpr rightB) . shrink $ TestIExpr x)
-    StuckEE (SetEnvSF x) -> TestIExpr x : (fmap (lift1Texpr setEnvB) . shrink $ TestIExpr x)
-    StuckEE (DeferSF fi x) -> TestIExpr x : (fmap (lift1Texpr (stuckEE . DeferSF fi)) . shrink $ TestIExpr x)
+      [lift2Texpr GateB a' b' | (a', b') <- shrink (TestIExpr a, TestIExpr b)]
+    StuckEE (LeftSF x) -> TestIExpr x : (fmap (lift1Texpr LeftB) . shrink $ TestIExpr x)
+    StuckEE (RightSF x) -> TestIExpr x : (fmap (lift1Texpr RightB) . shrink $ TestIExpr x)
+    StuckEE (SetEnvSF x) -> TestIExpr x : (fmap (lift1Texpr SetEnvB) . shrink $ TestIExpr x)
+    StuckEE (DeferSF fi x) -> TestIExpr x : (fmap (lift1Texpr (\y -> StuckEE (DeferSF fi y))) . shrink $ TestIExpr x)
     PairB a b -> TestIExpr a : TestIExpr  b :
-      [lift2Texpr pairB a' b' | (a', b') <- shrink (TestIExpr a, TestIExpr b)]
+      [lift2Texpr PairB a' b' | (a', b') <- shrink (TestIExpr a, TestIExpr b)]
 
 instance Arbitrary DataType where
   arbitrary = sized gen where
@@ -104,24 +106,24 @@ instance Arbitrary DataType where
            , PairType <$> gen half <*> gen half
            ]
 
-zeroTyped = null . typeCheck ZeroTypeP . fromTelomare . getIExpr
+zeroTyped = null . typeCheck (embed ZeroTypeP) . fromTelomare . getIExpr
 
 genTypedTree :: Maybe DataType -> DataType -> Int -> Gen StuckExpr
 genTypedTree ti t i =
   let half = div i 2
       optionEnv = if ti == Just t
-                  then (pure envB :)
+                  then (pure EnvB :)
                   else id
       optionGate ti' to = if ti' == ZeroType
-                          then ((gateB <$> genTypedTree ti to half <*> genTypedTree ti to half) :)
+                          then ((GateB <$> genTypedTree ti to half <*> genTypedTree ti to half) :)
                           else id
       setEnvOption to = arbitrary >>= makeSetEnv where
-        makeSetEnv ti' = setEnvB <$> genTypedTree ti (PairType (ArrType ti' to) ti') (i - 1)
-      leftOption to = arbitrary >>= (\ti' -> leftB <$> genTypedTree ti (PairType to ti') (i - 1))
-      rightOption to = arbitrary >>= (\ti' -> rightB <$> genTypedTree ti (PairType ti' to) (i - 1))
+        makeSetEnv ti' = SetEnvB <$> genTypedTree ti (PairType (ArrType ti' to) ti') (i - 1)
+      leftOption to = arbitrary >>= (\ti' -> LeftB <$> genTypedTree ti (PairType to ti') (i - 1))
+      rightOption to = arbitrary >>= (\ti' -> RightB <$> genTypedTree ti (PairType ti' to) (i - 1))
   in oneof . optionEnv $ case t of
                     ZeroType ->
-                      pure zeroB : if i < 1
+                      pure ZeroB : if i < 1
                       then []
                       else [ genTypedTree ti (PairType ZeroType ZeroType) i
                           , setEnvOption ZeroType
@@ -129,7 +131,7 @@ genTypedTree ti t i =
                           , rightOption ZeroType
                           ]
                     PairType ta tb ->
-                      (pairB <$> genTypedTree ti ta half <*> genTypedTree ti tb half) :
+                      (PairB <$> genTypedTree ti ta half <*> genTypedTree ti tb half) :
                       if i < 1
                       then []
                       else [ setEnvOption (PairType ta tb)
@@ -137,7 +139,7 @@ genTypedTree ti t i =
                           , rightOption (PairType ta tb)
                           ]
                     ArrType ti' to ->
-                      (stuckEE . DeferSF (toEnum (-1)) <$> genTypedTree (Just ti') to (i - 1)) :
+                      ((\x -> StuckEE (DeferSF (toEnum (-1)) x)) <$> genTypedTree (Just ti') to (i - 1)) :
                       if i < 1
                       then []
                       else optionGate ti' to
@@ -157,7 +159,7 @@ instance Arbitrary ValidTestIExpr where
   arbitrary = ValidTestIExpr <$> suchThat arbitrary typeable
   shrink (ValidTestIExpr te) = fmap ValidTestIExpr . filter typeable $ shrink te
 
-simpleArrowTyped x = inferType (fromTelomare $ getIExpr x) == Right (ArrTypeP ZeroTypeP ZeroTypeP)
+simpleArrowTyped x = inferType (fromTelomare $ getIExpr x) == Right (embed $ ArrTypeP (embed ZeroTypeP) (embed ZeroTypeP))
 
 instance Arbitrary ArrowTypedTestIExpr where
   arbitrary = ArrowTypedTestIExpr <$> suchThat arbitrary simpleArrowTyped
@@ -168,10 +170,10 @@ instance Arbitrary UnprocessedParsedTerm where
     leaves :: [String] -> Gen UnprocessedParsedTerm
     leaves varList =
       oneof $
-          (if not (null varList) then ((VarUP <$> elements varList) :) else id)
-          [ StringUP <$> elements (fmap (("s" <>) . show) [1..9]) -- chooseAny
-          , IntUP <$> elements [0..9]
-          , ChurchUP <$> elements [0..9]
+          (if not (null varList) then (((\s -> UnprocessedParsedTerm . Fix . UnprocessedParsedTermL $ VarF s) <$> elements varList) :) else id)
+          [ (\s -> UnprocessedParsedTerm . Fix . StringUPF $ s) <$> elements (fmap (("s" <>) . show) [1..9]) -- chooseAny
+          , (\n -> UnprocessedParsedTerm . Fix . IntUPF $ n) <$> elements [0..9]
+          , (\n -> UnprocessedParsedTerm . Fix . UnprocessedParsedTermH . ChurchF $ n) <$> elements [0..9]
           ]
     lambdaTerms = ["w", "x", "y", "z"]
     letTerms = fmap (("l" <>) . show) [1..255]
@@ -191,6 +193,10 @@ instance Arbitrary UnprocessedParsedTerm where
                                   , (1, pure '.')
                                   ])
       return (firstChar : rest)
+    mkUPT :: UnprocessedParsedTermF Pattern UPT -> UnprocessedParsedTerm
+    mkUPT = UnprocessedParsedTerm . Fix
+    wrap :: UnprocessedParsedTerm -> UPT
+    wrap = unUnprocessedParsedTerm
     genTree :: [String] -> Int -> Gen UnprocessedParsedTerm
     genTree varList i = let half = div i 2
                             third = div i 3
@@ -203,67 +209,102 @@ instance Arbitrary UnprocessedParsedTerm where
                                  0 -> leaves varList
                                  x -> oneof
                                    [ leaves varList
-                                   , ImportUP <$> genImportName
-                                   , ImportQualifiedUP <$> genImportName <*> genImportName
-                                   , HashUP <$> recur (i - 1)
-                                   , LeftUP <$> recur (i - 1)
-                                   , RightUP <$> recur (i - 1)
-                                   , TraceUP <$> recur (i - 1)
-                                    , elements lambdaTerms >>= \var -> LamUP (locatedName UnknownLoc var) <$> genTree (var : varList) (i - 1)
-                                   , ITEUP <$> recur third <*> recur third <*> recur third
-                                   , UnsizedRecursionUP <$> recur third <*> recur third <*> recur third
-                                   , ListUP <$> childList
-                                    , do { listSize <- choose (2, max i 2)
-                                         ; let childShare = div i listSize
-                                               makeList [] = pure []
-                                               makeList (v:vl) = do
-                                                  newTree <- genTree (v:varList) childShare
-                                                  ((locatedName UnknownLoc v, newTree) :) <$> makeList vl
-                                         ; vars <- take listSize <$> identifierList
-                                         ; childList <- makeList vars
-                                         ; pure $ LetUP (init childList) (letBindingValue . last $ childList)
-                                         }
-                                   , PairUP <$> recur half <*> recur half
-                                   , AppUP <$> recur half <*> recur half
+                                   , mkUPT . ImportUPF <$> genImportName
+                                   , (\m a -> mkUPT (ImportQualifiedUPF m a)) <$> genImportName <*> genImportName
+                                   , (\x' -> mkUPT (UnprocessedParsedTermH (HashF (wrap x')))) <$> recur (i - 1)
+                                   , (\x' -> mkUPT (UnprocessedParsedTermH (HLeftF (wrap x')))) <$> recur (i - 1)
+                                   , (\x' -> mkUPT (UnprocessedParsedTermH (HRightF (wrap x')))) <$> recur (i - 1)
+                                   , (\x' -> mkUPT (UnprocessedParsedTermH (HTraceF (wrap x')))) <$> recur (i - 1)
+                                   , elements lambdaTerms >>= \var -> (\body -> mkUPT (UnprocessedParsedTermL (LamF (locatedName UnknownLoc var) (wrap body)))) <$> genTree (var : varList) (i - 1)
+                                   , (\a b c -> mkUPT (UnprocessedParsedTermH (ITEF (wrap a) (wrap b) (wrap c)))) <$> recur third <*> recur third <*> recur third
+                                   , (\a b c -> mkUPT (UnprocessedParsedTermH (RecursionF (wrap a) (wrap b) (wrap c)))) <$> recur third <*> recur third <*> recur third
+                                   , (\items -> mkUPT (ListUPF (fmap wrap items))) <$> childList
+                                   , do { listSize <- choose (2, max i 2)
+                                        ; let childShare = div i listSize
+                                              makeList [] = pure []
+                                              makeList (v:vl) = do
+                                                 newTree <- genTree (v:varList) childShare
+                                                 ((locatedName UnknownLoc v, wrap newTree) :) <$> makeList vl
+                                        ; vars <- take listSize <$> identifierList
+                                        ; childList' <- makeList vars
+                                        ; let (binds, lastBind) = (init childList', last childList')
+                                        ; pure $ mkUPT (LetUPF binds (snd lastBind))
+                                        }
+                                   , (\a b -> mkUPT (UnprocessedParsedTermB (PairSF (wrap a) (wrap b)))) <$> recur half <*> recur half
+                                   , (\a b -> mkUPT (UnprocessedParsedTermL (AppF (wrap a) (wrap b)))) <$> recur half <*> recur half
                                    ]
-  shrink x = case x of
-      StringUP s -> case s of
+  shrink x = case unUnprocessedParsedTerm x of
+      Fix (StringUPF s) -> case s of
         [] -> []
-        _  -> pure . StringUP $ tail s
-      IntUP i -> case i of
+        _  -> [UnprocessedParsedTerm . Fix . StringUPF $ tail s]
+      Fix (IntUPF i) -> case i of
         0 -> []
-        n -> pure . IntUP $ n - 1
-      ChurchUP i -> case i of
+        n -> [UnprocessedParsedTerm . Fix . IntUPF $ n - 1]
+      Fix (UnprocessedParsedTermH (ChurchF i)) -> case i of
         0 -> []
-        n -> pure . ChurchUP $ n - 1
-      UnsizedRecursionUP t r b -> t : r : b : [UnsizedRecursionUP nt nr nb | (nt, nr, nb) <- shrink (t,r,b)]
-      VarUP _ -> []
-      HashUP x' -> x' : fmap HashUP (shrink x')
-      LeftUP x' -> x' : fmap LeftUP (shrink x')
-      RightUP x' -> x' : fmap RightUP (shrink x')
-      TraceUP x' -> x' : fmap TraceUP (shrink x')
-      LamUP v x' -> x' : fmap (LamUP v) (shrink x')
-      ITEUP i t e -> i : t : e : [ITEUP ni nt ne | (ni, nt, ne) <- shrink (i,t,e)]
-      ListUP l -> case l of
-        []  -> []
-        [e] -> if null $ shrink e then [e] else e : fmap (ListUP . pure) (shrink e)
-        _   -> head l : ListUP (tail l) : fmap (ListUP . shrink) l
+        n -> [UnprocessedParsedTerm . Fix . UnprocessedParsedTermH . ChurchF $ n - 1]
+      Fix (UnprocessedParsedTermH (RecursionF t r b)) ->
+        let w = UnprocessedParsedTerm
+            t' = w t; r' = w r; b' = w b
+            mk nt nr nb = UnprocessedParsedTerm . Fix $ UnprocessedParsedTermH (RecursionF (unUnprocessedParsedTerm nt) (unUnprocessedParsedTerm nr) (unUnprocessedParsedTerm nb))
+        in t' : r' : b' : [mk nt nr nb | (nt, nr, nb) <- shrink (t', r', b')]
+      Fix (UnprocessedParsedTermL (VarF _)) -> []
+      Fix (UnprocessedParsedTermH (HashF x')) ->
+        let x'' = UnprocessedParsedTerm x'
+            mk y = UnprocessedParsedTerm . Fix . UnprocessedParsedTermH . HashF $ unUnprocessedParsedTerm y
+        in x'' : fmap mk (shrink x'')
+      Fix (UnprocessedParsedTermH (HLeftF x')) ->
+        let x'' = UnprocessedParsedTerm x'
+            mk y = UnprocessedParsedTerm . Fix . UnprocessedParsedTermH . HLeftF $ unUnprocessedParsedTerm y
+        in x'' : fmap mk (shrink x'')
+      Fix (UnprocessedParsedTermH (HRightF x')) ->
+        let x'' = UnprocessedParsedTerm x'
+            mk y = UnprocessedParsedTerm . Fix . UnprocessedParsedTermH . HRightF $ unUnprocessedParsedTerm y
+        in x'' : fmap mk (shrink x'')
+      Fix (UnprocessedParsedTermH (HTraceF x')) ->
+        let x'' = UnprocessedParsedTerm x'
+            mk y = UnprocessedParsedTerm . Fix . UnprocessedParsedTermH . HTraceF $ unUnprocessedParsedTerm y
+        in x'' : fmap mk (shrink x'')
+      Fix (UnprocessedParsedTermL (LamF v x')) ->
+        let x'' = UnprocessedParsedTerm x'
+            mk y = UnprocessedParsedTerm . Fix . UnprocessedParsedTermL . LamF v $ unUnprocessedParsedTerm y
+        in x'' : fmap mk (shrink x'')
+      Fix (UnprocessedParsedTermH (ITEF i' t' e')) ->
+        let [i'', t'', e''] = fmap UnprocessedParsedTerm [i', t', e']
+            mk ni nt ne = UnprocessedParsedTerm . Fix . UnprocessedParsedTermH $ ITEF (unUnprocessedParsedTerm ni) (unUnprocessedParsedTerm nt) (unUnprocessedParsedTerm ne)
+        in i'' : t'' : e'' : [mk ni nt ne | (ni, nt, ne) <- shrink (i'', t'', e'')]
+      Fix (ListUPF l) ->
+        let l' = fmap UnprocessedParsedTerm l
+            mkList items = UnprocessedParsedTerm . Fix . ListUPF $ fmap unUnprocessedParsedTerm items
+        in case l' of
+          []  -> []
+          [e] -> if null $ shrink e then [e] else e : fmap (mkList . pure) (shrink e)
+          _   -> head l' : mkList (tail l') : fmap (mkList . shrink) l'
     {-
       LetUP l i -> i : case l of -- TODO make this do proper, full enumeration
         [(v,e)] -> if null $ shrink e then [e] else e : map (flip LetUP i . pure . (v,)) (shrink e) <> (map (LetUP l) (shrink i))
         _ -> let shrinkBinding (n, v) = map (n,) $ shrink v
             in snd (head l) : LetUP (tail l) i : map (flip LetUP i . second shrink) l
   -}
-      LetUP l i -> let shrinkBinding (n, v) = (n,) <$> shrink v
-                       removeAt n xs = let (f,s) = splitAt n xs in (f <> tail s)
-                       makeOptions _ _ [] = error "debugging split here"
-                       makeOptions f n xs = let (pa,c:pz) = splitAt n xs in ((pa ++) . (:pz) <$> f c)
-                       lessBindings = if length l > 1
-                         then [LetUP (removeAt n l) i | n <- [0..length l - 1]]
-                         else []
-                   in i : (lessBindings <> concat [(`LetUP` i) <$> makeOptions shrinkBinding n l | n <- [0..length l - 1]])
-      PairUP a b -> a : b : [PairUP na nb | (na, nb) <- shrink (a,b)]
-      AppUP f i -> f : i : [AppUP nf ni | (nf, ni) <- shrink (f,i)]
+      Fix (LetUPF l body) ->
+        let body' = UnprocessedParsedTerm body
+            l' = fmap (second UnprocessedParsedTerm) l
+            shrinkBinding (n, v) = (n,) <$> shrink v
+            removeAt n xs = let (f,s) = splitAt n xs in (f <> tail s)
+            makeOptions f n xs = let (pa,c:pz) = splitAt n xs in ((pa ++) . (:pz) <$> f c)
+            mkLet binds b = UnprocessedParsedTerm . Fix $ LetUPF (fmap (second unUnprocessedParsedTerm) binds) (unUnprocessedParsedTerm b)
+            lessBindings = if length l' > 1
+              then [mkLet (removeAt n l') body' | n <- [0..length l' - 1]]
+              else []
+        in body' : (lessBindings <> concat [(`mkLet` body') <$> makeOptions shrinkBinding n l' | n <- [0..length l' - 1]])
+      Fix (UnprocessedParsedTermB (PairSF a b)) ->
+        let a' = UnprocessedParsedTerm a; b' = UnprocessedParsedTerm b
+            mk na nb = UnprocessedParsedTerm . Fix . UnprocessedParsedTermB $ PairSF (unUnprocessedParsedTerm na) (unUnprocessedParsedTerm nb)
+        in a' : b' : [mk na nb | (na, nb) <- shrink (a', b')]
+      Fix (UnprocessedParsedTermL (AppF f i)) ->
+        let f' = UnprocessedParsedTerm f; i' = UnprocessedParsedTerm i
+            mk nf ni = UnprocessedParsedTerm . Fix . UnprocessedParsedTermL $ AppF (unUnprocessedParsedTerm nf) (unUnprocessedParsedTerm ni)
+        in f' : i' : [mk nf ni | (nf, ni) <- shrink (f', i')]
       _ -> []
 
 instance Arbitrary Term1 where
@@ -271,7 +312,7 @@ instance Arbitrary Term1 where
     leaves :: [String] -> Gen Term1
     leaves varList =
       oneof $
-          (if not (null varList) then (((UnknownLoc :<) . TVarF <$> elements varList) :) else id)
+          (if not (null varList) then (((UnknownLoc :<) . ParserTermL . VarF <$> elements varList) :) else id)
           [ pure $ UnknownLoc :< ParserTermB ZeroSF
           ]
     lambdaTerms = ["w", "x", "y", "z"]
@@ -294,33 +335,33 @@ instance Arbitrary Term1 where
                                  0 -> leaves varList
                                  x -> oneof
                                    [ leaves varList
-                                   , (UnknownLoc :<) . THashF <$> recur (i - 1)
-                                   , (UnknownLoc :<) . TLeftF <$> recur (i - 1)
-                                   , (UnknownLoc :<) . TRightF <$> recur (i - 1)
-                                   , (UnknownLoc :<) . TTraceF <$> recur (i - 1)
-                                   , elements lambdaTerms >>= \var -> (UnknownLoc :<) . TLamF (Open var) <$> genTree (var : varList) (i - 1)
-                                   , (\a b c -> UnknownLoc :< TITEF a b c) <$> recur third <*> recur third <*> recur third
-                                   , (\a b c -> UnknownLoc :< TLimitedRecursionF a b c) <$> recur third <*> recur third <*> recur third
+                                   , (UnknownLoc :<) . ParserTermH . HashF <$> recur (i - 1)
+                                   , (UnknownLoc :<) . ParserTermH . HLeftF <$> recur (i - 1)
+                                   , (UnknownLoc :<) . ParserTermH . HRightF <$> recur (i - 1)
+                                   , (UnknownLoc :<) . ParserTermH . HTraceF <$> recur (i - 1)
+                                   , elements lambdaTerms >>= \var -> (UnknownLoc :<) . ParserTermL . LamF (Open var) <$> genTree (var : varList) (i - 1)
+                                   , (\a b c -> UnknownLoc :< ParserTermH (ITEF a b c)) <$> recur third <*> recur third <*> recur third
+                                   , (\a b c -> UnknownLoc :< ParserTermH (RecursionF a b c)) <$> recur third <*> recur third <*> recur third
                                    , (\a b -> UnknownLoc :< ParserTermB (PairSF a b)) <$> recur half <*> recur half
-                                   , (\a b -> UnknownLoc :< TAppF a b) <$> recur half <*> recur half
+                                   , (\a b -> UnknownLoc :< ParserTermL (AppF a b)) <$> recur half <*> recur half
                                    ]
   shrink = \case
     _ :< ParserTermB ZeroSF -> []
-    anno :< TLimitedRecursionF t r b -> t : r : b : [anno :< TLimitedRecursionF nt nr nb | (nt, nr, nb) <- shrink (t,r,b)]
-    _ :< TVarF _ -> []
-    anno :< THashF x -> x : fmap ((anno :<) . THashF) (shrink x)
-    anno :< TLeftF x -> x : fmap ((anno :<) . TLeftF) (shrink x)
-    anno :< TRightF x -> x : fmap ((anno :<) . TRightF) (shrink x)
-    anno :< TTraceF x -> x : fmap ((anno :<) . TTraceF) (shrink x)
-    anno :< TLamF v x -> x : fmap ((anno :<) . TLamF v) (shrink x)
-    anno :< TITEF i t e -> i : t : e : [anno :< TITEF ni nt ne | (ni, nt, ne) <- shrink (i,t,e)]
+    anno :< ParserTermH (RecursionF t r b) -> t : r : b : [anno :< ParserTermH (RecursionF nt nr nb) | (nt, nr, nb) <- shrink (t,r,b)]
+    _ :< ParserTermL (VarF _) -> []
+    anno :< ParserTermH (HashF x) -> x : fmap ((anno :<) . ParserTermH . HashF) (shrink x)
+    anno :< ParserTermH (HLeftF x) -> x : fmap ((anno :<) . ParserTermH . HLeftF) (shrink x)
+    anno :< ParserTermH (HRightF x) -> x : fmap ((anno :<) . ParserTermH . HRightF) (shrink x)
+    anno :< ParserTermH (HTraceF x) -> x : fmap ((anno :<) . ParserTermH . HTraceF) (shrink x)
+    anno :< ParserTermL (LamF v x) -> x : fmap ((anno :<) . ParserTermL . LamF v) (shrink x)
+    anno :< ParserTermH (ITEF i t e) -> i : t : e : [anno :< ParserTermH (ITEF ni nt ne) | (ni, nt, ne) <- shrink (i,t,e)]
     anno :< ParserTermB (PairSF a b) -> a : b : [anno :< ParserTermB (PairSF na nb) | (na, nb) <- shrink (a,b)]
-    anno :< TAppF f i -> f : i : [anno :< TAppF nf ni | (nf, ni) <- shrink (f,i)]
+    anno :< ParserTermL (AppF f i) -> f : i : [anno :< ParserTermL (AppF nf ni) | (nf, ni) <- shrink (f,i)]
 
 instance Arbitrary Term2 where
   arbitrary = do
     term1 <- arbitrary :: Gen Term1
-    let term2 = case debruijinize [] term1 of
+    let term2 = case debruijinize term1 of
                   Left str -> error $ "Non valid `Term1` generated from `arbitrarry :: Gen Term1`: "
                                         <> show term1
                                         <> " With error message: "
@@ -331,13 +372,13 @@ instance Arbitrary Term2 where
     pure term2
   shrink = \case
     _ :< ParserTermB ZeroSF -> []
-    anno :< TLimitedRecursionF t r b -> t : r : b : [anno :< TLimitedRecursionF nt nr nb | (nt, nr, nb) <- shrink (t,r,b)]
-    _ :< TVarF _ -> []
-    anno :< THashF x -> x : fmap ((anno :<) . THashF) (shrink x)
-    anno :< TLeftF x -> x : fmap ((anno :<) . TLeftF) (shrink x)
-    anno :< TRightF x -> x : fmap ((anno :<) . TRightF) (shrink x)
-    anno :< TTraceF x -> x : fmap ((anno :<) . TTraceF) (shrink x)
-    anno :< TLamF v x -> x : fmap ((anno :<) . TLamF v) (shrink x)
-    anno :< TITEF i t e -> i : t : e : [anno :< TITEF ni nt ne | (ni, nt, ne) <- shrink (i,t,e)]
+    anno :< ParserTermH (RecursionF t r b) -> t : r : b : [anno :< ParserTermH (RecursionF nt nr nb) | (nt, nr, nb) <- shrink (t,r,b)]
+    _ :< ParserTermL (VarF _) -> []
+    anno :< ParserTermH (HashF x) -> x : fmap ((anno :<) . ParserTermH . HashF) (shrink x)
+    anno :< ParserTermH (HLeftF x) -> x : fmap ((anno :<) . ParserTermH . HLeftF) (shrink x)
+    anno :< ParserTermH (HRightF x) -> x : fmap ((anno :<) . ParserTermH . HRightF) (shrink x)
+    anno :< ParserTermH (HTraceF x) -> x : fmap ((anno :<) . ParserTermH . HTraceF) (shrink x)
+    anno :< ParserTermL (LamF v x) -> x : fmap ((anno :<) . ParserTermL . LamF v) (shrink x)
+    anno :< ParserTermH (ITEF i t e) -> i : t : e : [anno :< ParserTermH (ITEF ni nt ne) | (ni, nt, ne) <- shrink (i,t,e)]
     anno :< ParserTermB (PairSF a b) -> a : b : [anno :< ParserTermB (PairSF na nb) | (na, nb) <- shrink (a,b)]
-    anno :< TAppF f i -> f : i : [anno :< TAppF nf ni | (nf, ni) <- shrink (f,i)]
+    anno :< ParserTermL (AppF f i) -> f : i : [anno :< ParserTermL (AppF nf ni) | (nf, ni) <- shrink (f,i)]

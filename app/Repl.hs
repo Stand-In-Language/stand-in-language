@@ -29,8 +29,8 @@ import System.Exit (exitSuccess)
 import qualified System.IO.Strict as Strict
 import Telomare
 import Telomare.Eval (compileUnitTestNoAbort)
-import Telomare.Parser (AUPT, AnnotatedUPT (..), TelomareParser,
-                        parseAssignment, parseLongExpr, parsePrelude)
+import Telomare.Parser (TelomareParser, parseAssignment, parseLongExpr,
+                        parsePrelude)
 import Telomare.Possible (evalPartial)
 import Telomare.PossibleData (DeferredEvalF (..), PartialExpr, deferredEE)
 import Telomare.Resolver (process)
@@ -275,7 +275,7 @@ main = do
                SimpleBackend   -> wrapEval simpleEval'
       simpleEval' :: StuckExpr -> Either RunTimeError StuckExpr
       simpleEval' = eval
-      wrapEval f = conv . fmap toTelomare . f . fromTelomare . (\x -> setEnvB (pairB (embed . embedS $ DeferSF (toEnum (-1)) x) zeroB))
+      wrapEval f = conv . fmap toTelomare . f . fromTelomare . (\x -> SetEnvB (PairB (embed . embedS $ DeferSF (toEnum (-1)) x) ZeroB))
       conv = \case
         Right (Just x) -> Right x
         Left e -> Left e

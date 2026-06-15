@@ -99,16 +99,6 @@ buildTypeMap assocSet =
     Just k  -> Left $ RecursiveType k
     Nothing -> debugTrace (show multiMap) $ buildMap mempty assocSet mempty
 
-{-
-fullyResolve :: (Int -> Maybe PartialType) -> PartialType -> PartialType
-fullyResolve resolve = convert where
-    convert = transform endo
-    endo = \case
-      TypeVariable anno i -> case resolve i of
-        Nothing -> TypeVariable anno i
-        Just t  -> convert t -- debugTrace (show t) $ convert t
-      x -> x
--}
 fullyResolve :: (Int -> Maybe PartialType) -> PartialType -> Either TypeCheckError PartialType
 fullyResolve resolve = ($ Set.empty) . cata f where
   f :: PartialTypeF (Set Int -> Either TypeCheckError PartialType) -> Set Int -> Either TypeCheckError PartialType
@@ -186,14 +176,12 @@ partiallyAnnotate term =
 -}
 
 inferType :: Term3 -> Either TypeCheckError PartialType
--- inferType tm = lookupFully <$> partiallyAnnotate tm where
 inferType tm = partiallyAnnotate tm >>= lookupFully where
   lookupFully (ty, resolver) = fullyResolve resolver ty
 
 typeCheck :: PartialType -> Term3 -> Maybe TypeCheckError
 typeCheck t tm = convert (partiallyAnnotate tm >>= associate) where
   associate (ty, resolver) = debugTrace ("typechecking term:\n" <> prettyPrint tm <> "\nCOMPARING TYPES " <> show (t, fullyResolve resolver ty))
-     --  $ makeAssociations (fullyResolve resolver ty) t
      $ fullyResolve resolver ty >>= makeAssociations t
   convert = \case
     Left er -> Just er

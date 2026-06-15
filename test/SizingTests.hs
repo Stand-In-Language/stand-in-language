@@ -8,6 +8,7 @@ import Control.Monad.Reader (Reader, runReader)
 import qualified Control.Monad.State as State
 import Data.Bifunctor
 import Data.Char
+import Data.Fix (Fix (..))
 import Data.List (partition)
 import qualified Data.Map as Map
 import Data.Monoid
@@ -80,7 +81,7 @@ parsePreludeWithFile preludePath telFile = do
 
 -- | Compile using our sizing toggle function
 compileWithSizing :: SizingOption -> Term3 -> Either EvalError CompiledExpr
-compileWithSizing useSizing term = case typeCheck (PairTypeP (ArrTypeP ZeroTypeP ZeroTypeP) AnyType) term of
+compileWithSizing useSizing term = case typeCheck (Fix $ PairTypeP (Fix $ ArrTypeP (Fix ZeroTypeP) (Fix ZeroTypeP)) (Fix AnyType)) term of
   Just e -> Left $ TCE e
   _      -> compileWithSizing' useSizing term
 
@@ -95,8 +96,8 @@ compileWithSizing' useSizing t =
 sizingFunWrap :: (StuckExpr -> StuckExpr) -> StuckExpr -> Maybe (String, StuckExpr) -> (String, Maybe StuckExpr)
 sizingFunWrap evalFn fun inp =
   let iexpInp = case inp of
-        Nothing                  -> zeroB
-        Just (userInp, oldState) -> pairB (s2b userInp) oldState
+        Nothing                  -> ZeroB
+        Just (userInp, oldState) -> PairB (s2b userInp) oldState
   in case evalFn (appB fun iexpInp) of
     ZeroB               -> ("aborted", Nothing)
     PairB disp newState -> (case b2s disp of { Just s -> s; Nothing -> show disp }, Just newState)
