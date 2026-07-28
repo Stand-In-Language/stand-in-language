@@ -23,6 +23,7 @@ import System.Posix.Process
 import System.Posix.Types
 import Telomare
 import Telomare.Eval
+import qualified Telomare.Fast as Fast
 import Telomare.Parser
 import Telomare.Possible (SizingSettings (SizingSettings))
 import Telomare.Resolver
@@ -356,6 +357,12 @@ unitTests = testGroup "Unit tests"
   , testCase "test tictactoe.tel" $ do
       res <- tictactoe
       res @?= fullRunTicTacToeString
+  -- Running without sizing takes a different route through a different
+  -- evaluator, so the only thing that says it is the same language is that it
+  -- plays the same game.
+  , testCase "test tictactoe.tel without sizing" $ do
+      res <- tictactoeUnsized
+      res @?= fullRunTicTacToeString
   , testCase "test recursive imports" $ do
       res <- runMain_ aux222 "Main"
       res @?= "whattt\ndone"
@@ -392,6 +399,20 @@ tictactoe = do
   telStr <- Strict.readFile "tictactoe.tel"
   preludeStr <- Strict.readFile "Prelude.tel"
   runMainWithInput ["1", "9", "2", "8", "3"] [("Prelude", preludeStr), ("tictactoe", telStr)] "tictactoe"
+
+-- |The same game, on the runtime that skips sizing. Cheap, because skipping
+-- sizing is the point of it.
+tictactoeUnsized :: IO String
+tictactoeUnsized = do
+  telStr <- Strict.readFile "tictactoe.tel"
+  preludeStr <- Strict.readFile "Prelude.tel"
+  let modules = [("Prelude", preludeStr), ("tictactoe", telStr)]
+  case Fast.compileFast modules "tictactoe" of
+    Left err -> pure $ "failed to compile without sizing:\n" <> err
+    Right prog ->
+      case snd (Fast.runFastWithInput Nothing ["1", "9", "2", "8", "3"] prog) of
+        Left e           -> pure $ "run failed: " <> show e
+        Right transcript -> pure transcript
 
 fullRunTicTacToeString = init . unlines $
   [ "1|2|3"

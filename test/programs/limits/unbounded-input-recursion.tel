@@ -1,0 +1,30 @@
+import Prelude
+
+-- LIMIT: a recursion whose test reads input that nothing bounds cannot be
+--   sized, so the program does not compile. This is not a budget problem --
+--   raising the sizing budget would not help, because no finite iteration
+--   count can be proven at all.
+-- EXPECTED: a compile error naming this recursion and asking for a refinement.
+-- OBSERVED: could not size recursion #0 at unbounded-input-recursion:27:34:
+--   its test depends on input that nothing bounds, so no finite iteration
+--   count can be proven for it. Constrain that input with a refinement
+--   (`x : someValidator`) or an `assert` before recursing on it.
+-- WORKAROUND: bound the input first, with a refinement on the `let` binding.
+--   `valid` asserts the character is under 33, which tells the sizing pass the
+--   recursion can peel at most 33 layers -- see the commented lines below.
+
+countDown = { \i -> i
+            , \recur i -> recur (left i)
+            , \i -> 0
+            }
+
+-- WORKAROUND (compiles): refine the input before recursing on it.
+-- valid = \x -> assert (not ($33 left x)) "input too large"
+
+main = \input -> let userInput = left input
+                     firstChar = left userInput
+                     -- WORKAROUND: firstChar : valid = left userInput
+                     output = if countDown firstChar then "!" else "#"
+                 in if not input
+                    then (" ", 1)
+                    else (output, 0)

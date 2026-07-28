@@ -24,7 +24,8 @@ import qualified System.IO.Strict as Strict
 import Telomare
 import Telomare.TypeChecker (typeCheck)
 import Text.Megaparsec (MonadParsec (eof, notFollowedBy, try), ParseErrorBundle,
-                        Parsec, Pos, SourcePos (sourceColumn, sourceLine),
+                        Parsec, Pos,
+                        SourcePos (sourceColumn, sourceLine, sourceName),
                         between, choice, errorBundlePretty, getOffset,
                         getSourcePos, many, manyTill, optional, runParser,
                         sepBy, some, unPos, (<?>), (<|>))
@@ -131,7 +132,9 @@ sourcePositionFromPos offset pos = SourcePosition
 
 sourceLocFromPositions :: (Int, SourcePos) -> (Int, SourcePos) -> LocTag
 sourceLocFromPositions (startOffset, start) (endOffset, end) = SourceLoc SourceSpan
-  { sourceSpanFile = Nothing
+  { sourceSpanFile = case sourceName start of
+      ""   -> Nothing
+      name -> Just name
   , sourceSpanStart = sourcePositionFromPos startOffset start
   , sourceSpanEnd = sourcePositionFromPos endOffset end
   }
@@ -725,8 +728,13 @@ runParseLongExpr str = bimap errorBundlePretty convert $ runParser parseLongExpr
         PatternPairF a b -> PatternPairF a b
 
 parsePrelude :: String -> Either String [(String, AnnotatedUPT)]
-parsePrelude str = let result = runParser parseAssignmentEntries "" str
-                    in bimap errorBundlePretty (fmap (second AnnotatedUPT)) result
+parsePrelude = parsePreludeNamed ""
+
+-- |`parsePrelude`, recording the source name in every location it produces so
+-- diagnostics can say which file a term came from.
+parsePreludeNamed :: String -> String -> Either String [(String, AnnotatedUPT)]
+parsePreludeNamed name str = let result = runParser parseAssignmentEntries name str
+                             in bimap errorBundlePretty (fmap (second AnnotatedUPT)) result
 
 -- |One parser step inside a module: returns a list because list assignments
 -- expand into multiple (name, value) bindings.
@@ -749,10 +757,18 @@ parseWithPrelude prelude str = bimap errorBundlePretty AnnotatedUPT $ runParser 
   prelude' = fmap (second unAnnotatedUPT) prelude
 
 parseModule :: String -> Either String [Either AnnotatedUPT (String, AnnotatedUPT)]
-parseModule str = first errorBundlePretty $ parseModuleDetailed str
+parseModule = parseModuleNamed ""
+
+-- |`parseModule`, recording the source name in every location it produces so
+-- diagnostics can say which file a term came from.
+parseModuleNamed :: String -> String -> Either String [Either AnnotatedUPT (String, AnnotatedUPT)]
+parseModuleNamed name str = first errorBundlePretty $ parseModuleDetailedNamed name str
 
 parseModuleDetailed :: String -> Either (ParseErrorBundle String Void) [Either AnnotatedUPT (String, AnnotatedUPT)]
-parseModuleDetailed = wrapUp . runParser (concat <$> (scn *> many parseImportOrAssignment <* eof)) "" where
+parseModuleDetailed = parseModuleDetailedNamed ""
+
+parseModuleDetailedNamed :: String -> String -> Either (ParseErrorBundle String Void) [Either AnnotatedUPT (String, AnnotatedUPT)]
+parseModuleDetailedNamed name = wrapUp . runParser (concat <$> (scn *> many parseImportOrAssignment <* eof)) name where
   wrapUp = second (fmap (bimap AnnotatedUPT (second AnnotatedUPT)))
 
 -- |Parse either a single expression or top level definitions defaulting to the `main` definition.

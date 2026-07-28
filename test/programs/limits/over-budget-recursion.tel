@@ -1,0 +1,33 @@
+import Prelude
+
+-- LIMIT: sizing works by unrolling the recursion abstractly, one level at a
+--   time, until its test stops. That search has a budget, and a recursion that
+--   genuinely needs more levels than the budget allows is rejected -- even
+--   though it is perfectly total.
+-- EXPECTED: a compile error naming this recursion and the depth reached.
+-- OBSERVED (at a budget of 5): could not size recursion #0 at
+--   over-budget-recursion:30:34: its test had still not stopped after 6
+--   unrollings. Either it needs a deeper recursion than the sizing budget
+--   allows, or its test never stops.
+-- NOTE: this program COMPILES at the CLI's budget of 65536. It is here to
+--   exercise the budget-exhaustion path, which the test suite drives with a
+--   deliberately tiny budget. The two failures are worth telling apart: this
+--   one is fixed by a bigger budget or a shallower recursion, whereas
+--   unbounded-input-recursion.tel cannot be fixed by any budget.
+-- WORKAROUND: bound the recursion more tightly, so it needs fewer levels --
+--   see the commented refinement below, which peels 3 layers instead of 33.
+
+valid = \x -> assert (not ($33 left x)) "input too large"
+-- WORKAROUND (sizes within a small budget): -- valid = \x -> assert (not ($3 left x)) "input too large"
+
+countDown = { \i -> i
+            , \recur i -> recur (left i)
+            , \i -> 0
+            }
+
+main = \input -> let userInput = left input
+                     firstChar : valid = left userInput
+                     output = if countDown firstChar then "!" else "#"
+                 in if not input
+                    then (" ", 1)
+                    else (output, 0)

@@ -13,10 +13,8 @@ import Control.Monad.State (State, evalState)
 import qualified Control.Monad.State as State
 import Data.Bifunctor (bimap, first, second)
 import Data.Foldable (fold)
-import Data.List (partition)
 import Data.Map (Map)
 import qualified Data.Map as Map
-import Data.Maybe (isNothing)
 import Data.Semigroup (Max (..), Min (..))
 import Data.Set (Set)
 import qualified Data.Set as Set
@@ -32,7 +30,8 @@ import Telomare (AUPT, AbortableF (AbortF), AbstractRunTime, AnnotatedUPT (..),
                  BasicExpr, BasicExprF (..), CompiledExpr, CompiledExprF,
                  EvalError (..), LocTag (..), LocatedName (..),
                  PartialTypeF (..), Pattern, PatternA, ResolverError (..),
-                 RunTimeError (..), StuckExpr, StuckF (..), TelomareLike (..),
+                 RunTimeError (..), SizingFailure (..), SizingFailureKind (..),
+                 SourceSpan (..), StuckExpr, StuckF (..), TelomareLike (..),
                  Term2, Term3, Term3Builder, Term3F (..),
                  UnprocessedParsedTerm (..), UnprocessedParsedTermF (..),
                  UnsizedRecursionToken (..), appS, b2s, convertAbort,
@@ -41,11 +40,13 @@ import Telomare (AUPT, AbortableF (AbortF), AbstractRunTime, AnnotatedUPT (..),
                  locStartLineColumn, pattern AbortEE, pattern AbortFW,
                  pattern BasicEE, pattern BasicFW, pattern EnvB, pattern LeftB,
                  pattern PairB, pattern PairP, pattern RightB, pattern SetEnvB,
-                 pattern StuckEE, pattern StuckFW, pattern ZeroB, s2b, tag)
-import Telomare.Parser (parseModule, parseOneExprOrTopLevelDefs, parsePrelude)
-import Telomare.Possible (SizingSettings (SizingSettings), appB, basicEval,
-                          deferB, evalStaticCheck, getSizesM, sizeTermM,
-                          term3ToUnsizedExpr)
+                 pattern StuckEE, pattern StuckFW, pattern ZeroB,
+                 renderEvalError, renderLocTagCompact, s2b, tag)
+import Telomare.Meter (Meter, evalMeter)
+import Telomare.Parser (parseModule, parseModuleNamed,
+                        parseOneExprOrTopLevelDefs, parsePrelude)
+import Telomare.Possible (SizingSettings (..), appB, basicEval, deferB,
+                          evalStaticCheck, sizeTermM, term3ToUnsizedExpr)
 import Telomare.PossibleData (SizedRecursion (..), VoidF)
 import Telomare.Resolver (main2Term3, main2Term3let, process, resolveAllImports)
 import Telomare.TypeChecker (typeCheck)
@@ -78,12 +79,56 @@ data SizingOption
   | MainSizing
   | DebugSizing SizingSettings
 
+-- |What the sizing pass learned, kept rather than discarded. These iteration
+-- counts are the numbers the compiler already relies on to claim a program is
+-- total; reporting them asserts nothing new.
+data SizingReport = SizingReport
+  { sizingReportCounts :: SizedRecursion
+  -- ^Per recursion site, the iteration count inferred over every input.
+  , sizingReportLocs   :: Map UnsizedRecursionToken LocTag
+  -- ^Where each site is in the source.
+  , sizingReportBudget :: Int
+  -- ^The unrolling budget the search was allowed.
+  }
+
+-- |Every recursion site's source location, recovered from the `Term3`
+-- annotations that `term3ToUnsizedExpr` drops on its way to `UnsizedExpr`.
+buildUnsizedLocMap :: Term3 -> Map UnsizedRecursionToken LocTag
+buildUnsizedLocMap = cata f where
+  f (anno CofreeT.:< g) = case g of
+    Term3Unsized tok -> Map.singleton tok anno
+    x                -> fold x
+
+-- |`sizeTermM` names the recursion that failed but cannot say where it is.
+locateSizingFailure :: Map UnsizedRecursionToken LocTag -> SizingFailure -> SizingFailure
+locateSizingFailure locs failure =
+  failure { sizingFailureLoc = Map.lookup (sizingFailureToken failure) locs }
+
+sizingBudget :: SizingOption -> Int
+sizingBudget = \case
+  NoSizing       -> reallyBigNum
+  UnitTestSizing -> reallyBigNum
+  MainSizing     -> reallyBigNum
+  DebugSizing ss -> maxSizingSize ss
+
+reallyBigNum :: Int
+reallyBigNum = 65536
+
 findChurchSizeD :: SizingOption -> Term3 -> Either EvalError CompiledExpr
-findChurchSizeD so t3 = let reallyBigNum = 65536 in case so of
-  NoSizing       -> pure (convertPT (const reallyBigNum) t3)
-  UnitTestSizing -> calculateRecursionLimits (SizingSettings reallyBigNum False) t3
-  MainSizing     -> calculateRecursionLimits (SizingSettings reallyBigNum True) t3
-  DebugSizing ss -> calculateRecursionLimits ss t3
+findChurchSizeD so = fmap snd . findChurchSizeReporting so
+
+findChurchSizeReporting :: SizingOption -> Term3 -> Either EvalError (SizingReport, CompiledExpr)
+findChurchSizeReporting so t3 = case so of
+  NoSizing       -> pure (report mempty, convertPT (const reallyBigNum) t3)
+  UnitTestSizing -> sized (SizingSettings reallyBigNum False)
+  MainSizing     -> sized (SizingSettings reallyBigNum True)
+  DebugSizing ss -> sized ss
+  where
+    locs = buildUnsizedLocMap t3
+    report counts = SizingReport counts locs (sizingBudget so)
+    sized settings = case sizeTermM settings $ term3ToUnsizedExpr t3 of
+      Left failure      -> Left . RecursionLimitError $ locateSizingFailure locs failure
+      Right (counts, t) -> pure (report counts, t)
 
 -- rather than remove checks, we should extract them so that they can be run separately, if that gives a performance benefit
 {-
@@ -110,13 +155,22 @@ runStaticChecks t =
     Just e  -> Left . StaticCheckError $ convertAbortMessage e
 
 compileMain :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -> String -> Either EvalError CompiledExpr
-compileMain modules term = do
+compileMain modules term = snd <$> compileMainReporting MainSizing modules term
+
+-- |`compileMain`, keeping the sizing results. Sizing costs minutes on
+-- Prelude-heavy programs, so anything that wants to report the inferred
+-- iteration counts must come by them through here rather than size again.
+compileMainReporting :: SizingOption
+                     -> [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
+                     -> String
+                     -> Either EvalError (SizingReport, CompiledExpr)
+compileMainReporting so modules term = do
   let modules' = second (fmap (bimap unAnnotatedUPT (second unAnnotatedUPT))) <$> modules
       mainType = embed $ PairTypeP (embed $ ArrTypeP (embed ZeroTypeP) (embed ZeroTypeP)) (embed AnyType)
   tcTerm <- first RE $ main2Term3 modules' term
   case typeCheck mainType tcTerm of
     Just e -> Left $ TCE e
-    _      -> first RE (main2Term3let modules' term) >>= compile MainSizing pure
+    _      -> first RE (main2Term3let modules' term) >>= compileReporting so pure
 
 -- for testing
 compileMain' :: SizingSettings -> Term3 -> Either EvalError CompiledExpr
@@ -133,19 +187,36 @@ compileUnitTestNoAbort = fmap (cata f) . compileUnitTest where
     x -> embed x
 
 compile :: SizingOption -> (CompiledExpr -> Either EvalError CompiledExpr) -> Term3 -> Either EvalError CompiledExpr
-compile so staticCheck t = debugTrace ("compiling term3:\n" <> prettyPrint t)
-  $ removeChecks <$> (findChurchSizeD so t >>= staticCheck)
+compile so staticCheck t = snd <$> compileReporting so staticCheck t
+
+compileReporting :: SizingOption
+                 -> (CompiledExpr -> Either EvalError CompiledExpr)
+                 -> Term3
+                 -> Either EvalError (SizingReport, CompiledExpr)
+compileReporting so staticCheck t = debugTrace ("compiling term3:\n" <> prettyPrint t) $ do
+  (report, sized) <- findChurchSizeReporting so t
+  checked <- staticCheck sized
+  pure (report, removeChecks checked)
 
 -- converts between easily understood Haskell types and untyped IExprs around an iteration of a Telomare expression
 funWrap :: forall a. (Show a, AbstractRunTime a) => a -> (a -> a -> a) -> Maybe (String, BasicExpr) -> (String, Either RunTimeError BasicExpr)
-funWrap fun app inp =
+funWrap fun app inp = snd $ funWrapWith (\x -> ((), eval x)) fun app inp
+
+-- |`funWrap` over an evaluator that also reports something about the run, so
+-- the metered and plain loops share one conversion path.
+funWrapWith :: forall a m. (Show a, TelomareLike a, Monoid m)
+            => (a -> (m, Either RunTimeError a))
+            -> a -> (a -> a -> a) -> Maybe (String, BasicExpr)
+            -> (m, (String, Either RunTimeError BasicExpr))
+funWrapWith evaluator fun app inp =
   let iexpInp = conv $ case inp of
         Nothing                  -> ZeroB
         Just (userInp, oldState) -> PairB (s2b userInp) oldState
       conv = runIdentity . cata (convertBasic (\_ -> error "funWrap conversion error"))
       conv2 = runIdentity . cata (convertBasic (convertStuck (\_ -> error "funWrap conversion error2")))
       conv3 = runIdentity . cata (convertBasic (\_ -> error "funWrap conversion error3"))
-  in case eval (app fun $ fromTelomare iexpInp) of
+      (measured, outcome) = evaluator (app fun $ fromTelomare iexpInp)
+  in (,) measured $ case outcome of
     Right x -> case toTelomare x of
       Nothing -> ("error converting iteration value:\n" <> show x, Left $ AbortRunTime ZeroB)
       Just ZeroB -> ("aborted", Left $ AbortRunTime ZeroB)
@@ -155,38 +226,42 @@ funWrap fun app inp =
         _ -> ("error converting display value:\n" <> prettyPrint disp, Left . GenericRunTimeError "" $ conv2 disp)
     Left e -> ("runtime error:\n" <> show e, Left e)
 
+-- |Parse and compile a module set, keeping the sizing results. Every problem
+-- comes back as text a user can act on rather than as an exception, so callers
+-- decide how to report it.
+--
+-- Each module is parsed under its own name, so the locations in diagnostics
+-- can say which file a term came from.
+compileModules :: [(String, String)] -- ^All modules as (Module_Name, Module_Content)
+               -> String -- ^Module's name with `main` function
+               -> Either String (SizingReport, CompiledExpr)
+compileModules = compileModulesWith MainSizing
+
+-- |`compileModules` at a chosen sizing budget. Tests use a deliberately tiny
+-- budget to reach the budget-exhaustion path without waiting for 65536
+-- abstract unrollings.
+compileModulesWith :: SizingOption
+                   -> [(String, String)]
+                   -> String
+                   -> Either String (SizingReport, CompiledExpr)
+compileModulesWith so modulesStrings s =
+  case [ "Error in module " <> moduleName <> ":\n" <> err
+       | (moduleName, Left err) <- parsed ] of
+    [] -> first renderEvalError $ compileMainReporting so [ (n, m) | (n, Right m) <- parsed ] s
+    errs -> Left $ unlines errs
+  where
+    parsed :: [(String, Either String [Either AnnotatedUPT (String, AnnotatedUPT)])]
+    parsed = fmap (\(moduleName, content) -> (moduleName, parseModuleNamed moduleName content)) modulesStrings
+
 runMainCore :: [(String, String)] -- ^All modules as (Module_Name, Module_Content)
             -> String -- ^Module's name with `main` function
             -> (CompiledExpr -> IO a)
             -> IO a
-runMainCore modulesStrings s e =
-  let parsedModules :: [(String, Either String [Either AnnotatedUPT (String, AnnotatedUPT)])]
-      parsedModules = (fmap . fmap) parseModule modulesStrings
-      parsedModulesErrors :: [(String, Either String [Either AnnotatedUPT (String, AnnotatedUPT)])]
-      parsedModulesErrors = filter (\(moduleStr, parsed) -> case parsed of
-                                      Left _  -> True
-                                      Right _ -> False)
-                                   parsedModules
-      flattenLeft = \case
-        Left a -> a
-        Right a -> error "flattenLeft error: got a Right when it should be Left"
-      flattenRight = \case
-        Right a -> a
-        Left a -> error "flattenRight error: got a Left when it should be Right"
-      modules :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
-      modules =
-        case parsedModulesErrors of
-          [] -> (fmap . fmap) flattenRight parsedModules
-          errors -> let moduleWithError :: [(String, String)]
-                        moduleWithError = (fmap . fmap) flattenLeft parsedModulesErrors
-                        joinModuleError :: (String, String) -> String
-                        joinModuleError (moduleName, errorStr) = "Error in module " <> moduleName <> ":\n" <> errorStr
-                    in error . unlines $ joinModuleError <$> moduleWithError
-
-  in
-    case compileMain modules s of
-      Left e  -> error $ "runMainCore failed: " <> show e
-      Right g -> e g
+runMainCore modulesStrings s e = case compileModules modulesStrings s of
+  -- Still an exception, since callers depend on that; the CLI takes the
+  -- `compileModules` route instead so a user never sees this framing.
+  Left err         -> error $ "runMainCore failed: " <> err
+  Right (_, sized) -> e sized
 
 runMain_ :: [(String, String)] -- ^All modules as (Module_Name, Module_Content)
          -> String -- ^Module's name with `main` function
@@ -249,6 +324,25 @@ evalLoopWithInput inputList iexpr = evalLoopCore iexpr printAcc "" inputList
                        then pure out
                        else pure (acc <> "\n" <> out)
 
+-- |`evalLoop`, measuring what the session costs. Prints exactly what
+-- `evalLoop` prints; the caller decides what to do with the measurement.
+evalLoopMetered :: [String] -> CompiledExpr -> IO Meter
+evalLoopMetered manualInput expr = go mempty manualInput Nothing where
+  wrappedEval = funWrapWith evalMeter expr appB
+  go measured strInput s = do
+    let (m, (out, nextState)) = wrappedEval s
+        measured' = measured <> m
+    putStrLn out
+    case nextState of
+      Left _      -> pure measured'
+      Right ZeroB -> pure measured'
+      Right ns    -> do
+        (inp, rest) <-
+          if null strInput
+          then (, []) <$> getLine
+          else pure (head strInput, tail strInput)
+        go measured' rest $ pure (inp, ns)
+
 -- |Same as `evalLoop`, but keeping what was displayed.
 evalLoop_ :: CompiledExpr -> IO String
 evalLoop_ iexpr = evalLoopCore iexpr printAcc "" []
@@ -258,38 +352,32 @@ evalLoop_ iexpr = evalLoopCore iexpr printAcc "" []
                        else pure (acc <> "\n" <> out)
 
 calculateRecursionLimits :: SizingSettings -> Term3 -> Either EvalError CompiledExpr
-calculateRecursionLimits sizingSettings t3 = case sizeTermM sizingSettings $ term3ToUnsizedExpr t3 of
-    Left urt -> Left $ RecursionLimitError urt
-    Right t  -> pure t
+calculateRecursionLimits sizingSettings = findChurchSizeD (DebugSizing sizingSettings)
 
--- takes a main function and sizes the unsized recursion and then displays the results as comments in the original source
-showSizingInSource :: String -> String -> String
-showSizingInSource prelude s
-  = let asLines = zip [0..] $ lines s
-        parsed = first ParseError (parsePrelude prelude) >>= (`parseMain` s)
-        unsizedExpr = term3ToUnsizedExpr <$> first RE parsed
-        sizedRecursion = unsizedExpr >>= (first RecursionLimitError . getSizesM 256)
-        sizeLocs = error "TODO showSizingInSource implement sizeLocs" --Map.toAscList . buildUnsizedLocMap <$> unsizedExpr
-        -- (orphanLocs, lineLocs) = partition (isNothing . locStartLineColumn . snd) sizeLocs
-        (orphanLocs, lineLocs) = case sizeLocs of
-          Left e   -> error "uh" -- ("Could not size: " <> show e)
-          Right sl -> partition (isNothing . locStartLineColumn . snd) sl
-        -- orphanList = map ((<> " ") . show . fst) orphanLocs
-        -- orphans = "unsized with no location: " <> foldMap ((<> " ") . show . fst) orphanLocs
-        orphans = error "TODO showSizingInSource thing"
-        fromEnum' loc = case locStartLineColumn loc of
-          Just (line, _) -> line
-          Nothing        -> error "unexpected source-less location"
-        lookupSize x = case sizedRecursion of
-          Right (SizedRecursion sm) -> case Map.lookup x sm of
-            Just (Just v) -> show v
-            _             -> "?"
-          _ -> "?"
-        -- getSizeMatchingLine x = foldMap ((<> " ") . show) $ filter ((== x) . fromEnum' . snd) lineLocs
-        getSizeMatchingLine x = case filter ((== x) . fromEnum' . snd) lineLocs of
-          [] -> ""
-          l -> ("   # " <>) $ foldMap ((\s -> show (fromEnum s) <> ":" <> lookupSize s <> " ") . fst) l
-    in "showSizingInSource\n" <> orphans <> "\n" <> foldMap (\(l, s) -> s <> getSizeMatchingLine l <> "\n") asLines
+-- |Every recursion site in the program, where it is, and how many times it can
+-- iterate. The counts hold for every input: the sizing pass finds them by
+-- running the program over a symbolic input, and takes the worst case across
+-- the paths it explores.
+--
+-- Nothing here is a new claim. These are the very numbers the compiler bakes
+-- into the program to make it total; a program that does not size does not
+-- compile at all.
+renderSizingCertificate :: SizingReport -> String
+renderSizingCertificate report = unlines $
+  "recursion sites (iterations, over every input):"
+    : (if null sites then ["  none - this program has no unsized recursion"] else sites)
+    <> ["", "sizing budget in force: " <> show (sizingReportBudget report) <> " unrollings"]
+  where
+    counts = Map.toAscList . unSizedRecursion $ sizingReportCounts report
+    sites = fmap site counts
+    site (tok, size) = "  " <> pad (place tok) <> "  <= " <> maybe "?" show size
+    place tok =
+      let named = "#" <> show (unUnsizedRecursionToken tok)
+      in case Map.lookup tok (sizingReportLocs report) >>= renderLocTagCompact of
+           Just spot -> spot <> " (" <> named <> ")"
+           Nothing   -> named
+    width = maximum (0 : fmap (length . place . fst) counts)
+    pad s = s <> replicate (width - length s) ' '
 
 parseMain :: [(String, AnnotatedUPT)] -- ^Prelude: [(VariableName, BindedUPT)]
           -> String                            -- ^Raw string to be parserd.
