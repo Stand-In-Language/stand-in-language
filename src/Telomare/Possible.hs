@@ -69,7 +69,7 @@ import Telomare (AbortBase (..), AbortableF (..), AbstractRunTime (..),
                  pattern AbortUnsizeable, pattern AbortUser, pattern AppEE,
                  pattern BasicEE, pattern BasicFW, pattern EnvB,
                  pattern FillFunction, pattern FillFunctionEE, pattern GateB,
-                 pattern GateSwitch, pattern GateSwitchEE, pattern LeftB,
+                 pattern GateSwitch, pattern LeftB,
                  pattern PairB, pattern PairP, pattern RightB, pattern SetEnvB,
                  pattern StuckEE, pattern StuckFW, pattern ZeroB, s2b, sindent,
                  toPartialType)
@@ -140,7 +140,13 @@ doLeft :: (Base g ~ f, BasicBase f, StuckBase f, Recursive g, Corecursive g) => 
 doLeft = deferB leftGateInd $ LeftB EnvB
 
 doRight :: (Base g ~ f, BasicBase f, StuckBase f, Recursive g, Corecursive g) => g
-doRight = deferB leftGateInd $ RightB EnvB
+doRight = deferB rightGateInd $ RightB EnvB
+
+-- | matches the branch-selector functions a gate evaluates to (doLeft/doRight)
+isGateSelector :: (Base g ~ f, StuckBase f, Recursive g) => g -> Bool
+isGateSelector x = case project x of
+  StuckFW (DeferSF fi _) -> fi == toEnum leftGateInd || fi == toEnum rightGateInd
+  _ -> False
 
 stuckStep :: (Base a ~ f, StuckBase f, BasicBase f, Recursive a, Corecursive a, PrettyPrintable a)
   => (f a -> a) -> f a -> a
@@ -314,35 +320,9 @@ superStep gateResult step handleOther =
     StuckFW (RightSF (SuperEE (EitherPF n a b))) -> mergeShallow n (step . embedS . RightSF $ a) (step . embedS . RightSF $ b)
     StuckFW (SetEnvSF (SuperEE (EitherPF n a b))) -> mergeShallow n (step . embedS . SetEnvSF $ a) (step . embedS . SetEnvSF $ b)
     FillFunction GateB x@(SuperEE (EitherPF n _ _)) -> foldGateResult n $ gateResult x
-    (FillFunction (SuperEE (EitherPF n sca scb)) e) -> mergeShallow n
-      (step . embedS . SetEnvSF . BasicEE . PairSF sca $ if null n then e else cata (filterLeft n) e)
-      (step . embedS . SetEnvSF . BasicEE . PairSF scb $ if null n then e else cata (filterRight n) e)
-    -- stuck values
-    x@(SuperFW (EitherPF _ _ _)) -> embed x
-    x -> handleOther x
-
-superUnsizedStep :: forall a f. (Base a ~ f, Traversable f, BasicBase f, StuckBase f, SuperBase f, UnsizedBase f, ShallowEq1 f, Recursive a, Corecursive a, PrettyPrintable a)
-  => (a -> GateResult a) -> (f a -> a) -> (f a -> a) -> f a -> a
-superUnsizedStep gateResult step handleOther =
-  let filterLeft :: Maybe Integer -> f a -> a
-      filterLeft n = \case
-        SuperFW (EitherPF nt a _) | nt == n -> error "TODO make like superStepM" a
-        x -> embed x
-      filterRight :: Maybe Integer -> f a -> a
-      filterRight n = \case
-        SuperFW (EitherPF nt _ b) | nt == n -> b
-        x -> embed x
-  in \case
-    StuckFW (LeftSF (SuperEE (EitherPF n a b))) -> mergeShallow n (step . embedS . LeftSF $ a) (step . embedS . LeftSF $ b)
-    StuckFW (RightSF (SuperEE (EitherPF n a b))) -> mergeShallow n (step . embedS . RightSF $ a) (step . embedS . RightSF $ b)
-    StuckFW (SetEnvSF (SuperEE (EitherPF n a b))) -> mergeShallow n (step . embedS . SetEnvSF $ a) (step . embedS . SetEnvSF $ b)
-    FillFunction GateB x@(SuperEE (EitherPF n _ _)) -> wrapSS $ foldGateResult n res where
-      wrapSS = if null (unSizedRecursion srx) then id else unsizedEE . SizeStageF srx
-      (srx, nx) = extractSizeStages x
-      res = gateResult nx
-      extractSizeStages = cata $ \case
-        UnsizedFW (SizeStageF sr (srb, x)) -> (sr <> srb, x)
-        x -> embed <$> sequence x
+    FillFunction (SuperEE (EitherPF n sca scb)) e | isGateSelector sca && isGateSelector scb -> mergeShallow n
+      (step . embedS . SetEnvSF . BasicEE $ PairSF sca e)
+      (step . embedS . SetEnvSF . BasicEE $ PairSF scb e)
     (FillFunction (SuperEE (EitherPF n sca scb)) e) -> mergeShallow n
       (step . embedS . SetEnvSF . BasicEE . PairSF sca $ if null n then e else cata (filterLeft n) e)
       (step . embedS . SetEnvSF . BasicEE . PairSF scb $ if null n then e else cata (filterRight n) e)
@@ -373,8 +353,8 @@ superStepM gateResult step handleOther x = f x where
     StuckFW (SetEnvSF (SuperEE (EitherPF n a b))) -> mergeShallow n <$> pbStep SetEnvSF a <*> pbStep SetEnvSF b
     FillFunction GateB x@(SuperEE (EitherPF n _ _)) -> pure . foldGateResult n $ gateResult x
     FillFunction (SuperEE (EitherPF n sca scb)) e ->
-      let fl = if null n then id else cata (filterLeft n)
-          fr = if null n then id else cata (filterRight n)
+      let fl = if null n || isGateSelector sca then id else cata (filterLeft n)
+          fr = if null n || isGateSelector scb then id else cata (filterRight n)
       in mergeShallow n
        <$> (pbStep SetEnvSF . BasicEE . PairSF sca $ fl e)
        <*> (pbStep SetEnvSF . BasicEE . PairSF scb $ fr e)
