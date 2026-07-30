@@ -45,6 +45,116 @@ This project is in active development. Do expect bugs and general trouble, and p
    ```
 7. Profit!
 
+## Resource reporting
+
+Telomare is total because every `{test, recursion, last}` in a program is
+compiled into a loop whose iteration count the compiler *infers*, by unrolling
+the recursion abstractly over a symbolic input until its test stops. A program
+whose counts cannot be found does not compile.
+
+Those counts are worth seeing, so they are reported rather than discarded.
+There are exactly two reports: `--certificate`, which says what the compiler
+knows without running the program, and `--meter`, which says what one run
+actually cost.
+
+```sh
+$ cabal run telomare -- --certificate simpleplus.tel
+recursion sites (iterations, over every input):
+  Prelude:30:18 (#0)     <= 11
+  Prelude:48:23 (#1)     <= 7
+  simpleplus:12:42 (#2)  <= 10
+  simpleplus:12:28 (#3)  <= 10
+
+sizing budget in force: 65536 unrollings
+
+recursion nesting (structural, approximate):
+  triple         function             levels
+  Prelude:11:19  Prelude.d2c          0, 1
+  Prelude:44:34  Prelude.foldr.fixed  0, 1
+```
+
+The counts assert nothing new: they are the numbers already baked into the
+program to make it total, and they hold for every input. The nesting below them
+is a separate, structural reading of the source — it costs milliseconds rather
+than the sizing pass's minutes, and it also reports which bindings are used
+below the level they were bound at (on `tictactoe.tel`, `whoWon.board : !!`),
+which is what duplicating a value across recursion levels costs. The two lists
+index differently — a count is per instantiation, a nesting row is per `{test,
+recursion, last}` as written — so they do not line up row by row, and the
+report says so.
+
+`--meter` runs the program and reports what the run cost — steps taken, and
+term nodes built. Those are measurements of one run, not predictions about the
+next:
+
+```sh
+$ printf '3 4\n' | cabal run telomare -- --meter simpleplus.tel
+steps (measured): 46652
+nodes built (measured): 13660
+```
+
+Neither is a memory figure, deliberately. Telomare's evaluator shares
+environments rather than copying them, so counting the term it holds as a tree
+counts shared structure once per reference — for `tictactoe.tel` that reads
+about 1.2TB for a run that fits in a few GB. An honest memory figure needs
+reachability over distinct nodes, which is not implemented; use `+RTS -s` for
+the real thing.
+
+When sizing fails, the error names the recursion, where it is, and which of the
+two failures it is — a budget that was too small, or an input that nothing
+bounds. Only the first is fixable by raising the budget. See
+`test/programs/limits/` for a worked example of each.
+
+## Compiling once
+
+Sizing is the slow part — about 70 seconds for `tictactoe.tel` — and it gives
+the same answer every time, because it runs the program over a *symbolic*
+input. So it need only happen once:
+
+```sh
+$ cabal run telomare -- tictactoe.tel --compile      # ~70s, writes tictactoe.telc
+$ cabal run telomare -- tictactoe.telc               # starts immediately
+```
+
+A `.telc` file holds the sized program together with its counts and its
+certificate, so running it skips parsing, typechecking, resolving and sizing,
+and `--certificate` on it prints instantly. If the sources are still around and
+have changed since it was built, running it says so and carries on — an
+artifact is expected to outlive the checkout it came from.
+
+## Running without sizing
+
+`--fast` skips sizing altogether and runs the recursion on demand, unrolling
+one layer per call instead of a count inferred in advance. It starts
+immediately, plays `tictactoe.tel` identically, and will even run programs the
+sizing pass rejects:
+
+```sh
+$ printf '3 4\n' | cabal run telomare -- simpleplus.tel --fast --meter
+enter two digits separated by a space
+3 plus 4 is 7
+function applications (measured): 2,560
+gate selections (measured):       83
+recursion unrolls (measured):     110 across 4 sites
+
+  site   source            function          unrolls
+  #1     Prelude:48:23     Prelude.foldr     48
+  #0     Prelude:30:18     Prelude.dMinus    40
+  #2     simpleplus:12:42  simpleplus.doAdd  12
+  #3     simpleplus:12:28  simpleplus.doAdd  10
+```
+
+Per-site unrolls are only available this way: sizing compiles each site into a
+loop of a fixed length, after which the site no longer exists to attribute
+anything to. They are totals over the run rather than depths, so they are not
+the same measurement as the certificate's per-instantiation counts.
+
+What `--fast` gives up is the thing sizing is for: **nothing proves the program
+terminates**. A recursion that would not have sized runs until a fuel cap stops
+it (default 16777216 applications and unrollings per iteration of `main`,
+`--fuel N` to change it, `--fuel 0` to lift it). That is why it is a flag and
+why sizing remains the default.
+
 ## Telomare REPL
 1. Run:
    ```sh

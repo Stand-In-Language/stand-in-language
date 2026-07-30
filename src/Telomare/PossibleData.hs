@@ -529,14 +529,23 @@ convertDeferred convertOther = \case
   DeferredFW x -> deferredEE <$> sequence x
   x -> convertOther x
 
-data SizedResult = AbortedSR | UnsizableSR UnsizedRecursionToken
+data SizedResult
+  = AbortedSR
+  | UnsizableSR UnsizedRecursionToken
+  -- ^The recursion's test reached input that nothing bounds.
+  | OverfueledSR UnsizedRecursionToken
+  -- ^The abstract unrolling ran past the sizing budget.
   deriving (Eq, Ord, Show)
 
+-- |Unsizable wins over overfueled: an unbounded test is the more fundamental
+-- diagnosis, and raising the budget would not fix it.
 instance Semigroup SizedResult where
   (<>) a b = case (a,b) of
-    (u@(UnsizableSR _), _) -> u
-    (_, u@(UnsizableSR _)) -> u
-    _                      -> a
+    (u@(UnsizableSR _), _)  -> u
+    (_, u@(UnsizableSR _))  -> u
+    (o@(OverfueledSR _), _) -> o
+    (_, o@(OverfueledSR _)) -> o
+    _                       -> a
 
 newtype MonoidList a = MonoidList { unMonoidList :: [a] }
 

@@ -15,3 +15,5 @@ result
 result-*
 dev-profile*
 .direnv/
+# compiled programs written next to their sources by `telomare --compile`
+*.telc

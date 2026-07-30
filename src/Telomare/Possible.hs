@@ -57,13 +57,13 @@ import PrettyPrint
 import Telomare (AbortBase (..), AbortableF (..), AbstractRunTime (..),
                  BasicBase (..), BasicExpr, BasicExprF (..), CompiledExpr,
                  FunctionIndex (..), LocTag (..), PartialType (..),
-                 RunTimeError (..), StuckBase (..), StuckExpr, StuckExprF,
-                 StuckF (..), TelomareLike (fromTelomare, toTelomare),
-                 Term3 (..), Term3F (..),
-                 UnsizedRecursionToken (UnsizedRecursionToken), b2i,
-                 convertAbort, convertAbortMessage, convertBasic, convertStuck,
-                 forget, i2B, indentWithChildren', indentWithOneChild,
-                 indentWithOneChild', indentWithTwoChildren,
+                 RunTimeError (..), SizingFailure (..), SizingFailureKind (..),
+                 StuckBase (..), StuckExpr, StuckExprF, StuckF (..),
+                 TelomareLike (fromTelomare, toTelomare), Term3 (..),
+                 Term3F (..), UnsizedRecursionToken (UnsizedRecursionToken),
+                 b2i, convertAbort, convertAbortMessage, convertBasic,
+                 convertStuck, forget, i2B, indentWithChildren',
+                 indentWithOneChild, indentWithOneChild', indentWithTwoChildren,
                  indentWithTwoChildren', pattern AbortAny, pattern AbortEE,
                  pattern AbortFW, pattern AbortRecursion,
                  pattern AbortUnsizeable, pattern AbortUser, pattern AppEE,
@@ -603,7 +603,10 @@ unsizedStepM''' maxSize zeros recursionTest handleOther x = f x where
                                           (unsizedEE . SizeStageF (SizedRecursion . Map.singleton tok $ pure 1) $ appB argTwo argOne))
               result = PairB ZeroB (PairB ZeroB (PairB ZeroB (PairB (PairB rf trb) ZeroB)))
           in pure result
-    UnsizedFW (SizeStepStubF tok n _) | n > maxSize -> pure . AbortEE . AbortedF . AbortRecursion . i2B $ fromEnum n
+    -- The payload names the recursion that ran out of budget, matching the
+    -- runtime `AbortRecursion` built by `repeaterAndAbort`. The depth reached
+    -- is always `maxSize + 1`, so the caller reconstructs it from its settings.
+    UnsizedFW (SizeStepStubF tok n _) | n > maxSize -> pure . AbortEE . AbortedF . AbortRecursion . i2B $ fromEnum tok
     UnsizedFW (SizeStepStubF tok n e@(BasicEE (PairSF _ es))) ->
       let dbti = id
       in pure $ PairB (deferB unsizedStepMrfa (iteB (dbti $ appB argFour argOne)
@@ -996,8 +999,20 @@ initialInput irs = f 0 where
     then PairB (f $ n * 2 + 1) (f $ n * 2 + 2)
     else indexedEE $ IVarF n
 
-sizeTermM :: SizingSettings -> UnsizedExpr -> Either UnsizedRecursionToken CompiledExpr
+-- |Size every recursion site, returning the iteration counts alongside the
+-- compiled term. The counts are the numbers the compiler already relies on to
+-- claim the program is total; handing them back costs nothing, and re-running
+-- this pass to recover them would cost minutes.
+--
+-- The failure carries no location — `UnsizedExpr` has none. Callers holding
+-- the `Term3` fill it in (see `Telomare.Eval.locateSizingFailure`).
+sizeTermM :: SizingSettings -> UnsizedExpr -> Either SizingFailure (SizedRecursion, CompiledExpr)
 sizeTermM sizingSettings x = tidyUp . ($ []) . runReaderT . transformNoDeferM evalStep $ mx where
+  unlocated tok kind = SizingFailure
+    { sizingFailureToken = tok
+    , sizingFailureKind = kind
+    , sizingFailureLoc = Nothing
+    }
   failConvert x = (>>= Left) $ ("sizeTermM convert, unhandled:\n" <>) .  prettyPrint <$> sequence x
   forceType :: StuckExpr -> StuckExpr
   forceType = id
@@ -1015,10 +1030,12 @@ sizeTermM sizingSettings x = tidyUp . ($ []) . runReaderT . transformNoDeferM ev
   mx = removeRefinementWrappers $ if doCap sizingSettings
     then capMain (initialInput inputRestrictions) x
     else transformNoDefer convertNakedEnvs x
-  tidyUp (StrictAccum (SizedRecursion sm) r) = debugTrace ("sizes are: " <> show sm <> "\nand result is:\n" <> prettyPrint r) $ case foldAborted r of
-    Just (UnsizableSR i) -> debugTrace "sizeTermM hit unsizable" Left i
+  tidyUp (StrictAccum sr@(SizedRecursion sm) r) = debugTrace ("sizes are: " <> show sm <> "\nand result is:\n" <> prettyPrint r) $ case foldAborted r of
+    Just (UnsizableSR i) -> debugTrace "sizeTermM hit unsizable" Left $ unlocated i UnboundedInput
+    Just (OverfueledSR i) -> debugTrace "sizeTermM ran out of budget" Left
+      . unlocated i . FuelExhausted . succ $ maxSizingSize sizingSettings
     _ -> let sized = setSizes sm cm
-         in debugTrace "sizeTermM found all sizes" pure . clean $ if doCap sizingSettings
+         in debugTrace "sizeTermM found all sizes" pure . (,) sr . clean $ if doCap sizingSettings
             then uncap sized
             else sized
       where uncap = \case
@@ -1039,7 +1056,7 @@ sizeTermM sizingSettings x = tidyUp . ($ []) . runReaderT . transformNoDeferM ev
   foldAborted = cata f where
     f = \case
       AbortFW (AbortedF (AbortRecursion i)) -> case b2i i of
-        Just i' -> Just . UnsizableSR $ toEnum i'
+        Just i' -> Just . OverfueledSR $ toEnum i'
         _ -> error $ "sizeTermM foldAborted unexpected AbortRecursion value:\n" <> prettyPrint i
       AbortFW (AbortedF AbortAny) -> error "sizeTermM AbortAny hit"
       AbortFW (AbortedF (AbortUnsizeable t)) -> case b2i t of
@@ -1101,20 +1118,27 @@ abortPossibilities maxSize x = tidyUp . ($ []) . runReaderT . transformNoDeferM 
   evalStep = basicStepM (stuckStepWithTrace (abortStepM (indexedAbortStepM (indexedInputStepM zeros (indexedSuperStepM (superStepM gateResult evalStep (superAbortStepM evalStep (unsizedStepM''' maxSize zeros unsizedTest failAndPrintStack))))))))
 -}
 
-getSizesM :: Int -> UnsizedExpr -> Either UnsizedRecursionToken SizedRecursion
+getSizesM :: Int -> UnsizedExpr -> Either SizingFailure SizedRecursion
 getSizesM maxSize x = tidyUp . ($ []) . runReaderT . transformNoDeferM evalStep $ cm where
-  sizingSettings = SizingSettings 255 True
+  unlocated tok kind = SizingFailure
+    { sizingFailureToken = tok
+    , sizingFailureKind = kind
+    , sizingFailureLoc = Nothing
+    }
   failConvert x = error $ "getSizesM convert, unhandled:\n" <> prettyPrint x
   inputRestrictions = getInputLimits x
   zeros = zeroes inputRestrictions
   cm = removeRefinementWrappers $ capMain (initialInput inputRestrictions) x
   tidyUp (StrictAccum sr@(SizedRecursion sm) r) = debugTrace ("sizes are: " <> show sm <> "\nand result is:\n" <> prettyPrint r) $ case foldAborted r of
-    Just (UnsizableSR i) -> Left i
-    _                    -> pure sr
+    Just (UnsizableSR i)  -> Left $ unlocated i UnboundedInput
+    Just (OverfueledSR i) -> Left . unlocated i . FuelExhausted $ succ maxSize
+    _                     -> pure sr
   foldAborted = cata f where
     f = \case
-      AbortFW (AbortedF (AbortRecursion _)) -> Just . UnsizableSR $ toEnum (-2)
-      AbortFW (AbortedF AbortAny) -> Just . UnsizableSR $ toEnum (-1)
+      AbortFW (AbortedF (AbortRecursion t)) -> case b2i t of
+        Just i' -> Just . OverfueledSR $ toEnum i'
+        _ -> error $ "getSizesM foldAborted AbortRecursion unexpected value:\n" <> prettyPrint t
+      AbortFW (AbortedF AbortAny) -> error "getSizesM AbortAny hit"
       AbortFW (AbortedF (AbortUnsizeable t)) -> case b2i t of
         Just i' -> Just . UnsizableSR $ toEnum i'
         _ -> error $ "getSizesM foldAborted AbortUnsizeable unexpected value:\n" <> prettyPrint t

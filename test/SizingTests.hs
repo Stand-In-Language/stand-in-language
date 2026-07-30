@@ -1,104 +1,126 @@
-{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE PatternSynonyms #-}
 module SizingTests where
 
-import Control.Applicative (liftA2)
-import Control.Exception (SomeException (SomeException), evaluate, try)
-import Control.Monad.IO.Class
-import Control.Monad.Reader (Reader, runReader)
-import qualified Control.Monad.State as State
-import Data.Bifunctor
-import Data.Char
-import Data.Fix (Fix (..))
-import Data.List (partition)
+import Data.List (isInfixOf)
 import qualified Data.Map as Map
-import Data.Monoid
-import Debug.Trace
-import System.Exit
-import System.IO
+import Data.Maybe (isJust)
 import qualified System.IO.Strict as Strict
-import Telomare
-import Telomare.Decompiler
-import Telomare.Eval
-import Telomare.Parser
-import Telomare.Possible (SizingSettings (SizingSettings),
-                          UnexpectedGrammarException, appB)
-import Telomare.Resolver
-import Telomare.RunTime
-import Telomare.TypeChecker
 import Test.Hspec
-import Test.Hspec.Core.QuickCheck (modifyMaxSuccess)
-import Test.QuickCheck
+
+import Telomare (AbstractRunTime (eval), SizingFailure (..),
+                 SizingFailureKind (..), locStartLineColumn, pattern ZeroB)
+import Telomare.Eval (SizingOption (DebugSizing), SizingReport (..),
+                      compileModules, compileModulesWith,
+                      renderSizingCertificate)
+import Telomare.Meter (Meter (..), evalMeter)
+import Telomare.Possible (SizingSettings (SizingSettings), appB)
+import Telomare.PossibleData (SizedRecursion (..))
 
 -- Common datatypes for generating Telomare AST.
 import Common
 
+limitsDir :: FilePath
+limitsDir = "test/programs/limits/"
 
+-- |Compile a program alongside the prelude, at a chosen sizing budget.
+compileProgram :: SizingOption -> FilePath -> String -> IO (Either String SizingReport)
+compileProgram sizingOption path moduleName = do
+  prelude <- Strict.readFile "Prelude.tel"
+  source <- Strict.readFile path
+  pure . fmap fst $
+    compileModulesWith sizingOption [("Prelude", prelude), (moduleName, source)] moduleName
+
+-- |Compile at the budget the CLI uses.
+compileAtFullBudget :: FilePath -> String -> IO (Either String SizingReport)
+compileAtFullBudget = compileProgram (DebugSizing (SizingSettings 65536 True))
+
+sizingSpec :: Spec
+sizingSpec = do
+  describe "sizing failures name the recursion and say why" $ do
+    -- The distinction these two tests draw is the whole point: one is fixable
+    -- by a bigger budget and the other is not, and before this they were
+    -- reported identically.
+    it "reports unbounded input as unfixable by budget" $ do
+      result <- compileAtFullBudget
+        (limitsDir <> "unbounded-input-recursion.tel") "unbounded-input-recursion"
+      case result of
+        Right _ -> expectationFailure "expected this program to fail sizing"
+        Left err -> do
+          err `shouldSatisfy` isInfixOf "depends on input that nothing bounds"
+          err `shouldSatisfy` isInfixOf "unbounded-input-recursion:"
+
+    it "reports an exhausted budget as an exhausted budget" $ do
+      result <- compileProgram (DebugSizing (SizingSettings 5 True))
+        (limitsDir <> "over-budget-recursion.tel") "over-budget-recursion"
+      case result of
+        Right _ -> expectationFailure "expected this program to exhaust the budget"
+        Left err -> do
+          err `shouldSatisfy` isInfixOf "had still not stopped after 6 unrollings"
+          err `shouldSatisfy` isInfixOf "over-budget-recursion:"
+
+    it "sizes the same program once the budget is big enough" $ do
+      result <- compileAtFullBudget
+        (limitsDir <> "over-budget-recursion.tel") "over-budget-recursion"
+      case result of
+        Left err -> expectationFailure $ "expected this program to size:\n" <> err
+        Right _  -> pure ()
+
+  describe "sizing results are reported" $ do
+    it "gives every recursion site a count and a source location" $ do
+      result <- compileAtFullBudget "simpleplus.tel" "simpleplus"
+      case result of
+        Left err -> expectationFailure $ "failed to compile simpleplus.tel:\n" <> err
+        Right report -> do
+          let counts = Map.toList . unSizedRecursion $ sizingReportCounts report
+          counts `shouldSatisfy` not . null
+          -- A site with no count would mean the compiler baked in a loop bound
+          -- it could not justify.
+          counts `shouldSatisfy` all (isJust . snd)
+          -- Every site is locatable, which is what makes the report actionable.
+          counts `shouldSatisfy` all
+            (\(tok, _) -> case Map.lookup tok (sizingReportLocs report) of
+               Just loc -> isJust (locStartLineColumn loc)
+               Nothing  -> False)
+
+    it "keeps simpleplus.tel's inferred counts stable" $ do
+      result <- compileAtFullBudget "simpleplus.tel" "simpleplus"
+      case result of
+        Left err -> expectationFailure $ "failed to compile simpleplus.tel:\n" <> err
+        Right report ->
+          -- Two `d2c` calls converting a decimal digit, and the prelude's own
+          -- recursions. If these move, sizing precision moved with them.
+          (snd <$> Map.toAscList (unSizedRecursion (sizingReportCounts report)))
+            `shouldBe` [Just 11, Just 7, Just 10, Just 10]
+
+    it "names the budget it searched under" $ do
+      result <- compileAtFullBudget "simpleplus.tel" "simpleplus"
+      case result of
+        Left err -> expectationFailure $ "failed to compile simpleplus.tel:\n" <> err
+        Right report -> do
+          sizingReportBudget report `shouldBe` 65536
+          renderSizingCertificate report `shouldSatisfy` isInfixOf "65536"
+
+  -- The meter is a second interpreter, so the thing worth testing is that it is
+  -- still the same interpreter. It is easy to get a plausible cost out of an
+  -- evaluator that quietly computes the wrong answer.
+  describe "the meter mirrors the evaluator"
+    . it "computes the same value as the real evaluator" $ do
+      result <- compileAtFullBudget "tc_ultra_minimal.tel" "tc_ultra_minimal"
+      case result of
+        Left err -> expectationFailure $ "failed to compile:\n" <> err
+        Right _  -> pure ()
+      prelude <- Strict.readFile "Prelude.tel"
+      source <- Strict.readFile "tc_ultra_minimal.tel"
+      case compileModules [("Prelude", prelude), ("tc_ultra_minimal", source)] "tc_ultra_minimal" of
+        Left err -> expectationFailure $ "failed to compile:\n" <> err
+        Right (_, sized) -> do
+          let applied = appB sized ZeroB
+              (measured, metered) = evalMeter applied
+          fmap show metered `shouldBe` fmap show (eval applied)
+          meterSteps measured `shouldSatisfy` (> 0)
+          -- A run of any length constructs at least one node.
+          meterBuilt measured `shouldSatisfy` (> 0)
+
+-- |Kept for the historical name; the suite entry point calls this.
 twoFailedApproaches :: Spec
-twoFailedApproaches =
-  describe "I wish something like this worked" $ do
-    -- Minimal test content
-    preludeFile <- runIO $ Strict.readFile "Prelude.tel"
-    -- testContent <- runIO $ Strict.readFile "sizing_fail5.tel"
-    -- let try' :: IO a -> IO (Either SomeException a)
-    let try' :: IO a -> IO (Either UnexpectedGrammarException a)
-        try' = try
-        prelude' = case parsePrelude preludeFile of
-          Right p -> p
-          Left pe -> error $ show pe
-        prelude :: [(String, [Either AUPT (String, AUPT)])]
-        prelude = [("Prelude", Right . second unAnnotatedUPT <$> prelude')]
-        parseAuxModule :: String -> (String, [Either AUPT (String, AUPT)])
-        parseAuxModule str =
-          case sequence ("AuxModule", parseModule ("import Prelude\n" <> str)) of
-            Left e    -> error $ show e
-            Right pam -> second (fmap (bimap unAnnotatedUPT (second unAnnotatedUPT))) pam
-        parse :: Bool -> String -> Either String Term3
-        parse appLet str = if appLet
-          then first show $ main2Term3let (parseAuxModule str:prelude) "AuxModule"
-          else first show $ main2Term3 (parseAuxModule str:prelude) "AuxModule"
-        buildMainTest ss s = case fmap (compileMain' ss) (parse True s) of
-          Right (Right g) -> let eval = funWrap g appB
-                                 mi i = "main input " <> i <> " and SizingSettings " <> show ss
-                             -- in pure $ \s i e -> it ("main input " <> i) $ eval (Just (i, s)) `shouldBe` e
-                             in pure $ \s i e -> runIO (try' . evaluate . eval $ Just (i, s)) >>=
-                                                 \case
-                                                   Left z -> runIO $ expectationFailure (mi i <> " threw exception " <> show z)
-                                                   Right r' -> it (mi i) $ r' `shouldBe` e
-          z -> pure $ \ss i e -> runIO . expectationFailure $ "failed to compile main:\n" <> show s <> "\nbecause:\n" <> show z
-    -- unitTestMain <- buildMainTest (SizingSettings 255 True) testContent
-    -- unitTestMain (Pair (Pair Zero Zero) (Pair Zero (Pair Zero (Pair Zero (Pair Zero (Pair Zero (Pair Zero (Pair Zero (Pair Zero (Pair Zero Zero)))))))))) "3" ("2", Right zeroB)
-    pure ()
-
-
--- | Helper function to parse prelude with a file
--- parsePrelude :: String -> Either String [(String, AnnotatedUPT)]
-parsePreludeWithFile :: FilePath -> String -> IO Term3
-parsePreludeWithFile preludePath telFile = do
-  preludeString <- Strict.readFile preludePath
-  case first ParseError (parsePrelude preludeString) >>= (`parseMain` telFile) of
-    Right p -> pure p
-    Left e  -> error $ show e
-
--- | Compile using our sizing toggle function
-compileWithSizing :: SizingOption -> Term3 -> Either EvalError CompiledExpr
-compileWithSizing useSizing term = case typeCheck (Fix $ PairTypeP (Fix $ ArrTypeP (Fix ZeroTypeP) (Fix ZeroTypeP)) (Fix AnyType)) term of
-  Just e -> Left $ TCE e
-  _      -> compileWithSizing' useSizing term
-
-compileWithSizing' :: SizingOption -> Term3 -> Either EvalError CompiledExpr
-compileWithSizing' useSizing t =
-  case removeChecks <$> findChurchSizeD useSizing t of
-    Right i -> pure i
-    Left e  -> Left e
-
--- | Converts between easily understood Haskell types and untyped IExprs around an iteration of a Telomare expression
--- | Renamed to avoid conflict with Telomare.Eval.funWrap'
-sizingFunWrap :: (StuckExpr -> StuckExpr) -> StuckExpr -> Maybe (String, StuckExpr) -> (String, Maybe StuckExpr)
-sizingFunWrap evalFn fun inp =
-  let iexpInp = case inp of
-        Nothing                  -> ZeroB
-        Just (userInp, oldState) -> PairB (s2b userInp) oldState
-  in case evalFn (appB fun iexpInp) of
-    ZeroB               -> ("aborted", Nothing)
-    PairB disp newState -> (case b2s disp of { Just s -> s; Nothing -> show disp }, Just newState)
-    z                   -> ("runtime error, dumped:\n" <> show z, Nothing)
+twoFailedApproaches = sizingSpec

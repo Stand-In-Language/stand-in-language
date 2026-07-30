@@ -20,6 +20,9 @@ data-files:          bench/MemoryBench/cases
                    , examples.tel
                    , simpleplus.tel
                    , testchar.tel
+                   , tc_ultra_minimal.tel
+                   , test/programs/limits/unbounded-input-recursion.tel
+                   , test/programs/limits/over-budget-recursion.tel
 
 library
   hs-source-dirs:      src
@@ -34,8 +37,13 @@ library
   exposed-modules:     Debug
                      , PrettyPrint
                      , Telomare
+                     , Telomare.Artifact
+                     , Telomare.Certificate
                      , Telomare.Eval
                      , Telomare.Decompiler
+                     , Telomare.Fast
+                     , Telomare.Levels
+                     , Telomare.Meter
                      , Telomare.Parser
                      , Telomare.Possible
                      , Telomare.PossibleData
@@ -52,6 +60,7 @@ library
                      , deepseq
                      , derive-storable
                      , dlist
+                     , filepath
                      , megaparsec
                      , memory
                      , mtl
@@ -274,8 +283,10 @@ test-suite telomare-sizing-test
   hs-source-dirs:      test
   main-is:             SizingTest.hs
   other-modules:       Common
+                     , RunModeTests
                      , SizingTests
   build-depends:       base
+                     , bytestring
                      , containers
                      , data-fix
                      , dlist
