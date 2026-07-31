@@ -69,8 +69,8 @@ import Telomare (AbortBase (..), AbortableF (..), AbstractRunTime (..),
                  pattern AbortUnsizeable, pattern AbortUser, pattern AppEE,
                  pattern BasicEE, pattern BasicFW, pattern EnvB,
                  pattern FillFunction, pattern FillFunctionEE, pattern GateB,
-                 pattern GateSwitch, pattern LeftB,
-                 pattern PairB, pattern PairP, pattern RightB, pattern SetEnvB,
+                 pattern GateSwitch, pattern LeftB, pattern PairB,
+                 pattern PairP, pattern RightB, pattern SetEnvB,
                  pattern StuckEE, pattern StuckFW, pattern ZeroB, s2b, sindent,
                  toPartialType)
 import Telomare.PossibleData
