@@ -73,7 +73,7 @@ artifactMagic = BL.pack [0x54, 0x45, 0x4C, 0x43] -- "TELC"
 -- |Bumped whenever the encoding changes, which invalidates older files rather
 -- than misreading them.
 artifactVersion :: Int
-artifactVersion = 1
+artifactVersion = 2
 
 telcExtension :: String
 telcExtension = ".telc"
@@ -259,7 +259,7 @@ putCompiled e = case project e of
     putWord8 4
     putInt' (unFunctionIndex ind)
     putCompiled x
-  StuckFW (GateSF l r) -> putWord8 5 >> putCompiled l >> putCompiled r
+  StuckFW GateSF -> putWord8 5
   StuckFW (LeftSF x) -> putWord8 6 >> putCompiled x
   StuckFW (RightSF x) -> putWord8 7 >> putCompiled x
   AbortFW AbortF -> putWord8 8
@@ -275,7 +275,7 @@ getCompiled = getWord8 >>= \case
   4 -> do
     ind <- FunctionIndex <$> getInt'
     embed . StuckFW . DeferSF ind <$> getCompiled
-  5 -> (\l r -> embed (StuckFW (GateSF l r))) <$> getCompiled <*> getCompiled
+  5 -> pure $ embed (StuckFW GateSF)
   6 -> embed . StuckFW . LeftSF <$> getCompiled
   7 -> embed . StuckFW . RightSF <$> getCompiled
   8 -> pure $ embed (AbortFW AbortF)

@@ -639,11 +639,9 @@ instance Annotatable1 StuckF where
        ot <- newPartialType
        associateVar (PairTypeP (ArrTypeP it ot) it) xt
        pure ot
-    GateSF l r -> do
-       lt <- anno l
-       rt <- anno l
-       associateVar lt rt
-       pure $ ArrTypeP ZeroTypeP lt
+    GateSF -> do
+       (bt, _) <- withNewEnv $ pure ()
+       pure $ ArrTypeP ZeroTypeP (ArrTypeP (PairTypeP bt bt) bt)
     LeftSF x -> do
        xt <- anno x
        la <- newPartialType

@@ -104,8 +104,7 @@ data FastExpr
   | FEnv
   | FSetEnv FastExpr
   | FDefer FastExpr
-  | FGate FastExpr FastExpr
-  -- ^(zero branch, pair branch)
+  | FGate
   | FLeft FastExpr
   | FRight FastExpr
   | FAbort
@@ -118,7 +117,7 @@ data Value
   = VZero
   | VPair Value Value
   | VDefer FastExpr
-  | VGate Value Value
+  | VGate
   | VAbort
   | VAborted BasicExpr
   -- ^An abort in flight: propagates, and may be discarded unused.
@@ -302,7 +301,6 @@ findAbort :: Value -> Maybe BasicExpr
 findAbort = \case
   VAborted e -> Just e
   VPair a b  -> firstJust (findAbort a) (findAbort b)
-  VGate l r  -> firstJust (findAbort l) (findAbort r)
   _          -> Nothing
   where
     firstJust (Just x) _ = Just x
@@ -316,7 +314,7 @@ evalFast expr env = case expr of
   FAbort -> pure VAbort
   FDefer d -> pure (VDefer d)
   FPair a b -> VPair <$> evalFast a env <*> evalFast b env
-  FGate l r -> VGate <$> evalFast l env <*> evalFast r env
+  FGate -> pure VGate
   FLeft x -> project x "left of something that is not a pair" $ \case
     VPair a _ -> Just a
     VZero     -> Just VZero
@@ -325,8 +323,10 @@ evalFast expr env = case expr of
     VPair _ b -> Just b
     VZero     -> Just VZero
     _         -> Nothing
-  -- The if-then-else shape, kept lazy. See the module header.
-  FSetEnv (FPair (FGate l r) s) -> do
+  -- The if-then-else shape, kept lazy. See the module header. The branches
+  -- sit in the argument pair of the outer application; evaluating that pair
+  -- through the generic path would force both of them.
+  FSetEnv (FPair (FSetEnv (FPair FGate s)) (FPair l r)) -> do
     sv <- evalFast s env >>= forceValue
     tickGate
     case sv of
@@ -357,9 +357,11 @@ applyRaw :: Value -> Value -> EvalM Value
 applyRaw fun arg = forceValue fun >>= \case
   VDefer d -> tickApply >> evalFast d arg
   a@(VAborted _) -> pure a
-  VGate l r -> tickGate >> forceValue arg >>= \case
-    VZero          -> pure l
-    VPair _ _      -> pure r
+  -- A gate applied to its scrutinee yields the branch-selector function,
+  -- which the next application feeds the branch pair.
+  VGate -> tickGate >> forceValue arg >>= \case
+    VZero          -> pure (VDefer (FLeft FEnv))
+    VPair _ _      -> pure (VDefer (FRight FEnv))
     a@(VAborted _) -> pure a
     _              -> throwError $ FastStuck "gate applied to non-data"
   VAbort -> forceValue arg >>= \case
@@ -499,7 +501,7 @@ term3ToFast owners = cata go
       Term3S EnvSF -> Right FEnv
       Term3S (SetEnvSF x) -> FSetEnv <$> x
       Term3S (DeferSF _ x) -> FDefer <$> x
-      Term3S (GateSF l r) -> FGate <$> l <*> r
+      Term3S GateSF -> Right FGate
       Term3S (LeftSF x) -> FLeft <$> x
       Term3S (RightSF x) -> FRight <$> x
       Term3A AbortF -> Right FAbort

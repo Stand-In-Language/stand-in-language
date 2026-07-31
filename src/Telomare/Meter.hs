@@ -46,7 +46,7 @@
 -- is what keeps the mirror honest. One difference is deliberate and easy to
 -- "fix" by mistake: the evaluator gets lazy gate branches from Haskell rather
 -- than from its own structure, so the unselected branch is never forced. See
--- the `GateSF` case.
+-- the `GateSwitch` case.
 module Telomare.Meter where
 
 import Control.Monad.State.Strict (State, modify', runState)
@@ -57,8 +57,9 @@ import Numeric.Natural (Natural)
 import Telomare (AbortableF (..), BasicExprF (..), CompiledExpr,
                  RunTimeError (..), StuckF (..), pattern AbortEE,
                  pattern AbortFW, pattern BasicEE, pattern BasicFW,
-                 pattern PairB, pattern StuckEE, pattern StuckFW)
-import Telomare.Possible (deferB)
+                 pattern GateSwitch, pattern PairB, pattern StuckEE,
+                 pattern StuckFW)
+import Telomare.Possible (abortInd, deferB, doLeft, doRight)
 
 -- |What a run cost.
 data Meter = Meter
@@ -104,13 +105,26 @@ runMeter env whole = case project whole of
   StuckFW DeferSF {}   -> settled
   AbortFW AbortF       -> settled
   AbortFW (AbortedF _) -> settled
-  -- A gate is a value, and its branches stay unevaluated until one is picked.
-  -- The evaluator gets this from Haskell's laziness: it does map over both
-  -- branches, but discards the unselected thunk without ever forcing it. That
-  -- is load-bearing, not incidental — a bounded recursion's "recurse" branch is
-  -- still present at the base case, and evaluating it would run off the end of
-  -- the repeater's inferred size.
-  StuckFW GateSF {}    -> settled
+  StuckFW GateSF       -> settled
+
+  -- A gate switch. The branches sit in the application's argument pair and
+  -- stay unevaluated until the scrutinee picks one. The evaluator gets this
+  -- from Haskell's laziness: it discards the unselected thunk without ever
+  -- forcing it. That is load-bearing, not incidental — a bounded recursion's
+  -- "recurse" branch is still present at the base case, and evaluating it
+  -- would run off the end of the repeater's inferred size.
+  --
+  -- Only the chosen branch is evaluated, and in the current environment: a
+  -- gate is built and applied at the same node (`iteB_`), so its branches
+  -- belong to this environment.
+  GateSwitch l r s -> do
+    s' <- runMeter env s
+    step
+    case s' of
+      AbortEE (AbortedF _) -> pure s'
+      BasicEE ZeroSF       -> chose l
+      BasicEE PairSF {}    -> chose r
+      _                    -> unhandled "gate on a non-data scrutinee" s'
 
   BasicFW (PairSF a b) -> do
     a' <- runMeter env a
@@ -142,6 +156,8 @@ runMeter env whole = case project whole of
   where
     settled = step >> pure whole
 
+    chose branch = step >> runMeter env branch
+
     project' x pick = do
       x' <- runMeter env x
       step
@@ -160,14 +176,14 @@ runMeter env whole = case project whole of
         step
         built
         pure . AbortEE . AbortedF $ cata truncateToData e
-      (StuckEE (GateSF l _), BasicEE ZeroSF) -> chose l
-      (StuckEE (GateSF _ r), BasicEE PairSF {}) -> chose r
+      -- A gate applied to its scrutinee alone yields the branch-selector
+      -- function the evaluator would produce; the `GateSwitch` case above is
+      -- the one that keeps the usual full shape lazy.
+      (StuckEE GateSF, BasicEE ZeroSF) -> step >> pure doLeft
+      (StuckEE GateSF, BasicEE PairSF {}) -> step >> pure doRight
       -- The body's environment is now `e`; nothing is substituted or built.
       (StuckEE (DeferSF _ body), _) -> step >> runMeter (Just e) body
       _ -> unhandled "application of something that is not a function" f
-      -- Only now is the chosen branch evaluated. A gate is built and applied at
-      -- the same node (`iteB_`), so its branches belong to this environment.
-      where chose branch = step >> runMeter env branch
 
     truncateToData = \case
       BasicFW ZeroSF       -> BasicEE ZeroSF
@@ -176,13 +192,10 @@ runMeter env whole = case project whole of
 
     unhandled why what = error $ "Telomare.Meter: " <> why <> ":\n" <> show what
 
--- |Matches `Telomare.Possible`'s @abortInd@, the index the evaluator gives the
--- identity function a passed assertion becomes.
-abortIndex :: Int
-abortIndex = -9
-
+-- |The identity function a passed assertion becomes, carrying the index the
+-- evaluator gives it.
 identityFunction :: CompiledExpr
-identityFunction = deferB abortIndex $ StuckEE EnvSF
+identityFunction = deferB abortInd $ StuckEE EnvSF
 
 -- |Run a compiled program on an input, reporting what it cost. The result
 -- mirrors @eval@: an abort surfaces as a `RunTimeError`.
