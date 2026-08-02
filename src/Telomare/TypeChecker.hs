@@ -23,11 +23,13 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Debug.Trace
 import Telomare.PrettyPrint
-import Telomare (AbortableF (..), BasicExprF (..),
-                 FunctionIndex (FunctionIndex), LocTag (..), PartialType,
-                 PartialTypeF (..), StuckF (..), Term3, Term3F (..),
-                 TypeCheckError (..), pattern AbortFW, pattern BasicFW,
-                 pattern StuckFW)
+import Telomare.Error
+import Telomare.IR.Base
+import Telomare.IR.Builder
+import Telomare.IR.Core
+import Telomare.IR.Loc
+import Telomare.IR.Surface
+import Telomare.IR.Types
 
 debug :: Bool
 debug = False

@@ -42,13 +42,14 @@ import Language.LSP.Protocol.Types (NormalizedUri, Position (..), Range (..),
 import qualified Language.LSP.Protocol.Types as LSPTypes
 import Language.LSP.Server
 
-import Telomare (AUPT, AnnotatedUPT (..), BasicExprF (..), HighTermF (..),
-                 LamTermF (..), LocTag (..), PatternA, PatternF (..),
-                 ResolverError (..), SourcePosition (..), SourceSpan (..),
-                 UnprocessedParsedTermF (..), letBindingName, letBindingValue,
-                 locStartLineColumn, locatedNameLoc, locatedNameText,
-                 renderResolverError)
+import Telomare.Error
 import Telomare.Eval (eval2IExpr)
+import Telomare.IR.Base
+import Telomare.IR.Builder
+import Telomare.IR.Core
+import Telomare.IR.Loc
+import Telomare.IR.Surface
+import Telomare.IR.Types
 import Telomare.Parser (parseModule, parseModuleDetailed)
 import Telomare.Resolver (main2Term3)
 import Text.Megaparsec.Error (ParseErrorBundle (..), errorBundlePretty,

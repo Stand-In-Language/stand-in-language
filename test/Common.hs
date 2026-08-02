@@ -15,7 +15,13 @@ import System.IO
 import System.Posix.IO
 import System.Posix.Process
 import System.Posix.Types (ProcessID)
-import Telomare
+import Telomare.Error
+import Telomare.IR.Base
+import Telomare.IR.Builder
+import Telomare.IR.Core
+import Telomare.IR.Loc
+import Telomare.IR.Surface
+import Telomare.IR.Types
 import Telomare.Parser
 import Telomare.Resolver
 import Telomare.TypeChecker

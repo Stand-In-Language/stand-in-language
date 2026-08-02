@@ -36,7 +36,13 @@ import Data.Set (Set, (\\))
 import qualified Data.Set as Set
 import Debug.Trace (trace, traceShow, traceShowId)
 import Telomare.PrettyPrint (prettyPrint)
-import Telomare
+import Telomare.Error
+import Telomare.IR.Base
+import Telomare.IR.Builder
+import Telomare.IR.Core
+import Telomare.IR.Loc
+import Telomare.IR.Surface
+import Telomare.IR.Types
 import Telomare.Parser (TelomareParser, identifier)
 import Text.Megaparsec (errorBundlePretty, runParser)
 

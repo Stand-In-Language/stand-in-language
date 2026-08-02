@@ -77,12 +77,13 @@ import qualified Data.Map as Map
 import Data.Maybe (fromMaybe)
 import System.IO (hFlush, isEOF, stdout)
 
-import Telomare (AUPT, AbortableF (..), AnnotatedUPT (..), BasicExpr,
-                 BasicExprF (..), EvalError (..), LocTag (..),
-                 PartialTypeF (..), RunTimeError (AbortRunTime),
-                 SourcePosition (..), SourceSpan (..), StuckF (..), Term3,
-                 Term3F (..), UnsizedRecursionToken (..), pattern PairB,
-                 pattern ZeroB, renderEvalError, renderLocTagCompact)
+import Telomare.Error
+import Telomare.IR.Base
+import Telomare.IR.Builder
+import Telomare.IR.Core
+import Telomare.IR.Loc
+import Telomare.IR.Surface
+import Telomare.IR.Types
 import Telomare.Parser (parseModuleNamed)
 import Telomare.Resolver (main2Term3, main2Term3let)
 import Telomare.TypeChecker (typeCheck)

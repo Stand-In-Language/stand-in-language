@@ -18,7 +18,13 @@ import Telomare.PrettyPrint
 import System.Exit
 import System.IO
 import qualified System.IO.Strict as Strict
-import Telomare
+import Telomare.Error
+import Telomare.IR.Base
+import Telomare.IR.Builder
+import Telomare.IR.Core
+import Telomare.IR.Loc
+import Telomare.IR.Surface
+import Telomare.IR.Types
 import Telomare.Eval
 import Telomare.Parser
 import Telomare.Possible (SizingSettings (SizingSettings), appB, deferB)

@@ -9,7 +9,13 @@ import qualified Control.Monad.State as State
 import Data.Fix (Fix (..))
 import Telomare.PrettyPrint
 import qualified System.IO.Strict as Strict
-import Telomare
+import Telomare.Error
+import Telomare.IR.Base
+import Telomare.IR.Builder
+import Telomare.IR.Core
+import Telomare.IR.Loc
+import Telomare.IR.Surface
+import Telomare.IR.Types
 import Telomare.Eval (runMainWithInput)
 import Telomare.Parser
 import Telomare.Resolver (pattern2UPT)

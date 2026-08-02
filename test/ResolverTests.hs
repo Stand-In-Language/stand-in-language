@@ -21,7 +21,13 @@ import System.IO.Unsafe (unsafePerformIO)
 import System.Posix.IO
 import System.Posix.Process
 import System.Posix.Types
-import Telomare
+import Telomare.Error
+import Telomare.IR.Base
+import Telomare.IR.Builder
+import Telomare.IR.Core
+import Telomare.IR.Loc
+import Telomare.IR.Surface
+import Telomare.IR.Types
 import Telomare.Eval
 import qualified Telomare.Fast as Fast
 import Telomare.Parser

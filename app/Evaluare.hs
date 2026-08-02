@@ -14,16 +14,21 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Zipper as TZ
 import qualified Graphics.Vty as V
-import Telomare.PrettyPrint (PrettyCompiledExpr (..))
 import Reflex
 import Reflex.Vty
 import System.Environment (getArgs)
 import qualified System.IO.Strict as Strict
-import qualified Telomare as Tel
-import Telomare (AUPT, AnnotatedUPT (..), BasicExprF (..), CompiledExpr,
-                 CompiledExprF (..), StuckF (..))
+import Telomare.Error
 import qualified Telomare.Eval as TE
+import qualified Telomare.IR.Base as Tel
+import Telomare.IR.Base
+import Telomare.IR.Builder
+import Telomare.IR.Core
+import Telomare.IR.Loc
+import Telomare.IR.Surface
+import Telomare.IR.Types
 import Telomare.Parser (parseModule)
+import Telomare.PrettyPrint (PrettyCompiledExpr (..))
 import Text.Read (readMaybe)
 
 type VtyExample t m =

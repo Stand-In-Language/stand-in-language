@@ -7,8 +7,13 @@ import Data.Maybe (isJust)
 import qualified System.IO.Strict as Strict
 import Test.Hspec
 
-import Telomare (AbstractRunTime (eval), SizingFailure (..),
-                 SizingFailureKind (..), locStartLineColumn, pattern ZeroB)
+import Telomare.Error
+import Telomare.IR.Base
+import Telomare.IR.Builder
+import Telomare.IR.Core
+import Telomare.IR.Loc
+import Telomare.IR.Surface
+import Telomare.IR.Types
 import Telomare.Eval (SizingOption (DebugSizing), SizingReport (..),
                       compileModules, compileModulesWith,
                       renderSizingCertificate)

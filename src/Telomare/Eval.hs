@@ -24,22 +24,13 @@ import qualified Control.Comonad.Trans.Cofree as CofreeT
 import Control.Lens (Identity (runIdentity))
 import Data.Functor.Foldable (Base, cata, embed, para)
 import Telomare.PrettyPrint
-import Telomare (AUPT, AbortableF (AbortF), AbstractRunTime, AnnotatedUPT (..),
-                 BasicExpr, BasicExprF (..), CompiledExpr, CompiledExprF,
-                 EvalError (..), LocTag (..), LocatedName (..),
-                 PartialTypeF (..), Pattern, PatternA, ResolverError (..),
-                 RunTimeError (..), SizingFailure (..), SizingFailureKind (..),
-                 SourceSpan (..), StuckExpr, StuckF (..), TelomareLike (..),
-                 Term2, Term3, Term3Builder, Term3F (..),
-                 UnprocessedParsedTerm (..), UnprocessedParsedTermF (..),
-                 UnsizedRecursionToken (..), appS, b2s, convertAbort,
-                 convertAbortMessage, convertBasic, convertStuck, deferS,
-                 embedB, embedS, eval, forget, insertAndGetKey,
-                 locStartLineColumn, pattern AbortEE, pattern AbortFW,
-                 pattern BasicEE, pattern BasicFW, pattern EnvB, pattern LeftB,
-                 pattern PairB, pattern PairP, pattern RightB, pattern SetEnvB,
-                 pattern StuckEE, pattern StuckFW, pattern ZeroB,
-                 renderEvalError, renderLocTagCompact, s2b, tag)
+import Telomare.Error
+import Telomare.IR.Base
+import Telomare.IR.Builder
+import Telomare.IR.Core
+import Telomare.IR.Loc
+import Telomare.IR.Surface
+import Telomare.IR.Types
 import Telomare.Meter (Meter, evalMeter)
 import Telomare.Parser (parseModule, parseModuleNamed,
                         parseOneExprOrTopLevelDefs, parsePrelude)

@@ -20,7 +20,13 @@ import Data.Void (Void)
 import Data.Word (Word8)
 import GHC.Desugar (AnnotationWrapper (AnnotationWrapper))
 import qualified System.IO.Strict as Strict
-import Telomare
+import Telomare.Error
+import Telomare.IR.Base
+import Telomare.IR.Builder
+import Telomare.IR.Core
+import Telomare.IR.Loc
+import Telomare.IR.Surface
+import Telomare.IR.Types
 import Telomare.PrettyPrint.Indent (indentSansFirstLine)
 import Text.Megaparsec (MonadParsec (eof, notFollowedBy, try), ParseErrorBundle,
                         Parsec, Pos,

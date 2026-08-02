@@ -54,11 +54,13 @@ import Data.Foldable (asum)
 import Data.Functor.Foldable (cata, project)
 import Numeric.Natural (Natural)
 
-import Telomare (AbortableF (..), BasicExprF (..), CompiledExpr,
-                 RunTimeError (..), StuckF (..), pattern AbortEE,
-                 pattern AbortFW, pattern BasicEE, pattern BasicFW,
-                 pattern GateSwitch, pattern PairB, pattern StuckEE,
-                 pattern StuckFW)
+import Telomare.Error
+import Telomare.IR.Base
+import Telomare.IR.Builder
+import Telomare.IR.Core
+import Telomare.IR.Loc
+import Telomare.IR.Surface
+import Telomare.IR.Types
 import Telomare.Possible (abortInd, deferB, doLeft, doRight)
 
 -- |What a run cost.

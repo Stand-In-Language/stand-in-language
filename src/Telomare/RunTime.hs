@@ -6,7 +6,13 @@ module Telomare.RunTime where
 
 import Control.Monad.IO.Class (MonadIO (..))
 import Telomare.PrettyPrint (prettyPrint)
-import Telomare
+import Telomare.Error
+import Telomare.IR.Base
+import Telomare.IR.Builder
+import Telomare.IR.Core
+import Telomare.IR.Loc
+import Telomare.IR.Surface
+import Telomare.IR.Types
 import Telomare.Possible (basicStep, stuckStep, transformNoDefer)
 
 showPass :: (Show a, MonadIO m) => m a -> m a

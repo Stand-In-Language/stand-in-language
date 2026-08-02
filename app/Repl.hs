@@ -23,16 +23,22 @@ import qualified Data.Set as Set
 import Debug.Trace (trace)
 import Options.Applicative hiding ((<|>))
 import qualified Options.Applicative as O
-import Telomare.PrettyPrint
 import System.Console.Haskeline
 import System.Exit (exitSuccess)
 import qualified System.IO.Strict as Strict
-import Telomare
+import Telomare.Error
 import Telomare.Eval (compileUnitTestNoAbort)
+import Telomare.IR.Base
+import Telomare.IR.Builder
+import Telomare.IR.Core
+import Telomare.IR.Loc
+import Telomare.IR.Surface
+import Telomare.IR.Types
 import Telomare.Parser (TelomareParser, parseAssignment, parseLongExpr,
                         parsePrelude)
 import Telomare.Possible (evalPartial)
 import Telomare.PossibleData (DeferredEvalF (..), PartialExpr, deferredEE)
+import Telomare.PrettyPrint
 import Telomare.Resolver (process)
 import Telomare.RunTime
 import Telomare.TypeChecker (inferType)

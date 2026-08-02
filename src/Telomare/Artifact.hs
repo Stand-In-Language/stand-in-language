@@ -46,10 +46,13 @@ import Data.Map (Map)
 import qualified Data.Map as Map
 import System.FilePath (takeExtension)
 
-import Telomare (AbortableF (..), BasicExpr, BasicExprF (..), CompiledExpr,
-                 FunctionIndex (..), LocTag (..), SourcePosition (..),
-                 SourceSpan (..), StuckF (..), UnsizedRecursionToken (..),
-                 pattern AbortFW, pattern BasicFW, pattern StuckFW)
+import Telomare.Error
+import Telomare.IR.Base
+import Telomare.IR.Builder
+import Telomare.IR.Core
+import Telomare.IR.Loc
+import Telomare.IR.Surface
+import Telomare.IR.Types
 import Telomare.Eval (SizingReport (..))
 import Telomare.PossibleData (SizedRecursion (..))
 

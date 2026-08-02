@@ -13,7 +13,13 @@ import qualified Data.Map as Map
 import qualified System.IO.Strict as Strict
 import Test.Hspec
 
-import Telomare (AbstractRunTime (eval), pattern ZeroB)
+import Telomare.Error
+import Telomare.IR.Base
+import Telomare.IR.Builder
+import Telomare.IR.Core
+import Telomare.IR.Loc
+import Telomare.IR.Surface
+import Telomare.IR.Types
 import Telomare.Artifact (Artifact (..), decodeArtifact, encodeArtifact,
                           nodeCount, sourcesHash)
 import Telomare.Certificate (renderStaticReport)

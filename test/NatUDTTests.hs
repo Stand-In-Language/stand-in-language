@@ -14,7 +14,13 @@ import Data.Bifunctor (Bifunctor (first, second))
 import Data.List (isInfixOf)
 import Telomare.PrettyPrint
 import qualified System.IO.Strict as Strict
-import Telomare
+import Telomare.Error
+import Telomare.IR.Base
+import Telomare.IR.Builder
+import Telomare.IR.Core
+import Telomare.IR.Loc
+import Telomare.IR.Surface
+import Telomare.IR.Types
 import Telomare.Eval (SizingOption (..), compile, runStaticChecks)
 import Telomare.Parser (parseLongExpr, parsePrelude)
 import Telomare.Possible (SizingSettings (SizingSettings))

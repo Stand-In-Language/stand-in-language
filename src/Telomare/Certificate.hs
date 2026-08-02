@@ -27,7 +27,13 @@ module Telomare.Certificate
 
 import qualified Data.Map as Map
 
-import Telomare (UnsizedRecursionToken (..), renderLocTagCompact)
+import Telomare.Error
+import Telomare.IR.Base
+import Telomare.IR.Builder
+import Telomare.IR.Core
+import Telomare.IR.Loc
+import Telomare.IR.Surface
+import Telomare.IR.Types
 import Telomare.Eval (SizingReport (..))
 import Telomare.Levels (BindingKey, LevelsInfo (..), SiteKey (..), bangs,
                         renderBinding, renderDef, renderLevels, renderSource)

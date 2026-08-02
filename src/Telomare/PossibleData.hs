@@ -26,11 +26,13 @@ import Debug.Trace
 import GHC.Generics (Generic)
 
 import Data.Bifunctor (first)
-import Telomare (AbortBase (..), AbortableF (..), BasicBase (..),
-                 BasicExprF (..), CompiledExpr, FunctionIndex, LocTag (..),
-                 PartialType (..), StuckBase (..), StuckF (..),
-                 TelomareLike (..), UnsizedRecursionToken (..),
-                 convertAbortMessage, convertBasic, convertStuck)
+import Telomare.Error
+import Telomare.IR.Base
+import Telomare.IR.Builder
+import Telomare.IR.Core
+import Telomare.IR.Loc
+import Telomare.IR.Surface
+import Telomare.IR.Types
 import Telomare.PrettyPrint
 import Telomare.PrettyPrint.Indent (indentWithChildren', indentWithOneChild',
                                     indentWithTwoChildren')

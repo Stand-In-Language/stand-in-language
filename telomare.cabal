@@ -31,8 +31,7 @@ library
                      , OverloadedStrings
                      , RecursiveDo
                      , LambdaCase
-  exposed-modules:     Telomare
-                     , Telomare.Artifact
+  exposed-modules:     Telomare.Artifact
                      , Telomare.Certificate
                      , Telomare.Error
                      , Telomare.Eval

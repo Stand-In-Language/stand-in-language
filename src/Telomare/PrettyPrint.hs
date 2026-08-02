@@ -6,14 +6,13 @@ module Telomare.PrettyPrint where
 
 import Control.Monad.State (State)
 import Data.Map (Map)
-import Telomare (AbortableF (..), BasicExprF (..), CompiledExpr,
-                 CompiledExprF (..), DataType (..), FunctionIndex,
-                 HighTermF (..), LamTermF (..), LamType (..), LocTag,
-                 ParserTermF (..), PartialType, PartialTypeF (..),
-                 PatternF (..), StuckExpr, StuckExprF (..), StuckF (..), Term1,
-                 Term3 (..), Term3F (..), UnprocessedParsedTerm (..),
-                 UnprocessedParsedTermF (..), b2i, convertAbortMessage, forget,
-                 locatedNameText, pattern BasicEE)
+import Telomare.Error
+import Telomare.IR.Base
+import Telomare.IR.Builder
+import Telomare.IR.Core
+import Telomare.IR.Loc
+import Telomare.IR.Surface
+import Telomare.IR.Types
 import Telomare.PrettyPrint.Indent (indentSansFirstLine, indentWithChildren',
                                     indentWithOneChild', indentWithTwoChildren')
 

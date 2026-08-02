@@ -46,23 +46,13 @@ import qualified Data.Set as Set
 import Data.Void
 import Debug.Trace
 import GHC.Generics (Generic)
-import Telomare (AbortBase (..), AbortableF (..), AbstractRunTime (..),
-                 BasicBase (..), BasicExpr, BasicExprF (..), CompiledExpr,
-                 FunctionIndex (..), LocTag (..), PartialType (..),
-                 RunTimeError (..), SizingFailure (..), SizingFailureKind (..),
-                 StuckBase (..), StuckExpr, StuckExprF, StuckF (..),
-                 TelomareLike (fromTelomare, toTelomare), Term3 (..),
-                 Term3F (..), UnsizedRecursionToken (UnsizedRecursionToken),
-                 b2i, convertAbort, convertAbortMessage, convertBasic,
-                 convertStuck, forget, i2B, pattern AbortAny, pattern AbortEE,
-                 pattern AbortFW, pattern AbortRecursion,
-                 pattern AbortUnsizeable, pattern AbortUser, pattern AppEE,
-                 pattern BasicEE, pattern BasicFW, pattern EnvB,
-                 pattern FillFunction, pattern FillFunctionEE, pattern GateB,
-                 pattern GateSwitch, pattern LeftB, pattern PairB,
-                 pattern PairP, pattern RightB, pattern SetEnvB,
-                 pattern StuckEE, pattern StuckFW, pattern ZeroB, s2b,
-                 toPartialType)
+import Telomare.Error
+import Telomare.IR.Base
+import Telomare.IR.Builder
+import Telomare.IR.Core
+import Telomare.IR.Loc
+import Telomare.IR.Surface
+import Telomare.IR.Types
 import Telomare.PossibleData
 import Telomare.PrettyPrint
 import Telomare.PrettyPrint.Indent (indentWithChildren', indentWithOneChild,
