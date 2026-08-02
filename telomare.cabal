@@ -35,7 +35,7 @@ library
                      , Telomare.Certificate
                      , Telomare.Desugar
                      , Telomare.Error
-                     , Telomare.Eval
+                     , Telomare.Driver
                      , Telomare.Eval.Reference
                      , Telomare.Fast
                      , Telomare.IR.Base
@@ -46,7 +46,7 @@ library
                      , Telomare.IR.Types
                      , Telomare.Levels
                      , Telomare.Machine
-                     , Telomare.Meter
+                     , Telomare.Eval.Meter
                      , Telomare.Parse
                      , Telomare.Parse.Sugar
                      , Telomare.PrettyPrint

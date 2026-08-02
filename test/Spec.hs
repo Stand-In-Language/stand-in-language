@@ -18,7 +18,7 @@ import System.Exit
 import System.IO
 import qualified System.IO.Strict as Strict
 import Telomare.Error
-import Telomare.Eval
+import Telomare.Driver
 import Telomare.Eval.Reference
 import Telomare.IR.Base
 import Telomare.IR.Builder

@@ -23,7 +23,7 @@ import System.Posix.Process
 import System.Posix.Types
 import Telomare.Desugar
 import Telomare.Error
-import Telomare.Eval
+import Telomare.Driver
 import Telomare.Eval.Reference
 import qualified Telomare.Fast as Fast
 import Telomare.IR.Base

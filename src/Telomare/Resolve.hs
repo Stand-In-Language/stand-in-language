@@ -11,7 +11,7 @@
 -- == The dual pipeline
 --
 -- Two resolution pipelines coexist, with different semantics, and
--- 'Telomare.Eval.compileMainReporting' runs BOTH on every compile:
+-- 'Telomare.Driver.compileMainReporting' runs BOTH on every compile:
 --
 -- * 'process' (via 'validateVariables' + 'debruijinize'): scope-checks
 --   and inlines let bindings. Its 'Term3' is what the type checker sees -

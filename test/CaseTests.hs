@@ -10,7 +10,7 @@ import Data.Fix (Fix (..))
 import qualified System.IO.Strict as Strict
 import Telomare.Desugar (pattern2UPT)
 import Telomare.Error
-import Telomare.Eval (runMainWithInput)
+import Telomare.Driver (runMainWithInput)
 import Telomare.IR.Base
 import Telomare.IR.Builder
 import Telomare.IR.Core

@@ -43,7 +43,7 @@ import qualified Language.LSP.Protocol.Types as LSPTypes
 import Language.LSP.Server
 
 import Telomare.Error
-import Telomare.Eval (eval2IExpr)
+import Telomare.Driver (eval2IExpr)
 import Telomare.IR.Base
 import Telomare.IR.Builder
 import Telomare.IR.Core

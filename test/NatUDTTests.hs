@@ -14,7 +14,7 @@ import Data.Bifunctor (Bifunctor (first, second))
 import Data.List (isInfixOf)
 import qualified System.IO.Strict as Strict
 import Telomare.Error
-import Telomare.Eval (SizingOption (..), compile, runStaticChecks)
+import Telomare.Driver (SizingOption (..), compile, runStaticChecks)
 import Telomare.IR.Base
 import Telomare.IR.Builder
 import Telomare.IR.Core

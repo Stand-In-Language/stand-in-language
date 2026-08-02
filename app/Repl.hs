@@ -27,7 +27,7 @@ import System.Console.Haskeline
 import System.Exit (exitSuccess)
 import qualified System.IO.Strict as Strict
 import Telomare.Error
-import Telomare.Eval (compileUnitTestNoAbort)
+import Telomare.Driver (compileUnitTestNoAbort)
 import Telomare.Eval.Reference (evalPartial, showPass)
 import Telomare.IR.Base
 import Telomare.IR.Builder

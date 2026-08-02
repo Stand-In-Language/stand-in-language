@@ -464,7 +464,7 @@ runFastWithInput fuel inputs prog = runEval fuel $ do
   go "" inputs Nothing
 
 -- |Parse, typecheck and resolve, then convert without sizing. This mirrors
--- `Telomare.Eval.compileMainReporting` up to the point where that calls the
+-- `Telomare.Driver.compileMainReporting` up to the point where that calls the
 -- sizing pass.
 compileFast :: [(String, String)] -- ^All modules as (Module_Name, Module_Content)
             -> String -- ^Name of the module holding `main`

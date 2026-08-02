@@ -3,7 +3,7 @@
 {-# OPTIONS_GHC -Wno-deferred-out-of-scope-variables #-}
 {-# LANGUAGE TupleSections       #-}
 
-module Telomare.Eval where
+module Telomare.Driver where
 
 import Control.Comonad.Cofree (Cofree ((:<)), hoistCofree)
 import Control.Lens.Plated (Plated (..), transformM)
@@ -31,7 +31,7 @@ import Telomare.IR.Loc
 import Telomare.IR.Surface
 import Telomare.IR.Types
 import Telomare.Machine (appB, deferB)
-import Telomare.Meter (Meter, evalMeter)
+import Telomare.Eval.Meter (Meter, evalMeter)
 import Telomare.Parse (parseModule, parseModuleNamed,
                        parseOneExprOrTopLevelDefs, parsePrelude)
 import Telomare.PrettyPrint

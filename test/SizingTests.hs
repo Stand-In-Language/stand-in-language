@@ -7,7 +7,7 @@ import qualified System.IO.Strict as Strict
 import Test.Hspec
 
 import Telomare.Error
-import Telomare.Eval (SizingOption (DebugSizing), compileModules,
+import Telomare.Driver (SizingOption (DebugSizing), compileModules,
                       compileModulesWith)
 import Telomare.IR.Base
 import Telomare.IR.Builder
@@ -16,7 +16,7 @@ import Telomare.IR.Loc
 import Telomare.IR.Surface
 import Telomare.IR.Types
 import Telomare.Machine (appB)
-import Telomare.Meter (Meter (..), evalMeter)
+import Telomare.Eval.Meter (Meter (..), evalMeter)
 import Telomare.Size (SizingReport (..), SizingSettings (SizingSettings),
                       renderSizingCertificate)
 import Telomare.Size.IR (SizedRecursion (..))

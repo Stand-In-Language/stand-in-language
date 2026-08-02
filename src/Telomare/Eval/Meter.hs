@@ -46,7 +46,7 @@
 -- "fix" by mistake: the evaluator gets lazy gate branches from Haskell rather
 -- than from its own structure, so the unselected branch is never forced. See
 -- the `GateSwitch` case.
-module Telomare.Meter where
+module Telomare.Eval.Meter where
 
 import Control.Monad.State.Strict (State, modify', runState)
 import Data.Foldable (asum)
