@@ -19,8 +19,6 @@ import Data.Semigroup (Max (..), Min (..))
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Debug.Trace
-import System.IO
-import System.Process
 
 import qualified Control.Comonad.Trans.Cofree as CofreeT
 import Control.Lens (Identity (runIdentity))
@@ -278,15 +276,6 @@ runMainWithInput :: [String] -- ^Inputs
                  -> String -- ^Module's name with `main` function
                  -> IO String
 runMainWithInput inputList modulesStrings s = runMainCore modulesStrings s (evalLoopWithInput inputList)
-
-{- TODO fix
-schemeEval :: CompiledExpr -> IO ()
-schemeEval iexpr = do
-  writeFile "scheme.txt" ('(' : (show (app iexpr Zero) <> ")"))
-  (_, Just mhout, _, _) <- createProcess (shell "chez-script runtime.so") { std_out = CreatePipe }
-  scheme <- hGetContents mhout
-  putStrLn scheme
--}
 
 evalLoopCore :: CompiledExpr
              -> (String -> String -> IO String)

@@ -19,7 +19,6 @@ import System.Exit
 import System.IO
 import qualified System.IO.Strict as Strict
 import Telomare
-import Telomare.Decompiler
 import Telomare.Eval
 import Telomare.Parser
 import Telomare.Possible (SizingSettings (SizingSettings), appB, deferB)

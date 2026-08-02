@@ -22,7 +22,6 @@ import GHC.Desugar (AnnotationWrapper (AnnotationWrapper))
 import PrettyPrint (indentSansFirstLine)
 import qualified System.IO.Strict as Strict
 import Telomare
-import Telomare.TypeChecker (typeCheck)
 import Text.Megaparsec (MonadParsec (eof, notFollowedBy, try), ParseErrorBundle,
                         Parsec, Pos,
                         SourcePos (sourceColumn, sourceLine, sourceName),

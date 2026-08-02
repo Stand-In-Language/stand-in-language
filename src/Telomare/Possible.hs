@@ -23,8 +23,6 @@ import qualified Control.Monad.State.Strict as State
 import Control.Monad.Trans.Class
 import Data.Bifunctor
 import Data.Char (chr)
-import Data.DList (DList)
-import qualified Data.DList as DList
 import Data.Fix (Fix (..), hoistFix')
 import Data.Foldable
 import Data.Functor.Classes
@@ -37,20 +35,15 @@ import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
 import Data.Monoid
 -- import Data.SBV ((.<), (.>))
--- import qualified Data.SBV as SBV
--- import qualified Data.SBV.Control as SBVC
 import Control.Comonad.Trans.Cofree (CofreeF, headF)
 import Control.Exception (Exception)
 import Control.Exception.Base (throw)
 import Control.Monad.Reader.Class
-import Data.GenValidity
-import Data.GenValidity.Map
+import Data.Functor.Identity (Identity (Identity), runIdentity)
 import Data.Semigroup (Max (..))
 import Data.Set (Set)
 import qualified Data.Set as Set
-import Data.Validity (Validity (..), declare, trivialValidation)
 import Data.Void
-import Debug
 import Debug.Trace
 import GHC.Generics (Generic)
 import PrettyPrint
@@ -74,37 +67,12 @@ import Telomare (AbortBase (..), AbortableF (..), AbstractRunTime (..),
                  pattern StuckEE, pattern StuckFW, pattern ZeroB, s2b, sindent,
                  toPartialType)
 import Telomare.PossibleData
--- import Telomare.RunTime (hvmEval)
-import Data.Functor.Identity (Identity (Identity), runIdentity)
-import Test.QuickCheck (Arbitrary (..), Gen, oneof)
-import Test.QuickCheck.Gen (sized)
 
 debug :: Bool
 debug = False
 
 debugTrace :: String -> a -> a
--- debugTrace s x = if debug then debugTrace' s x else x
 debugTrace s x = if debug then trace s x else x
-
-{-
-testSBV :: SBV.Symbolic SBV.Word8
-testSBV = do
-  b <- SBV.sBool "b"
-  a <- SBV.sWord8 "a"
-  SBV.constrain $ a + 5 .< 10
-  SBV.constrain $ a .> 2
-  SBV.constrain b
-  SBVC.query $ SBVC.checkSat >>= \case
-      SBVC.Unk   -> undefined -- error "Solver returned unknown!"
-      SBVC.Unsat -> undefined -- error "Solver couldn't solve constraints"
-      SBVC.Sat   -> SBVC.getValue a
--}
-
--- testSBV' :: IO Int
--- testSBV' = fromIntegral <$> SBV.runSMT testSBV
-
-anaM' :: (Monad m, Corecursive t, x ~ Base t, Traversable x) => (a -> m (Base t a)) -> a -> m t
-anaM' f = c where c = (fmap embed . mapM c) <=< f
 
 basicStep :: (Base g ~ f, BasicBase f, Corecursive g, Recursive g) => (f g -> g) -> f g -> g
 basicStep handleOther = \case
@@ -171,26 +139,6 @@ stuckStep handleOther = \case
   x@(StuckFW GateSF )                 -> embed x
   x -> handleOther x
 
-{-
-stuckStepDebug :: (Base a ~ f, StuckBase f, BasicBase f, Recursive a, Corecursive a, PrettyPrintable a)
-  => (f a -> a) -> f a -> a
-stuckStepDebug handleOther = \case
-  ff@(FillFunction (StuckEE (DeferSF fid d)) e) -> db $ transformNoDefer (basicStep (stuckStepDebug handleOther) . replaceEnv) d' where
-    interestingIds = []
-    e' = project e
-    db = if False -- fid == toEnum 74
-      then debugTrace ("stuckstep dumping output:\n" <> prettyPrint (embed ff))
-      else id
-    d' = if fromEnum fid `elem` interestingIds -- if fid == toEnum unsizedStepMw -- unsizedStepMrfa
-      then debugTrace ("stuckStep dumping environment for " <> show fid <> "\n"  <> prettyPrint e) d
-      else debugTrace ("stuckStep hit " <> show (fromEnum fid)) d
-    replaceEnv = \case
-      StuckFW EnvSF -> e'
-      x             -> x
-  -- stuck value
-  x@(StuckFW _) -> embed x
-  x -> handleOther x
--}
 
 stuckStepM :: (Base a ~ f, Traversable f, StuckBase f, BasicBase f, Recursive a, Corecursive a, PrettyPrintable a, Monad m)
   => (f a -> m a) -> f a -> m a
@@ -213,44 +161,7 @@ stuckStepM handleOther x = f x where
     x@(StuckFW GateSF)                 -> pure $ embed x
     _ -> handleOther x
 
-{-
-stuckStepDebugM :: forall a f m j. (Base a ~ f, Traversable f, StuckBase f, BasicBase f, AbortBase f, UnsizedBase f, IndexedInputBase f, SuperBase f
-                   , ShallowEq1 f, Show a, Eq a, Recursive a, Corecursive a, PrettyPrintable a, GenValidAdj a, Monad m
-                   , Gennable a ~ j, GenValid j, Eq j)
-  => (f a -> m a) -> f a -> m a
-stuckStepDebugM handleOther x = f x where
-  interestingIds = [-5, 33, 32, 31, 29]
-  f = \case
-    ff@(FillFunction (StuckEE (DeferSF fid d)) e) -> db $ transformNoDeferM runStuck d' where
-      runStuck = basicStepM (stuckStepDebugM handleOther) . replaceEnv
-      e' = project e
-      d' = if fromEnum fid `elem` interestingIds -- if fid == toEnum unsizedStepMw -- unsizedStepMrfa
-        then debugTrace ("stuckStepDebugM dumping environment for " <> show fid <> "\n"  <> prettyPrint e) d
-        else debugTrace ("stuckStepDebugM hit " <> show (fromEnum fid)) d
-      db = id
-      replaceEnv = \case
-        BasicFW EnvSF -> e'
-        x             -> x
-    -- stuck value
-    x@(StuckFW _) -> pure $ embed x
-    _ -> handleOther x
--}
 
-{-
-stuckStepWithTrace :: (Base a ~ f, MonadReader s m, s ~ TCallStack a, Traversable f, StuckBase f, BasicBase f, Recursive a, Corecursive a, PrettyPrintable a)
-  => (f a -> m a) -> f a -> m a
-stuckStepWithTrace handleOther = \case
-  FillFunction (StuckEE (DeferSF fid d)) e -> local addTrace $ transformNoDeferM runStuck d where
-    addTrace = ((fid, e) :)
-    runStuck = basicStepM (stuckStepM handleOther) . replaceEnv
-    e' = project e
-    replaceEnv = \case
-      BasicFW EnvSF -> e'
-      x             -> x
-  -- stuck value
-  x@(StuckFW _) -> pure $ embed x
-  x -> handleOther x
--}
 
 failAndPrintStack :: (Base a ~ f, MonadReader s m, s ~ TCallStack a, Corecursive a, PrettyPrintable a)
   => f a -> m b
@@ -801,13 +712,6 @@ extractInputRestrictions = cleanup . f Nothing where
     _ -> mempty
 
 zeroToBranch :: (Base a ~ f, BasicBase f, Recursive a, Corecursive a) => Integer -> a
-{-
-zeroToBranch = ana f where
-  f 0 = embedB ZeroSF
-  f n = let n' = div (n - 1) 2 in if even n
-    then embedB (PairSF n' 0)
-    else embedB (PairSF 0 n')
--}
 zeroToBranch n = g n id where
   g :: (Base a ~ f, BasicBase f, Recursive a, Corecursive a) => Integer -> (a -> a) -> a
   g 0 f = f ZeroB
@@ -901,57 +805,6 @@ instance Show UnexpectedGrammarException where
 
 instance Exception UnexpectedGrammarException
 
-{-
-sizeTerm :: Int -> UnsizedExpr -> Either UnsizedRecursionToken AbortExpr
-sizeTerm maxSize x = tidyUp . foldAborted . debugResult . transformNoDefer evalStep $ peTerm where
-  failConvert x = error $ "sizeTerm convert, unhandled:\n" <> prettyPrint x
-  forceType :: StuckExpr -> StuckExpr
-  forceType = id
-  zeros = zeroes $ getInputLimits x
-  debugResult r = debugTrace ("sizeTerm result is\n" <> prettyPrint r) r
-  cm = removeRefinementWrappers $ capMain (indexedEE $ IVarF 0) x
-  showSizes sm = debugTrace ("sizes are: " <> show sm)
-  tidyUp =  \case
-    (Just (UnsizableSR i), sm) -> Left i
-    (_, SizedRecursion sm) -> let sized = showSizes sm $ setSizes sm peTerm
-                              in pure . clean $ if isClosure x
-                                                then uncap sized
-                                                else sized
-      where uncap = \case
-              BasicEE (SetEnvSF (BasicEE (PairSF d _))) -> basicEE $ PairSF d (basicEE ZeroSF)
-              z -> error ("sizeTerm tidyUp trying to uncap something that isn't a main function: " <> show z)
-  clean :: UnsizedExpr -> AbortExpr
-  clean = cata (convertBasic (convertStuck (convertAbort failConvert)))
-  convertPartialError x = error ("convertPartialSizing unhandled " <> prettyPrint x)
-  tracePartialSizes = id
-  setSizes :: Map UnsizedRecursionToken (Maybe Int) -> UnsizedExpr -> UnsizedExpr
-  setSizes sizeMap = cata $ \case
-    UnsizedFW us@(UnsizedStubF tok _) -> tracePartialSizes $ case Map.lookup tok sizeMap of
-      Just (Just n) -> debugTrace ("sizeTerm setting size: " <> show (tok, n)) iterate (basicEE . SetEnvSF) (basicEE EnvSF) !! n
-      _      ->  basicEE . SetEnvSF $ basicEE EnvSF
-    x -> embed x
-  setSomeSizes :: Map UnsizedRecursionToken (Maybe Int) -> InputSizingExpr -> InputSizingExpr
-  setSomeSizes sizeMap = cata $ \case
-    UnsizedFW us@(UnsizedStubF tok _) -> tracePartialSizes $ case Map.lookup tok sizeMap of
-      Just (Just n) -> iterate (basicEE . SetEnvSF) (basicEE EnvSF) !! n
-      _             -> embed $ embedU us
-    x -> embed x
-  foldAborted = cata f where
-    f = \case
-      AbortFW (AbortedF (AbortRecursion _)) -> (Just . UnsizableSR $ toEnum (-2), mempty)
-      AbortFW (AbortedF AbortAny) -> (Just . UnsizableSR $ toEnum (-1), mempty)
-      AbortFW (AbortedF (AbortUnsizeable t)) -> (Just . UnsizableSR . toEnum . g2i $ t, mempty)
-      UnsizedFW (SizeStageF sm x) -> (Nothing, sm) <> x
-      x                                 -> Data.Foldable.fold x
-  hasSizes (SizedRecursion sm, _) = not . null $ Map.filter (not . null) sm
-  peTerm = cm -- in case debugging is needed
-  unhandledMerge x y = error ("sizeTerm unhandledMerge: " <> show (x,y))
-  unhandledGate x = error ("sizeTerm unhandled gate input: " <> show x)
-  gateResult = debugTrace "gateResult" gateBasicResult (gateAbortResult (gateIndexedResult (gateSuperResult gateResult unhandledGate)))
-  unsizedTest ri = unsizedTestIndexed zeros (unsizedTestSuper (unsizedTest ri) (unsizedTestUnsized (unsizedTest ri) (const id))) ri
-  evalStep = basicStep (stuckStep (abortStep (indexedAbortStep (indexedInputStep zeros (indexedSuperStep (superUnsizedStep gateResult evalStep (superAbortStep evalStep (unsizedStep maxSize unsizedTest evalStep unhandledError))))))))
-  unhandledError x = error ("sizeTerm unhandled case\n" <> prettyPrint x)
--}
 
 initialInput :: (Base a ~ f, BasicBase f, IndexedInputBase f, Recursive a, Corecursive a) => InputRestrictions -> a
 initialInput irs = f 0 where
@@ -1032,51 +885,6 @@ sizeTermM sizingSettings x = tidyUp . ($ []) . runReaderT . transformNoDeferM ev
   unhandledError x = throw $ UGException ("sizeTermM unhandled case\n" <> prettyPrint x)
   evalStep = basicStepM (stuckStepM (abortStepM (indexedAbortStepM (indexedInputStepM zeros (indexedSuperStepM (superStepM gateResult evalStep (superAbortStepM evalStep (unsizedStepM''' (maxSizingSize sizingSettings) zeros unsizedTest' unhandledError))))))))
 
-{-
-evalTrace :: (Base a ~ f, BasicBase f, StuckBase f, AbortBase f, IndexedInputBase f, SuperBase f, UnsizedBase f, Traversable f, ShallowEq1 f
-             , Recursive a, Corecursive a, PrettyPrintable a, Show a) => a -> a
-evalTrace x = debugTrace ("evalTrace:\n" <> prettyPrint (transformNoDefer evalStepT x)) x where
-          unhandledGate x = error ("findInputLimitStepM evalT unhandled gate input: " <> show x)
-          gateResult = gateBasicResult (gateAbortResult (gateIndexedResult (gateSuperResult gateResult unhandledGate)))
-          testZ = Set.singleton $ toEnum 127
-          evalError z = error $ "findInputLimitStepM evalT unexpected:\n" <> prettyPrint (embed z)
-          -- evalStepT = basicStep (stuckStep (abortStep (indexAbortIfUnboundStep testZ (indexedSuperStep (superAbortStep evalStepT (superStep gateResult evalStepT evalError))))))
-          evalStepT = basicStep (stuckStep (abortStep (indexedInputStep testZ (indexedSuperStep (superAbortStep evalStepT (superStep gateResult evalStepT (traceRefinement evalStepT evalError)))))))
--}
-
-{-
-abortPossibilities :: Int -> UnsizedExpr -> Set IExpr
-abortPossibilities maxSize x = tidyUp . ($ []) . runReaderT . transformNoDeferM evalStep $ cm where
-  sizingSettings = SizingSettings 255 True
-  failConvert x = error $ "abortPossibilities convert, unhandled:\n" <> prettyPrint x
-  forceType :: StuckExpr -> StuckExpr
-  forceType = id
-  showZeros z = "\nabortPossibilities zeros are: " <> show z <> "\nzeros are:\n" <> concatMap (prettyPrint . forceType . zeroToBranch) z
-  inputRestrictions = getInputLimits x
-  zeros = zeroes inputRestrictions
-  cm = removeRefinementWrappers $ capMain (initialInput inputRestrictions) x
-  tidyUp (StrictAccum (SizedRecursion sm) r) = debugTrace ("sizes are: " <> show sm <> "\nand result is:\n" <> prettyPrint r) $ foldAborted r
-  clean :: UnsizedExpr -> AbortExpr
-  clean = cata (convertBasic (convertStuck (convertAbort failConvert)))
-  setSizes :: Map UnsizedRecursionToken (Maybe Int) -> UnsizedExpr -> UnsizedExpr
-  setSizes sizeMap = cata $ \case
-    UnsizedFW us@(UnsizedStubF tok _) -> case Map.lookup tok sizeMap of
-      Just (Just n) -> debugTrace ("abortPossibilities setting size: " <> show (tok, n)) iterate (basicEE . SetEnvSF) (basicEE EnvSF) !! n
-      _      ->  basicEE . SetEnvSF $ basicEE EnvSF
-    x -> embed x
-  foldAborted = cata f where
-    f = \case
-      AbortFW (AbortedF x) -> Set.singleton x
-      x                                 -> Data.Foldable.fold x
-  unhandledMerge x y = error ("abortPossibilities unhandledMerge: " <> show (x,y))
-  unhandledGate x = error ("abortPossibilities unhandled gate input: " <> show x)
-  gateResult = gateBasicResult (gateAbortResult (gateIndexedResult (gateSuperResult gateResult unhandledGate)))
-  unsizedTest :: UnsizedRecursionToken -> UnsizedExpr -> UnsizedExpr
-  unsizedTest ri = unsizedTestIndexed zeros (unsizedTestSuper (unsizedTest ri) (const id)) ri
-  unsizedTest' ri = unsizedTest ri . (\x -> debugTrace ("unsizedTest value of\n" <> prettyPrint x) x)
-  unhandledError x = error ("abortPossibilities unhandled case\n" <> prettyPrint x)
-  evalStep = basicStepM (stuckStepWithTrace (abortStepM (indexedAbortStepM (indexedInputStepM zeros (indexedSuperStepM (superStepM gateResult evalStep (superAbortStepM evalStep (unsizedStepM''' maxSize zeros unsizedTest failAndPrintStack))))))))
--}
 
 getSizesM :: Int -> UnsizedExpr -> Either SizingFailure SizedRecursion
 getSizesM maxSize x = tidyUp . ($ []) . runReaderT . transformNoDeferM evalStep $ cm where
@@ -1222,193 +1030,3 @@ evalPartialUnsized zeroes = cata gatherLimits . transformNoDefer step where
     UnsizedFW (SizeStageF sm x) -> sm <> x
     x -> Data.Foldable.fold x
 
-{-
-fullyResolve :: (Int -> Maybe PartialType) -> PartialType -> PartialType
-fullyResolve resolve = convert where
-    convert = transform endo
-    endo = \case
-      TypeVariable anno i -> case resolve i of
-        Nothing -> TypeVariable anno i
-        Just t  -> convert t
-      x -> x
-
-buildTypeMap :: Set TypeAssociation -> Either TypeCheckError (Map Int PartialType)
-buildTypeMap assocSet =
-  let multiMap = Map.fromListWith DList.append . fmap (\(TypeAssociation i t) -> (i, DList.singleton t))
-        $ Set.toList assocSet
-      getKeys = \case
-        TypeVariable _ i -> DList.singleton i
-        ArrTypeP a b     -> getKeys a <> getKeys b
-        PairTypeP a b    -> getKeys a <> getKeys b
-        _                -> mempty
-      isRecursiveType resolvedSet k = case (Set.member k resolvedSet, Map.lookup k multiMap) of
-        (True, _) -> Just k
-        (_, Nothing) -> Nothing
-        (_, Just t) -> foldr (\nk r -> isRecursiveType (Set.insert k resolvedSet) nk <|> r) Nothing
-          $ foldMap getKeys t
-      debugShowMap tm = debugTrace (concatMap (\(k, v) -> show k <> ": " <> show v <> "\n") $ Map.toAscList tm)
-      buildMap assoc typeMap = case Set.minView assoc of
-        Nothing -> debugShowMap typeMap $ pure typeMap
-        Just (TypeAssociation i t, newAssoc) -> case Map.lookup i typeMap of
-          Nothing -> buildMap newAssoc $ Map.insert i t typeMap
-          Just t2 -> makeAssociations t t2 >>= (\assoc2 -> buildMap (newAssoc <> assoc2) typeMap)
-  -- if any variables result in lookup cycles, fail with RecursiveType
-  in case foldr (\t r -> isRecursiveType Set.empty t <|> r) Nothing (Map.keys multiMap) of
-    Just k  -> Left $ RecursiveType k
-    Nothing -> debugTrace (show multiMap) $ buildMap assocSet mempty
-
-partiallyAnnotate :: (Base g ~ f, Annotatable1 f, Annotatable g)
-  => g -> Either TypeCheckError (PartialType, Int -> Maybe PartialType)
-partiallyAnnotate term =
-  let runner :: State (PartialType, Set TypeAssociation, Int) (Either TypeCheckError PartialType)
-      runner = runExceptT $ anno term
-      initState = (TypeVariable RuntimeLoc 0, Set.empty, 0)
-      (rt, (_, s, _)) = State.runState runner initState
-  in (,) <$> rt <*> (flip Map.lookup <$> buildTypeMap s)
-
-annotateTree :: forall g f. (Base g ~ f, Traversable f, Annotatable1 f, Recursive g, Annotatable g)
-  => g -> Either TypeCheckError (Cofree f PartialType)
-annotateTree term = do
-  (rt, resolver) <- partiallyAnnotate term
-  let fResolve = fullyResolve resolver
-      ca x = anno1 x >>= \a -> pure (fResolve a :< x)
-      f = ca <=< sequence
-      initState = (TypeVariable RuntimeLoc 0, Set.empty, 0)
-  flip State.evalState initState . runExceptT $ cata f term
-
-matchType :: PartialType -> PartialType -> Bool
-matchType a b = case (a,b) of
-  (ZeroTypeP, ZeroTypeP)         -> True
-  (AnyType, _)                   -> True
-  (_, AnyType)                   -> True
-  (TypeVariable _ _, _)          -> True
-  (_, TypeVariable _ _)          -> True
-  (ArrTypeP a b, ArrTypeP c d)   -> matchType a c && matchType b d
-  (PairTypeP a b, PairTypeP c d) -> matchType a c && matchType b d
-  _                              -> False
-
-matchTypeHead :: (Annotatable1 f, Annotatable g) => PartialType -> f g -> Bool
-matchTypeHead t x =
-  let initState = (TypeVariable RuntimeLoc 0, Set.empty, 0)
-  in case State.evalState (runExceptT $ anno1 x) initState of
-    Left _   -> False
-    Right t' -> matchType t' t
-
-instance Validity a => Validity (BasicExprF a)
-instance Validity a => Validity (StuckF a)
-instance Validity a => Validity (SuperPositionF a)
-instance Validity a => Validity (AbortableF a)
-instance Validity a => Validity (UnsizedRecursionF a)
-instance Validity a => Validity (IndexedInputF a)
-instance Validity a => Validity (UnsizedExprF a)
-instance Validity (Cofree UnsizedExprF PartialType) where
-  validate x = let startVar = succ . getMax $ cata mv x
-                   mv (a CofreeT.:< x) = mv' a <> Data.Foldable.fold x
-                   mv' = \case
-                     TypeVariable _ n -> Max n
-                     ArrTypeP a b -> mv' a <> mv' b
-                     PairTypeP a b -> mv' a <> mv' b
-                     _ -> Max 0
-                   initState = (TypeVariable RuntimeLoc startVar, Set.empty, startVar)
-                   etb = \case
-                     Right True -> True
-                     _ -> False
-                   getTypeLevel = flip State.evalState initState . runExceptT . liftAnno anno
-                   matchLevel (a CofreeT.:< fx) = All (etb $ matchType a <$> getTypeLevel (fst <$> fx))
-                     <> Data.Foldable.fold (snd <$> fx)
-               in declare "grammar matches type annotations" . getAll $ para matchLevel x
-instance Validity (Fix BasicExprF) where
-  validate = error "fix Validity instance for StuckExpr"
-
-instance GenValid a => GenValid (BasicExprF a) where
-instance GenValid FunctionIndex
-instance GenValid a => GenValid (StuckF a) where
-instance GenValid a => GenValid (SuperPositionF a) where
-instance GenValid a => GenValid (AbortableF a) where
-instance GenValid UnsizedRecursionToken
-instance GenValid SizedRecursion where
-instance GenValid a => GenValid (UnsizedRecursionF a) where
-instance GenValid a => GenValid (IndexedInputF a) where
-instance GenValid a => GenValid (UnsizedExprF a) where
-instance GenValid (Fix BasicExprF) where
-  genValid = error "fix GenValid instance for StuckExpr"
-  shrinkValid = error "fix GenValid instance for StuckExpr"
-
-class GenValidAdj g where
-  type Gennable g
-  toGennable :: g -> Gennable g
-  fromGennable :: Gennable g -> g
-
-instance GenValid (Cofree UnsizedExprF PartialType) where
-  genValid = genValid >>= (sized . genTypedTree Nothing . toPartialType)
-  shrinkValid (a :< x) = (a :<) <$> filter (matchTypeHead a) (shrinkValidStructurally x)
-
-instance GenValidAdj UnsizedExpr where
-  type Gennable UnsizedExpr = Cofree UnsizedExprF PartialType
-  toGennable x = case annotateTree x of
-    Left z -> error ("UnsizedExpr toGennable mistyped expression: " <> show z <> "\nfrom\n" <> ppax) where
-      annoTerm :: UnsizedExpr -> Either TypeCheckError (Gennable UnsizedExpr)
-      annoTerm term = do
-        (rt, resolver) <- partiallyAnnotate term
-        let ca x = anno1 x >>= \a -> pure (resolve a :< x)
-            resolve = \case
-              t@(TypeVariable _ i) -> (fromMaybe t (resolver i))
-            f = ca <=< sequence
-            initState = (TypeVariable RuntimeLoc 0, Set.empty, 0)
-        flip State.evalState initState . runExceptT $ cata f term
-      ppax = case annoTerm x of
-        Left z   -> "toGennable ppax bad: " <> show z
-        Right x' -> prettyPrint x
-    Right x -> x
-  fromGennable x = cata f x where
-    f (_ CofreeT.:< x) = embed x
-
-
-genTypedTree :: Maybe PartialType -> PartialType -> Int -> Gen (Cofree UnsizedExprF PartialType)
-genTypedTree ti t i = -- TODO generate UnsizedF sections?
-  let optionEnv = if ti == Just t
-                  then (pure (t :< embedS EnvSF) :)
-                  else id
-      optionGate = case t of
-        ArrTypeP ZeroTypeP to -> ((ta . embedS <$> (GateSF <$> genTypedTree ti to half <*> genTypedTree ti to half)) : )
-        _ -> id
-      optionAbort = case t of
-        ArrTypeP ZeroTypeP (ArrTypeP _ _) -> ((pure . ta $ embedA AbortF) : )
-        _                                 -> id
-      ta = (t :<)
-      half = div i 2
-      setEnvOption = genValid >>= makeSetEnv where
-        makeSetEnv ti' = ta . embedS . SetEnvSF <$> genTypedTree ti (PairTypeP (ArrTypeP ti' t) ti') (i - 1)
-      leftOption = genValid >>= makeLeft where
-        makeLeft ti' = ta . embedS . LeftSF <$> genTypedTree ti (PairTypeP t ti') (i - 1)
-      rightOption = genValid >>= makeRight where
-        makeRight ti' = ta . embedS . RightSF <$> genTypedTree ti (PairTypeP ti' t) (i - 1)
-      eitherOption = ta . embedP <$> (EitherPF <$> genValid <*> genTypedTree ti t half <*> genTypedTree ti t half)
-      abortedOption = pure . ta . embedA . AbortedF . AbortUser $ s2b "Arbitrary Test Data"
-      addZeroPair = if t == ZeroTypeP
-        then ((ta . embedB <$> (PairSF <$> genTypedTree ti ZeroTypeP half <*> genTypedTree ti ZeroTypeP half)) :)
-        else id
-      addBranches l = if i < 2 then l else leftOption : rightOption : setEnvOption : eitherOption : addZeroPair l
-  in oneof . optionEnv . (abortedOption :) . addBranches $ case t of
-    PairTypeP tl tr ->
-      [ ta . embedB <$> (PairSF <$> genTypedTree ti tl half <*> genTypedTree ti tr half)
-      ]
-    ArrTypeP ti' to -> optionGate . optionAbort $
-      [ ta . embedS . DeferSF (toEnum 0) <$> genTypedTree ti to (i - 1)
-      ]
-    _ ->
-      [ pure . ta $ embedB ZeroSF
-      , ta . embedI . IVarF <$> arbitrary
-      , pure . ta $ embedI AnyF
-      ]
-
-tcAnnotatedProp :: Cofree UnsizedExprF PartialType -> Bool
-tcAnnotatedProp exp = validate . pa $ cata f exp where
-  pa :: UnsizedExpr -> Either TypeCheckError (PartialType, Int -> Maybe PartialType)
-  pa = partiallyAnnotate
-  f (_ CofreeT.:< x) = embed x
-  validate = \case
-    Right _ -> True
-    _ -> False
-
--}
