@@ -39,7 +39,7 @@
 -- evaluator does not do, and inflated the step count for `simpleplus.tel` from
 -- 46 thousand to 17 million.
 --
--- `evalMeter` mirrors `Telomare.Possible`'s
+-- `evalMeter` mirrors `Telomare.Eval.Reference`'s
 -- @instance AbstractRunTime CompiledExpr@. Being a second interpreter, it can
 -- drift; `test/SizingTests.hs` asserts it still computes the same value, which
 -- is what keeps the mirror honest. One difference is deliberate and easy to

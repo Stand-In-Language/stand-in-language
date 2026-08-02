@@ -15,20 +15,17 @@ cradle:
     - path: "app/LSP.hs"
       component: "telomare:exe:telomare-lsp"
 
-    - path: "./test/Spec.hs"
-      component: "test:telomare-test"
+    - path: "test"
+      component: "telomare:test:telomare-test"
 
-    - path: "test/ParserTests.hs"
+    - path: "test"
       component: "telomare:test:telomare-parser-test"
 
-    - path: "test/ResolverTests.hs"
+    - path: "test"
       component: "telomare:test:telomare-resolver-test"
 
-    - path: "./test/SizingTest.hs"
-      component: "test:telomare-sizing-test"
+    - path: "test"
+      component: "telomare:test:telomare-sizing-test"
 
-    - path: "./test/SizingTests.hs"
-      component: "test:telomare-sizing-test"
-
-    - path: "./test/ArithmeticTests.hs"
-      component: "test:telomare-arithmetic-test"
+    - path: "test"
+      component: "telomare:test:telomare-udt-test"
