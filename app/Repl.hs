@@ -28,6 +28,7 @@ import System.Exit (exitSuccess)
 import qualified System.IO.Strict as Strict
 import Telomare.Error
 import Telomare.Eval (compileUnitTestNoAbort)
+import Telomare.Eval.Reference (evalPartial, showPass)
 import Telomare.IR.Base
 import Telomare.IR.Builder
 import Telomare.IR.Core
@@ -35,12 +36,10 @@ import Telomare.IR.Loc
 import Telomare.IR.Surface
 import Telomare.IR.Types
 import Telomare.Parse (TelomareParser, parseAssignment, parseLongExpr,
-                        parsePrelude)
-import Telomare.Possible (evalPartial)
-import Telomare.PossibleData (DeferredEvalF (..), PartialExpr, deferredEE)
+                       parsePrelude)
 import Telomare.PrettyPrint
 import Telomare.Resolve (process)
-import Telomare.RunTime
+import Telomare.Size.IR (DeferredEvalF (..), PartialExpr, deferredEE)
 import Telomare.TypeCheck (inferType)
 import Text.Megaparsec
 import Text.Megaparsec.Char

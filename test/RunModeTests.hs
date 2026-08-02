@@ -12,22 +12,23 @@ import qualified Data.Map as Map
 import qualified System.IO.Strict as Strict
 import Test.Hspec
 
+import Telomare.Artifact (Artifact (..), decodeArtifact, encodeArtifact,
+                          nodeCount, sourcesHash)
+import Telomare.Certificate (renderStaticReport)
 import Telomare.Error
+import Telomare.Eval (compileModules, runMainWithInput)
+import Telomare.Fast (FastError (..), FastMeter (..), compileFast,
+                      runFastWithInput)
 import Telomare.IR.Base
 import Telomare.IR.Builder
 import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.IR.Surface
 import Telomare.IR.Types
-import Telomare.Artifact (Artifact (..), decodeArtifact, encodeArtifact,
-                          nodeCount, sourcesHash)
-import Telomare.Certificate (renderStaticReport)
-import Telomare.Eval (SizingReport (..), compileModules, runMainWithInput)
-import Telomare.Fast (FastError (..), FastMeter (..), compileFast,
-                      runFastWithInput)
 import Telomare.Levels (LevelsInfo (..), levelsInfo)
-import Telomare.Possible (appB)
-import Telomare.PossibleData (SizedRecursion (..))
+import Telomare.Machine (appB)
+import Telomare.Size (SizingReport (..))
+import Telomare.Size.IR (SizedRecursion (..))
 
 limitsDir :: FilePath
 limitsDir = "test/programs/limits/"

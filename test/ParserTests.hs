@@ -25,16 +25,16 @@ import Debug.Trace (trace, traceShowId)
 import qualified System.IO.Strict as Strict
 import System.Process hiding (createPipe)
 import Telomare.Error
+import Telomare.Eval
+import Telomare.Eval.Reference
 import Telomare.IR.Base
 import Telomare.IR.Builder
 import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.IR.Surface
 import Telomare.IR.Types
-import Telomare.Eval
 import Telomare.Parse
 import Telomare.Resolve
-import Telomare.RunTime
 import Test.QuickCheck
 import Test.Tasty
 import Test.Tasty.HUnit

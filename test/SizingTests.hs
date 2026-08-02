@@ -7,18 +7,19 @@ import qualified System.IO.Strict as Strict
 import Test.Hspec
 
 import Telomare.Error
+import Telomare.Eval (SizingOption (DebugSizing), compileModules,
+                      compileModulesWith)
 import Telomare.IR.Base
 import Telomare.IR.Builder
 import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.IR.Surface
 import Telomare.IR.Types
-import Telomare.Eval (SizingOption (DebugSizing), SizingReport (..),
-                      compileModules, compileModulesWith,
-                      renderSizingCertificate)
+import Telomare.Machine (appB)
 import Telomare.Meter (Meter (..), evalMeter)
-import Telomare.Possible (SizingSettings (SizingSettings), appB)
-import Telomare.PossibleData (SizedRecursion (..))
+import Telomare.Size (SizingReport (..), SizingSettings (SizingSettings),
+                      renderSizingCertificate)
+import Telomare.Size.IR (SizedRecursion (..))
 
 -- Common datatypes for generating Telomare AST.
 import Common

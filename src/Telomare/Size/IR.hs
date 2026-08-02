@@ -6,7 +6,7 @@
 {-# LANGUAGE TypeFamilies      #-}
 {-# LANGUAGE ViewPatterns      #-}
 
-module Telomare.PossibleData where
+module Telomare.Size.IR where
 
 import Control.Applicative
 import Control.Comonad.Cofree (Cofree ((:<)))

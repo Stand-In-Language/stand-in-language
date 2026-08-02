@@ -36,6 +36,7 @@ library
                      , Telomare.Desugar
                      , Telomare.Error
                      , Telomare.Eval
+                     , Telomare.Eval.Reference
                      , Telomare.Fast
                      , Telomare.IR.Base
                      , Telomare.IR.Builder
@@ -44,15 +45,15 @@ library
                      , Telomare.IR.Surface
                      , Telomare.IR.Types
                      , Telomare.Levels
+                     , Telomare.Machine
                      , Telomare.Meter
                      , Telomare.Parse
                      , Telomare.Parse.Sugar
-                     , Telomare.Possible
-                     , Telomare.PossibleData
                      , Telomare.PrettyPrint
                      , Telomare.PrettyPrint.Indent
                      , Telomare.Resolve
-                     , Telomare.RunTime
+                     , Telomare.Size
+                     , Telomare.Size.IR
                      , Telomare.TypeCheck
   build-depends:       base
                      , binary

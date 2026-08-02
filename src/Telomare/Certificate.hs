@@ -34,10 +34,10 @@ import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.IR.Surface
 import Telomare.IR.Types
-import Telomare.Eval (SizingReport (..))
+import Telomare.Size (SizingReport (..))
 import Telomare.Levels (BindingKey, LevelsInfo (..), SiteKey (..), bangs,
                         renderBinding, renderDef, renderLevels, renderSource)
-import Telomare.PossibleData (SizedRecursion (..))
+import Telomare.Size.IR (SizedRecursion (..))
 
 -- |The whole static report.
 --

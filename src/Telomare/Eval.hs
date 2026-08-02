@@ -22,21 +22,24 @@ import Debug.Trace
 import qualified Control.Comonad.Trans.Cofree as CofreeT
 import Control.Lens (Identity (runIdentity))
 import Data.Functor.Foldable (Base, cata, embed, para)
-import Telomare.PrettyPrint
 import Telomare.Error
+import Telomare.Eval.Reference (basicEval)
 import Telomare.IR.Base
 import Telomare.IR.Builder
 import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.IR.Surface
 import Telomare.IR.Types
+import Telomare.Machine (appB, deferB)
 import Telomare.Meter (Meter, evalMeter)
 import Telomare.Parse (parseModule, parseModuleNamed,
-                        parseOneExprOrTopLevelDefs, parsePrelude)
-import Telomare.Possible (SizingSettings (..), appB, basicEval, deferB,
-                          evalStaticCheck, sizeTermM, term3ToUnsizedExpr)
-import Telomare.PossibleData (SizedRecursion (..), VoidF)
+                       parseOneExprOrTopLevelDefs, parsePrelude)
+import Telomare.PrettyPrint
 import Telomare.Resolve (main2Term3, main2Term3let, process, resolveAllImports)
+import Telomare.Size (SizingReport (..), SizingSettings (..),
+                      buildUnsizedLocMap, evalStaticCheck, locateSizingFailure,
+                      sizeTermM, term3ToUnsizedExpr)
+import Telomare.Size.IR (SizedRecursion (..), VoidF)
 import Telomare.TypeCheck (typeCheck)
 import Text.Megaparsec (errorBundlePretty, runParser)
 
@@ -66,31 +69,6 @@ data SizingOption
   | UnitTestSizing
   | MainSizing
   | DebugSizing SizingSettings
-
--- |What the sizing pass learned, kept rather than discarded. These iteration
--- counts are the numbers the compiler already relies on to claim a program is
--- total; reporting them asserts nothing new.
-data SizingReport = SizingReport
-  { sizingReportCounts :: SizedRecursion
-  -- ^Per recursion site, the iteration count inferred over every input.
-  , sizingReportLocs   :: Map UnsizedRecursionToken LocTag
-  -- ^Where each site is in the source.
-  , sizingReportBudget :: Int
-  -- ^The unrolling budget the search was allowed.
-  }
-
--- |Every recursion site's source location, recovered from the `Term3`
--- annotations that `term3ToUnsizedExpr` drops on its way to `UnsizedExpr`.
-buildUnsizedLocMap :: Term3 -> Map UnsizedRecursionToken LocTag
-buildUnsizedLocMap = cata f where
-  f (anno CofreeT.:< g) = case g of
-    Term3Unsized tok -> Map.singleton tok anno
-    x                -> fold x
-
--- |`sizeTermM` names the recursion that failed but cannot say where it is.
-locateSizingFailure :: Map UnsizedRecursionToken LocTag -> SizingFailure -> SizingFailure
-locateSizingFailure locs failure =
-  failure { sizingFailureLoc = Map.lookup (sizingFailureToken failure) locs }
 
 sizingBudget :: SizingOption -> Int
 sizingBudget = \case
@@ -332,31 +310,6 @@ evalLoop_ iexpr = evalLoopCore iexpr printAcc "" []
 
 calculateRecursionLimits :: SizingSettings -> Term3 -> Either EvalError CompiledExpr
 calculateRecursionLimits sizingSettings = findChurchSizeD (DebugSizing sizingSettings)
-
--- |Every recursion site in the program, where it is, and how many times it can
--- iterate. The counts hold for every input: the sizing pass finds them by
--- running the program over a symbolic input, and takes the worst case across
--- the paths it explores.
---
--- Nothing here is a new claim. These are the very numbers the compiler bakes
--- into the program to make it total; a program that does not size does not
--- compile at all.
-renderSizingCertificate :: SizingReport -> String
-renderSizingCertificate report = unlines $
-  "recursion sites (iterations, over every input):"
-    : (if null sites then ["  none - this program has no unsized recursion"] else sites)
-    <> ["", "sizing budget in force: " <> show (sizingReportBudget report) <> " unrollings"]
-  where
-    counts = Map.toAscList . unSizedRecursion $ sizingReportCounts report
-    sites = fmap site counts
-    site (tok, size) = "  " <> pad (place tok) <> "  <= " <> maybe "?" show size
-    place tok =
-      let named = "#" <> show (unUnsizedRecursionToken tok)
-      in case Map.lookup tok (sizingReportLocs report) >>= renderLocTagCompact of
-           Just spot -> spot <> " (" <> named <> ")"
-           Nothing   -> named
-    width = maximum (0 : fmap (length . place . fst) counts)
-    pad s = s <> replicate (width - length s) ' '
 
 parseMain :: [(String, AnnotatedUPT)] -- ^Prelude: [(VariableName, BindedUPT)]
           -> String                            -- ^Raw string to be parserd.

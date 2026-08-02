@@ -14,22 +14,23 @@ import Data.Monoid
 import qualified Data.Set as Set
 import Data.Void
 import Debug.Trace
-import Telomare.PrettyPrint
 import System.Exit
 import System.IO
 import qualified System.IO.Strict as Strict
 import Telomare.Error
+import Telomare.Eval
+import Telomare.Eval.Reference
 import Telomare.IR.Base
 import Telomare.IR.Builder
 import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.IR.Surface
 import Telomare.IR.Types
-import Telomare.Eval
+import Telomare.Machine (appB, deferB)
 import Telomare.Parse
-import Telomare.Possible (SizingSettings (SizingSettings), appB, deferB)
+import Telomare.PrettyPrint
 import Telomare.Resolve
-import Telomare.RunTime
+import Telomare.Size (SizingSettings (SizingSettings))
 import Telomare.TypeCheck
 import Test.Hspec
 import Test.Hspec.Core.QuickCheck (modifyMaxSuccess)

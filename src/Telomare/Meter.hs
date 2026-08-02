@@ -1,4 +1,4 @@
-{-# LANGUAGE LambdaCase      #-}
+{-# LANGUAGE LambdaCase #-}
 
 -- |Measured cost of a concrete run: how many evaluation steps it took, and how
 -- many term nodes it built along the way.
@@ -60,7 +60,7 @@ import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.IR.Surface
 import Telomare.IR.Types
-import Telomare.Possible (abortInd, deferB, doLeft, doRight)
+import Telomare.Machine (abortInd, deferB, doLeft, doRight)
 
 -- |What a run cost.
 data Meter = Meter

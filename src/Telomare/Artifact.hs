@@ -52,8 +52,8 @@ import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.IR.Surface
 import Telomare.IR.Types
-import Telomare.Eval (SizingReport (..))
-import Telomare.PossibleData (SizedRecursion (..))
+import Telomare.Size (SizingReport (..))
+import Telomare.Size.IR (SizedRecursion (..))
 
 -- |A program with its sizing already done.
 data Artifact = Artifact

@@ -24,6 +24,7 @@ import System.Posix.Types
 import Telomare.Desugar
 import Telomare.Error
 import Telomare.Eval
+import Telomare.Eval.Reference
 import qualified Telomare.Fast as Fast
 import Telomare.IR.Base
 import Telomare.IR.Builder
@@ -32,9 +33,8 @@ import Telomare.IR.Loc
 import Telomare.IR.Surface
 import Telomare.IR.Types
 import Telomare.Parse
-import Telomare.Possible (SizingSettings (SizingSettings))
 import Telomare.Resolve
-import Telomare.RunTime
+import Telomare.Size (SizingSettings (SizingSettings))
 import Test.Tasty
 import Test.Tasty.HUnit
 import Test.Tasty.QuickCheck as QC
