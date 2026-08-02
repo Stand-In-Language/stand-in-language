@@ -34,8 +34,15 @@ library
   exposed-modules:     Telomare
                      , Telomare.Artifact
                      , Telomare.Certificate
+                     , Telomare.Error
                      , Telomare.Eval
                      , Telomare.Fast
+                     , Telomare.IR.Base
+                     , Telomare.IR.Builder
+                     , Telomare.IR.Core
+                     , Telomare.IR.Loc
+                     , Telomare.IR.Surface
+                     , Telomare.IR.Types
                      , Telomare.Levels
                      , Telomare.Meter
                      , Telomare.Parser
