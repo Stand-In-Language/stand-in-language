@@ -22,7 +22,7 @@ import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.IR.Surface
 import Telomare.IR.Types
-import Telomare.Parser
+import Telomare.Parse
 import Telomare.Resolver
 import Telomare.TypeChecker
 import Test.QuickCheck

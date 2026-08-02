@@ -58,7 +58,7 @@ import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.IR.Surface
 import Telomare.IR.Types
-import Telomare.Parser (parseModuleNamed)
+import Telomare.Parse (parseModuleNamed)
 
 -- |A top-level definition, or a @let@ binding qualified by the definition it
 -- appears in.

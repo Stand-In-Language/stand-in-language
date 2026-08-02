@@ -30,7 +30,7 @@ import Telomare.IR.Surface
 import Telomare.IR.Types
 import Telomare.Eval
 import qualified Telomare.Fast as Fast
-import Telomare.Parser
+import Telomare.Parse
 import Telomare.Possible (SizingSettings (SizingSettings))
 import Telomare.Resolver
 import Telomare.RunTime

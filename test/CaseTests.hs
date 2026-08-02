@@ -17,7 +17,7 @@ import Telomare.IR.Loc
 import Telomare.IR.Surface
 import Telomare.IR.Types
 import Telomare.Eval (runMainWithInput)
-import Telomare.Parser
+import Telomare.Parse
 import Telomare.Resolver (pattern2UPT)
 import Test.Tasty
 import Test.Tasty.HUnit

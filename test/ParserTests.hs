@@ -32,7 +32,7 @@ import Telomare.IR.Loc
 import Telomare.IR.Surface
 import Telomare.IR.Types
 import Telomare.Eval
-import Telomare.Parser
+import Telomare.Parse
 import Telomare.Resolver
 import Telomare.RunTime
 import Test.QuickCheck

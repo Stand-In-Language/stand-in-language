@@ -27,7 +27,7 @@ import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.IR.Surface
 import Telomare.IR.Types
-import Telomare.Parser (parseModule)
+import Telomare.Parse (parseModule)
 import Telomare.PrettyPrint (PrettyCompiledExpr (..))
 import Text.Read (readMaybe)
 

@@ -43,7 +43,7 @@ import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.IR.Surface
 import Telomare.IR.Types
-import Telomare.Parser (TelomareParser, identifier)
+import Telomare.Parse (TelomareParser, identifier)
 import Text.Megaparsec (errorBundlePretty, runParser)
 
 debug :: Bool

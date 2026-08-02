@@ -44,7 +44,8 @@ library
                      , Telomare.IR.Types
                      , Telomare.Levels
                      , Telomare.Meter
-                     , Telomare.Parser
+                     , Telomare.Parse
+                     , Telomare.Parse.Sugar
                      , Telomare.Possible
                      , Telomare.PossibleData
                      , Telomare.PrettyPrint

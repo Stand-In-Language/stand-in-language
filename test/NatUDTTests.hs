@@ -22,7 +22,7 @@ import Telomare.IR.Loc
 import Telomare.IR.Surface
 import Telomare.IR.Types
 import Telomare.Eval (SizingOption (..), compile, runStaticChecks)
-import Telomare.Parser (parseLongExpr, parsePrelude)
+import Telomare.Parse (parseLongExpr, parsePrelude)
 import Telomare.Possible (SizingSettings (SizingSettings))
 import Telomare.Resolver (process, pruneBindings)
 import Test.Tasty

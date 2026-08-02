@@ -83,7 +83,7 @@ import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.IR.Surface
 import Telomare.IR.Types
-import Telomare.Parser (parseModuleNamed)
+import Telomare.Parse (parseModuleNamed)
 import Telomare.Resolver (main2Term3, main2Term3let)
 import Telomare.TypeChecker (typeCheck)
 

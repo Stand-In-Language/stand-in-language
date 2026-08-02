@@ -34,7 +34,7 @@ import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.IR.Surface
 import Telomare.IR.Types
-import Telomare.Parser (TelomareParser, parseAssignment, parseLongExpr,
+import Telomare.Parse (TelomareParser, parseAssignment, parseLongExpr,
                         parsePrelude)
 import Telomare.Possible (evalPartial)
 import Telomare.PossibleData (DeferredEvalF (..), PartialExpr, deferredEE)

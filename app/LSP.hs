@@ -50,7 +50,7 @@ import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.IR.Surface
 import Telomare.IR.Types
-import Telomare.Parser (parseModule, parseModuleDetailed)
+import Telomare.Parse (parseModule, parseModuleDetailed)
 import Telomare.Resolver (main2Term3)
 import Text.Megaparsec.Error (ParseErrorBundle (..), errorBundlePretty,
                               errorOffset)

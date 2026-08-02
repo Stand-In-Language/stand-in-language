@@ -31,7 +31,7 @@ import Telomare.IR.Loc
 import Telomare.IR.Surface
 import Telomare.IR.Types
 import Telomare.Meter (Meter, evalMeter)
-import Telomare.Parser (parseModule, parseModuleNamed,
+import Telomare.Parse (parseModule, parseModuleNamed,
                         parseOneExprOrTopLevelDefs, parsePrelude)
 import Telomare.Possible (SizingSettings (..), appB, basicEval, deferB,
                           evalStaticCheck, sizeTermM, term3ToUnsizedExpr)

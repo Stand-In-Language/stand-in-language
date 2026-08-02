@@ -24,7 +24,7 @@ import Telomare.IR.Surface
 import Telomare.IR.Types
 import Telomare.Eval (SizingOption (..), compile, compileUnitTest,
                       compileUnitTestNoAbort, runStaticChecks)
-import Telomare.Parser (TelomareParser, parseLongExpr, parsePrelude)
+import Telomare.Parse (TelomareParser, parseLongExpr, parsePrelude)
 import Telomare.Possible (SizingSettings (SizingSettings))
 import Telomare.Resolver (process, pruneBindings)
 
