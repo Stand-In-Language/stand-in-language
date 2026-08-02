@@ -24,7 +24,7 @@ import Telomare.IR.Surface
 import Telomare.IR.Types
 import Telomare.Parse
 import Telomare.Resolve
-import Telomare.TypeChecker
+import Telomare.TypeCheck
 import Test.QuickCheck
 import Test.QuickCheck.Gen
 

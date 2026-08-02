@@ -41,7 +41,7 @@ import Telomare.PossibleData (DeferredEvalF (..), PartialExpr, deferredEE)
 import Telomare.PrettyPrint
 import Telomare.Resolve (process)
 import Telomare.RunTime
-import Telomare.TypeChecker (inferType)
+import Telomare.TypeCheck (inferType)
 import Text.Megaparsec
 import Text.Megaparsec.Char
 

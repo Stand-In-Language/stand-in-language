@@ -30,7 +30,7 @@ import Telomare.Parse
 import Telomare.Possible (SizingSettings (SizingSettings), appB, deferB)
 import Telomare.Resolve
 import Telomare.RunTime
-import Telomare.TypeChecker
+import Telomare.TypeCheck
 import Test.Hspec
 import Test.Hspec.Core.QuickCheck (modifyMaxSuccess)
 import Test.QuickCheck

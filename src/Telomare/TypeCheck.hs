@@ -1,7 +1,7 @@
 {-# LANGUAGE LambdaCase      #-}
 {- HLINT ignore "Use tuple-section" -}
 
-module Telomare.TypeChecker where
+module Telomare.TypeCheck where
 
 import Control.Applicative
 import Control.Comonad.Cofree (Cofree ((:<)))
