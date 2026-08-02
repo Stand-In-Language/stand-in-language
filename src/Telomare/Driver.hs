@@ -23,6 +23,7 @@ import qualified Control.Comonad.Trans.Cofree as CofreeT
 import Control.Lens (Identity (runIdentity))
 import Data.Functor.Foldable (Base, cata, embed, para)
 import Telomare.Error
+import Telomare.Eval.Meter (Meter, evalMeter)
 import Telomare.Eval.Reference (basicEval)
 import Telomare.IR.Base
 import Telomare.IR.Builder
@@ -31,7 +32,6 @@ import Telomare.IR.Loc
 import Telomare.IR.Surface
 import Telomare.IR.Types
 import Telomare.Machine (appB, deferB)
-import Telomare.Eval.Meter (Meter, evalMeter)
 import Telomare.Parse (parseModule, parseModuleNamed,
                        parseOneExprOrTopLevelDefs, parsePrelude)
 import Telomare.PrettyPrint

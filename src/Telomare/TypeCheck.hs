@@ -1,4 +1,4 @@
-{-# LANGUAGE LambdaCase      #-}
+{-# LANGUAGE LambdaCase #-}
 {- HLINT ignore "Use tuple-section" -}
 
 module Telomare.TypeCheck where
@@ -21,7 +21,6 @@ import Data.Semigroup (Max (..))
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Debug.Trace
-import Telomare.PrettyPrint
 import Telomare.Error
 import Telomare.IR.Base
 import Telomare.IR.Builder
@@ -29,6 +28,7 @@ import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.IR.Surface
 import Telomare.IR.Types
+import Telomare.PrettyPrint
 
 debug :: Bool
 debug = False

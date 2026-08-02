@@ -15,8 +15,8 @@ import Test.Hspec
 import Telomare.Artifact (Artifact (..), decodeArtifact, encodeArtifact,
                           nodeCount, sourcesHash)
 import Telomare.Certificate (renderStaticReport)
-import Telomare.Error
 import Telomare.Driver (compileModules, runMainWithInput)
+import Telomare.Error
 import Telomare.Fast (FastError (..), FastMeter (..), compileFast,
                       runFastWithInput)
 import Telomare.IR.Base

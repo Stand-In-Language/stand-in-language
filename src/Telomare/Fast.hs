@@ -1,4 +1,4 @@
-{-# LANGUAGE LambdaCase      #-}
+{-# LANGUAGE LambdaCase #-}
 
 -- |Running a program without sizing it first.
 --

@@ -16,10 +16,10 @@ import Telomare.Artifact (Artifact (..), isArtifactPath, nodeCount,
                           writeArtifact)
 import Telomare.Certificate (renderStaticReport)
 import Telomare.Driver (compileModules, evalLoop, evalLoopMetered)
+import Telomare.Eval.Meter (renderMeter)
 import Telomare.Fast (compileFast, defaultFastFuel, renderFastMeter,
                       runFastLoop)
 import Telomare.Levels (levelsInfo)
-import Telomare.Eval.Meter (renderMeter)
 import Telomare.Size (SizingReport)
 
 -- |What to do with the program.

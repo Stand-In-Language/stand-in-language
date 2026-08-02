@@ -14,9 +14,9 @@ import Data.Ratio
 import Debug.Trace
 import NatUDTTests (natUDTTests)
 import qualified System.IO.Strict as Strict
-import Telomare.Error
 import Telomare.Driver (SizingOption (..), compile, compileUnitTest,
-                      compileUnitTestNoAbort, runStaticChecks)
+                        compileUnitTestNoAbort, runStaticChecks)
+import Telomare.Error
 import Telomare.IR.Base
 import Telomare.IR.Builder
 import Telomare.IR.Core

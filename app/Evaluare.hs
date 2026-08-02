@@ -18,8 +18,8 @@ import Reflex
 import Reflex.Vty
 import System.Environment (getArgs)
 import qualified System.IO.Strict as Strict
-import Telomare.Error
 import qualified Telomare.Driver as TE
+import Telomare.Error
 import qualified Telomare.IR.Base as Tel
 import Telomare.IR.Base
 import Telomare.IR.Builder
