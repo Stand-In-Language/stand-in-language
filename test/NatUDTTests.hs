@@ -24,7 +24,7 @@ import Telomare.IR.Types
 import Telomare.Eval (SizingOption (..), compile, runStaticChecks)
 import Telomare.Parse (parseLongExpr, parsePrelude)
 import Telomare.Possible (SizingSettings (SizingSettings))
-import Telomare.Resolver (process, pruneBindings)
+import Telomare.Resolve (process, pruneBindings)
 import Test.Tasty
 import Test.Tasty.HUnit
 import Text.Megaparsec (eof, errorBundlePretty, runParser)

@@ -39,7 +39,7 @@ import Telomare.Parse (TelomareParser, parseAssignment, parseLongExpr,
 import Telomare.Possible (evalPartial)
 import Telomare.PossibleData (DeferredEvalF (..), PartialExpr, deferredEE)
 import Telomare.PrettyPrint
-import Telomare.Resolver (process)
+import Telomare.Resolve (process)
 import Telomare.RunTime
 import Telomare.TypeChecker (inferType)
 import Text.Megaparsec

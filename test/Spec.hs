@@ -28,7 +28,7 @@ import Telomare.IR.Types
 import Telomare.Eval
 import Telomare.Parse
 import Telomare.Possible (SizingSettings (SizingSettings), appB, deferB)
-import Telomare.Resolver
+import Telomare.Resolve
 import Telomare.RunTime
 import Telomare.TypeChecker
 import Test.Hspec

@@ -33,7 +33,7 @@ import Telomare.IR.Surface
 import Telomare.IR.Types
 import Telomare.Eval
 import Telomare.Parse
-import Telomare.Resolver
+import Telomare.Resolve
 import Telomare.RunTime
 import Test.QuickCheck
 import Test.Tasty

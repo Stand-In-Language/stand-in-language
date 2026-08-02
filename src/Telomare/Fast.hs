@@ -84,7 +84,7 @@ import Telomare.IR.Loc
 import Telomare.IR.Surface
 import Telomare.IR.Types
 import Telomare.Parse (parseModuleNamed)
-import Telomare.Resolver (main2Term3, main2Term3let)
+import Telomare.Resolve (main2Term3, main2Term3let)
 import Telomare.TypeChecker (typeCheck)
 
 -- |A recursion site: the token the sizing pass would have sized, where it is

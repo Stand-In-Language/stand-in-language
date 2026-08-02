@@ -36,7 +36,7 @@ import Telomare.Parse (parseModule, parseModuleNamed,
 import Telomare.Possible (SizingSettings (..), appB, basicEval, deferB,
                           evalStaticCheck, sizeTermM, term3ToUnsizedExpr)
 import Telomare.PossibleData (SizedRecursion (..), VoidF)
-import Telomare.Resolver (main2Term3, main2Term3let, process, resolveAllImports)
+import Telomare.Resolve (main2Term3, main2Term3let, process, resolveAllImports)
 import Telomare.TypeChecker (typeCheck)
 import Text.Megaparsec (errorBundlePretty, runParser)
 

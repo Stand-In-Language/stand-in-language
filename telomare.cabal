@@ -33,6 +33,7 @@ library
                      , LambdaCase
   exposed-modules:     Telomare.Artifact
                      , Telomare.Certificate
+                     , Telomare.Desugar
                      , Telomare.Error
                      , Telomare.Eval
                      , Telomare.Fast
@@ -50,7 +51,7 @@ library
                      , Telomare.PossibleData
                      , Telomare.PrettyPrint
                      , Telomare.PrettyPrint.Indent
-                     , Telomare.Resolver
+                     , Telomare.Resolve
                      , Telomare.RunTime
                      , Telomare.TypeChecker
   build-depends:       base

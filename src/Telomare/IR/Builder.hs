@@ -5,7 +5,7 @@
 
 -- |A small monadic DSL for constructing lowered terms while threading the
 -- supply of function indexes and unsized-recursion tokens. Used by the
--- core lowering ('Telomare.Resolver.splitExpr') and by tests that
+-- core lowering ('Telomare.Resolve.splitExpr') and by tests that
 -- hand-assemble expected 'Term3' values.
 module Telomare.IR.Builder where
 
