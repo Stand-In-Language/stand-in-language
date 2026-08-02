@@ -23,7 +23,7 @@ import qualified Data.Set as Set
 import Debug.Trace (trace)
 import Options.Applicative hiding ((<|>))
 import qualified Options.Applicative as O
-import PrettyPrint
+import Telomare.PrettyPrint
 import System.Console.Haskeline
 import System.Exit (exitSuccess)
 import qualified System.IO.Strict as Strict

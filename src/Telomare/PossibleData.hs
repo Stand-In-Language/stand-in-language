@@ -26,14 +26,14 @@ import Debug.Trace
 import GHC.Generics (Generic)
 
 import Data.Bifunctor (first)
-import PrettyPrint
 import Telomare (AbortBase (..), AbortableF (..), BasicBase (..),
                  BasicExprF (..), CompiledExpr, FunctionIndex, LocTag (..),
                  PartialType (..), StuckBase (..), StuckF (..),
                  TelomareLike (..), UnsizedRecursionToken (..),
-                 convertAbortMessage, convertBasic, convertStuck,
-                 indentWithChildren', indentWithOneChild',
-                 indentWithTwoChildren')
+                 convertAbortMessage, convertBasic, convertStuck)
+import Telomare.PrettyPrint
+import Telomare.PrettyPrint.Indent (indentWithChildren', indentWithOneChild',
+                                    indentWithTwoChildren')
 
 debug' :: Bool
 debug' = False

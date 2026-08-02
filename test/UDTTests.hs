@@ -13,7 +13,7 @@ import Data.List (isInfixOf)
 import Data.Ratio
 import Debug.Trace
 import NatUDTTests (natUDTTests)
-import PrettyPrint
+import Telomare.PrettyPrint
 import qualified System.IO.Strict as Strict
 import Telomare
 import Telomare.Eval (SizingOption (..), compile, compileUnitTest,

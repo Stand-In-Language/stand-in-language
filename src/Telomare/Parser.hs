@@ -19,9 +19,9 @@ import Data.Maybe (fromJust)
 import Data.Void (Void)
 import Data.Word (Word8)
 import GHC.Desugar (AnnotationWrapper (AnnotationWrapper))
-import PrettyPrint (indentSansFirstLine)
 import qualified System.IO.Strict as Strict
 import Telomare
+import Telomare.PrettyPrint.Indent (indentSansFirstLine)
 import Text.Megaparsec (MonadParsec (eof, notFollowedBy, try), ParseErrorBundle,
                         Parsec, Pos,
                         SourcePos (sourceColumn, sourceLine, sourceName),

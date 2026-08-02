@@ -23,7 +23,7 @@ import Debug.Trace
 import qualified Control.Comonad.Trans.Cofree as CofreeT
 import Control.Lens (Identity (runIdentity))
 import Data.Functor.Foldable (Base, cata, embed, para)
-import PrettyPrint
+import Telomare.PrettyPrint
 import Telomare (AUPT, AbortableF (AbortF), AbstractRunTime, AnnotatedUPT (..),
                  BasicExpr, BasicExprF (..), CompiledExpr, CompiledExprF,
                  EvalError (..), LocTag (..), LocatedName (..),

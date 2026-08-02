@@ -35,7 +35,7 @@ import Data.Monoid (Sum (..))
 import Data.Set (Set, (\\))
 import qualified Data.Set as Set
 import Debug.Trace (trace, traceShow, traceShowId)
-import PrettyPrint (prettyPrint)
+import Telomare.PrettyPrint (prettyPrint)
 import Telomare
 import Telomare.Parser (TelomareParser, identifier)
 import Text.Megaparsec (errorBundlePretty, runParser)

@@ -14,7 +14,7 @@ import Data.Monoid
 import qualified Data.Set as Set
 import Data.Void
 import Debug.Trace
-import PrettyPrint
+import Telomare.PrettyPrint
 import System.Exit
 import System.IO
 import qualified System.IO.Strict as Strict

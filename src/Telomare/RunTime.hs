@@ -5,7 +5,7 @@
 module Telomare.RunTime where
 
 import Control.Monad.IO.Class (MonadIO (..))
-import PrettyPrint (prettyPrint)
+import Telomare.PrettyPrint (prettyPrint)
 import Telomare
 import Telomare.Possible (basicStep, stuckStep, transformNoDefer)
 

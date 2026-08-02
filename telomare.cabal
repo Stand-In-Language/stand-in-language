@@ -31,8 +31,7 @@ library
                      , OverloadedStrings
                      , RecursiveDo
                      , LambdaCase
-  exposed-modules:     PrettyPrint
-                     , Telomare
+  exposed-modules:     Telomare
                      , Telomare.Artifact
                      , Telomare.Certificate
                      , Telomare.Eval
@@ -42,6 +41,8 @@ library
                      , Telomare.Parser
                      , Telomare.Possible
                      , Telomare.PossibleData
+                     , Telomare.PrettyPrint
+                     , Telomare.PrettyPrint.Indent
                      , Telomare.Resolver
                      , Telomare.RunTime
                      , Telomare.TypeChecker

@@ -2,7 +2,7 @@
 {-# LANGUAGE LambdaCase        #-}
 {-# LANGUAGE PatternSynonyms   #-}
 
-module PrettyPrint where
+module Telomare.PrettyPrint where
 
 import Control.Monad.State (State)
 import Data.Map (Map)
@@ -13,8 +13,9 @@ import Telomare (AbortableF (..), BasicExprF (..), CompiledExpr,
                  PatternF (..), StuckExpr, StuckExprF (..), StuckF (..), Term1,
                  Term3 (..), Term3F (..), UnprocessedParsedTerm (..),
                  UnprocessedParsedTermF (..), b2i, convertAbortMessage, forget,
-                 indentWithChildren', indentWithOneChild',
-                 indentWithTwoChildren', locatedNameText, pattern BasicEE)
+                 locatedNameText, pattern BasicEE)
+import Telomare.PrettyPrint.Indent (indentSansFirstLine, indentWithChildren',
+                                    indentWithOneChild', indentWithTwoChildren')
 
 import qualified Control.Comonad.Trans.Cofree as CofreeT (CofreeF (..))
 import qualified Control.Monad.State as State
@@ -39,10 +40,6 @@ instance (PrettyPrintable1 f, PrettyPrintable x) => PrettyPrintable (f x) where
 
 prettyPrint :: PrettyPrintable p => p -> String
 prettyPrint x = State.evalState (showP x) 0
-
-indentation :: Int -> String
-indentation 0 = []
-indentation n = ' ' : ' ' : indentation (n - 1)
 
 instance (Show l, Show v) => PrettyPrintable1 (LamTermF l v) where
   showP1 = \case
@@ -70,14 +67,6 @@ instance (Show l, Show v) => PrettyPrintable1 (ParserTermF l v) where
   showP1 = \case
       ParserTermB x            -> showP1 x
       TUnsizedRepeaterF        -> pure "*"
-
-indentSansFirstLine :: Int -> String -> String
-indentSansFirstLine i x = removeLastNewLine res where
-  res = unlines $ (\(s:ns) -> s:((indentation i <>) <$> ns)) (lines x)
-  removeLastNewLine str =
-    case reverse str of
-      '\n' : rest -> reverse rest
-      x           -> str
 
 newtype PrettyDataType = PrettyDataType DataType
 

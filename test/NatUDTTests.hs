@@ -12,7 +12,7 @@ import Control.Comonad.Cofree (Cofree ((:<)))
 import Control.Monad (unless)
 import Data.Bifunctor (Bifunctor (first, second))
 import Data.List (isInfixOf)
-import PrettyPrint
+import Telomare.PrettyPrint
 import qualified System.IO.Strict as Strict
 import Telomare
 import Telomare.Eval (SizingOption (..), compile, runStaticChecks)

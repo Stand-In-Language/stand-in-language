@@ -22,7 +22,7 @@ import Data.Semigroup (Max (..))
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Debug.Trace
-import PrettyPrint
+import Telomare.PrettyPrint
 import Telomare (AbortableF (..), BasicExprF (..),
                  FunctionIndex (FunctionIndex), LocTag (..), PartialType,
                  PartialTypeF (..), StuckF (..), Term3, Term3F (..),

@@ -7,7 +7,7 @@ import Common
 import Control.Comonad.Cofree (Cofree ((:<)))
 import qualified Control.Monad.State as State
 import Data.Fix (Fix (..))
-import PrettyPrint
+import Telomare.PrettyPrint
 import qualified System.IO.Strict as Strict
 import Telomare
 import Telomare.Eval (runMainWithInput)

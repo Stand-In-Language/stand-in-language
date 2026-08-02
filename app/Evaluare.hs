@@ -14,7 +14,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Zipper as TZ
 import qualified Graphics.Vty as V
-import PrettyPrint (PrettyCompiledExpr (..))
+import Telomare.PrettyPrint (PrettyCompiledExpr (..))
 import Reflex
 import Reflex.Vty
 import System.Environment (getArgs)
