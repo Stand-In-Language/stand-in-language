@@ -1,5 +1,4 @@
 {-# LANGUAGE LambdaCase      #-}
-{-# LANGUAGE PatternSynonyms #-}
 
 -- |A compiled program on disk, so that sizing happens once.
 --

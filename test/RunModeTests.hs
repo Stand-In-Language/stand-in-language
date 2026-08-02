@@ -1,4 +1,3 @@
-{-# LANGUAGE PatternSynonyms #-}
 
 -- |The two ways to run a program that are not "size it, then run it": from an
 -- artifact that was sized earlier, and without sizing at all.

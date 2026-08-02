@@ -1,6 +1,5 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE LambdaCase        #-}
-{-# LANGUAGE PatternSynonyms   #-}
 
 module Telomare.PrettyPrint where
 

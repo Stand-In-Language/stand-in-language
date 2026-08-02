@@ -1,5 +1,4 @@
 {-# LANGUAGE LambdaCase      #-}
-{-# LANGUAGE PatternSynonyms #-}
 {- HLINT ignore "Use tuple-section" -}
 
 module Telomare.TypeChecker where

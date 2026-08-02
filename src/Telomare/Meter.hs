@@ -1,5 +1,4 @@
 {-# LANGUAGE LambdaCase      #-}
-{-# LANGUAGE PatternSynonyms #-}
 
 -- |Measured cost of a concrete run: how many evaluation steps it took, and how
 -- many term nodes it built along the way.

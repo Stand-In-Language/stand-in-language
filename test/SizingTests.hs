@@ -1,4 +1,3 @@
-{-# LANGUAGE PatternSynonyms #-}
 module SizingTests where
 
 import Data.List (isInfixOf)
