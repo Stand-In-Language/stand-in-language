@@ -51,10 +51,14 @@ import qualified Data.Map as Map
 import Data.Set (Set)
 import qualified Data.Set as Set
 
-import Telomare (AUPT, AnnotatedUPT (..), HighTermF (..), LamTermF (..),
-                 LocTag (..), LocatedName (..), SourcePosition (..),
-                 SourceSpan (..), UnprocessedParsedTermF (..), unAnnotatedUPT)
-import Telomare.Parser (parseModuleNamed)
+import Telomare.Error
+import Telomare.IR.Base
+import Telomare.IR.Builder
+import Telomare.IR.Core
+import Telomare.IR.Loc
+import Telomare.IR.Surface
+import Telomare.IR.Types
+import Telomare.Parse (parseModuleNamed)
 
 -- |A top-level definition, or a @let@ binding qualified by the definition it
 -- appears in.

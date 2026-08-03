@@ -1,3 +1,0 @@
-[submodule "ctest/rapidcheck"]
-	path = ctest/rapidcheck
-	url = https://github.com/emil-e/rapidcheck.git

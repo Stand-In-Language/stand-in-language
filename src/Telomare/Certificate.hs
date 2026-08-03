@@ -3,7 +3,7 @@
 --
 -- Two analyses feed it, and they answer different questions:
 --
---   * the sizing pass ("Telomare.Possible") says how many times each recursion
+--   * the sizing pass ("Telomare.Size") says how many times each recursion
 --     can iterate. That is the number that makes the program total, and it
 --     costs minutes to find.
 --   * the structural pass ("Telomare.Levels") says how recursions nest, and
@@ -27,11 +27,17 @@ module Telomare.Certificate
 
 import qualified Data.Map as Map
 
-import Telomare (UnsizedRecursionToken (..), renderLocTagCompact)
-import Telomare.Eval (SizingReport (..))
+import Telomare.Error
+import Telomare.IR.Base
+import Telomare.IR.Builder
+import Telomare.IR.Core
+import Telomare.IR.Loc
+import Telomare.IR.Surface
+import Telomare.IR.Types
 import Telomare.Levels (BindingKey, LevelsInfo (..), SiteKey (..), bangs,
                         renderBinding, renderDef, renderLevels, renderSource)
-import Telomare.PossibleData (SizedRecursion (..))
+import Telomare.Size (SizingReport (..))
+import Telomare.Size.IR (SizedRecursion (..))
 
 -- |The whole static report.
 --

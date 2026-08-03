@@ -7,12 +7,18 @@ import Common
 import Control.Comonad.Cofree (Cofree ((:<)))
 import qualified Control.Monad.State as State
 import Data.Fix (Fix (..))
-import PrettyPrint
 import qualified System.IO.Strict as Strict
-import Telomare
-import Telomare.Eval (runMainWithInput)
-import Telomare.Parser
-import Telomare.Resolver (pattern2UPT)
+import Telomare.Desugar (pattern2UPT)
+import Telomare.Driver (runMainWithInput)
+import Telomare.Error
+import Telomare.IR.Base
+import Telomare.IR.Builder
+import Telomare.IR.Core
+import Telomare.IR.Loc
+import Telomare.IR.Surface
+import Telomare.IR.Types
+import Telomare.Parse
+import Telomare.PrettyPrint
 import Test.Tasty
 import Test.Tasty.HUnit
 import Test.Tasty.QuickCheck as QC

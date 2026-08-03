@@ -24,11 +24,17 @@ import qualified Data.Set as Set
 import Debug.Trace (trace, traceShowId)
 import qualified System.IO.Strict as Strict
 import System.Process hiding (createPipe)
-import Telomare
-import Telomare.Eval
-import Telomare.Parser
-import Telomare.Resolver
-import Telomare.RunTime
+import Telomare.Driver
+import Telomare.Error
+import Telomare.Eval.Reference
+import Telomare.IR.Base
+import Telomare.IR.Builder
+import Telomare.IR.Core
+import Telomare.IR.Loc
+import Telomare.IR.Surface
+import Telomare.IR.Types
+import Telomare.Parse
+import Telomare.Resolve
 import Test.QuickCheck
 import Test.Tasty
 import Test.Tasty.HUnit

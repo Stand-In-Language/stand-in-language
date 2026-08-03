@@ -1,0 +1,568 @@
+{-# LANGUAGE DeriveGeneric     #-}
+{-# LANGUAGE DeriveTraversable #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE LambdaCase        #-}
+{-# LANGUAGE PatternSynonyms   #-}
+{-# LANGUAGE TypeFamilies      #-}
+{-# LANGUAGE ViewPatterns      #-}
+
+module Telomare.Size.IR where
+
+import Control.Applicative
+import Control.Comonad.Cofree (Cofree ((:<)))
+import Control.Monad (liftM2, (<=<))
+import Control.Monad.Except
+import Control.Monad.State.Strict (State, StateT)
+import qualified Control.Monad.State.Strict as State
+import Data.Fix (Fix (..))
+import Data.Functor.Classes (Eq1 (..), Show1 (liftShowsPrec))
+import Data.Functor.Foldable
+import Data.Map (Map)
+import qualified Data.Map as Map
+import Data.Set (Set)
+import qualified Data.Set as Set
+import Data.Validity (Validity (..), declare, trivialValidation)
+import Debug.Trace
+import GHC.Generics (Generic)
+
+import Data.Bifunctor (first)
+import Telomare.Error
+import Telomare.IR.Base
+import Telomare.IR.Builder
+import Telomare.IR.Core
+import Telomare.IR.Loc
+import Telomare.IR.Surface
+import Telomare.IR.Types
+import Telomare.PrettyPrint
+import Telomare.PrettyPrint.Indent (indentWithChildren', indentWithOneChild',
+                                    indentWithTwoChildren')
+
+debug' :: Bool
+debug' = False
+
+debugTrace' :: String -> a -> a
+debugTrace' s x = if debug' then trace s x else x
+
+type TCallStack a = [(FunctionIndex, a)]
+
+class HasTCallStack c where
+  type CallStackT c
+  getCallStack :: c -> TCallStack (CallStackT c)
+
+class SuperBase g where
+  embedP :: SuperPositionF x -> g x
+  extractP :: g x -> Maybe (SuperPositionF x)
+
+class UnsizedBase g where
+  embedU :: UnsizedRecursionF x -> g x
+  extractU :: g x -> Maybe (UnsizedRecursionF x)
+
+class IndexedInputBase g where
+  embedI :: IndexedInputF x -> g x
+  extractI :: g x -> Maybe (IndexedInputF x)
+
+class DeferredEvalBase g where
+  embedD :: DeferredEvalF x -> g x
+  extractD :: g x -> Maybe (DeferredEvalF x)
+
+pattern SuperFW :: SuperBase g => SuperPositionF x -> g x
+pattern SuperFW x <- (extractP -> Just x)
+pattern SuperEE :: (Base g ~ f, SuperBase f, Recursive g) => SuperPositionF g -> g
+pattern SuperEE x <- (project -> (SuperFW x))
+pattern UnsizedFW :: UnsizedBase g => UnsizedRecursionF x -> g x
+pattern UnsizedFW x <- (extractU -> Just x)
+pattern UnsizedEE :: (Base g ~ f, UnsizedBase f, Recursive g) => UnsizedRecursionF g -> g
+pattern UnsizedEE x <- (project -> (UnsizedFW x))
+pattern IndexedFW :: IndexedInputBase g => IndexedInputF x -> g x
+pattern IndexedFW x <- (extractI -> Just x)
+pattern IndexedEE :: (Base g ~ f, IndexedInputBase f, Recursive g) => IndexedInputF g -> g
+pattern IndexedEE x <- (project -> (IndexedFW x))
+pattern DeferredFW :: DeferredEvalBase g => DeferredEvalF x -> g x
+pattern DeferredFW x <- (extractD -> Just x)
+pattern DeferredEE :: (Base g ~ f, DeferredEvalBase f, Recursive g) => DeferredEvalF g -> g
+pattern DeferredEE x <- (project -> (DeferredFW x))
+superEE :: (Base g ~ f, SuperBase f, Corecursive g) => SuperPositionF g -> g
+superEE = embed . embedP
+unsizedEE :: (Base g ~ f, UnsizedBase f, Corecursive g) => UnsizedRecursionF g -> g
+unsizedEE = embed . embedU
+indexedEE :: (Base g ~ f, IndexedInputBase f, Corecursive g) => IndexedInputF g -> g
+indexedEE = embed . embedI
+deferredEE :: (Base g ~ f, DeferredEvalBase f, Corecursive g) => DeferredEvalF g -> g
+deferredEE = embed . embedD
+
+
+instance PrettyPrintable FunctionIndex where
+  showP = pure . ("F" <>) . show . fromEnum
+
+data GateResult a
+  = GateResult
+  { leftBranch  :: Bool
+  , rightBranch :: Bool
+  , noBranch    :: Maybe a
+  } deriving (Eq, Ord)
+
+instance PrettyPrintable a => Show (GateResult a) where
+  -- show (GateResult lb rb nb) = "GateResult " <> show lb <> " " <> show rb <> " " <> prettyPrint nb
+  show (GateResult lb rb nb) = "GateResult " <> show lb <> " " <> show rb <> " " <> pnb where
+    pnb = case nb of
+      Just nb' -> prettyPrint nb'
+      _        -> "Nothing"
+
+newtype SizedRecursion = SizedRecursion { unSizedRecursion :: Map UnsizedRecursionToken (Maybe Int)}
+  deriving (Eq, Ord, Show, Generic)
+
+instance Semigroup SizedRecursion where
+  (<>) (SizedRecursion a) (SizedRecursion b) = SizedRecursion . tr $ Map.unionWith (liftM2 max) a b where
+    tr x = if null a || null b
+      then x
+      else debugTrace' ("sizedrecursion merge result: " <> show (first fromEnum <$> Map.toAscList x)) x
+
+instance Monoid SizedRecursion where
+  mempty = SizedRecursion Map.empty
+
+instance PrettyPrintable1 ((,) SizedRecursion) where
+  showP1 (_,x) = showP x
+
+instance Validity SizedRecursion where
+  validate = trivialValidation
+
+data StrictAccum a x = StrictAccum
+  { getAccum :: !a
+  , getX     :: x
+  }
+  deriving Functor
+
+instance Monoid a => Applicative (StrictAccum a) where
+  pure = StrictAccum mempty
+  StrictAccum u f <*> StrictAccum v x = StrictAccum (u <> v) $ f x
+  liftA2 f (StrictAccum u x) (StrictAccum v y) = StrictAccum (u <> v) $ f x y
+
+instance Monoid a => Monad (StrictAccum a) where
+  StrictAccum u x >>= f = case f x of StrictAccum v y -> StrictAccum (u <> v) y
+
+instance PrettyPrintable1 (StrictAccum SizedRecursion) where
+  showP1 (StrictAccum _ x) = showP x
+
+data VoidF f
+  deriving (Functor, Foldable, Traversable)
+
+instance Show (VoidF a) where
+  show = undefined
+
+instance Eq (VoidF a) where
+  (==) = undefined
+
+data SuperPositionF f
+  = EitherPF (Maybe Integer) !f !f
+  deriving (Eq, Ord, Show, Functor, Foldable, Traversable, Generic)
+
+instance Eq1 SuperPositionF where
+  liftEq test a b = case (a,b) of
+    (EitherPF x a b, EitherPF y c d) -> x == y && test a c && test b d
+    _                                -> False
+
+instance Show1 SuperPositionF where
+  liftShowsPrec showsPrec' showList prec = \case
+    EitherPF x a b -> shows "EitherPF " . shows x . shows " (" . showsPrec' 0 a . shows ", " . showsPrec' 0 b . shows ")"
+
+class ShallowEq a where
+  shallowEq :: a -> a -> Bool
+class ShallowEq1 f where
+  shallowEq1 :: f a -> f b -> Bool
+instance ShallowEq1 BasicExprF where
+  shallowEq1 a b = case (a,b) of
+    (ZeroSF, ZeroSF) -> True
+    _                -> False
+instance ShallowEq1 StuckF where
+  shallowEq1 a b = case (a,b) of
+    (DeferSF fida _, DeferSF fidb _) -> fida == fidb
+    _                                -> False
+instance ShallowEq1 AbortableF where
+  shallowEq1 a b = case (a,b) of
+    (AbortedF a', AbortedF b') -> a' == b'
+    (AbortF, AbortF)           -> True
+    _                          -> False
+
+data UnsizedRecursionF f
+  = RecursionTestF UnsizedRecursionToken f
+  | UnsizedStubF UnsizedRecursionToken f
+  | SizeStageF SizedRecursion f
+  | RefinementWrapperF LocTag f f
+  | SizeStepStubF UnsizedRecursionToken Int f
+  | TraceF String f
+  deriving (Eq, Ord, Show, Functor, Foldable, Traversable, Generic)
+
+instance Eq1 UnsizedRecursionF where
+  liftEq test a b = case (a, b) of
+    (RecursionTestF ta a, RecursionTestF tb b) -> ta == tb && test a b
+    _                                          -> False
+
+instance Show1 UnsizedRecursionF where
+  liftShowsPrec showsPrec' showList prec x = case x of
+    RecursionTestF be x -> shows "RecursionTestF (" . shows be . shows " " . showsPrec' 0 x . shows ")"
+    SizeStageF sm x -> shows "SizeStageF " . shows sm
+      . shows " (" . showsPrec' 0 x . shows ")"
+    SizeStepStubF _ _ x -> shows "SizeStepStubF (" . showsPrec' 0 x . shows ")"
+
+instance PrettyPrintable1 SuperPositionF where
+  showP1 = \case
+    EitherPF x a b -> indentWithTwoChildren' ("%" <> show x) (showP a) (showP b)
+
+instance PrettyPrintable1 UnsizedRecursionF where
+  showP1 = \case
+    RecursionTestF (UnsizedRecursionToken ind) x -> indentWithOneChild' ("T(" <> show ind <> ")") $ showP x
+    UnsizedStubF (UnsizedRecursionToken ind) x -> indentWithOneChild' ("#" <> show ind) $ showP x
+    SizeStageF _ x -> indentWithOneChild' "^" $ showP x
+    RefinementWrapperF l tc x -> indentWithTwoChildren' (":" <> show l) (showP tc) (showP x)
+    SizeStepStubF _ _ x -> indentWithOneChild' "@" $ showP x
+    TraceF _ x -> indentWithOneChild' "_" $ showP x
+
+instance PrettyPrintable1 VoidF where
+  showP1 _ = error "VoidF should never be inhabited, so should not be PrettyPrintable1"
+
+data IndexedInputF f
+  = IVarF Integer
+  | AnyF
+  deriving (Eq, Ord, Show, Functor, Foldable, Traversable, Generic)
+
+instance Eq1 IndexedInputF where
+  liftEq test a b = case (a, b) of
+    (IVarF x, IVarF y) -> x == y
+    (AnyF, AnyF)       -> True
+    _                  -> False
+
+instance Show1 IndexedInputF where
+  liftShowsPrec showsPrec showList prec x = case x of
+    IVarF n -> shows $ "IVarF " <> show n
+    AnyF    -> shows "IgnoreThis"
+
+instance PrettyPrintable1 IndexedInputF where
+  showP1 = \case
+    IVarF n -> pure $ "I" <> show n
+    AnyF -> pure "-"
+
+data DeferredEvalF f
+  = BarrierF f
+  | ManyLefts Integer f
+  | ManyRights Integer f
+  deriving (Eq, Ord, Show, Functor, Foldable, Traversable, Generic)
+
+instance Eq1 DeferredEvalF where
+  liftEq test a b = case (a, b) of
+    (BarrierF x, BarrierF y)             -> test x y
+    (ManyLefts na va, ManyLefts nb vb)   -> na == nb && test va vb
+    (ManyRights na va, ManyRights nb vb) -> na == nb && test va vb
+    _                                    -> False
+
+instance Show1 DeferredEvalF where
+  liftShowsPrec showsPrec' showList prec x = case x of
+    BarrierF x -> shows "BarrierF (" . showsPrec' 0 x . shows ")"
+    ManyLefts n x -> shows ("ManyLefts " <> show n) . shows " (" . showsPrec' 0 x . shows ")"
+    ManyRights n x -> shows ("ManyRights " <> show n) . shows " (" . showsPrec' 0 x . shows ")"
+
+instance PrettyPrintable1 DeferredEvalF where
+  showP1 = \case
+    BarrierF x -> indentWithOneChild' "|" $ showP x
+    ManyLefts n x -> indentWithOneChild' ("L" <> show n) $ showP x
+    ManyRights n x -> indentWithOneChild' ("R" <> show n) $ showP x
+
+data DeferredExprF f
+  = DeferredExprB (BasicExprF f)
+  | DeferredExprS (StuckF f)
+  | DeferredExprD (DeferredEvalF f)
+  deriving (Functor, Foldable, Traversable)
+instance BasicBase DeferredExprF where
+  embedB = DeferredExprB
+  extractB = \case
+    DeferredExprB x -> Just x
+    _ -> Nothing
+instance StuckBase DeferredExprF where
+  embedS = DeferredExprS
+  extractS = \case
+    DeferredExprS x -> Just x
+    _ -> Nothing
+instance DeferredEvalBase DeferredExprF where
+  embedD = DeferredExprD
+  extractD = \case
+    DeferredExprD x -> Just x
+    _ -> Nothing
+instance PrettyPrintable1 DeferredExprF where
+  showP1 = \case
+    DeferredExprB x -> showP1 x
+    DeferredExprS x -> showP1 x
+    DeferredExprD x -> showP1 x
+
+type DeferredExpr = Fix DeferredExprF
+
+data PartialExprF f
+  = PartialExprB (BasicExprF f)
+  | PartialExprS (StuckF f)
+  | PartialExprD (DeferredEvalF f)
+  | PartialExprA (AbortableF f)
+  deriving (Functor, Foldable, Traversable)
+instance BasicBase PartialExprF where
+  embedB = PartialExprB
+  extractB = \case
+    PartialExprB x -> Just x
+    _ -> Nothing
+instance StuckBase PartialExprF where
+  embedS = PartialExprS
+  extractS = \case
+    PartialExprS x -> Just x
+    _ -> Nothing
+instance DeferredEvalBase PartialExprF where
+  embedD = PartialExprD
+  extractD = \case
+    PartialExprD x -> Just x
+    _ -> Nothing
+instance AbortBase PartialExprF where
+  embedA = PartialExprA
+  extractA = \case
+    PartialExprA x -> Just x
+    _ -> Nothing
+instance PrettyPrintable1 PartialExprF where
+  showP1 = \case
+    PartialExprB x -> showP1 x
+    PartialExprS x -> showP1 x
+    PartialExprA x -> showP1 x
+    PartialExprD x -> showP1 x
+
+type PartialExpr = Fix PartialExprF
+
+data StaticCheckExprF f
+  = StaticCheckExprB (BasicExprF f)
+  | StaticCheckExprS (StuckF f)
+  | StaticCheckExprA (AbortableF f)
+  | StaticCheckExprD (DeferredEvalF f)
+  deriving (Functor, Foldable, Traversable)
+instance BasicBase StaticCheckExprF where
+  embedB = StaticCheckExprB
+  extractB = \case
+    StaticCheckExprB x -> Just x
+    _ -> Nothing
+instance StuckBase StaticCheckExprF where
+  embedS = StaticCheckExprS
+  extractS = \case
+    StaticCheckExprS x -> Just x
+    _ -> Nothing
+instance AbortBase StaticCheckExprF where
+  embedA = StaticCheckExprA
+  extractA = \case
+    StaticCheckExprA x -> Just x
+    _ -> Nothing
+instance DeferredEvalBase StaticCheckExprF where
+  embedD = StaticCheckExprD
+  extractD = \case
+    StaticCheckExprD x -> Just x
+    _ -> Nothing
+instance PrettyPrintable1 StaticCheckExprF where
+  showP1 = \case
+    StaticCheckExprB x -> showP1 x
+    StaticCheckExprS x -> showP1 x
+    StaticCheckExprA x -> showP1 x
+    StaticCheckExprD x -> showP1 x
+
+type StaticCheckExpr = Fix StaticCheckExprF
+
+instance TelomareLike CompiledExpr where
+  fromTelomare = verify . cata (convertBasic (convertStuck (\z -> Left "failed to convert to CompiledExpr"))) where
+    verify = \case
+      Left e -> error e
+      Right x -> x
+  toTelomare = cata (convertBasic (convertStuck (const Nothing)))
+
+data UnsizedExprF f
+  = UnsizedExprB (BasicExprF f)
+  | UnsizedExprS (StuckF f)
+  | UnsizedExprP (SuperPositionF f)
+  | UnsizedExprA (AbortableF f)
+  | UnsizedExprU (UnsizedRecursionF f)
+  | UnsizedExprI (IndexedInputF f)
+  deriving (Eq, Show, Functor, Foldable, Traversable, Generic)
+instance BasicBase UnsizedExprF where
+  embedB = UnsizedExprB
+  extractB = \case
+    UnsizedExprB x -> Just x
+    _              -> Nothing
+instance StuckBase UnsizedExprF where
+  embedS = UnsizedExprS
+  extractS = \case
+    UnsizedExprS x -> Just x
+    _ -> Nothing
+instance Show1 UnsizedExprF where
+  liftShowsPrec showsPrec showList prec = \case
+    UnsizedExprB x -> liftShowsPrec showsPrec showList prec x
+    UnsizedExprS x -> liftShowsPrec showsPrec showList prec x
+    UnsizedExprP x -> liftShowsPrec showsPrec showList prec x
+    UnsizedExprA x -> liftShowsPrec showsPrec showList prec x
+    UnsizedExprU x -> liftShowsPrec showsPrec showList prec x
+    UnsizedExprI x -> liftShowsPrec showsPrec showList prec x
+instance SuperBase UnsizedExprF where
+  embedP = UnsizedExprP
+  extractP = \case
+    UnsizedExprP x -> Just x
+    _              -> Nothing
+instance AbortBase UnsizedExprF where
+  embedA = UnsizedExprA
+  extractA = \case
+    UnsizedExprA x -> Just x
+    _              -> Nothing
+instance IndexedInputBase UnsizedExprF where
+  embedI = UnsizedExprI
+  extractI = \case
+    UnsizedExprI x -> Just x
+    _              -> Nothing
+instance UnsizedBase UnsizedExprF where
+  embedU = UnsizedExprU
+  extractU = \case
+    UnsizedExprU x -> Just x
+    _              -> Nothing
+instance Eq1 UnsizedExprF where
+  liftEq test a b = case (a,b) of
+    (UnsizedExprB x, UnsizedExprB y) -> liftEq test x y
+    (UnsizedExprS x, UnsizedExprS y) -> liftEq test x y
+    (UnsizedExprP x, UnsizedExprP y) -> liftEq test x y
+--    (UnsizedExprZ x, UnsizedExprZ y) -> liftEq test x y
+    (UnsizedExprA x, UnsizedExprA y) -> liftEq test x y
+    (UnsizedExprU x, UnsizedExprU y) -> liftEq test x y
+    (UnsizedExprI x, UnsizedExprI y) -> liftEq test x y
+    _                                -> False
+instance ShallowEq1 UnsizedExprF where
+  shallowEq1 a b = case (a,b) of
+    (UnsizedExprB x, UnsizedExprB y) -> shallowEq1 x y
+    (UnsizedExprS x, UnsizedExprS y) -> shallowEq1 x y
+    (UnsizedExprA x, UnsizedExprA y) -> shallowEq1 x y
+    _                                -> False
+
+instance PrettyPrintable1 UnsizedExprF where
+  showP1 = \case
+    UnsizedExprB x -> showP1 x
+    UnsizedExprS x -> showP1 x
+    UnsizedExprP x -> showP1 x
+--    UnsizedExprZ x -> showP1 x
+    UnsizedExprA x -> showP1 x
+    UnsizedExprU x -> showP1 x
+    UnsizedExprI x -> showP1 x
+
+type UnsizedExpr = Fix UnsizedExprF
+
+data InputSizingExprF f
+  = InputSizingB (BasicExprF f)
+  | InputSizingS (StuckF f)
+  | InputSizingA (AbortableF f)
+  | InputSizingU (UnsizedRecursionF f)
+  | InputSizingD (DeferredEvalF f)
+  | InputSizingI (IndexedInputF f)
+  deriving (Eq, Functor, Foldable, Traversable)
+instance BasicBase InputSizingExprF where
+  embedB = InputSizingB
+  extractB = \case
+    InputSizingB x -> Just x
+    _            -> Nothing
+instance StuckBase InputSizingExprF where
+  embedS = InputSizingS
+  extractS = \case
+    InputSizingS x -> Just x
+    _            -> Nothing
+instance AbortBase InputSizingExprF where
+  embedA = InputSizingA
+  extractA = \case
+    InputSizingA x -> Just x
+    _            -> Nothing
+instance UnsizedBase InputSizingExprF where
+  embedU = InputSizingU
+  extractU = \case
+    InputSizingU x -> Just x
+    _ -> Nothing
+instance DeferredEvalBase InputSizingExprF where
+  embedD = InputSizingD
+  extractD = \case
+    InputSizingD x -> Just x
+    _ -> Nothing
+instance IndexedInputBase InputSizingExprF where
+  embedI = InputSizingI
+  extractI = \case
+    InputSizingI x -> Just x
+    _ -> Nothing
+instance Eq1 InputSizingExprF where
+  liftEq test a b = case (a,b) of
+    (InputSizingB x, InputSizingB y) -> liftEq test x y
+    (InputSizingS x, InputSizingS y) -> liftEq test x y
+    (InputSizingA x, InputSizingA y) -> liftEq test x y
+    (InputSizingU x, InputSizingU y) -> liftEq test x y
+    (InputSizingD x, InputSizingD y) -> liftEq test x y
+    (InputSizingI x, InputSizingI y) -> liftEq test x y
+    _                                -> False
+instance PrettyPrintable1 InputSizingExprF where
+  showP1 = \case
+    InputSizingB x -> showP1 x
+    InputSizingS x -> showP1 x
+    InputSizingA x -> showP1 x
+    InputSizingU x -> showP1 x
+    InputSizingD x -> showP1 x
+    InputSizingI x -> showP1 x
+type InputSizingExpr = Fix InputSizingExprF
+
+instance PrettyPrintable Char where
+  showP = pure . (:[])
+
+convertSuper :: (SuperBase g, SuperBase h, Base x ~ h, Corecursive x, Monad m) => (g (m x) -> m x) -> g (m x) -> m x
+convertSuper convertOther = \case
+  SuperFW x -> superEE <$> sequence x
+  x -> convertOther x
+convertUnsized :: (UnsizedBase g, UnsizedBase h, Base x ~ h, Corecursive x, Monad m) => (g (m x) -> m x) -> g (m x) -> m x
+convertUnsized convertOther = \case
+  UnsizedFW x -> unsizedEE <$> sequence x
+  x -> convertOther x
+convertIndexed :: (IndexedInputBase g, IndexedInputBase h, Base x ~ h, Corecursive x, Monad m) => (g (m x) -> m x) -> g (m x) -> m x
+convertIndexed convertOther = \case
+  IndexedFW x -> indexedEE <$> sequence x
+  x -> convertOther x
+convertDeferred :: (DeferredEvalBase g, DeferredEvalBase h, Base x ~ h, Corecursive x, Monad m) => (g (m x) -> m x) -> g (m x) -> m x
+convertDeferred convertOther = \case
+  DeferredFW x -> deferredEE <$> sequence x
+  x -> convertOther x
+
+data SizedResult
+  = AbortedSR
+  | UnsizableSR UnsizedRecursionToken
+  -- ^The recursion's test reached input that nothing bounds.
+  | OverfueledSR UnsizedRecursionToken
+  -- ^The abstract unrolling ran past the sizing budget.
+  deriving (Eq, Ord, Show)
+
+-- |Unsizable wins over overfueled: an unbounded test is the more fundamental
+-- diagnosis, and raising the budget would not fix it.
+instance Semigroup SizedResult where
+  (<>) a b = case (a,b) of
+    (u@(UnsizableSR _), _)  -> u
+    (_, u@(UnsizableSR _))  -> u
+    (o@(OverfueledSR _), _) -> o
+    (_, o@(OverfueledSR _)) -> o
+    _                       -> a
+
+newtype MonoidList a = MonoidList { unMonoidList :: [a] }
+
+instance Semigroup a => Semigroup (MonoidList a) where
+  (<>) (MonoidList a) (MonoidList b) = MonoidList $ zipWith (<>) a b
+
+instance Semigroup a => Monoid (MonoidList a) where
+  mempty = MonoidList []
+
+anaM' :: (Monad m, Corecursive t, x ~ Base t, Traversable x) => (a -> m (Base t a)) -> a -> m t
+anaM' f = c where c = (fmap embed . mapM c) <=< f
+
+instance TelomareLike UnsizedExpr where
+  fromTelomare = verify . cata (convertBasic (convertStuck (\z -> Left "failed to convert to UnsizedExpr"))) where
+    verify = \case
+      Left e -> error e
+      Right x -> x
+  toTelomare = cata (convertBasic (convertStuck (const Nothing)))
+
+instance TelomareLike DeferredExpr where
+  fromTelomare = verify . cata (convertBasic (convertStuck (\z -> Left "failed to convert to DeferredExpr"))) where
+    verify = \case
+      Left e -> error e
+      Right x -> x
+  toTelomare = cata (convertBasic (convertStuck (const Nothing)))
+

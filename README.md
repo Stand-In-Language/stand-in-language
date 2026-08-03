@@ -301,6 +301,25 @@ You can setup your git configuration to automatically format and look for lint s
 $ git config core.hooksPath hooks
 ```
 
+## Compiler stages
+
+The library is organized so that modules delimit the standard stages of the
+pipeline. In pipeline order:
+
+| Stage | Modules | What happens |
+| --- | --- | --- |
+| Parse | `Telomare.Parse`, `Telomare.Parse.Sugar` | megaparsec grammar producing the surface AST (`AUPT`). Sugar with no surface representation (multi-pattern lambdas, list assignments, UDT declarations) expands during parsing via `Parse.Sugar`. |
+| Desugar | `Telomare.Desugar` | post-parse `AUPT -> AUPT` rewrites: case lowering, builtin binding and optimization. |
+| Resolve | `Telomare.Resolve` | import resolution, scope checking, de Bruijn conversion, hash folding, and core lowering (`splitExpr`: `Term2 -> Term3`). Documents the dual `process`/`processWlet` pipeline. |
+| Type check | `Telomare.TypeCheck` | unification-based check of `Term3` against the main type. |
+| Size (totality) | `Telomare.Size`, `Telomare.Size.IR`, `Telomare.Machine` | telomare's distinguishing stage: `sizeTermM` abstractly interprets the program over symbolic input and infers a finite iteration count for every recursion site, then bakes the counts in (`Term3 -> CompiledExpr`). A program that cannot be sized does not compile. `Machine` is the shared step-algebra the sizing pass and the evaluators are assembled from. |
+| Evaluate | `Telomare.Eval.Reference`, `Telomare.Eval.Meter`, `Telomare.Fast` | the reference interpreter, the step-counting meter, and the fuel-based fast path (which skips sizing). |
+| Drive | `Telomare.Driver`, `Telomare.Artifact`, `Telomare.Certificate`, `Telomare.Levels` | orchestration (`compileModules`, `evalLoop`), `.telc` artifacts, and the static report. |
+
+The IR vocabulary shared by all stages lives under `Telomare.IR.*`
+(`Loc`, `Base`, `Types`, `Surface`, `Core`, `Builder`), with the error
+types in `Telomare.Error` and pretty-printing in `Telomare.PrettyPrint`.
+
 ## Contributing
 If you'd like to contribute, please fork the repository and use a feature branch. Pull requests are warmly welcome.
 

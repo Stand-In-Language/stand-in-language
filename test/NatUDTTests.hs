@@ -12,13 +12,19 @@ import Control.Comonad.Cofree (Cofree ((:<)))
 import Control.Monad (unless)
 import Data.Bifunctor (Bifunctor (first, second))
 import Data.List (isInfixOf)
-import PrettyPrint
 import qualified System.IO.Strict as Strict
-import Telomare
-import Telomare.Eval (SizingOption (..), compile, runStaticChecks)
-import Telomare.Parser (parseLongExpr, parsePrelude)
-import Telomare.Possible (SizingSettings (SizingSettings))
-import Telomare.Resolver (process, pruneBindings)
+import Telomare.Driver (SizingOption (..), compile, runStaticChecks)
+import Telomare.Error
+import Telomare.IR.Base
+import Telomare.IR.Builder
+import Telomare.IR.Core
+import Telomare.IR.Loc
+import Telomare.IR.Surface
+import Telomare.IR.Types
+import Telomare.Parse (parseLongExpr, parsePrelude)
+import Telomare.PrettyPrint
+import Telomare.Resolve (process, pruneBindings)
+import Telomare.Size (SizingSettings (SizingSettings))
 import Test.Tasty
 import Test.Tasty.HUnit
 import Text.Megaparsec (eof, errorBundlePretty, runParser)

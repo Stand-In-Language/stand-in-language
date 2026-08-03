@@ -15,11 +15,12 @@ import Telomare.Artifact (Artifact (..), isArtifactPath, nodeCount,
                           readArtifact, sourcesHash, telcExtension,
                           writeArtifact)
 import Telomare.Certificate (renderStaticReport)
-import Telomare.Eval (SizingReport, compileModules, evalLoop, evalLoopMetered)
+import Telomare.Driver (compileModules, evalLoop, evalLoopMetered)
+import Telomare.Eval.Meter (renderMeter)
 import Telomare.Fast (compileFast, defaultFastFuel, renderFastMeter,
                       runFastLoop)
 import Telomare.Levels (levelsInfo)
-import Telomare.Meter (renderMeter)
+import Telomare.Size (SizingReport)
 
 -- |What to do with the program.
 data Action

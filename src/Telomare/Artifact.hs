@@ -1,5 +1,4 @@
-{-# LANGUAGE LambdaCase      #-}
-{-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE LambdaCase #-}
 
 -- |A compiled program on disk, so that sizing happens once.
 --
@@ -46,12 +45,15 @@ import Data.Map (Map)
 import qualified Data.Map as Map
 import System.FilePath (takeExtension)
 
-import Telomare (AbortableF (..), BasicExpr, BasicExprF (..), CompiledExpr,
-                 FunctionIndex (..), LocTag (..), SourcePosition (..),
-                 SourceSpan (..), StuckF (..), UnsizedRecursionToken (..),
-                 pattern AbortFW, pattern BasicFW, pattern StuckFW)
-import Telomare.Eval (SizingReport (..))
-import Telomare.PossibleData (SizedRecursion (..))
+import Telomare.Error
+import Telomare.IR.Base
+import Telomare.IR.Builder
+import Telomare.IR.Core
+import Telomare.IR.Loc
+import Telomare.IR.Surface
+import Telomare.IR.Types
+import Telomare.Size (SizingReport (..))
+import Telomare.Size.IR (SizedRecursion (..))
 
 -- |A program with its sizing already done.
 data Artifact = Artifact

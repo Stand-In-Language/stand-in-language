@@ -1,4 +1,3 @@
-{-# LANGUAGE PatternSynonyms #-}
 
 -- |The two ways to run a program that are not "size it, then run it": from an
 -- artifact that was sized earlier, and without sizing at all.
@@ -13,16 +12,23 @@ import qualified Data.Map as Map
 import qualified System.IO.Strict as Strict
 import Test.Hspec
 
-import Telomare (AbstractRunTime (eval), pattern ZeroB)
 import Telomare.Artifact (Artifact (..), decodeArtifact, encodeArtifact,
                           nodeCount, sourcesHash)
 import Telomare.Certificate (renderStaticReport)
-import Telomare.Eval (SizingReport (..), compileModules, runMainWithInput)
+import Telomare.Driver (compileModules, runMainWithInput)
+import Telomare.Error
 import Telomare.Fast (FastError (..), FastMeter (..), compileFast,
                       runFastWithInput)
+import Telomare.IR.Base
+import Telomare.IR.Builder
+import Telomare.IR.Core
+import Telomare.IR.Loc
+import Telomare.IR.Surface
+import Telomare.IR.Types
 import Telomare.Levels (LevelsInfo (..), levelsInfo)
-import Telomare.Possible (appB)
-import Telomare.PossibleData (SizedRecursion (..))
+import Telomare.Machine (appB)
+import Telomare.Size (SizingReport (..))
+import Telomare.Size.IR (SizedRecursion (..))
 
 limitsDir :: FilePath
 limitsDir = "test/programs/limits/"

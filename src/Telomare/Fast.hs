@@ -1,5 +1,4 @@
-{-# LANGUAGE LambdaCase      #-}
-{-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE LambdaCase #-}
 
 -- |Running a program without sizing it first.
 --
@@ -77,15 +76,16 @@ import qualified Data.Map as Map
 import Data.Maybe (fromMaybe)
 import System.IO (hFlush, isEOF, stdout)
 
-import Telomare (AUPT, AbortableF (..), AnnotatedUPT (..), BasicExpr,
-                 BasicExprF (..), EvalError (..), LocTag (..),
-                 PartialTypeF (..), RunTimeError (AbortRunTime),
-                 SourcePosition (..), SourceSpan (..), StuckF (..), Term3,
-                 Term3F (..), UnsizedRecursionToken (..), pattern PairB,
-                 pattern ZeroB, renderEvalError, renderLocTagCompact)
-import Telomare.Parser (parseModuleNamed)
-import Telomare.Resolver (main2Term3, main2Term3let)
-import Telomare.TypeChecker (typeCheck)
+import Telomare.Error
+import Telomare.IR.Base
+import Telomare.IR.Builder
+import Telomare.IR.Core
+import Telomare.IR.Loc
+import Telomare.IR.Surface
+import Telomare.IR.Types
+import Telomare.Parse (parseModuleNamed)
+import Telomare.Resolve (main2Term3, main2Term3let)
+import Telomare.TypeCheck (typeCheck)
 
 -- |A recursion site: the token the sizing pass would have sized, where it is
 -- in the source, and the top-level definition it belongs to. The token keeps
@@ -464,7 +464,7 @@ runFastWithInput fuel inputs prog = runEval fuel $ do
   go "" inputs Nothing
 
 -- |Parse, typecheck and resolve, then convert without sizing. This mirrors
--- `Telomare.Eval.compileMainReporting` up to the point where that calls the
+-- `Telomare.Driver.compileMainReporting` up to the point where that calls the
 -- sizing pass.
 compileFast :: [(String, String)] -- ^All modules as (Module_Name, Module_Content)
             -> String -- ^Name of the module holding `main`

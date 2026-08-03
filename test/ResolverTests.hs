@@ -21,13 +21,20 @@ import System.IO.Unsafe (unsafePerformIO)
 import System.Posix.IO
 import System.Posix.Process
 import System.Posix.Types
-import Telomare
-import Telomare.Eval
+import Telomare.Desugar
+import Telomare.Driver
+import Telomare.Error
+import Telomare.Eval.Reference
 import qualified Telomare.Fast as Fast
-import Telomare.Parser
-import Telomare.Possible (SizingSettings (SizingSettings))
-import Telomare.Resolver
-import Telomare.RunTime
+import Telomare.IR.Base
+import Telomare.IR.Builder
+import Telomare.IR.Core
+import Telomare.IR.Loc
+import Telomare.IR.Surface
+import Telomare.IR.Types
+import Telomare.Parse
+import Telomare.Resolve
+import Telomare.Size (SizingSettings (SizingSettings))
 import Test.Tasty
 import Test.Tasty.HUnit
 import Test.Tasty.QuickCheck as QC
@@ -521,13 +528,13 @@ showAllTransformations input = do
               Right x -> x
               Left x  -> error x
   section "Input" input
-  section "UnprocessedParsedTerm" $ show upt
-  section "optimizeBuiltinFunctions" . show . optimizeBuiltinFunctions . unAnnotatedUPT $ upt
+  section "Parse: UnprocessedParsedTerm" $ show upt
+  section "Desugar: optimizeBuiltinFunctions" . show . optimizeBuiltinFunctions . unAnnotatedUPT $ upt
   let optimizeBuiltinFunctionsVar = optimizeBuiltinFunctions (unAnnotatedUPT upt)
       str1 = lines . show $ optimizeBuiltinFunctionsVar
       str0 = lines . show $ upt
       diff = getGroupedDiff str0 str1
-  section "Diff optimizeBuiltinFunctions" $ ppDiff diff
+  section "Diff Desugar: optimizeBuiltinFunctions" $ ppDiff diff
   -- let optimizeBindingsReferenceVar = optimizeBindingsReference optimizeBuiltinFunctionsVar
   --     str2 = lines . show $ optimizeBindingsReferenceVar
   --     diff = getGroupedDiff str1 str2
@@ -536,23 +543,23 @@ showAllTransformations input = do
   let validateVariablesVar = validateVariables (AnnotatedUPT optimizeBuiltinFunctionsVar)
       str3 = lines . show $ validateVariablesVar
       diff = getGroupedDiff str3 str1
-  section "validateVariables" . show $ validateVariablesVar
-  section "Diff validateVariables" $ ppDiff diff
+  section "Resolve: validateVariables" . show $ validateVariablesVar
+  section "Diff Resolve: validateVariables" $ ppDiff diff
   let Right debruijinizeVar = (>>= debruijinize) validateVariablesVar
       str4 = lines . show $ debruijinizeVar
       diff = getGroupedDiff str4 str3
-  section "debruijinize" . show $ debruijinizeVar
-  section "Diff debruijinize" $ ppDiff diff
+  section "Resolve: debruijinize" . show $ debruijinizeVar
+  section "Diff Resolve: debruijinize" $ ppDiff diff
   let splitExprVar = splitExpr debruijinizeVar
       str5 = lines . ppShow $ splitExprVar
       diff = getGroupedDiff str5 str4
-  section "splitExpr" . ppShow $ splitExprVar
-  section "Diff splitExpr" $ ppDiff diff
+  section "Resolve: splitExpr" . ppShow $ splitExprVar
+  section "Diff Resolve: splitExpr" $ ppDiff diff
   let Right (Just toTelomareVar) = fmap toTelomare . findChurchSizeD (DebugSizing (SizingSettings 255 False)) $ splitExprVar
       str6 = lines . show $ toTelomareVar
       diff = getGroupedDiff str6 str5
-  section "toTelomare" . show $ toTelomareVar
-  section "Diff toTelomare" $ ppDiff diff
+  section "Size: findChurchSizeD + toTelomare" . show $ toTelomareVar
+  section "Diff Size: findChurchSizeD + toTelomare" $ ppDiff diff
   putStrLn "\n-----------------------------------------------------------------"
   putStrLn "---- stepEval:\n"
   x <- stepIEval toTelomareVar
