@@ -22,7 +22,7 @@ import qualified Data.Map as Map
 import Control.Comonad.Cofree
 import Data.Fix (Fix (..))
 import Data.Functor.Foldable
-import Data.List (elemIndex)
+import Data.List (elemIndex, intercalate)
 import Text.Read (readMaybe)
 -- import Data.SBV (sFPHalf)
 
@@ -176,6 +176,20 @@ instance Show MultiLineShowUPT where
                         "  " <> ind x
       (ImportUPF s) -> "ImportUP " <> show s
       (ImportQualifiedUPF s1 s2) -> "ImportQualifiedUP " <> show s1 <> " " <> show s2
+      (LamPatUPF pats x) ->
+        "LamPatUP [" <> intercalate ", " (prettyPrintPattern (show . MultiLineShowUPT) . snd <$> pats) <> "]\n" <>
+        "  " <> ind x
+      (LetSugarUPF defs x) ->
+        let showDef = \case
+              SingleDefF name Nothing v -> "  , (" <> locatedNameText name <> ", " <> ind v <> ")\n"
+              SingleDefF name (Just (_, t)) v ->
+                "  , (" <> locatedNameText name <> " : " <> ind t <> ", " <> ind v <> ")\n"
+              ListDefF _ names v ->
+                "  , ([" <> intercalate ", " (locatedNameText <$> names) <> "], " <> ind v <> ")\n"
+        in "LetSugarUP\n" <>
+           concatMap showDef defs <>
+           "  ]\n" <>
+           "  " <> ind x
 
 newtype PrettyUPT = PrettyUPT UnprocessedParsedTerm
 
@@ -230,6 +244,21 @@ instance Show PrettyUPT where
       (CaseUPF x ls) -> "case " <> x <> " of\n" <>
                         "  " <> indentSansFirstLine 2 (unlines ((\(p, r) -> indentSansFirstLine 2 (prettyPrintPattern (show . PrettyUPT) p <> " -> " <> r))
                                                                 <$> ls))
+      (LamPatUPF pats x) ->
+        let binders = unwords (prettyPrintPattern (show . PrettyUPT) . snd <$> pats)
+        in "\\ " <> binders <> " -> " <> indentSansFirstLine (6 + length binders) x
+      (LetSugarUPF defs x) ->
+        "let " <> indentSansFirstLine 4 (unlines (showDef <$> defs)) <> "\n" <>
+        "in " <> indentSansFirstLine 3 x
+          where
+            showDef = \case
+              SingleDefF name Nothing v ->
+                locatedNameText name <> " = " <> indentSansFirstLine (3 + length (locatedNameText name)) v
+              SingleDefF name (Just (_, t)) v ->
+                locatedNameText name <> " : " <> t <> " = " <> indentSansFirstLine (3 + length (locatedNameText name)) v
+              ListDefF _ names v ->
+                let nameList = "[" <> intercalate ", " (locatedNameText <$> names) <> "]"
+                in nameList <> " = " <> indentSansFirstLine (3 + length nameList) v
 
 instance PrettyPrintable LocTag where
   showP = const $ pure ""

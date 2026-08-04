@@ -15,6 +15,7 @@ import Control.Comonad.Cofree (Cofree ((:<)))
 import qualified Control.Comonad.Trans.Cofree as CofreeT (CofreeF (..))
 import Data.Fix (Fix (..))
 import Data.Functor.Classes (Eq1 (..), Show1 (..))
+import Data.List (intersperse)
 import GHC.Generics (Generic1, Generically1 (..))
 import Telomare.IR.Base (BasicBase (..), BasicExprF (..), CarryAnno (..),
                          HighBase (..), HighTermF (..), LamBase (..),
@@ -41,7 +42,26 @@ instance Show o => Show1 (PatternF o) where
     PatternIgnoreF -> showString "PatternIgnore"
     PatternPairF a b -> showString "PatternPair " . showsPrec' 0 a . showChar ' ' . showsPrec' 0 b
 
--- |Firstly parsed AST
+-- |One top-level or let-level definition exactly as written in the source,
+-- before desugaring. @SingleDefF name annotation body@ is
+-- @name (: check)? = body@, where the annotation's 'LocTag' is captured at
+-- the @:@. @ListDefF loc names body@ is @[n1, n2, ...] = body@ (a plain
+-- list assignment or a UDT declaration; 'Telomare.Sugar' decides which).
+data DefinitionF f
+  = SingleDefF LocatedName (Maybe (LocTag, f)) f
+  | ListDefF LocTag [LocatedName] f
+  deriving (Eq, Show, Functor, Foldable, Traversable, Generic1)
+  deriving Eq1 via (Generically1 DefinitionF)
+
+definitionNames :: DefinitionF f -> [LocatedName]
+definitionNames = \case
+  SingleDefF name _ _  -> [name]
+  ListDefF _ names _   -> names
+
+-- |Firstly parsed AST. 'LamPatUPF' and 'LetSugarUPF' are the raw
+-- (pre-desugared) forms the parser emits; 'Telomare.Sugar' eliminates them
+-- (rewriting into 'UnprocessedParsedTermL'/'LetUPF') before any later stage
+-- walks the tree.
 data UnprocessedParsedTermF p f
   = UnprocessedParsedTermH (HighTermF f)
   | UnprocessedParsedTermL (LamTermF LocatedName String f)
@@ -55,6 +75,8 @@ data UnprocessedParsedTermF p f
   -- TODO: check if adding this doesn't create partial functions
   | ImportQualifiedUPF String String
   | ImportUPF String
+  | LamPatUPF [(LocTag, p)] f
+  | LetSugarUPF [DefinitionF f] f
   deriving (Eq, Show, Functor, Foldable, Traversable, Generic1)
   deriving Eq1 via (Generically1 (UnprocessedParsedTermF p))
 instance HighBase (UnprocessedParsedTermF p) where
@@ -104,6 +126,24 @@ instance (Show p) => Show1 (UnprocessedParsedTermF p) where
                            (fmap showPattern patterns) . showChar ']'
       in showString "CaseUPF " . showsPrecFunc 11 scrutinee . showChar ' '
          . showPatterns patterns
+    LamPatUPF pats body ->
+      showString "LamPatUPF " . shows pats . showChar ' ' . showsPrecFunc 11 body
+    LetSugarUPF defs body ->
+      let showAnnot = \case
+            Nothing       -> showString "Nothing"
+            Just (loc, t) -> showString "(Just (" . shows loc . showString ", "
+                             . showsPrecFunc 0 t . showString "))"
+          showDef = \case
+            SingleDefF name annot value ->
+              showString "(SingleDefF " . shows name . showChar ' ' . showAnnot annot
+              . showChar ' ' . showsPrecFunc 11 value . showChar ')'
+            ListDefF loc names value ->
+              showString "(ListDefF " . shows loc . showChar ' ' . shows names
+              . showChar ' ' . showsPrecFunc 11 value . showChar ')'
+          showDefs ds = showChar '['
+                        . foldr (.) id (intersperse (showString ", ") (fmap showDef ds))
+                        . showChar ']'
+      in showString "LetSugarUPF " . showDefs defs . showChar ' ' . showsPrecFunc 11 body
 
 type Pattern = Fix (PatternF UnprocessedParsedTerm)
 newtype UnprocessedParsedTerm = UnprocessedParsedTerm { unUnprocessedParsedTerm :: UPT}
