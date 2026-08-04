@@ -308,8 +308,9 @@ pipeline. In pipeline order:
 
 | Stage | Modules | What happens |
 | --- | --- | --- |
-| Parse | `Telomare.Parse`, `Telomare.Parse.Sugar` | megaparsec grammar producing the surface AST (`AUPT`). Sugar with no surface representation (multi-pattern lambdas, list assignments, UDT declarations) expands during parsing via `Parse.Sugar`. |
-| Desugar | `Telomare.Desugar` | post-parse `AUPT -> AUPT` rewrites: case lowering, builtin binding and optimization. |
+| Parse | `Telomare.Parse` | megaparsec grammar producing the raw surface AST (`AUPT`): no expansion, no resolving, no semantic checks. Multi-pattern lambdas, refinement annotations, list assignments and UDT declarations come out as written (`LamPatUPF`, `LetSugarUPF`, `DefinitionF`). |
+| Sugar | `Telomare.Sugar` | eliminates the raw parse-level forms (`desugarTerm`/`desugarDefs`/`desugarModule`): multi-pattern lambdas become nested lambdas with case destructuring, list assignments and UDT declarations expand into per-slot bindings, refinement annotations fold into `CheckF`, and `wrapMain` wraps a module's bindings around its `main`. |
+| Desugar | `Telomare.Desugar` | later `AUPT -> AUPT` rewrites: case lowering, builtin binding and optimization. |
 | Resolve | `Telomare.Resolve` | import resolution, scope checking, de Bruijn conversion, hash folding, and core lowering (`splitExpr`: `Term2 -> Term3`). Documents the dual `process`/`processWlet` pipeline. |
 | Type check | `Telomare.TypeCheck` | unification-based check of `Term3` against the main type. |
 | Size (totality) | `Telomare.Size`, `Telomare.Size.IR`, `Telomare.Machine` | telomare's distinguishing stage: `sizeTermM` abstractly interprets the program over symbolic input and infers a finite iteration count for every recursion site, then bakes the counts in (`Term3 -> CompiledExpr`). A program that cannot be sized does not compile. `Machine` is the shared step-algebra the sizing pass and the evaluators are assembled from. |
