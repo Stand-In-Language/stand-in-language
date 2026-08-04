@@ -27,8 +27,9 @@ import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.IR.Surface
 import Telomare.IR.Types
-import Telomare.Parse (parseModule)
+import Telomare.Parse (runParseModule)
 import Telomare.PrettyPrint (PrettyCompiledExpr (..))
+import Telomare.Sugar (desugarModule, renderSugarError)
 import Text.Read (readMaybe)
 
 type VtyExample t m =
@@ -167,16 +168,16 @@ nodify = removeExtraNumbers . fmap go . allNodes 0 where
     x -> [(i, x)]
 
 
--- parseModule :: String -> Either String [Either AnnotatedUPT (String, AnnotatedUPT)]
 -- TODO: Load modules qualifed
 loadModules :: [String] -> IO [(String, [Either AUPT (String, AUPT)])]
 loadModules filenames = do
   filesStrings :: [String] <- mapM Strict.readFile filenames
-  case mapM parseModule filesStrings of
-    Right p -> pure $ zip filesStrings (fmap convertModule p)
+  case mapM parseAndDesugar filesStrings of
+    Right p -> pure $ zip filesStrings p
     Left pe -> error pe
   where
-    convertModule = fmap (bimap unAnnotatedUPT (second unAnnotatedUPT))
+    parseAndDesugar str =
+      runParseModule "" str >>= first renderSugarError . desugarModule
 
 mainWidgetInit
   :: (forall t m.

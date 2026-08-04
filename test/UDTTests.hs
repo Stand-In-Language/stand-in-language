@@ -23,10 +23,11 @@ import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.IR.Surface
 import Telomare.IR.Types
-import Telomare.Parse (TelomareParser, parseLongExpr, parsePrelude)
+import Telomare.Parse (TelomareParser, parseLongExpr, runParseDefinitions)
 import Telomare.PrettyPrint
 import Telomare.Resolve (process, pruneBindings)
 import Telomare.Size (SizingSettings (SizingSettings))
+import Telomare.Sugar (desugarDefs, desugarTerm, renderSugarError)
 
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -53,21 +54,22 @@ rightToMaybe :: Either String a -> Maybe a
 rightToMaybe (Right x) = Just x
 rightToMaybe _         = Nothing
 
-loadPreludeBindings :: IO [(String, AnnotatedUPT)]
+loadPreludeBindings :: IO [(String, AUPT)]
 loadPreludeBindings = do
   preludeResult <- Strict.readFile "Prelude.tel"
-  case parsePrelude preludeResult of
+  case runParseDefinitions "" preludeResult >>= first renderSugarError . desugarDefs of
     Left _   -> pure []
-    Right bs -> pure bs
+    Right bs -> pure $ first locatedNameText <$> bs
 
 evalExprString :: String -> IO (Either String String)
 evalExprString input = do
   preludeBindings <- loadPreludeBindings
-  let parseResult = runParser (parseLongExpr <* eof) "" input
+  let parseResult = first errorBundlePretty (runParser (parseLongExpr <* eof) "" input)
+        >>= first renderSugarError . desugarTerm
   case parseResult of
-    Left err -> pure $ Left (errorBundlePretty err)
+    Left err -> pure $ Left err
     Right aupt -> do
-      let bindings = fmap (second unAnnotatedUPT) preludeBindings
+      let bindings = preludeBindings
           term = UnknownLoc :< LetUPF (first (locatedName UnknownLoc) <$> pruneBindings aupt bindings) aupt
           compile' :: Term3 -> Either EvalError CompiledExpr
           compile' = compile (DebugSizing (SizingSettings 255 False)) runStaticChecks

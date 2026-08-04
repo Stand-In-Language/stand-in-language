@@ -50,18 +50,19 @@ import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.IR.Surface
 import Telomare.IR.Types
-import Telomare.Parse (parseModule, parseModuleDetailed)
+import Telomare.Parse (runParseModule, runParseModuleDetailed)
 import Telomare.Resolve (main2Term3)
+import Telomare.Sugar (SugarError, desugarModule, renderSugarError,
+                       sugarErrorLoc)
 import Text.Megaparsec.Error (ParseErrorBundle (..), errorBundlePretty,
                               errorOffset)
 
 --------------------------------------------------------------------------------
 -- Document state tracking
 
--- Results of parseModule:
---   Either errorString or a list of either imports or (name, binding) pairs.
+-- Results of parsing and desugaring a module:
+--   a list of either imports or (name, binding) pairs.
 type ParseResult = [Either AUPT (String, AUPT)]
-type AnnotatedParseResult = [Either AnnotatedUPT (String, AnnotatedUPT)]
 
 -- Store module bindings for evaluation context
 type ModuleBindings = [(String, ParseResult)]
@@ -129,11 +130,11 @@ loadPrelude = do
   case preludeContents of
     Nothing -> return []
     Just content ->
-      case parseModule content of
+      case parseTelomareModule (T.pack content) of
         Left err -> do
           putStrLn $ "Warning: Failed to parse Prelude.tel: " <> err
           return []
-        Right parsed -> return [("Prelude", convertParseResult parsed)]
+        Right parsed -> return [("Prelude", parsed)]
   where
     tryLoadFiles :: [FilePath] -> IO (Maybe String)
     tryLoadFiles [] = return Nothing
@@ -250,16 +251,17 @@ formatTimestampMinutesUTC rawTimestamp = do
   pure . T.pack $ formatTime defaultTimeLocale "%Y-%m-%dT%H:%MZ" (zonedTimeToUTC zonedTime)
 
 --------------------------------------------------------------------------------
--- Helpers: centralize parsing through parseModule
+-- Helpers: centralize parsing through runParseModule + desugarModule
 
 parseTelomareModule :: T.Text -> Either String ParseResult
-parseTelomareModule = fmap convertParseResult . parseModule . T.unpack
+parseTelomareModule text =
+  runParseModule "" (T.unpack text)
+    >>= first renderSugarError . desugarModule
 
-parseTelomareModuleDetailed :: T.Text -> Either (ParseErrorBundle String Void) ParseResult
-parseTelomareModuleDetailed = fmap convertParseResult . parseModuleDetailed . T.unpack
-
-convertParseResult :: AnnotatedParseResult -> ParseResult
-convertParseResult = fmap (bimap unAnnotatedUPT (second unAnnotatedUPT))
+-- |Raw parse only, keeping the megaparsec bundle so parse diagnostics can
+-- use 'errorOffset'. Callers run 'desugarModule' on the result themselves.
+parseTelomareModuleDetailed :: T.Text -> Either (ParseErrorBundle String Void) [Either AUPT (DefinitionF AUPT)]
+parseTelomareModuleDetailed = runParseModuleDetailed "" . T.unpack
 
 storeParsedDoc
   :: GlobalState
@@ -270,10 +272,13 @@ storeParsedDoc
 storeParsedDoc gState uri version text = do
   modules <- liftIO $ readTVarIO (moduleBindings gState)
   let detailedParse = parseTelomareModuleDetailed text
+      desugared = desugarModule <$> detailedParse
       parseRes = first errorBundlePretty detailedParse
-  diagnostics' <- case detailedParse of
+        >>= first renderSugarError . desugarModule
+  diagnostics' <- case desugared of
     Left err -> pure $ parseDiagnostics text err
-    Right parsed -> do
+    Right (Left err) -> pure $ sugarDiagnostics err
+    Right (Right parsed) -> do
       importedModules <- liftIO $ concat <$> mapM (loadImportedModuleBinding gState uri) (moduleImports parsed)
       let modules' = importedModules <> modules
           importDiagnostics' = importDiagnostics text modules' parsed
@@ -336,6 +341,17 @@ parseDiagnostics text bundle =
       "parser"
       (T.pack $ errorBundlePretty bundle)
   ]
+
+-- |Desugaring errors point at the 'LocTag' the 'SugarError' carries (falling
+-- back to the start of the document when it has none).
+sugarDiagnostics :: SugarError -> [LSPTypes.Diagnostic]
+sugarDiagnostics err =
+  [ mkDiagnostic range "desugar" (T.pack $ renderSugarError err) ]
+  where
+    range = case sugarErrorLoc err >>= locStartLineColumn of
+      -- LocTag positions are 1-based; LSP positions are 0-based.
+      Just (line, column) -> pointRange (line - 1) (column - 1)
+      Nothing             -> pointRange 0 0
 
 loadImportedModuleBinding :: GlobalState -> LSPTypes.Uri -> ModuleImport -> IO ModuleBindings
 loadImportedModuleBinding gState currentUri moduleImport = do

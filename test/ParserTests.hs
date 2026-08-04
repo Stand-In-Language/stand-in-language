@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase          #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Main where
@@ -35,6 +36,7 @@ import Telomare.IR.Surface
 import Telomare.IR.Types
 import Telomare.Parse
 import Telomare.Resolve
+import Telomare.Sugar
 import Test.QuickCheck
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -47,7 +49,78 @@ main :: IO ()
 main = defaultMain tests
 
 tests :: TestTree
-tests = testGroup "Parser Tests" [unitTests]
+tests = testGroup "Parser Tests" [unitTests, sugarTests]
+
+-- |The desugaring pass ('Telomare.Sugar') as a stage of its own: raw
+-- parser output goes in, sugar-free trees or 'SugarError's come out.
+sugarTests :: TestTree
+sugarTests = testGroup "Sugar pass"
+  [ testCase "multi-pattern lambda desugars through buildMultiLambda" $ do
+      raw <- runTelomareParser parseLongExpr "\\(x, y) z -> x"
+      case raw of
+        loc :< LamPatUPF pats body ->
+          case desugarTerm raw of
+            Left err -> assertFailure $ renderSugarError err
+            Right desugared ->
+              stripParserLocs desugared @?= stripParserLocs (buildMultiLambda loc pats body)
+        _ -> assertFailure $ "expected raw LamPatUPF, got: " <> show raw
+  , testCase "annotated pattern lambda cases on the validator result" $ do
+      raw <- runTelomareParser parseLongExpr "\\(v : Nat) -> v"
+      case desugarTerm raw of
+        Right (_ :< UnprocessedParsedTermL (LamF binder
+                (_ :< CaseUPF
+                  (_ :< UnprocessedParsedTermL (AppF
+                    (_ :< UnprocessedParsedTermL (VarF "Nat"))
+                    (_ :< UnprocessedParsedTermL (VarF bound))))
+                  [(Fix (PatternVarF "v"), _)]))) ->
+          bound @?= locatedNameText binder
+        other -> assertFailure $ "unexpected desugaring: " <> show other
+  , testCase "refinement annotation folds into CheckF" $ do
+      defs <- runTelomareParser parseDefinitions "main : T = 0\n"
+      case desugarDefs defs of
+        Right [(name, _ :< UnprocessedParsedTermH (CheckF
+                 (_ :< UnprocessedParsedTermL (VarF "T"))
+                 (_ :< IntUPF 0)))] ->
+          locatedNameText name @?= "main"
+        other -> assertFailure $ "unexpected desugaring: " <> show other
+  , testCase "list assignment arity mismatch is a SugarError" $ do
+      defs <- runTelomareParser parseDefinitions "[a, b] = [1, 2, 3]\n"
+      case desugarDefs defs of
+        Left (ListArityMismatch _ 2 3) -> pure ()
+        other -> assertFailure $ "expected ListArityMismatch: " <> show other
+  , testCase "UDT declaration whose body is not a list is a SugarError" $ do
+      defs <- runTelomareParser parseDefinitions "[T, mk] = \\h -> 0\n"
+      case desugarDefs defs of
+        Left (UDTBodyNotList _ "T" _) -> pure ()
+        other -> assertFailure $ "expected UDTBodyNotList: " <> show other
+  , testCase "wrapMain without a main definition is MissingMain" $ do
+      defs <- runTelomareParser parseDefinitions "foo = 0\n"
+      (desugarDefs defs >>= wrapMain []) @?= Left MissingMain
+  , testCase "desugared tictactoe.tel contains no raw sugar constructors" $ do
+      content <- Strict.readFile "tictactoe.tel"
+      case runParseModule "" content >>= first renderSugarError . desugarModule of
+        Left err -> assertFailure err
+        Right items ->
+          let terms = either (: []) ((: []) . snd) =<< items
+          in all noRawSugar terms @?= True
+  ]
+
+-- |No 'LamPatUPF', 'LetSugarUPF' or 'UDTUPF' anywhere, including inside
+-- pattern annotations.
+noRawSugar :: AUPT -> Bool
+noRawSugar (_ :< term) = case term of
+  LamPatUPF _ _        -> False
+  LetSugarUPF _ _      -> False
+  UDTUPF _ _           -> False
+  CaseUPF scrutinee alternatives ->
+    noRawSugar scrutinee
+    && all (\(p, b) -> noRawSugarPattern p && noRawSugar b) alternatives
+  other                -> all noRawSugar other
+
+noRawSugarPattern :: PatternA -> Bool
+noRawSugarPattern (Fix pat) = case pat of
+  PatternAnnotatedF inner (AnnotatedUPT t) -> noRawSugarPattern inner && noRawSugar t
+  other -> all noRawSugarPattern other
 
 unitTests :: TestTree
 unitTests = testGroup "Unit tests"
@@ -56,8 +129,8 @@ unitTests = testGroup "Unit tests"
       res @?= True
     -- Keep structured Megaparsec errors available for LSP ranges while
     -- preserving pretty text for CLI-style diagnostics.
-  , testCase "parseModuleDetailed exposes parse error offsets for diagnostics" $ do
-      case parseModuleDetailed "main = if 0 then 1" of
+  , testCase "runParseModuleDetailed exposes parse error offsets for diagnostics" $ do
+      case runParseModuleDetailed "" "main = if 0 then 1" of
         Left bundle -> do
           errorOffset (NE.head $ bundleErrors bundle) >= 0 @?= True
           null (errorBundlePretty bundle) @?= False
@@ -76,7 +149,7 @@ unitTests = testGroup "Unit tests"
   , testCase "let binding source spans exclude trailing whitespace" $ do
       case runParser parseLongExpr "" "let foo   = 0 in foo" of
         Left err -> assertFailure $ errorBundlePretty err
-        Right (_ :< LetUPF [(name, _)] _) | SourceLoc span <- locatedNameLoc name -> do
+        Right (_ :< LetSugarUPF [SingleDefF name Nothing _] _) | SourceLoc span <- locatedNameLoc name -> do
           locatedNameText name @?= "foo"
           sourcePositionLine (sourceSpanStart span) @?= 1
           sourcePositionColumn (sourceSpanStart span) @?= 5
@@ -86,9 +159,8 @@ unitTests = testGroup "Unit tests"
   , testCase "lambda binding source spans exclude trailing whitespace" $ do
       case runParser parseLongExpr "" "\\foo   -> foo" of
         Left err -> assertFailure $ errorBundlePretty err
-        Right (_ :< UnprocessedParsedTermL (LamF binder _)) -> case locatedNameLoc binder of
+        Right (_ :< LamPatUPF [(binderLoc, Fix (PatternVarF "foo"))] _) -> case binderLoc of
           SourceLoc span -> do
-            locatedNameText binder @?= "foo"
             sourcePositionLine (sourceSpanStart span) @?= 1
             sourcePositionColumn (sourceSpanStart span) @?= 2
             sourcePositionLine (sourceSpanEnd span) @?= 1
@@ -126,10 +198,10 @@ unitTests = testGroup "Unit tests"
       res <- parseSuccessful (parseLambda <* eof) testLambdawITEwPair
       res @?= True
   , testCase "test parse assignment with Complete Lambda with ITE with Pair" $ do
-      res <- parseSuccessful (parseTopLevel <* eof) testParseAssignmentwCLwITEwPair1
+      res <- parseSuccessful (parseDefinitions <* eof) testParseAssignmentwCLwITEwPair1
       res @?= True
   , testCase "test if testParseTopLevelwCLwITEwPair parses successfuly" $ do
-      res <- parseSuccessful (parseTopLevel <* eof) testParseTopLevelwCLwITEwPair
+      res <- parseSuccessful (parseDefinitions <* eof) testParseTopLevelwCLwITEwPair
       res @?= True
   , testCase "test main2Term3 with CL with ITE with Pair parses" $ do
       res <- runTestMainwCLwITEwPair
@@ -162,22 +234,22 @@ unitTests = testGroup "Unit tests"
       res <- runTestMainWType
       res @?= True
   , testCase "testShowBoard0" $ do
-      res <- parseSuccessful (parseTopLevel <* scn <* eof) testShowBoard0
+      res <- parseSuccessful (parseDefinitions <* scn <* eof) testShowBoard0
       res @?= True
   , testCase "testShowBoard1" $ do
-      res <- parseSuccessful (parseTopLevel <* scn <* eof) testShowBoard1
+      res <- parseSuccessful (parseDefinitions <* scn <* eof) testShowBoard1
       res @?= True
   , testCase "testShowBoard2" $ do
-      res <- parseSuccessful (parseTopLevel <* scn <* eof) testShowBoard2
+      res <- parseSuccessful (parseDefinitions <* scn <* eof) testShowBoard2
       res @?= True
   , testCase "testShowBoard3" $ do
-      res <- parseSuccessful (parseTopLevel <* scn <* eof) testShowBoard3
+      res <- parseSuccessful (parseDefinitions <* scn <* eof) testShowBoard3
       res @?= True
   , testCase "testShowBoard4" $ do
-      res <- parseSuccessful (parseTopLevel <* scn <* eof) testShowBoard4
+      res <- parseSuccessful (parseDefinitions <* scn <* eof) testShowBoard4
       res @?= True
   , testCase "testShowBoard5" $ do
-      res <- parseSuccessful (parseTopLevel <* scn <* eof) testShowBoard5
+      res <- parseSuccessful (parseDefinitions <* scn <* eof) testShowBoard5
       res @?= True
   , testCase "testShowBoard6" $ do
       res <- parseSuccessful parseApplied testShowBoard6
@@ -195,7 +267,7 @@ unitTests = testGroup "Unit tests"
       res <- parseSuccessful (parseApplied <* scn <* eof) testLetShowBoard3
       res @?= True
   , testCase "testLetShowBoard4" $ do
-      res <- parseSuccessful (parseTopLevel <* scn <* eof) testLetShowBoard4
+      res <- parseSuccessful (parseDefinitions <* scn <* eof) testLetShowBoard4
       res @?= True
   , testCase "testLetShowBoard5" $ do
       res <- parseSuccessful (parseLet <* scn <* eof) testLetShowBoard5
@@ -231,9 +303,10 @@ unitTests = testGroup "Unit tests"
       res <- parseSuccessful (parseLet <* scn <* eof) testLetIncorrectIndentation2
       res `compare` False @?= EQ
   , testCase "Case within top level definitions" $ do
-      res' <- runTelomareParser parseTopLevel caseExpr0
-      let res = stripParserLocs res'
-      res @?= caseExpr0UPT
+      defs <- runTelomareParser parseDefinitions caseExpr0
+      case desugarDefs defs >>= wrapMain [] of
+        Left err  -> assertFailure $ renderSugarError err
+        Right res -> stripParserLocs res @?= caseExpr0UPT
   , testCase "Simple import parsing" $ do
       res' <- runTelomareParser parseImport importExpr0str
       stripParserLocs res' @?= importExpr0
@@ -265,7 +338,18 @@ stripParserLocs (loc :< term) = UnknownLoc :< case term of
   LetUPF bindings body -> LetUPF ((\(name, value) -> (locatedName UnknownLoc $ locatedNameText name, stripParserLocs value)) <$> bindings) (stripParserLocs body)
   UnprocessedParsedTermL (LamF name body) -> UnprocessedParsedTermL (LamF (locatedName UnknownLoc $ locatedNameText name) (stripParserLocs body))
   CaseUPF scrutinee cases -> CaseUPF (stripParserLocs scrutinee) (bimap stripPatternLocs stripParserLocs <$> cases)
+  LamPatUPF pats body -> LamPatUPF (bimap (const UnknownLoc) stripPatternLocs <$> pats) (stripParserLocs body)
+  LetSugarUPF defs body -> LetSugarUPF (stripDefinitionLocs <$> defs) (stripParserLocs body)
   other -> stripParserLocs <$> other
+
+stripDefinitionLocs :: DefinitionF AUPT -> DefinitionF AUPT
+stripDefinitionLocs = \case
+  SingleDefF name annot value ->
+    SingleDefF (locatedName UnknownLoc $ locatedNameText name)
+               (bimap (const UnknownLoc) stripParserLocs <$> annot)
+               (stripParserLocs value)
+  ListDefF _ names value ->
+    ListDefF UnknownLoc (locatedName UnknownLoc . locatedNameText <$> names) (stripParserLocs value)
 
 stripPatternLocs :: PatternA -> PatternA
 stripPatternLocs (Fix patternF) = Fix $ case patternF of
@@ -297,7 +381,7 @@ caseExpr0 = unlines
   ]
 
 test2UPT str =
-  case parseModule str of
+  case runParseModule "" str >>= first renderSugarError . desugarModule of
     Right _ -> return True
     Left _  -> return False
 
@@ -381,7 +465,7 @@ testLambdawITEwPair = unlines
 
 runTestParsePrelude = do
   preludeFile <- Strict.readFile "Prelude.tel"
-  case parsePrelude preludeFile of
+  case runParseDefinitions "" preludeFile >>= first renderSugarError . desugarDefs of
     Right _ -> return True
     Left _  -> return False
 

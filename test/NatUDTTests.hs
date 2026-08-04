@@ -21,10 +21,11 @@ import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.IR.Surface
 import Telomare.IR.Types
-import Telomare.Parse (parseLongExpr, parsePrelude)
+import Telomare.Parse (parseLongExpr, runParseDefinitions)
 import Telomare.PrettyPrint
 import Telomare.Resolve (process, pruneBindings)
 import Telomare.Size (SizingSettings (SizingSettings))
+import Telomare.Sugar (desugarDefs, desugarTerm, renderSugarError)
 import Test.Tasty
 import Test.Tasty.HUnit
 import Text.Megaparsec (eof, errorBundlePretty, runParser)
@@ -43,13 +44,13 @@ natUDTSource = unlines
   , "  ]"
   ]
 
-parseBindings :: String -> String -> IO [(String, AnnotatedUPT)]
+parseBindings :: String -> String -> IO [(String, AUPT)]
 parseBindings name raw =
-  case parsePrelude raw of
+  case runParseDefinitions "" raw >>= first renderSugarError . desugarDefs of
     Left err -> error $ "parseBindings: " <> name <> ": " <> err
-    Right bs -> pure bs
+    Right bs -> pure $ first locatedNameText <$> bs
 
-loadBindings :: FilePath -> IO [(String, AnnotatedUPT)]
+loadBindings :: FilePath -> IO [(String, AUPT)]
 loadBindings path = do
   raw <- Strict.readFile path
   parseBindings path raw
@@ -60,10 +61,11 @@ evalUDTExpr input = do
   preludeBindings <- loadBindings "Prelude.tel"
   udtBindings     <- parseBindings "Nat UDT fixture" natUDTSource
   let allBindings = preludeBindings <> udtBindings
-  case runParser (parseLongExpr <* eof) "" input of
-    Left err -> pure $ Left (errorBundlePretty err)
+  case first errorBundlePretty (runParser (parseLongExpr <* eof) "" input)
+         >>= first renderSugarError . desugarTerm of
+    Left err -> pure $ Left err
     Right aupt -> do
-      let bindings = fmap (second unAnnotatedUPT) allBindings
+      let bindings = allBindings
           term = UnknownLoc :< LetUPF (first (locatedName UnknownLoc) <$> pruneBindings aupt bindings) aupt
           compile' :: Term3 -> Either EvalError CompiledExpr
           compile' = compile (DebugSizing (SizingSettings 255 False)) runStaticChecks

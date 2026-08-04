@@ -31,6 +31,7 @@ import Telomare.Parse
 import Telomare.PrettyPrint
 import Telomare.Resolve
 import Telomare.Size (SizingSettings (SizingSettings))
+import Telomare.Sugar
 import Telomare.TypeCheck
 import Test.Hspec
 import Test.Hspec.Core.QuickCheck (modifyMaxSuccess)
@@ -559,17 +560,17 @@ main = do
   preludeFile <- Strict.readFile "Prelude.tel"
 
   let
-    prelude' = case parsePrelude preludeFile of
+    prelude' = case runParseDefinitions "" preludeFile >>= first renderSugarError . desugarDefs of
       Right p -> p
-      Left pe -> error $ show pe
+      Left pe -> error pe
     prelude :: [(String, [Either AUPT (String, AUPT)])]
-    prelude = [("Prelude", Right . second unAnnotatedUPT <$> prelude')]
+    prelude = [("Prelude", Right . first locatedNameText <$> prelude')]
     parseAuxModule :: String -> (String, [Either AUPT (String, AUPT)])
     parseAuxModule str =
-      case sequence ("AuxModule", parseModule ("import Prelude\n" <> str)) of
-      -- case sequence ("AuxModule", parseModule str) of
-        Left e    -> error $ show e
-        Right pam -> second (fmap (bimap unAnnotatedUPT (second unAnnotatedUPT))) pam
+      case runParseModule "" ("import Prelude\n" <> str)
+             >>= first renderSugarError . desugarModule of
+        Left e    -> error e
+        Right pam -> ("AuxModule", pam)
     parse :: Bool -> String -> Either String Term3
     parse appLet str = if appLet
       then first show $ main2Term3let (parseAuxModule str:prelude) "AuxModule"

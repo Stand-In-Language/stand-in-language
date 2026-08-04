@@ -13,6 +13,7 @@ import Control.Monad.Except (ExceptT, MonadError, catchError, runExceptT,
                              throwError)
 import Data.Algorithm.Diff (getGroupedDiff)
 import Data.Algorithm.DiffOutput (ppDiff)
+import Data.Bifunctor (first)
 import Data.List (isInfixOf, isPrefixOf, sortOn)
 import Debug.Trace (trace, traceShow, traceShowId)
 import System.IO
@@ -35,10 +36,11 @@ import Telomare.IR.Types
 import Telomare.Parse
 import Telomare.Resolve
 import Telomare.Size (SizingSettings (SizingSettings))
+import Telomare.Sugar
 import Test.Tasty
 import Test.Tasty.HUnit
 import Test.Tasty.QuickCheck as QC
-import Text.Megaparsec (eof)
+import Text.Megaparsec (eof, errorBundlePretty, runParser)
 import Text.Show.Pretty (ppShow)
 
 type Term2' = Term2
@@ -321,7 +323,7 @@ unitTests = testGroup "Unit tests"
     -- Missing definitions should point at the unresolved variable so CLI
     -- messages and LSP diagnostics can direct users to the real source site.
   , testCase "missing definition error reports source location" $ do
-      case parseWithPrelude [] "main = foo 0" of
+      case parseMainWith [] "main = foo 0" of
         Left err -> assertFailure err
         Right term -> case process term of
           Left err -> do
@@ -342,12 +344,12 @@ unitTests = testGroup "Unit tests"
         Left err -> trimEnd (removeCallStack (show err)) @?= trimEnd runForwardCycleLet
         Right res -> trimEnd res @?= trimEnd runForwardCycleLet
   , testCase "different values get different hashes" $ do
-      let res1 = generateAllHashes <$> runTelomareParser2Term2 (AnnotatedUPT <$> parseLet) hashtest0
-          res2 = generateAllHashes <$> runTelomareParser2Term2 (AnnotatedUPT <$> parseLet) hashtest1
+      let res1 = generateAllHashes <$> runTelomareParser2Term2 parseLet hashtest0
+          res2 = generateAllHashes <$> runTelomareParser2Term2 parseLet hashtest1
       (res1 == res2) `compare` False @?= EQ
   , testCase "same functions have the same hash even with different variable names" $ do
-     let res1 = generateAllHashes <$> runTelomareParser2Term2 (AnnotatedUPT <$> parseLet) hashtest2
-         res2 = generateAllHashes <$> runTelomareParser2Term2 (AnnotatedUPT <$> parseLet) hashtest3
+     let res1 = generateAllHashes <$> runTelomareParser2Term2 parseLet hashtest2
+         res2 = generateAllHashes <$> runTelomareParser2Term2 parseLet hashtest3
      res1 @?= res2
   , testCase "Ad hoc user defined types success" $ do
       res <- testUserDefAdHocTypes userDefAdHocTypesSuccess
@@ -512,6 +514,30 @@ hashtest3 = unlines [ "let b = \\x -> x"
                , "in (# b)"
                ]
 
+-- |Parse and desugar a whole program (definitions ending in @main@),
+-- with extra module bindings in scope. Local successor of the old
+-- @parseWithPrelude@.
+parseMainWith :: [(String, AUPT)] -> String -> Either String AnnotatedUPT
+parseMainWith prelude str = do
+  defs <- runParseDefinitions "" str
+  first renderSugarError $ AnnotatedUPT <$> (desugarDefs defs >>= wrapMain prelude)
+
+-- |Parse and desugar a file of definitions (a prelude).
+parsePreludeDefs :: String -> Either String [(String, AUPT)]
+parsePreludeDefs str = do
+  defs <- runParseDefinitions "" str
+  bindings <- first renderSugarError $ desugarDefs defs
+  pure $ first locatedNameText <$> bindings
+
+-- |Helper function to compile to Term2. Lived in "Telomare.Resolve" while
+-- desugaring still ran inside the parser; now that parsers return raw
+-- terms it composes the Sugar pass itself, and only this suite uses it.
+runTelomareParser2Term2 :: TelomareParser AUPT -> String -> Either ResolverError Term2
+runTelomareParser2Term2 parser str =
+  first (ParseError . errorBundlePretty) (runParser parser "" str)
+    >>= first (ParseError . renderSugarError) . desugarTerm
+    >>= process2Term2 . AnnotatedUPT
+
 -- TODO: do something with this
 showAllTransformations :: String -- ^ Telomare code
                        -> IO ()
@@ -521,14 +547,14 @@ showAllTransformations input = do
         putStrLn "\n-----------------------------------------------------------------"
         putStrLn $ "----" <> description <> ":\n"
         putStrLn body
-      prelude = case parsePrelude preludeFile of
+      prelude = case parsePreludeDefs preludeFile of
                   Right x  -> x
                   Left err -> error err
-      upt = case parseWithPrelude prelude input of
+      upt = case parseMainWith prelude input of
               Right x -> x
               Left x  -> error x
   section "Input" input
-  section "Parse: UnprocessedParsedTerm" $ show upt
+  section "Parse + Sugar: UnprocessedParsedTerm" $ show upt
   section "Desugar: optimizeBuiltinFunctions" . show . optimizeBuiltinFunctions . unAnnotatedUPT $ upt
   let optimizeBuiltinFunctionsVar = optimizeBuiltinFunctions (unAnnotatedUPT upt)
       str1 = lines . show $ optimizeBuiltinFunctionsVar

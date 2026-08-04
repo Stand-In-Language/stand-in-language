@@ -44,6 +44,7 @@ module Telomare.Levels
   ) where
 
 import Control.Comonad.Cofree (Cofree ((:<)))
+import Data.Bifunctor (first)
 import Data.Foldable (toList)
 import Data.List (foldl', intercalate, sortOn)
 import Data.Map (Map)
@@ -58,7 +59,8 @@ import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.IR.Surface
 import Telomare.IR.Types
-import Telomare.Parse (parseModuleNamed)
+import Telomare.Parse (runParseModule)
+import Telomare.Sugar (desugarModule, renderSugarError)
 
 -- |A top-level definition, or a @let@ binding qualified by the definition it
 -- appears in.
@@ -145,17 +147,20 @@ summarize entryId st = LevelsInfo
 -- Each module is parsed under its bare name, the same way
 -- `Telomare.Eval.compileModulesWith` parses it, so that a site's location here
 -- and the same site's location in the sizing report are the same string.
+-- Desugaring runs here too: this module walks the AST directly and only
+-- understands the post-sugar vocabulary.
 parseModules :: [(String, String)]
-             -> Either String [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
+             -> Either String [(String, [Either AUPT (String, AUPT)])]
 parseModules = traverse parseOne
   where
     parseOne (name, src) =
-      either (Left . ((name <> ": ") <>)) (Right . (name,)) (parseModuleNamed name src)
+      either (Left . ((name <> ": ") <>)) (Right . (name,)) $
+        runParseModule name src >>= first renderSugarError . desugarModule
 
 lookupEntry :: DefId
-            -> [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
+            -> [(String, [Either AUPT (String, AUPT)])]
             -> Maybe AUPT
-lookupEntry entryId parsed = unAnnotatedUPT <$> lookup (defName entryId)
+lookupEntry entryId parsed = lookup (defName entryId)
   [ (name, def)
   | (moduleName, entries) <- parsed
   , moduleName == defModule entryId
@@ -189,13 +194,13 @@ data St = St
 emptySt :: St
 emptySt = St Set.empty [] Map.empty
 
-globalEnv :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -> GlobalEnv
+globalEnv :: [(String, [Either AUPT (String, AUPT)])] -> GlobalEnv
 globalEnv = foldl' addModule Map.empty
   where
     addModule env (moduleName, entries) = foldl' (addDef moduleName) env entries
     addDef moduleName env = \case
       Right (name, def) -> Map.insertWith keepExisting name
-        (DefInfo (DefId moduleName name) (unAnnotatedUPT def)) env
+        (DefInfo (DefId moduleName name) def) env
       Left _ -> env
     keepExisting _ old = old
 

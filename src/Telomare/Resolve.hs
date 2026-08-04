@@ -67,9 +67,7 @@ import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.IR.Surface
 import Telomare.IR.Types
-import Telomare.Parse (TelomareParser, identifier)
 import Telomare.PrettyPrint (prettyPrint)
-import Text.Megaparsec (errorBundlePretty, runParser)
 
 debug :: Bool
 debug = False
@@ -516,13 +514,6 @@ process2Term2let = fmap generateAllHashes
                  . addBuiltins
                  . unAnnotatedUPT
                  where tf x = debugTrace ("wLet Term1:\n" <> prettyPrint x) x
-
--- |Helper function to compile to Term2
-runTelomareParser2Term2 :: TelomareParser AnnotatedUPT -- ^Parser to run
-                        -> String                      -- ^Raw string to be parsed
-                        -> Either ResolverError Term2         -- ^Error on Left
-runTelomareParser2Term2 parser str =
-  first (ParseError . errorBundlePretty) (runParser parser "" str) >>= process2Term2
 
 resolveImports' :: [(String, [Either AUPT (String, AUPT)])]
                 -> [Either AUPT (String, AUPT)] -- ^Main module with both Import and Assignment

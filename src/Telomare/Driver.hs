@@ -7,7 +7,7 @@ module Telomare.Driver where
 
 import Control.Comonad.Cofree (Cofree ((:<)), hoistCofree)
 import Control.Lens.Plated (Plated (..), transformM)
-import Control.Monad (void)
+import Control.Monad (void, (>=>))
 import Control.Monad.State (State, evalState)
 import qualified Control.Monad.State as State
 import Data.Bifunctor (bimap, first, second)
@@ -32,14 +32,15 @@ import Telomare.IR.Loc
 import Telomare.IR.Surface
 import Telomare.IR.Types
 import Telomare.Machine (appB, deferB)
-import Telomare.Parse (parseModule, parseModuleNamed,
-                       parseOneExprOrTopLevelDefs, parsePrelude)
+import Telomare.Parse (parseOneExprOrDefinitions, runParseModule)
 import Telomare.PrettyPrint
 import Telomare.Resolve (main2Term3, main2Term3let, process, resolveAllImports)
 import Telomare.Size (SizingReport (..), SizingSettings (..),
                       buildUnsizedLocMap, evalStaticCheck, locateSizingFailure,
                       sizeTermM, term3ToUnsizedExpr)
 import Telomare.Size.IR (SizedRecursion (..), VoidF)
+import Telomare.Sugar (desugarDefs, desugarModule, desugarTerm,
+                       renderSugarError, wrapMain)
 import Telomare.TypeCheck (typeCheck)
 import Text.Megaparsec (errorBundlePretty, runParser)
 
@@ -120,23 +121,22 @@ runStaticChecks t =
     Nothing -> pure t
     Just e  -> Left . StaticCheckError $ convertAbortMessage e
 
-compileMain :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -> String -> Either EvalError CompiledExpr
+compileMain :: [(String, [Either AUPT (String, AUPT)])] -> String -> Either EvalError CompiledExpr
 compileMain modules term = snd <$> compileMainReporting MainSizing modules term
 
 -- |`compileMain`, keeping the sizing results. Sizing costs minutes on
 -- Prelude-heavy programs, so anything that wants to report the inferred
 -- iteration counts must come by them through here rather than size again.
 compileMainReporting :: SizingOption
-                     -> [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
+                     -> [(String, [Either AUPT (String, AUPT)])]
                      -> String
                      -> Either EvalError (SizingReport, CompiledExpr)
 compileMainReporting so modules term = do
-  let modules' = second (fmap (bimap unAnnotatedUPT (second unAnnotatedUPT))) <$> modules
-      mainType = embed $ PairTypeP (embed $ ArrTypeP (embed ZeroTypeP) (embed ZeroTypeP)) (embed AnyType)
-  tcTerm <- first RE $ main2Term3 modules' term
+  let mainType = embed $ PairTypeP (embed $ ArrTypeP (embed ZeroTypeP) (embed ZeroTypeP)) (embed AnyType)
+  tcTerm <- first RE $ main2Term3 modules term
   case typeCheck mainType tcTerm of
     Just e -> Left $ TCE e
-    _      -> first RE (main2Term3let modules' term) >>= compileReporting so pure
+    _      -> first RE (main2Term3let modules term) >>= compileReporting so pure
 
 -- for testing
 compileMain' :: SizingSettings -> Term3 -> Either EvalError CompiledExpr
@@ -216,8 +216,12 @@ compileModulesWith so modulesStrings s =
     [] -> first renderEvalError $ compileMainReporting so [ (n, m) | (n, Right m) <- parsed ] s
     errs -> Left $ unlines errs
   where
-    parsed :: [(String, Either String [Either AnnotatedUPT (String, AnnotatedUPT)])]
-    parsed = fmap (\(moduleName, content) -> (moduleName, parseModuleNamed moduleName content)) modulesStrings
+    parsed :: [(String, Either String [Either AUPT (String, AUPT)])]
+    parsed = fmap parseAndDesugar modulesStrings
+    parseAndDesugar (moduleName, content) =
+      ( moduleName
+      , runParseModule moduleName content
+          >>= first renderSugarError . desugarModule )
 
 runMainCore :: [(String, String)] -- ^All modules as (Module_Name, Module_Content)
             -> String -- ^Module's name with `main` function
@@ -311,22 +315,11 @@ evalLoop_ iexpr = evalLoopCore iexpr printAcc "" []
 calculateRecursionLimits :: SizingSettings -> Term3 -> Either EvalError CompiledExpr
 calculateRecursionLimits sizingSettings = findChurchSizeD (DebugSizing sizingSettings)
 
-parseMain :: [(String, AnnotatedUPT)] -- ^Prelude: [(VariableName, BindedUPT)]
-          -> String                            -- ^Raw string to be parserd.
-          -> Either ResolverError Term3               -- ^Error on Left.
-parseMain prelude' str =
-  let
-      prelude = [("Prelude", Right . second unAnnotatedUPT <$> prelude')]
-      parseAuxModule :: String -> (String, [Either AUPT (String, AUPT)])
-      parseAuxModule str =
-        case sequence ("AuxModule", parseModule ("import Prelude\n" <> str)) of
-          Left e    -> error $ show e
-          Right pam -> second (fmap (bimap unAnnotatedUPT (second unAnnotatedUPT))) pam
-  in main2Term3 (parseAuxModule str:prelude) "AuxModule"
-
 eval2IExpr :: [(String, [Either AUPT (String, AUPT)])] -> String -> Either String CompiledExpr
 eval2IExpr extraModuleBindings str =
-  first errorBundlePretty (runParser (parseOneExprOrTopLevelDefs resolved) "" str)
+  first errorBundlePretty (runParser parseOneExprOrDefinitions "" str)
+  >>= first renderSugarError
+      . either (desugarDefs >=> wrapMain resolved) desugarTerm
   >>= first show . process . AnnotatedUPT
   >>= tt . first show . compileUnitTest
     where

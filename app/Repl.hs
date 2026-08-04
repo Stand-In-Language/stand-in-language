@@ -35,11 +35,12 @@ import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.IR.Surface
 import Telomare.IR.Types
-import Telomare.Parse (TelomareParser, parseAssignment, parseLongExpr,
-                       parsePrelude)
+import Telomare.Parse (TelomareParser, parseLongExpr, parseSingleDefinition,
+                       runParseDefinitions)
 import Telomare.PrettyPrint
 import Telomare.Resolve (process)
 import Telomare.Size.IR (DeferredEvalF (..), PartialExpr, deferredEE)
+import Telomare.Sugar (SugarError, desugarDefs, desugarTerm, renderSugarError)
 import Telomare.TypeCheck (inferType)
 import Text.Megaparsec
 import Text.Megaparsec.Char
@@ -51,15 +52,23 @@ import Text.Megaparsec.Char
 -- than in the compiler. For example it is possible.
 -- to overwrite top-level bindings.
 
+-- |Lift a desugaring result into the REPL's parsers, rendering errors the
+-- same way parse errors are shown.
+desugaredRepl :: Either SugarError a -> TelomareParser a
+desugaredRepl = either (fail . renderSugarError) pure
+
 -- | Assignment parsing from the repl.
 parseReplAssignment :: TelomareParser [(String, AUPT)]
-parseReplAssignment = singleton <$> (parseAssignment <* eof)
+parseReplAssignment = do
+  def <- parseSingleDefinition <* eof
+  fmap (first locatedNameText) <$> desugaredRepl (desugarDefs [def])
 
 -- | Parse only an expression
 parseReplExpr :: TelomareParser [(String, AUPT)]
 parseReplExpr = do
   expr <- parseLongExpr <* eof
-  pure [("_tmp_", expr)]
+  desugaredExpr <- desugaredRepl (desugarTerm expr)
+  pure [("_tmp_", desugaredExpr)]
 
 -- | Information about what has the REPL parsed.
 data ReplStep a = ReplAssignment a
@@ -76,6 +85,14 @@ runReplParser :: [(String, AUPT)]
               -> String
               -> Either String (ReplStep [(String, AUPT)])
 runReplParser prelude str = fmap (prelude <>) <$> first errorBundlePretty (runParser parseReplStep "" str)
+
+-- |Parse and desugar a file of definitions (a prelude or a @:l@-loaded
+-- file) into REPL bindings.
+parseDefinitionsFile :: String -> Either String [(String, AUPT)]
+parseDefinitionsFile str = do
+  defs <- runParseDefinitions "" str
+  bindings <- first renderSugarError $ desugarDefs defs
+  pure $ first locatedNameText <$> bindings
 
 -- Common functions
 -- ~~~~~~~~~~~~~~~~
@@ -205,25 +222,25 @@ replLoop (ReplState bs eval sf) = do
       let loadFile :: FilePath -> InputT IO [(String, AUPT)]
           loadFile fileName = do
             fileString <- liftIO $ Strict.readFile fileName
-            case parsePrelude fileString of
+            case parseDefinitionsFile fileString of
               Left errStr -> do
                 liftIO . putStrLn $ "Error from loaded file: " <> errStr
                 pure []
               Right fileBindings -> do
                 liftIO . putStrLn $ "File " <> fileName <> " successfully loaded."
-                pure . (fmap . fmap) unAnnotatedUPT $ fileBindings
+                pure fileBindings
       bs' <- concat <$> mapM loadFile (Set.toList sf)
       replLoop $ ReplState bs' eval sf
     Just fileName | ":l " `isPrefixOf` fileName -> do
       let fileName' = drop 3 fileName
       fileString <- liftIO $ Strict.readFile fileName'
-      case parsePrelude fileString of
+      case parseDefinitionsFile fileString of
         Left errStr -> do
           liftIO . putStrLn $ "Error from loaded file: " <> errStr
           replLoop $ ReplState bs eval sf
         Right fileBindings -> do
                 liftIO . putStrLn $ "File " <> fileName' <> " successfully loaded."
-                replLoop $ ReplState (bs <> (fmap . fmap) unAnnotatedUPT fileBindings) eval (Set.insert fileName' sf)
+                replLoop $ ReplState (bs <> fileBindings) eval (Set.insert fileName' sf)
     Just s -> do
       new_bs <- replStep eval bs s
       replLoop $ ReplState new_bs eval sf
@@ -274,7 +291,7 @@ startExpr eval bindings s_expr = case runReplParser bindings s_expr of
   Right (ReplExpr binds)   -> printLastExpr eval binds
 
 main = do
-  e_prelude <- parsePrelude <$> Strict.readFile "Prelude.tel"
+  e_prelude <- parseDefinitionsFile <$> Strict.readFile "Prelude.tel"
   settings  <- execParser opts
   let eval' = case _backend settings of
                SimpleBackend   -> wrapEval simpleEval'
@@ -285,8 +302,7 @@ main = do
         Right (Just x) -> Right x
         Left e -> Left e
         _ -> Left $ ResultConversionError "failed converting back to iexpr after eval"
-      bindings = (fmap . fmap) unAnnotatedUPT $
-        case e_prelude of
+      bindings = case e_prelude of
           Left  _   ->  []
           Right bds -> bds
   case _expr settings of
