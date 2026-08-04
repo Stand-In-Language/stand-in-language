@@ -48,7 +48,6 @@ library
                      , Telomare.Machine
                      , Telomare.Eval.Meter
                      , Telomare.Parse
-                     , Telomare.Parse.Sugar
                      , Telomare.PrettyPrint
                      , Telomare.PrettyPrint.Indent
                      , Telomare.Resolve

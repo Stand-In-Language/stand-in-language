@@ -5,9 +5,8 @@
 -- builtin names are bound ('addBuiltins') and partially applied builtins
 -- are rewritten to direct forms ('optimizeBuiltinFunctions').
 --
--- Sugar with no surface-AST representation (multi-pattern lambdas, list
--- assignments, UDT declarations) is expanded during parsing instead, by
--- 'Telomare.Parse.Sugar'.
+-- Raw parse-level sugar (multi-pattern lambdas, list assignments, UDT
+-- declarations) is expanded before this stage runs, by 'Telomare.Sugar'.
 module Telomare.Desugar where
 
 import Control.Comonad.Cofree (Cofree (..))
