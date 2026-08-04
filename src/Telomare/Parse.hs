@@ -1,38 +1,16 @@
-{-# LANGUAGE LambdaCase          #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeFamilies        #-}
 
 module Telomare.Parse where
 
-import Control.Comonad.Cofree (Cofree (..), unwrap)
-import qualified Control.Comonad.Trans.Cofree as C (CofreeF (..))
-import Control.Lens.Plated (Plated (..))
-import Control.Monad (join, void)
-import Control.Monad.State (State)
-import Data.Bifunctor (Bifunctor (first, second), bimap)
-import Data.Char (isUpper)
-import Data.Fix (Fix (..))
-import Data.Functor (($>))
-import Data.Functor.Foldable (Base, cata, embed, para, project)
-import Data.Functor.Foldable.TH (MakeBaseFunctor (makeBaseFunctor))
-import Data.Maybe (fromJust)
+import Control.Comonad.Cofree (Cofree (..))
+import Control.Monad (void)
+import Data.Bifunctor (first)
+import Data.Functor.Foldable (embed)
 import Data.Void (Void)
-import Data.Word (Word8)
-import GHC.Desugar (AnnotationWrapper (AnnotationWrapper))
-import qualified System.IO.Strict as Strict
-import Telomare.Error
 import Telomare.IR.Base
-import Telomare.IR.Builder
-import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.IR.Surface
-import Telomare.IR.Types
-import Telomare.PrettyPrint.Indent (indentSansFirstLine)
--- TODO(refactor/dumb-parse): temporary import backing the compatibility
--- shims at the bottom of this file; goes away once every consumer
--- composes parse-then-sugar itself.
-import Telomare.Sugar (SugarError, desugarDefs, desugarModule, desugarTerm,
-                       renderSugarError, wrapMain)
 import Text.Megaparsec (MonadParsec (eof, notFollowedBy, try), ParseErrorBundle,
                         Parsec, Pos,
                         SourcePos (sourceColumn, sourceLine, sourceName),
@@ -42,9 +20,6 @@ import Text.Megaparsec (MonadParsec (eof, notFollowedBy, try), ParseErrorBundle,
 import Text.Megaparsec.Char (alphaNumChar, char, letterChar, space1, string)
 import qualified Text.Megaparsec.Char.Lexer as L
 import Text.Megaparsec.Debug (dbg)
-import Text.Megaparsec.Pos (Pos)
-import Text.Read (readMaybe)
-import Text.Show.Deriving (deriveShow1)
 
 -- |TelomareParser :: * -> *
 type TelomareParser = Parsec Void String
@@ -497,73 +472,3 @@ parseOneExprOrDefinitions :: TelomareParser (Either [DefinitionF AUPT] AUPT)
 parseOneExprOrDefinitions =
   (Left <$> try parseDefinitions) <|> (Right <$> parseLongExpr)
 
--- * Compatibility shims
---
--- TODO(refactor/dumb-parse): everything below composes raw parsing with
--- 'Telomare.Sugar' to preserve the old parse API while consumers migrate
--- to calling the pass themselves. Delete once nothing imports these.
-
-desugaredInParser :: Either SugarError a -> TelomareParser a
-desugaredInParser = either (fail . renderSugarError) pure
-
--- |Parse top level expressions.
-parseTopLevel :: TelomareParser AUPT
-parseTopLevel = parseTopLevelWithExtraModuleBindings []
-
-parseTopLevelWithExtraModuleBindings :: [(String, AUPT)] -> TelomareParser AUPT
-parseTopLevelWithExtraModuleBindings lst = do
-  defs <- parseDefinitions
-  desugaredInParser $ desugarDefs defs >>= wrapMain lst
-
-parseAssignment :: TelomareParser (String, AUPT)
-parseAssignment = first locatedNameText <$> parseLocatedAssignment
-
-parseLocatedAssignment :: TelomareParser (LocatedName, AUPT)
-parseLocatedAssignment = do
-  def <- parseSingleDefinition
-  desugaredInParser (desugarDefs [def]) >>= \case
-    [binding] -> pure binding
-    _         -> fail "parseLocatedAssignment: unexpected expansion"
-
-parsePrelude :: String -> Either String [(String, AnnotatedUPT)]
-parsePrelude = parsePreludeNamed ""
-
-parsePreludeNamed :: String -> String -> Either String [(String, AnnotatedUPT)]
-parsePreludeNamed name str = do
-  defs <- runParseDefinitions name str
-  bindings <- first renderSugarError $ desugarDefs defs
-  pure $ bimap locatedNameText AnnotatedUPT <$> bindings
-
-parseWithPrelude :: [(String, AnnotatedUPT)]   -- ^Prelude
-                 -> String                     -- ^Raw string to be parsed
-                 -> Either String AnnotatedUPT -- ^Error on Left
-parseWithPrelude prelude str = do
-  defs <- runParseDefinitions "" str
-  first renderSugarError $ AnnotatedUPT <$> (desugarDefs defs >>= wrapMain prelude')
-  where
-    prelude' = second unAnnotatedUPT <$> prelude
-
-parseModule :: String -> Either String [Either AnnotatedUPT (String, AnnotatedUPT)]
-parseModule = parseModuleNamed ""
-
-parseModuleNamed :: String -> String -> Either String [Either AnnotatedUPT (String, AnnotatedUPT)]
-parseModuleNamed name str = first errorBundlePretty $ parseModuleDetailedNamed name str
-
-parseModuleDetailed :: String -> Either (ParseErrorBundle String Void) [Either AnnotatedUPT (String, AnnotatedUPT)]
-parseModuleDetailed = parseModuleDetailedNamed ""
-
-parseModuleDetailedNamed :: String -> String -> Either (ParseErrorBundle String Void) [Either AnnotatedUPT (String, AnnotatedUPT)]
-parseModuleDetailedNamed name str = wrapUp <$> runParseModuleDetailed name str where
-  -- Desugar errors crash here as they did when expansion ran inside the
-  -- parser; the migrated callers get a proper Either from desugarModule.
-  wrapUp items = case desugarModule items of
-    Right xs -> bimap AnnotatedUPT (second AnnotatedUPT) <$> xs
-    Left e   -> error $ renderSugarError e
-
--- |Parse either a single expression or top level definitions defaulting to the `main` definition.
---  This function was made for telomare-evaluare
-parseOneExprOrTopLevelDefs :: [(String, AUPT)] -> TelomareParser AUPT
-parseOneExprOrTopLevelDefs extraModuleBindings =
-  choice $ try <$> [ parseTopLevelWithExtraModuleBindings extraModuleBindings
-                   , parseLongExpr >>= desugaredInParser . desugarTerm
-                   ]

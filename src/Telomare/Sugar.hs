@@ -23,6 +23,7 @@ module Telomare.Sugar
   ) where
 
 import Control.Comonad.Cofree (Cofree (..))
+import Control.Monad ((>=>))
 import Data.Bifunctor (first)
 import Data.Char (isUpper)
 import Data.Fix (Fix (..))
@@ -100,7 +101,7 @@ desugarPattern (Fix pattern') = case pattern' of
 -- Single definitions fold their refinement annotation into a 'CheckF';
 -- list assignments expand into one binding per name.
 desugarDefs :: [DefinitionF AUPT] -> Either SugarError [(LocatedName, AUPT)]
-desugarDefs defs = concat <$> traverse (\def -> traverse desugarTerm def >>= expandDef) defs
+desugarDefs defs = concat <$> traverse (traverse desugarTerm >=> expandDef) defs
 
 -- |Desugar a parsed module: imports pass through, definitions expand into
 -- their bindings.
