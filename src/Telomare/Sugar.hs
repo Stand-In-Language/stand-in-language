@@ -3,8 +3,8 @@
 -- |The desugaring pass that runs immediately after parsing. The grammar in
 -- 'Telomare.Parse' is deliberately dumb: it emits the raw forms
 -- 'LamPatUPF' (multi-pattern lambdas), 'LetSugarUPF' (lets whose entries
--- may be list assignments or carry refinement annotations) and 'UDTUPF'.
--- 'desugarTerm' eliminates all three, rewriting them into the plain
+-- may be list assignments or carry refinement annotations).
+-- 'desugarTerm' eliminates both, rewriting them into the plain
 -- 'UnprocessedParsedTermL'/'LetUPF'/'CheckF' vocabulary every later stage
 -- consumes. Everything here is a pure @AUPT@ builder, so source spans are
 -- exactly what the grammar alone produces.
@@ -18,12 +18,15 @@ module Telomare.Sugar
   , desugarTerm
   , desugarDefs
   , desugarModule
+  , sugarTerm
+  , sugarDefs
+  , sugarModule
   , wrapMain
   , buildMultiLambda
   ) where
 
 import Control.Comonad.Cofree (Cofree (..))
-import Control.Monad ((>=>))
+import Control.Monad (when, (>=>))
 import Data.Bifunctor (first)
 import Data.Char (isUpper)
 import Data.Fix (Fix (..))
@@ -45,6 +48,9 @@ data SugarError
     -- ^ A UDT declaration whose lambda body does not reduce to a list
     -- literal. Fields: location, type name, description of the offending
     -- node.
+  | UDTArityMismatch LocTag String Int Int
+    -- ^ A UDT declaration with a different number of exported names and
+    -- body slots. Fields: location, type name, number of names, body slots.
   | MissingMain
     -- ^ 'wrapMain' found no @main@ among the top-level definitions.
   deriving (Eq, Show)
@@ -57,6 +63,10 @@ renderSugarError = \case
   UDTBodyNotList loc tname desc ->
     "UDT body for [" <> tname <> "] must reduce to a list literal; got: "
     <> desc <> atLoc loc
+  UDTArityMismatch loc tname nNames nSlots ->
+    "UDT declaration for [" <> tname <> "] has " <> show nNames
+    <> " names for " <> show nSlots <> " value slots; expected one type name "
+    <> "plus one name per slot" <> atLoc loc
   MissingMain -> "missing 'main' definition"
   where
     atLoc loc = maybe "" (" at " <>) (renderLocTag loc)
@@ -67,10 +77,11 @@ sugarErrorLoc :: SugarError -> Maybe LocTag
 sugarErrorLoc = \case
   ListArityMismatch loc _ _ -> Just loc
   UDTBodyNotList loc _ _   -> Just loc
+  UDTArityMismatch loc _ _ _ -> Just loc
   MissingMain              -> Nothing
 
 -- |Rewrite away every raw form, bottom-up. The result contains no
--- 'LamPatUPF', 'LetSugarUPF' or 'UDTUPF' nodes, including inside pattern
+-- 'LamPatUPF' or 'LetSugarUPF' nodes, including inside pattern
 -- annotations.
 desugarTerm :: AUPT -> Either SugarError AUPT
 desugarTerm (loc :< term) = case term of
@@ -105,12 +116,30 @@ desugarDefs defs = concat <$> traverse (traverse desugarTerm >=> expandDef) defs
 
 -- |Desugar a parsed module: imports pass through, definitions expand into
 -- their bindings.
-desugarModule :: [Either AUPT (DefinitionF AUPT)] -> Either SugarError [Either AUPT (String, AUPT)]
+desugarModule :: [ModuleItem AUPT] -> Either SugarError [Either AUPT (String, AUPT)]
 desugarModule = fmap concat . traverse item where
   item = \case
-    Left imp -> (: []) . Left <$> desugarTerm imp
-    Right def -> fmap (Right . first locatedNameText)
-                 <$> (traverse desugarTerm def >>= expandDef)
+    ModuleImportItem importDecl -> pure [Left $ importDeclTerm importDecl]
+    ModuleDefinitionItem def -> fmap (Right . first locatedNameText)
+                                 <$> (traverse desugarTerm def >>= expandDef)
+
+  importDeclTerm importDecl = case parsedImportQualifier importDecl of
+    Nothing -> parsedImportLoc importDecl :< ImportUPF
+      (locatedNameText $ parsedImportModule importDecl)
+    Just qualifier -> parsedImportLoc importDecl :< ImportQualifiedUPF
+      (locatedNameText qualifier)
+      (locatedNameText $ parsedImportModule importDecl)
+
+sugarTerm :: Parsed AUPT -> Either SugarError (Sugared AUPT)
+sugarTerm (Parsed term) = Sugared <$> desugarTerm term
+
+sugarDefs :: Parsed [DefinitionF AUPT]
+          -> Either SugarError (Sugared [(LocatedName, AUPT)])
+sugarDefs (Parsed defs) = Sugared <$> desugarDefs defs
+
+sugarModule :: Parsed [ModuleItem AUPT]
+            -> Either SugarError (Sugared [Either AUPT (String, AUPT)])
+sugarModule (Parsed items) = Sugared <$> desugarModule items
 
 -- |Wrap a module's bindings (plus any extra module bindings, e.g. an
 -- already-desugared prelude) in a let around its @main@ definition. This
@@ -139,25 +168,16 @@ expandDef = \case
     where
       names = locatedNameText <$> locatedNames
 
--- |Generate a fresh-looking variable name from a pattern's shape, used
--- as the name of the lambda parameter that 'buildMultiLambda' introduces
--- before destructuring.
-genPatternVarName :: PatternA -> String
-genPatternVarName = ("generatedVar" <>)
-                  . filter (\x -> x /= '\"'
-                               && x /= ' '
-                               && x /= '('
-                               && x /= ')'
-                               && x /= '['
-                               && x /= ']')
-                  . show
-
--- |Pick the lambda-bound variable name for a pattern: use the user's name
--- for a 'PatternVar', otherwise generate one.
-lambdaVarName :: (LocTag, PatternA) -> LocatedName
-lambdaVarName (loc, pattern') = case pattern' of
-  Fix (PatternVarF str) -> locatedName loc str
-  p              -> locatedName (GeneratedLoc "lambda pattern" (Just loc)) (genPatternVarName p)
+-- |Pick lambda-bound names for patterns. Generated names begin with an
+-- underscore, which source identifiers cannot do, and the parameter index
+-- keeps repeated patterns distinct.
+lambdaVarNames :: [(LocTag, PatternA)] -> [LocatedName]
+lambdaVarNames = zipWith nameFor [0 :: Int ..]
+  where
+    nameFor index (loc, pattern') = case pattern' of
+      Fix (PatternVarF name) -> name
+      _ -> locatedName (GeneratedLoc "lambda pattern" (Just loc))
+             ("__lambda_pattern_" <> show index)
 
 -- |Build a multi-argument lambda whose destructuring all happens INSIDE
 -- the innermost lambda body. For @\\p1 p2 p3 -> body@ this emits
@@ -174,7 +194,7 @@ lambdaVarName (loc, pattern') = case pattern' of
 -- abort fallback.
 buildMultiLambda :: LocTag -> [(LocTag, PatternA)] -> AUPT -> AUPT
 buildMultiLambda lt patterns body =
-  let varNames = lambdaVarName <$> patterns
+  let varNames = lambdaVarNames patterns
       destructured = foldr applyDestructure body (zip (snd <$> patterns) (locatedNameText <$> varNames))
       lamWrapped = foldr LamP destructured varNames
   in lamWrapped
@@ -277,6 +297,10 @@ expandUDTLocated' loc locatedNames tname body =
   case body of
     (LamP hParam inner) -> do
       (slots, wrapBody) <- udtSlots loc tname inner
+      let nameCount = length locatedNames
+          slotCount = length slots
+      when (nameCount /= slotCount + 1)
+        (Left $ UDTArityMismatch loc tname nameCount slotCount)
       let hParamName = locatedNameText hParam
           (coreSlots, hoistedSlots) = splitAt 2 slots
           coreNames = take (1 + length coreSlots) locatedNames

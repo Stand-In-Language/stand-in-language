@@ -46,7 +46,7 @@ import qualified Data.ByteArray as BA
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
 import Data.Char (ord)
-import Data.Fix (Fix)
+import Data.Fix (Fix (..))
 import qualified Data.Foldable as F
 import Data.Functor.Foldable (Base, Corecursive (ana, apo, embed),
                               Recursive (..))
@@ -58,7 +58,8 @@ import Data.Monoid (Sum (..))
 import Data.Set (Set, (\\))
 import qualified Data.Set as Set
 import Debug.Trace (trace, traceShow, traceShowId)
-import Telomare.Desugar (addBuiltins, optimizeBuiltinFunctions, removeCaseUPs,
+import Telomare.Desugar (addBuiltins, addCaseHelperAliases,
+                         optimizeBuiltinFunctions, removeCaseUPs,
                          rewriteOuterTag)
 import Telomare.Error
 import Telomare.IR.Base
@@ -502,6 +503,7 @@ process2Term2 = fmap generateAllHashes
               . removeCaseUPs
               . optimizeBuiltinFunctions
               . addBuiltins
+              . addCaseHelperAliases
               . unAnnotatedUPT
                  where tf x = debugTrace ("reg Term1:\n" <> prettyPrint x) x
 
@@ -512,74 +514,109 @@ process2Term2let = fmap generateAllHashes
                  . removeCaseUPs
                  . optimizeBuiltinFunctions
                  . addBuiltins
+                 . addCaseHelperAliases
                  . unAnnotatedUPT
                  where tf x = debugTrace ("wLet Term1:\n" <> prettyPrint x) x
 
 resolveImports' :: [(String, [Either AUPT (String, AUPT)])]
                 -> [Either AUPT (String, AUPT)] -- ^Main module with both Import and Assignment
-                -> [Either AUPT (String, AUPT)]
-resolveImports' modules xs = lefts <> rights
-  where
-    lefts' = reverse . filter isLeft $ xs
-    lefts = case lefts' of
-      [] -> lefts'
-      (y:ys) -> case y of
-        (Left (_ :< (ImportUPF var))) ->
-          case lookup var modules of
-            Nothing -> error $ "Import error from " <> var -- TODO make return Either and get rid of this
-            Just x  -> x
-        (Left (_ :< (ImportQualifiedUPF q v))) ->
-          case lookup v modules of
-            Nothing -> error $ "Import error from " <> v -- TODO make return Either and get rid of this
-            Just x  -> (fmap . fmap . first) (\str -> q <> "." <> str) x
-        e -> error $ "Expected import statement. Got:\n" <> show e
-    rights = filter isRight xs
-    isLeft (Left _) = True
-    isLeft _        = False
-    isRight (Right _) = True
-    isRight _         = False
+                -> Either ResolverError [Either AUPT (String, AUPT)]
+resolveImports' modules = fmap (fmap Right) . resolveItems modules []
 
 resolveAllImports' :: [(String, [Either AUPT (String, AUPT)])]
                    -> [Either AUPT (String, AUPT)]
-                   -> [Either AUPT (String, AUPT)]
-resolveAllImports' modules x =
-  let resolved = resolveImports' modules x
-  in if resolved == x
-     then resolved
-     else resolveAllImports' modules resolved
+                   -> Either ResolverError [Either AUPT (String, AUPT)]
+resolveAllImports' = resolveImports'
 
 resolveAllImports :: [(String, [Either AUPT (String, AUPT)])] -- ^All the modules
                   -> [Either AUPT (String, AUPT)] -- ^Module to be resolved (i.e. list of either Import_UPT or top level definitions)
-                  -> [(String, AUPT)]
-resolveAllImports x y = removeRights <$> resolveAllImports' x y
-  where
-    removeRights = \case
-      Left x -> error $ "resolveImports: Left when should be all Right: " <> show x -- TODO make return Either and get rid of this
-      Right x -> x
+                  -> Either ResolverError [(String, AUPT)]
+resolveAllImports modules = resolveItems modules []
 
 resolveImports :: [(String, [Either AUPT (String, AUPT)])]
                -> String
-               -> [(String, AUPT)]
-resolveImports modules moduleName = resolveAllImports modules principal
+               -> Either ResolverError [(String, AUPT)]
+resolveImports modules = resolveModule modules []
+
+resolveModule :: [(String, [Either AUPT (String, AUPT)])]
+              -> [String]
+              -> String
+              -> Either ResolverError [(String, AUPT)]
+resolveModule modules stack moduleName
+  | moduleName `elem` stack =
+      Left . ImportCycle $ dropWhile (/= moduleName) stack <> [moduleName]
+  | otherwise = case lookup moduleName modules of
+      Nothing    -> Left $ ModuleNotFound moduleName
+      Just items -> resolveItems modules (stack <> [moduleName]) items
+
+resolveItems :: [(String, [Either AUPT (String, AUPT)])]
+             -> [String]
+             -> [Either AUPT (String, AUPT)]
+             -> Either ResolverError [(String, AUPT)]
+resolveItems modules stack = fmap concat . traverse resolveItem
   where
-    principal = case lookup moduleName modules of
-      Nothing -> error $ "resolveImports: Module " <> moduleName <> " not found" -- TODO make return Either and get rid of this
-      Just x  -> x
+    resolveItem = \case
+      Right binding -> Right [binding]
+      Left (loc :< ImportUPF moduleName) -> resolveModule modules stack moduleName
+      Left (loc :< ImportQualifiedUPF qualifier moduleName) -> do
+        bindings <- resolveModule modules stack moduleName
+        pure $ qualifyBindings qualifier bindings
+      Left (loc :< _) -> Left $ MalformedImport loc
+
+qualifyBindings :: String -> [(String, AUPT)] -> [(String, AUPT)]
+qualifyBindings qualifier bindings =
+  [ (qualify name, qualifyTerm names qualifier value)
+  | (name, value) <- bindings
+  ]
+  where
+    names = Set.fromList $ fst <$> bindings
+    qualify name = qualifier <> "." <> name
+
+qualifyTerm :: Set String -> String -> AUPT -> AUPT
+qualifyTerm names qualifier = go Set.empty
+  where
+    go bound (loc :< term) = loc :< case term of
+      UnprocessedParsedTermL (VarF name)
+        | name `Set.member` names && name `Set.notMember` bound ->
+            UnprocessedParsedTermL $ VarF (qualifier <> "." <> name)
+      UnprocessedParsedTermL (LamF name body) ->
+        UnprocessedParsedTermL . LamF name $
+          go (Set.insert (locatedNameText name) bound) body
+      LetUPF bindings body ->
+        let localNames = Set.fromList $ letBindingName <$> bindings
+            bound' = bound <> localNames
+        in LetUPF (fmap (fmap $ go bound') bindings) (go bound' body)
+      CaseUPF scrutinee alternatives ->
+        CaseUPF (go bound scrutinee)
+          [ (qualifyPattern bound pattern', go (bound <> patternNames pattern') body)
+          | (pattern', body) <- alternatives
+          ]
+      other -> fmap (go bound) other
+
+    qualifyPattern bound (Fix pattern') = Fix $ case pattern' of
+      PatternAnnotatedF pattern'' (AnnotatedUPT annotation) ->
+        PatternAnnotatedF (qualifyPattern bound pattern'')
+          (AnnotatedUPT $ go bound annotation)
+      other -> fmap (qualifyPattern bound) other
+
+    patternNames = cata $ \case
+      PatternVarF name      -> Set.singleton $ locatedNameText name
+      PatternAnnotatedF p _ -> p
+      p                     -> F.fold p
 
 resolveMain :: [(String, [Either AUPT (String, AUPT)])] -- ^Modules: [(ModuleName, [Either Import (VariableName, BindedUPT)])]
             -> String -- ^Module name with main
             -> Either ResolverError AUPT
 resolveMain allModules mainModule = case lookup mainModule allModules of
   Nothing -> Left $ ModuleNotFound mainModule
-  Just lst -> let resolved :: [(String, AUPT)]
-                  resolved = resolveImports allModules mainModule
-                  maybeMain = lookup "main" resolved
-              in case maybeMain of
-                   Nothing -> Left $ NoMainFunction mainModule
-                   Just x ->
-                     let loc = case x of loc' :< _ -> loc'
-                         locatedBindings = first (locatedName (GeneratedLoc "resolveMain.binding" (Just loc))) <$> pruneBindings x resolved
-                     in Right $ GeneratedLoc "resolveMain" (Just loc) :< LetUPF locatedBindings x
+  Just _ -> do
+    resolved <- resolveImports allModules mainModule
+    case lookup "main" resolved of
+      Nothing -> Left $ NoMainFunction mainModule
+      Just x ->
+        let loc = case x of loc' :< _ -> loc'
+            locatedBindings = first (locatedName (GeneratedLoc "resolveMain.binding" (Just loc))) <$> pruneBindings x resolved
+        in Right $ GeneratedLoc "resolveMain" (Just loc) :< LetUPF locatedBindings x
 
 main2Term3 :: [(String, [Either AUPT (String, AUPT)])] -- ^Modules: [(ModuleName, [Either Import (VariableName, BindedUPT)])]
            -> String -- ^Module name with main

@@ -14,7 +14,7 @@ import Control.Concurrent.STM
 import Control.Exception (IOException, try)
 import Control.Monad (join, void)
 import Control.Monad.IO.Class (MonadIO (liftIO))
-import Data.Bifunctor (bimap, first, second)
+import Data.Bifunctor (first)
 import Data.Char (isAsciiLower, isAsciiUpper, isDigit)
 import Data.Fix (Fix (..))
 import Data.List (find, sortOn)
@@ -45,15 +45,11 @@ import Language.LSP.Server
 import Telomare.Driver (eval2IExpr)
 import Telomare.Error
 import Telomare.IR.Base
-import Telomare.IR.Builder
-import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.IR.Surface
-import Telomare.IR.Types
 import Telomare.Parse (runParseModule, runParseModuleDetailed)
 import Telomare.Resolve (main2Term3)
-import Telomare.Sugar (SugarError, desugarModule, renderSugarError,
-                       sugarErrorLoc)
+import Telomare.Sugar (SugarError, renderSugarError, sugarErrorLoc, sugarModule)
 import Text.Megaparsec.Error (ParseErrorBundle (..), errorBundlePretty,
                               errorOffset)
 
@@ -256,11 +252,11 @@ formatTimestampMinutesUTC rawTimestamp = do
 parseTelomareModule :: T.Text -> Either String ParseResult
 parseTelomareModule text =
   runParseModule "" (T.unpack text)
-    >>= first renderSugarError . desugarModule
+    >>= first renderSugarError . fmap unSugared . sugarModule
 
 -- |Raw parse only, keeping the megaparsec bundle so parse diagnostics can
 -- use 'errorOffset'. Callers run 'desugarModule' on the result themselves.
-parseTelomareModuleDetailed :: T.Text -> Either (ParseErrorBundle String Void) [Either AUPT (DefinitionF AUPT)]
+parseTelomareModuleDetailed :: T.Text -> Either (ParseErrorBundle String Void) (Parsed [ModuleItem AUPT])
 parseTelomareModuleDetailed = runParseModuleDetailed "" . T.unpack
 
 storeParsedDoc
@@ -272,9 +268,11 @@ storeParsedDoc
 storeParsedDoc gState uri version text = do
   modules <- liftIO $ readTVarIO (moduleBindings gState)
   let detailedParse = parseTelomareModuleDetailed text
-      desugared = desugarModule <$> detailedParse
-      parseRes = first errorBundlePretty detailedParse
-        >>= first renderSugarError . desugarModule
+      desugared = fmap unSugared . sugarModule <$> detailedParse
+      parseRes = case desugared of
+        Left parseErr      -> Left $ errorBundlePretty parseErr
+        Right (Left err)   -> Left $ renderSugarError err
+        Right (Right tree) -> Right tree
   diagnostics' <- case desugared of
     Left err -> pure $ parseDiagnostics text err
     Right (Left err) -> pure $ sugarDiagnostics err
@@ -431,7 +429,6 @@ unresolvedTerm globals = go Set.empty
             bound' = localNames <> bound
         in concatMap (go bound' . letBindingValue) bindings <> go bound' body
       UnprocessedParsedTermL (LamF name body) -> go (Set.insert (locatedNameText name) bound) body
-      UDTUPF names body -> go (Set.union (Set.fromList names) bound) body
       CaseUPF scrutinee cases ->
         go bound scrutinee <> concatMap (caseRefs bound) cases
       UnprocessedParsedTermH (ITEF i t e) -> concatMap (go bound) [i, t, e]
@@ -741,7 +738,6 @@ termReferences bound (loc :< term) =
         UnprocessedParsedTermH (HTraceF x) -> termReferences bound x
         UnprocessedParsedTermH (CheckF checkExpr body) -> termReferences bound checkExpr <> termReferences bound body
         UnprocessedParsedTermH (HashF x) -> termReferences bound x
-        UDTUPF names body -> termReferences (names <> bound) body
         CaseUPF scrutinee cases -> termReferences bound scrutinee <> concatMap caseReferences cases
         _ -> []
   in children
@@ -797,23 +793,30 @@ localTermDefinitionAt uri position env (loc :< term) = case term of
   UnprocessedParsedTermH (HTraceF x) -> localTermDefinitionAt uri position env x
   UnprocessedParsedTermH (CheckF checkExpr body) -> firstJust [checkExpr, body]
   UnprocessedParsedTermH (HashF x) -> localTermDefinitionAt uri position env x
-  UDTUPF names body -> localTermDefinitionAt uri position (foldr (`Map.insert` Nothing) env names) body
   CaseUPF scrutinee cases ->
     localTermDefinitionAt uri position env scrutinee
-      <|> listToMaybe [ location
-                      | (pat, caseBody) <- cases
-                      , let env' = foldr (`Map.insert` Nothing) env $ patternBoundNames pat
-                      , location <- foldMap pure $ localTermDefinitionAt uri position env' caseBody
-                      ]
+      <|> listToMaybe (mapMaybe caseDefinition cases)
   _ -> Nothing
   where
     firstJust = listToMaybe . mapMaybe (localTermDefinitionAt uri position env)
+    caseDefinition (pat, caseBody) =
+      let bindings = patternBoundNamesLocated pat
+          bindingLocation name = LSPTypes.Location uri (locTagToRange $ locatedNameLoc name)
+          env' = foldr (\name -> Map.insert (locatedNameText name) (Just $ bindingLocation name)) env bindings
+      in listToMaybe [ bindingLocation name
+                     | name <- bindings
+                     , positionInRange position (locTagToRange $ locatedNameLoc name)
+                     ]
+         <|> localTermDefinitionAt uri position env' caseBody
 
 patternBoundNames :: PatternA -> [String]
-patternBoundNames (Fix patternF) = case patternF of
+patternBoundNames = fmap locatedNameText . patternBoundNamesLocated
+
+patternBoundNamesLocated :: PatternA -> [LocatedName]
+patternBoundNamesLocated (Fix patternF) = case patternF of
   PatternVarF name        -> [name]
-  PatternAnnotatedF pat _ -> patternBoundNames pat
-  PatternPairF left right -> patternBoundNames left <> patternBoundNames right
+  PatternAnnotatedF pat _ -> patternBoundNamesLocated pat
+  PatternPairF left right -> patternBoundNamesLocated left <> patternBoundNamesLocated right
   _                       -> []
 
 lspIdentChar :: Char -> Bool

@@ -40,7 +40,8 @@ import Telomare.Parse (TelomareParser, parseLongExpr, parseSingleDefinition,
 import Telomare.PrettyPrint
 import Telomare.Resolve (process)
 import Telomare.Size.IR (DeferredEvalF (..), PartialExpr, deferredEE)
-import Telomare.Sugar (SugarError, desugarDefs, desugarTerm, renderSugarError)
+import Telomare.Sugar (SugarError, desugarDefs, desugarTerm, renderSugarError,
+                       sugarDefs)
 import Telomare.TypeCheck (inferType)
 import Text.Megaparsec
 import Text.Megaparsec.Char
@@ -91,7 +92,7 @@ runReplParser prelude str = fmap (prelude <>) <$> first errorBundlePretty (runPa
 parseDefinitionsFile :: String -> Either String [(String, AUPT)]
 parseDefinitionsFile str = do
   defs <- runParseDefinitions "" str
-  bindings <- first renderSugarError $ desugarDefs defs
+  bindings <- first renderSugarError . fmap unSugared $ sugarDefs defs
   pure $ first locatedNameText <$> bindings
 
 -- Common functions

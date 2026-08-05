@@ -7,8 +7,8 @@
 
 -- |The surface AST: what the parser produces. 'UnprocessedParsedTermF'
 -- composes the shared base functors with the surface-only forms (let, list,
--- case, imports, UDT declarations). 'AUPT' is the location-annotated
--- variant every later stage consumes.
+-- case, and imports). 'AUPT' is shared by the parsed and immediately
+-- desugared surface phases; 'Parsed' and 'Sugared' mark public boundaries.
 module Telomare.IR.Surface where
 
 import Control.Comonad.Cofree (Cofree ((:<)))
@@ -22,9 +22,17 @@ import Telomare.IR.Base (BasicBase (..), BasicExprF (..), CarryAnno (..),
                          LamTermF (..))
 import Telomare.IR.Loc (LocTag, LocatedName, locatedNameText)
 
+-- |A value produced by a complete public parser entry point.
+newtype Parsed a = Parsed { unParsed :: a }
+  deriving (Eq, Show, Functor, Foldable, Traversable)
+
+-- |A parsed value after immediate surface sugar has been eliminated.
+newtype Sugared a = Sugared { unSugared :: a }
+  deriving (Eq, Show, Functor, Foldable, Traversable)
+
 -- |AST for patterns in `case` expressions
 data PatternF t f
-  = PatternVarF String
+  = PatternVarF LocatedName
   | PatternAnnotatedF f t
   | PatternIntF Int
   | PatternStringF String
@@ -35,7 +43,7 @@ data PatternF t f
 
 instance Show o => Show1 (PatternF o) where
   liftShowsPrec showsPrec' showList prec = \case
-    PatternVarF s -> showString "PatternVar " . shows s
+    PatternVarF s -> showString "PatternVar " . shows (locatedNameText s)
     PatternAnnotatedF p x -> showString "PatternAnnotated " . showsPrec' 0 p . showChar ' ' . shows x
     PatternIntF x -> showString "PatternInt " . shows x
     PatternStringF s -> showString "PatternString " . shows s
@@ -58,6 +66,20 @@ definitionNames = \case
   SingleDefF name _ _  -> [name]
   ListDefF _ names _   -> names
 
+-- |An import declaration exactly as written in a module.
+data ImportDecl = ImportDecl
+  { parsedImportLoc       :: LocTag
+  , parsedImportModule    :: LocatedName
+  , parsedImportQualifier :: Maybe LocatedName
+  }
+  deriving (Eq, Show)
+
+-- |One source-level module item.
+data ModuleItem f
+  = ModuleImportItem ImportDecl
+  | ModuleDefinitionItem (DefinitionF f)
+  deriving (Eq, Show, Functor, Foldable, Traversable)
+
 -- |Firstly parsed AST. 'LamPatUPF' and 'LetSugarUPF' are the raw
 -- (pre-desugared) forms the parser emits; 'Telomare.Sugar' eliminates them
 -- (rewriting into 'UnprocessedParsedTermL'/'LetUPF') before any later stage
@@ -70,7 +92,6 @@ data UnprocessedParsedTermF p f
   | ListUPF [f]
   | IntUPF Int
   | StringUPF String
-  | UDTUPF [String] f
   | CaseUPF f [(p, f)]
   -- TODO: check if adding this doesn't create partial functions
   | ImportQualifiedUPF String String
@@ -109,21 +130,21 @@ instance (Show p) => Show1 (UnprocessedParsedTermF p) where
     LetUPF bindings body ->
       let showBinding (str, x) = showChar '(' . shows (locatedNameText str) . showString ", "
                                  . showsPrecFunc 11 x . showChar ')'
-          showBindings bs = showChar '[' . foldr1 (\a b -> a . showString ", " . b)
-                           (fmap showBinding bs) . showChar ']'
+          showBindings bs = showChar '['
+                          . foldr (.) id (intersperse (showString ", ") (fmap showBinding bs))
+                          . showChar ']'
       in showString "LetUPF " . showBindings bindings . showChar ' ' . showsPrecFunc 11 body
-    ListUPF terms -> showString "ListUPF [" .
-                     foldr1 (\a b -> a . showString ", " . b)
-                           (fmap (showsPrecFunc 11) terms) .
-                     showChar ']'
+    ListUPF terms -> showString "ListUPF ["
+                   . foldr (.) id (intersperse (showString ", ") (fmap (showsPrecFunc 11) terms))
+                   . showChar ']'
     IntUPF n -> showString "IntUPF " . shows n
     StringUPF s -> showString "StringUPF " . shows s
-    UDTUPF ss x -> showString "UDTUPF " . shows ss . showChar ' ' . showsPrecFunc 11 x
     CaseUPF scrutinee patterns ->
       let showPattern (pat, x) = showChar '(' . shows pat . showString ", "
                                 . showsPrecFunc 11 x . showChar ')'
-          showPatterns ps = showChar '[' . foldr1 (\a b -> a . showString ", " . b)
-                           (fmap showPattern patterns) . showChar ']'
+          showPatterns ps = showChar '['
+                          . foldr (.) id (intersperse (showString ", ") (fmap showPattern ps))
+                          . showChar ']'
       in showString "CaseUPF " . showsPrecFunc 11 scrutinee . showChar ' '
          . showPatterns patterns
     LamPatUPF pats body ->

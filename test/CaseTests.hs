@@ -153,14 +153,14 @@ instance Arbitrary PatternA where
         PatternVarF _ -> do
           s <- State.get
           State.modify (+ 1)
-          pure . Fix . PatternVarF $ "var" <> show s
+          pure . Fix . PatternVarF . locatedName UnknownLoc $ "var" <> show s
         PatternPairF x y -> Fix <$> (PatternPairF <$> go x <*> go y)
         other -> pure $ Fix other
     leaves :: Gen PatternA
     leaves = oneof
       [ Fix . PatternStringF <$> elements (fmap (("s" <>) . show) [1..9])
       , Fix . PatternIntF <$> elements [0..9]
-      , pure . Fix $ PatternVarF ""
+      , pure . Fix . PatternVarF $ locatedName UnknownLoc ""
       ]
     genTree :: Int -> Gen PatternA
     genTree = \case
@@ -171,9 +171,9 @@ instance Arbitrary PatternA where
         ]
 
   shrink (Fix patternF) = case patternF of
-    PatternVarF str -> case str of
-      "" -> []
-      _  -> pure . Fix . PatternVarF $ tail str
+    PatternVarF name -> case locatedNameText name of
+      ""  -> []
+      str -> pure . Fix . PatternVarF . locatedName UnknownLoc $ tail str
     PatternStringF s -> case s of
       "" -> []
       _  -> pure . Fix . PatternStringF $ tail s

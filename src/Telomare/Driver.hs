@@ -39,8 +39,8 @@ import Telomare.Size (SizingReport (..), SizingSettings (..),
                       buildUnsizedLocMap, evalStaticCheck, locateSizingFailure,
                       sizeTermM, term3ToUnsizedExpr)
 import Telomare.Size.IR (SizedRecursion (..), VoidF)
-import Telomare.Sugar (desugarDefs, desugarModule, desugarTerm,
-                       renderSugarError, wrapMain)
+import Telomare.Sugar (desugarDefs, desugarTerm, renderSugarError, sugarModule,
+                       wrapMain)
 import Telomare.TypeCheck (typeCheck)
 import Text.Megaparsec (errorBundlePretty, runParser)
 
@@ -221,7 +221,7 @@ compileModulesWith so modulesStrings s =
     parseAndDesugar (moduleName, content) =
       ( moduleName
       , runParseModule moduleName content
-          >>= first renderSugarError . desugarModule )
+          >>= first renderSugarError . fmap unSugared . sugarModule )
 
 runMainCore :: [(String, String)] -- ^All modules as (Module_Name, Module_Content)
             -> String -- ^Module's name with `main` function
@@ -316,18 +316,18 @@ calculateRecursionLimits :: SizingSettings -> Term3 -> Either EvalError Compiled
 calculateRecursionLimits sizingSettings = findChurchSizeD (DebugSizing sizingSettings)
 
 eval2IExpr :: [(String, [Either AUPT (String, AUPT)])] -> String -> Either String CompiledExpr
-eval2IExpr extraModuleBindings str =
+eval2IExpr extraModuleBindings str = do
+  resolved <- first show $ resolveAllImports extraModuleBindings aux
   first errorBundlePretty (runParser parseOneExprOrDefinitions "" str)
-  >>= first renderSugarError
-      . either (desugarDefs >=> wrapMain resolved) desugarTerm
-  >>= first show . process . AnnotatedUPT
-  >>= tt . first show . compileUnitTest
+    >>= first renderSugarError
+        . either (desugarDefs >=> wrapMain resolved) desugarTerm
+    >>= first show . process . AnnotatedUPT
+    >>= tt . first show . compileUnitTest
     where
       tt = \case
         Left e -> Left $ show e
         Right x -> pure x
       aux = (\str -> Left (GeneratedLoc "eval2IExpr.import" Nothing :< ImportQualifiedUPF str str)) . fst <$> extraModuleBindings
-      resolved = resolveAllImports extraModuleBindings aux
 
 tagIExprWithEval :: CompiledExpr -> Cofree CompiledExprF (Int, CompiledExpr)
 tagIExprWithEval iexpr = evalState (para alg iexpr) 0 where
@@ -372,4 +372,3 @@ tagIExprWithEval iexpr = evalState (para alg iexpr) 0 where
     StuckFW GateSF -> do
       i <- statePlus1
       pure $ (i, basicEval $ StuckEE GateSF) :< embedS GateSF
-

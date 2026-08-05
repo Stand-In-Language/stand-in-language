@@ -85,7 +85,7 @@ import Telomare.IR.Surface
 import Telomare.IR.Types
 import Telomare.Parse (runParseModule)
 import Telomare.Resolve (main2Term3, main2Term3let)
-import Telomare.Sugar (desugarModule, renderSugarError)
+import Telomare.Sugar (renderSugarError, sugarModule)
 import Telomare.TypeCheck (typeCheck)
 
 -- |A recursion site: the token the sizing pass would have sized, where it is
@@ -483,12 +483,13 @@ compileFast modulesStrings entry =
       case typeCheck mainType tcTerm of
         Just e  -> Left . renderEvalError $ TCE e
         Nothing -> pure ()
-      t3 <- resolved $ main2Term3let modules entry
-      term3ToFast (ownerMap modules) t3
+      runtimeTerm <- resolved $ main2Term3let modules entry
+      term3ToFast (ownerMap modules) runtimeTerm
   where
     parsed = fmap parseAndDesugar modulesStrings
     parseAndDesugar (n, content) =
-      (n, runParseModule n content >>= first renderSugarError . desugarModule)
+      (n, runParseModule n content
+            >>= first renderSugarError . fmap unSugared . sugarModule)
     resolved = either (Left . renderEvalError . RE) Right
 
 -- |`Term3` to the runtime IR. There is no sizing here: `Term3Unsized` becomes

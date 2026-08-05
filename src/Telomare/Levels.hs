@@ -60,7 +60,7 @@ import Telomare.IR.Loc
 import Telomare.IR.Surface
 import Telomare.IR.Types
 import Telomare.Parse (runParseModule)
-import Telomare.Sugar (desugarModule, renderSugarError)
+import Telomare.Sugar (renderSugarError, sugarModule)
 
 -- |A top-level definition, or a @let@ binding qualified by the definition it
 -- appears in.
@@ -155,7 +155,8 @@ parseModules = traverse parseOne
   where
     parseOne (name, src) =
       either (Left . ((name <> ": ") <>)) (Right . (name,)) $
-        runParseModule name src >>= first renderSugarError . desugarModule
+        runParseModule name src
+          >>= first renderSugarError . fmap unSugared . sugarModule
 
 lookupEntry :: DefId
             -> [(String, [Either AUPT (String, AUPT)])]

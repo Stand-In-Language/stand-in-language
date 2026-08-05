@@ -331,6 +331,87 @@ unitTests = testGroup "Unit tests"
             rendered @?= "missing definition \"foo\" at line 1, column 8"
             show err @?= rendered
           Right _ -> assertFailure "expected missing definition error"
+  , testCase "builtin optimization respects lexical shadows" $ do
+      let a = UnknownLoc
+          name = locatedName a
+          var n = a :< UnprocessedParsedTermL (VarF n)
+          int n = a :< IntUPF n
+          app f x = a :< UnprocessedParsedTermL (AppF f x)
+          shadow n use = a :< LetUPF [(name n, var "replacement")] use
+          samples =
+            [ shadow "left" (app (var "left") (int 1))
+            , shadow "right" (app (var "right") (int 1))
+            , shadow "trace" (app (var "trace") (int 1))
+            , shadow "pair" (app (app (var "pair") (int 1)) (int 2))
+            , shadow "app" (app (app (var "app") (var "f")) (int 2))
+            ]
+      fmap optimizeBuiltinFunctions samples @?= samples
+  , testCase "builtin optimization still rewrites builtin references" $ do
+      let a = UnknownLoc
+          var n = a :< UnprocessedParsedTermL (VarF n)
+          int n = a :< IntUPF n
+          app f x = a :< UnprocessedParsedTermL (AppF f x)
+      case optimizeBuiltinFunctions (app (var "left") (int 1)) of
+        _ :< UnprocessedParsedTermH (HLeftF _) -> pure ()
+        term -> assertFailure $ "left was not optimized: " <> show term
+      case optimizeBuiltinFunctions (app (app (var "pair") (int 1)) (int 2)) of
+        _ :< UnprocessedParsedTermB (PairSF _ _) -> pure ()
+        term -> assertFailure $ "pair was not optimized: " <> show term
+  , testCase "case lowering helpers cannot be captured by local bindings" $ do
+      let source = unlines
+            [ "import Prelude"
+            , "main = \\i ->"
+            , "  let and = 0"
+            , "      foldl = 0"
+            , "      listEqual = 0"
+            , "      abort = 0"
+            , "  in (case 1 of"
+            , "        1 -> \"ok\", 0)"
+            ]
+      result <- testUserDefAdHocTypes source
+      result @?= "ok\ndone"
+  , testCase "missing imported module is a resolver error" $ do
+      let a = UnknownLoc
+          modules = [("Main", [Left (a :< ImportUPF "Missing")])]
+      resolveMain modules "Main" @?= Left (ModuleNotFound "Missing")
+  , testCase "malformed residual import is a resolver error" $ do
+      let a = UnknownLoc
+          modules = [("Main", [Left (a :< IntUPF 1)])]
+      resolveMain modules "Main" @?= Left (MalformedImport a)
+  , testCase "import cycle is a resolver error" $ do
+      let a = UnknownLoc
+          imported moduleName = Left (a :< ImportUPF moduleName)
+          modules =
+            [ ("Main", [imported "A"])
+            , ("A", [imported "B"])
+            , ("B", [imported "Main"])
+            ]
+      resolveMain modules "Main" @?= Left (ImportCycle ["Main", "A", "B", "Main"])
+  , testCase "qualified imports rewrite sibling references" $ do
+      let a = UnknownLoc
+          var name = a :< UnprocessedParsedTermL (VarF name)
+          modules =
+            [ ("A", [Right ("x", a :< IntUPF 1), Right ("y", var "x")])
+            , ("Main", [Left (a :< ImportQualifiedUPF "Q" "A"), Right ("main", var "Q.y")])
+            ]
+      case resolveImports modules "Main" of
+        Right bindings -> do
+          fst <$> bindings @?= ["Q.x", "Q.y", "main"]
+          lookup "Q.y" bindings @?= Just (var "Q.x")
+        other -> assertFailure $ "qualified import failed: " <> show other
+  , testCase "qualified imports rewrite transitive references" $ do
+      let a = UnknownLoc
+          var name = a :< UnprocessedParsedTermL (VarF name)
+          modules =
+            [ ("B", [Right ("x", a :< IntUPF 1)])
+            , ("A", [Left (a :< ImportQualifiedUPF "B" "B"), Right ("y", var "B.x")])
+            , ("Main", [Left (a :< ImportQualifiedUPF "Q" "A"), Right ("main", var "Q.y")])
+            ]
+      case resolveImports modules "Main" of
+        Right bindings -> do
+          fst <$> bindings @?= ["Q.B.x", "Q.y", "main"]
+          lookup "Q.y" bindings @?= Just (var "Q.B.x")
+        other -> assertFailure $ "transitive qualified import failed: " <> show other
   , testCase "test backward cycle let" $ do
       let backwardCycleLet = wrapRecursiveBackwardLet cycleLet
       result <- try ( testUserDefAdHocTypes backwardCycleLet ) :: IO (Either SomeException String)
@@ -520,13 +601,14 @@ hashtest3 = unlines [ "let b = \\x -> x"
 parseMainWith :: [(String, AUPT)] -> String -> Either String AnnotatedUPT
 parseMainWith prelude str = do
   defs <- runParseDefinitions "" str
-  first renderSugarError $ AnnotatedUPT <$> (desugarDefs defs >>= wrapMain prelude)
+  bindings <- first renderSugarError . fmap unSugared $ sugarDefs defs
+  first renderSugarError $ AnnotatedUPT <$> wrapMain prelude bindings
 
 -- |Parse and desugar a file of definitions (a prelude).
 parsePreludeDefs :: String -> Either String [(String, AUPT)]
 parsePreludeDefs str = do
   defs <- runParseDefinitions "" str
-  bindings <- first renderSugarError $ desugarDefs defs
+  bindings <- first renderSugarError . fmap unSugared $ sugarDefs defs
   pure $ first locatedNameText <$> bindings
 
 -- |Helper function to compile to Term2. Lived in "Telomare.Resolve" while

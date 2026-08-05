@@ -301,6 +301,59 @@ You can setup your git configuration to automatically format and look for lint s
 $ git config core.hooksPath hooks
 ```
 
+## Surface Syntax
+
+Telomare source is a small expression grammar. Applications associate to the
+left, definitions in the same `let` or module are mutually visible, and
+continuation lines must remain indented under the expression they continue.
+
+```text
+module      ::= (import | definition)*
+import      ::= "import" module-name
+              | "import" "qualified" module-name "as" identifier
+definition  ::= identifier (":" expression)? "=" expression
+              | "[" identifier ("," identifier)* "]" "=" expression
+expression  ::= "let" definition* "in" expression
+              | "if" expression "then" expression "else" expression
+              | "\\" pattern+ "->" expression
+              | "case" expression "of" alternative+
+              | atom+
+alternative ::= pattern "->" expression
+atom        ::= identifier | natural | string | "$" natural | "#" atom
+              | "(" expression ")" | "(" expression "," expression ")"
+              | "[" (expression ("," expression)*)? "]"
+              | "{" expression "," expression "," expression "}"
+pattern     ::= identifier | "_" | natural | string
+              | "(" pattern "," pattern ")"
+              | "(" pattern ":" expression ")"
+identifier ::= letter (letter | digit | "_" | ".")*
+```
+
+The keywords are `let`, `in`, `if`, `then`, `else`, `case`, `of`, `import`,
+`qualified`, and `as`. Naturals must fit in the implementation's `Int` range;
+oversized literals are parse errors rather than wrapping.
+
+UDTs deliberately retain the existing list-definition convention:
+
+```telomare
+[T, constructor, extractor, operation] = \h ->
+  [ constructorBody, extractorBody, operationBody ]
+```
+
+Sugar recognizes this only when the first name starts uppercase and the body
+is a lambda. There must be exactly one more name than body slots: the extra
+name is the generated validator. This classification is not parser behavior.
+
+| Source form | Parsed representation | Immediate Sugar result |
+| --- | --- | --- |
+| `\p1 p2 -> e` | `LamPatUPF` | nested `LamF`, with cases for patterns |
+| `let defs in e` | `LetSugarUPF` | `LetUPF` |
+| `x : T = e` | annotated `SingleDefF` | `CheckF T e` |
+| `[a, b] = e` | `ListDefF` | one binding per name |
+| `[T, ...] = \h -> [...]` | `ListDefF` | UDT bindings and validator |
+| `import ...` | `ModuleImportItem ImportDecl` | resolver-compatible import term |
+| `case e of ...` | `CaseUPF` | lowered later by `Telomare.Desugar` |
+
 ## Compiler stages
 
 The library is organized so that modules delimit the standard stages of the
@@ -308,8 +361,8 @@ pipeline. In pipeline order:
 
 | Stage | Modules | What happens |
 | --- | --- | --- |
-| Parse | `Telomare.Parse` | megaparsec grammar producing the raw surface AST (`AUPT`): no expansion, no resolving, no semantic checks. Multi-pattern lambdas, refinement annotations, list assignments and UDT declarations come out as written (`LamPatUPF`, `LetSugarUPF`, `DefinitionF`). |
-| Sugar | `Telomare.Sugar` | eliminates the raw parse-level forms (`desugarTerm`/`desugarDefs`/`desugarModule`): multi-pattern lambdas become nested lambdas with case destructuring, list assignments and UDT declarations expand into per-slot bindings, refinement annotations fold into `CheckF`, and `wrapMain` wraps a module's bindings around its `main`. |
+| Parse | `Telomare.Parse` | megaparsec grammar producing `Parsed` raw surface values: no expansion, resolving, or semantic checks. Modules use `ModuleItem`; multi-pattern lambdas, refinement annotations, and list definitions remain as written. Complete public runners reject trailing input. |
+| Sugar | `Telomare.Sugar` | converts `Parsed` to `Sugared` and eliminates `LamPatUPF`/`LetSugarUPF`: multi-pattern lambdas become nested lambdas with hygienic case destructuring, list definitions and UDT conventions expand into bindings, and refinement annotations fold into `CheckF`. |
 | Desugar | `Telomare.Desugar` | later `AUPT -> AUPT` rewrites: case lowering, builtin binding and optimization. |
 | Resolve | `Telomare.Resolve` | import resolution, scope checking, de Bruijn conversion, hash folding, and core lowering (`splitExpr`: `Term2 -> Term3`). Documents the dual `process`/`processWlet` pipeline. |
 | Type check | `Telomare.TypeCheck` | unification-based check of `Term3` against the main type. |

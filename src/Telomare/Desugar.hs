@@ -18,6 +18,8 @@ import Data.Functor.Foldable (Base, Corecursive (embed), Recursive (..))
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Map.Strict (keys)
+import Data.Set (Set)
+import qualified Data.Set as Set
 import Telomare.Error
 import Telomare.IR.Base
 import Telomare.IR.Core
@@ -68,15 +70,15 @@ findPatternVars :: LocTag -> PatternA -> Map String (AUPT -> AUPT)
 findPatternVars anno = cata alg where
   alg = \case
     PatternPairF x y      -> ((. HLeft) <$> x) <> ((. HRight) <$> y)
-    PatternVarF str       -> Map.singleton str id
+    PatternVarF name      -> Map.singleton (locatedNameText name) id
     PatternAnnotatedF x _ -> x
     _                     -> Map.empty
 
 -- TODO: Annotate without so much fuzz
 pairStructureCheck :: PatternA -> AUPT -> AUPT
 pairStructureCheck p upt = let a = GeneratedLoc "pairStructureCheck" Nothing in
-  AppP (AppP (AppP (rewriteOuterTag a $ VarP "foldl")
-                      (VarP "and"))
+  AppP (AppP (AppP (rewriteOuterTag a $ VarP "__case_foldl")
+                      (VarP "__case_and"))
                (a :< IntUPF 1))
         ((a :<) . ListUPF $ ($ upt) <$> pairRoute2Dirs p)
 
@@ -94,7 +96,7 @@ pattern2UPT anno = cata alg where
     PatternPairF x y       -> PairP x y
     PatternIntF i          -> anno :< IntUPF i
     PatternStringF str     -> anno :< StringUPF str
-    PatternVarF str        -> anno :< IntUPF 0
+    PatternVarF _          -> anno :< IntUPF 0
     PatternIgnoreF         -> anno :< IntUPF 0
     PatternAnnotatedF x _  -> x
       -- Note that "__ignore" is a special variable name and not accessible to users because
@@ -133,26 +135,26 @@ case2annidatedIfs :: AUPT -- ^ Term to be pattern matched
                   -> AUPT
 case2annidatedIfs (anno :< _) [] [] [] [] [] [] =
   ITEP (anno :< IntUPF 1)
-        (AppP (VarP "abort") (anno :< StringUPF "Non-exhaustive patterns in case"))
+        (AppP (VarP "__case_abort") (anno :< StringUPF "Non-exhaustive patterns in case"))
         (anno :< IntUPF 0)
 case2annidatedIfs x (aPattern:as) ((_ :< ListUPF []) : bs) ((_ :< ListUPF []) :cs) (dirs2StringOnUPT:ds) (dirs2StringOnPattern:es) (resultAlternative@(anno :< _):fs) =
-  ITEP (AppP (AppP (rewriteOuterTag anno $ VarP "and")
-                   (AppP (AppP (VarP "listEqual") dirs2StringOnUPT) dirs2StringOnPattern))
+  ITEP (AppP (AppP (rewriteOuterTag anno $ VarP "__case_and")
+                   (AppP (AppP (VarP "__case_listEqual") dirs2StringOnUPT) dirs2StringOnPattern))
              (pairStructureCheck aPattern x))
        (mkCaseAlternative x resultAlternative aPattern)
        (case2annidatedIfs x as bs cs ds es fs)
 case2annidatedIfs x (aPattern:as) (dirs2IntOnUPT:bs) (dirs2IntOnPattern:cs) ((_ :< ListUPF []) : ds) ((_ :< ListUPF []) : es) (resultAlternative@(anno :< _):fs) =
-    ITEP (AppP (AppP (rewriteOuterTag anno $ VarP "and")
-                        (AppP (AppP (VarP "listEqual") dirs2IntOnUPT) dirs2IntOnPattern))
+    ITEP (AppP (AppP (rewriteOuterTag anno $ VarP "__case_and")
+                        (AppP (AppP (VarP "__case_listEqual") dirs2IntOnUPT) dirs2IntOnPattern))
                  (pairStructureCheck aPattern x))
           (mkCaseAlternative x resultAlternative aPattern)
           (case2annidatedIfs x as bs cs ds es fs)
 case2annidatedIfs x (aPattern:as) (dirs2IntOnUPT:bs) (dirs2IntOnPattern:cs) (dirs2StringOnUPT:ds) (dirs2StringOnPattern:es) (resultAlternative@(anno :< _):fs) =
-    ITEP (AppP (AppP (AppP (rewriteOuterTag anno $ VarP "foldl")
-                           (VarP "and"))
+    ITEP (AppP (AppP (AppP (rewriteOuterTag anno $ VarP "__case_foldl")
+                           (VarP "__case_and"))
                      (anno :< IntUPF 1))
-               (anno :< ListUPF [ AppP (AppP (VarP "listEqual") dirs2IntOnUPT) dirs2IntOnPattern
-                                  , AppP (AppP (VarP "listEqual") dirs2StringOnUPT) dirs2StringOnPattern
+               (anno :< ListUPF [ AppP (AppP (VarP "__case_listEqual") dirs2IntOnUPT) dirs2IntOnPattern
+                                  , AppP (AppP (VarP "__case_listEqual") dirs2StringOnUPT) dirs2StringOnPattern
                                   , pairStructureCheck aPattern x
                                   ]))
           (mkCaseAlternative x resultAlternative aPattern)
@@ -179,28 +181,94 @@ removeCaseUPs = cata go where
                            resultCaseAlts
     x -> embed x
 
+-- |Capture the helper definitions used by generated case code in the
+-- outer resolved let. The aliases cannot be written in source, so nested
+-- bindings cannot capture the generated references.
+addCaseHelperAliases :: AUPT -> AUPT
+addCaseHelperAliases term@(loc :< LetUPF bindings body) =
+  loc :< LetUPF (aliases <> bindings) body
+  where
+    aliases =
+      [ ( locatedName (GeneratedLoc ("case helper " <> name) (Just loc)) alias
+        , loc :< UnprocessedParsedTermL (VarF name)
+        )
+      | (name, alias) <- [ ("and", "__case_and")
+                         , ("foldl", "__case_foldl")
+                         , ("listEqual", "__case_listEqual")
+                         , ("abort", "__case_abort")
+                         ]
+      , name `elem` (letBindingName <$> bindings)
+      ]
+addCaseHelperAliases term = term
+
 
 rewriteOuterTag :: anno -> Cofree a anno -> Cofree a anno
 rewriteOuterTag anno (_ :< x) = anno :< x
 
 
 optimizeBuiltinFunctions :: AUPT -> AUPT
-optimizeBuiltinFunctions = cata f where
-  f = \case
-    twoApp@(AppAFP a (GFix (AppAFP _ f x)) y) ->
-      case project f of
-        VarAFP _ "pair" -> embed $ PairAFP a x y
-        VarAFP _ "app"  -> embed $ AppAFP a x y
-        _               -> embed twoApp
-    oneApp@(AppAFP a f x) ->
-      case project f of
-        VarAFP _ "left" -> HLeft x
-        VarAFP _ "right" -> HRight x
-        VarAFP _ "trace" -> a :< UnprocessedParsedTermH (HTraceF x)
-        VarAFP _ "pair" -> embed $ LamAFP a (locatedName a "y") (PairP x (embed $ VarAFP a "y"))
-        VarAFP _ "app" -> embed $ LamAFP a (locatedName a "y") (AppP x (embed $ VarAFP a "y"))
-        _             -> embed oneApp
-    x -> embed x
+optimizeBuiltinFunctions = go builtinNames
+  where
+    builtinNames = Set.fromList ["left", "right", "trace", "pair", "app"]
+
+    go :: Set String -> AUPT -> AUPT
+    go scope (anno :< term) = optimize scope $ case term of
+      UnprocessedParsedTermL (AppF inner y) -> case project inner of
+        AppAFP _ f x -> case project f of
+          VarAFP _ "pair" | "pair" `Set.member` scope ->
+            anno :< UnprocessedParsedTermB (PairSF (go scope x) (go scope y))
+          VarAFP _ "app"  | "app" `Set.member` scope ->
+            anno :< UnprocessedParsedTermL (AppF (go scope x) (go scope y))
+          _ -> anno :< UnprocessedParsedTermL (AppF (go scope inner) (go scope y))
+        _ -> anno :< UnprocessedParsedTermL (AppF (go scope inner) (go scope y))
+      UnprocessedParsedTermL (LamF name body) ->
+        anno :< UnprocessedParsedTermL (LamF name (go (Set.delete (locatedNameText name) scope) body))
+      LetUPF bindings body ->
+        let scope' = foldr updateScope scope bindings
+        in anno :< LetUPF (fmap (fmap $ go scope') bindings) (go scope' body)
+      CaseUPF scrutinee alternatives ->
+        anno :< CaseUPF (go scope scrutinee)
+          [ (mapPattern scope pattern', go (scope Set.\\ patternVars pattern') body)
+          | (pattern', body) <- alternatives
+          ]
+      other -> anno :< fmap (go scope) other
+
+    updateScope (name, _) =
+      let text = locatedNameText name
+      in if locatedNameLoc name == BuiltinLoc text
+           then Set.insert text
+           else Set.delete text
+
+    patternVars :: PatternA -> Set String
+    patternVars = cata $ \case
+      PatternVarF name      -> Set.singleton (locatedNameText name)
+      PatternAnnotatedF p _ -> p
+      p                     -> F.fold p
+
+    mapPattern :: Set String -> PatternA -> PatternA
+    mapPattern scope = cata $ \case
+      PatternAnnotatedF p (AnnotatedUPT annotation) ->
+        embed $ PatternAnnotatedF p (AnnotatedUPT $ go scope annotation)
+      p -> embed p
+
+    optimize :: Set String -> AUPT -> AUPT
+    optimize scope term = case project term of
+      AppAFP a (GFix (AppAFP _ f x)) y -> case project f of
+        VarAFP _ "pair" | "pair" `Set.member` scope -> embed $ PairAFP a x y
+        VarAFP _ "app"  | "app" `Set.member` scope  -> embed $ AppAFP a x y
+        _                                           -> term
+      AppAFP a f x -> case project f of
+        VarAFP _ "left"  | "left" `Set.member` scope  -> HLeft x
+        VarAFP _ "right" | "right" `Set.member` scope -> HRight x
+        VarAFP _ "trace" | "trace" `Set.member` scope -> a :< UnprocessedParsedTermH (HTraceF x)
+        VarAFP _ "pair"  | "pair" `Set.member` scope  -> partial a x PairP
+        VarAFP _ "app"   | "app" `Set.member` scope   -> partial a x AppP
+        _ -> term
+      _ -> term
+
+    partial anno x constructor =
+      let argument = locatedName anno "__builtin_arg"
+      in embed $ LamAFP anno argument (constructor x (embed $ VarAFP anno "__builtin_arg"))
 
 
 addBuiltins :: AUPT -> AUPT
@@ -218,5 +286,3 @@ addBuiltins aupt = GeneratedLoc "addBuiltins" Nothing :< LetUPF
     tagBuiltin n = tag (BuiltinLoc n)
     builtin = BuiltinLoc
     bind name value = (locatedName (builtin name) name, value)
-
-

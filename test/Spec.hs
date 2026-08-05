@@ -560,7 +560,8 @@ main = do
   preludeFile <- Strict.readFile "Prelude.tel"
 
   let
-    prelude' = case runParseDefinitions "" preludeFile >>= first renderSugarError . desugarDefs of
+    prelude' = case runParseDefinitions "" preludeFile
+                      >>= first renderSugarError . fmap unSugared . sugarDefs of
       Right p -> p
       Left pe -> error pe
     prelude :: [(String, [Either AUPT (String, AUPT)])]
@@ -568,7 +569,7 @@ main = do
     parseAuxModule :: String -> (String, [Either AUPT (String, AUPT)])
     parseAuxModule str =
       case runParseModule "" ("import Prelude\n" <> str)
-             >>= first renderSugarError . desugarModule of
+             >>= first renderSugarError . fmap unSugared . sugarModule of
         Left e    -> error e
         Right pam -> ("AuxModule", pam)
     parse :: Bool -> String -> Either String Term3

@@ -6,7 +6,7 @@ import Control.Comonad.Cofree (Cofree ((:<)))
 import qualified Control.Exception as Exception
 import Control.Monad
 import Control.Monad.Fix (MonadFix)
-import Data.Bifunctor (bimap, first, second)
+import Data.Bifunctor (first)
 import Data.Either (fromLeft)
 import Data.Map (Map)
 import qualified Data.Map as Map
@@ -19,17 +19,13 @@ import Reflex.Vty
 import System.Environment (getArgs)
 import qualified System.IO.Strict as Strict
 import qualified Telomare.Driver as TE
-import Telomare.Error
 import qualified Telomare.IR.Base as Tel
 import Telomare.IR.Base
-import Telomare.IR.Builder
 import Telomare.IR.Core
-import Telomare.IR.Loc
 import Telomare.IR.Surface
-import Telomare.IR.Types
 import Telomare.Parse (runParseModule)
 import Telomare.PrettyPrint (PrettyCompiledExpr (..))
-import Telomare.Sugar (desugarModule, renderSugarError)
+import Telomare.Sugar (renderSugarError, sugarModule)
 import Text.Read (readMaybe)
 
 type VtyExample t m =
@@ -172,12 +168,13 @@ nodify = removeExtraNumbers . fmap go . allNodes 0 where
 loadModules :: [String] -> IO [(String, [Either AUPT (String, AUPT)])]
 loadModules filenames = do
   filesStrings :: [String] <- mapM Strict.readFile filenames
-  case mapM parseAndDesugar filesStrings of
-    Right p -> pure $ zip filesStrings p
-    Left pe -> error pe
+  case zipWithM parseAndDesugar filenames filesStrings of
+    Right parsed -> pure $ zip filenames parsed
+    Left pe      -> error pe
   where
-    parseAndDesugar str =
-      runParseModule "" str >>= first renderSugarError . desugarModule
+    parseAndDesugar name str =
+      runParseModule name str
+        >>= first renderSugarError . fmap unSugared . sugarModule
 
 mainWidgetInit
   :: (forall t m.
