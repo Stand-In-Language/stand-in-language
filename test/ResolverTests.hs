@@ -601,23 +601,23 @@ hashtest3 = unlines [ "let b = \\x -> x"
 parseMainWith :: [(String, AUPT)] -> String -> Either String AnnotatedUPT
 parseMainWith prelude str = do
   defs <- runParseDefinitions "" str
-  bindings <- first renderSugarError . fmap unSugared $ sugarDefs defs
+  bindings <- first renderSugarError $ sugarDefs defs
   first renderSugarError $ AnnotatedUPT <$> wrapMain prelude bindings
 
 -- |Parse and desugar a file of definitions (a prelude).
 parsePreludeDefs :: String -> Either String [(String, AUPT)]
 parsePreludeDefs str = do
   defs <- runParseDefinitions "" str
-  bindings <- first renderSugarError . fmap unSugared $ sugarDefs defs
+  bindings <- first renderSugarError $ sugarDefs defs
   pure $ first locatedNameText <$> bindings
 
 -- |Helper function to compile to Term2. Lived in "Telomare.Resolve" while
 -- desugaring still ran inside the parser; now that parsers return raw
 -- terms it composes the Sugar pass itself, and only this suite uses it.
-runTelomareParser2Term2 :: TelomareParser AUPT -> String -> Either ResolverError Term2
+runTelomareParser2Term2 :: TelomareParser PAUPT -> String -> Either ResolverError Term2
 runTelomareParser2Term2 parser str =
   first (ParseError . errorBundlePretty) (runParser parser "" str)
-    >>= first (ParseError . renderSugarError) . desugarTerm
+    >>= first (ParseError . renderSugarError) . sugarTerm
     >>= process2Term2 . AnnotatedUPT
 
 -- TODO: do something with this

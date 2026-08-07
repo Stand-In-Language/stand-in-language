@@ -489,7 +489,7 @@ compileFast modulesStrings entry =
     parsed = fmap parseAndDesugar modulesStrings
     parseAndDesugar (n, content) =
       (n, runParseModule n content
-            >>= first renderSugarError . fmap unSugared . sugarModule)
+            >>= first renderSugarError . sugarModule)
     resolved = either (Left . renderEvalError . RE) Right
 
 -- |`Term3` to the runtime IR. There is no sizing here: `Term3Unsized` becomes

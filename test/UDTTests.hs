@@ -27,7 +27,7 @@ import Telomare.Parse (TelomareParser, parseLongExpr, runParseDefinitions)
 import Telomare.PrettyPrint
 import Telomare.Resolve (process, pruneBindings)
 import Telomare.Size (SizingSettings (SizingSettings))
-import Telomare.Sugar (desugarTerm, renderSugarError, sugarDefs)
+import Telomare.Sugar (sugarTerm, renderSugarError, sugarDefs)
 
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -58,7 +58,7 @@ loadPreludeBindings :: IO [(String, AUPT)]
 loadPreludeBindings = do
   preludeResult <- Strict.readFile "Prelude.tel"
   case runParseDefinitions "" preludeResult
-         >>= first renderSugarError . fmap unSugared . sugarDefs of
+         >>= first renderSugarError . sugarDefs of
     Left _   -> pure []
     Right bs -> pure $ first locatedNameText <$> bs
 
@@ -66,7 +66,7 @@ evalExprString :: String -> IO (Either String String)
 evalExprString input = do
   preludeBindings <- loadPreludeBindings
   let parseResult = first errorBundlePretty (runParser (parseLongExpr <* eof) "" input)
-        >>= first renderSugarError . desugarTerm
+        >>= first renderSugarError . sugarTerm
   case parseResult of
     Left err -> pure $ Left err
     Right aupt -> do

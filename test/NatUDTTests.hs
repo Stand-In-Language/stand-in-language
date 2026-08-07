@@ -25,7 +25,7 @@ import Telomare.Parse (parseLongExpr, runParseDefinitions)
 import Telomare.PrettyPrint
 import Telomare.Resolve (process, pruneBindings)
 import Telomare.Size (SizingSettings (SizingSettings))
-import Telomare.Sugar (desugarTerm, renderSugarError, sugarDefs)
+import Telomare.Sugar (sugarTerm, renderSugarError, sugarDefs)
 import Test.Tasty
 import Test.Tasty.HUnit
 import Text.Megaparsec (eof, errorBundlePretty, runParser)
@@ -47,7 +47,7 @@ natUDTSource = unlines
 parseBindings :: String -> String -> IO [(String, AUPT)]
 parseBindings name raw =
   case runParseDefinitions "" raw
-         >>= first renderSugarError . fmap unSugared . sugarDefs of
+         >>= first renderSugarError . sugarDefs of
     Left err -> error $ "parseBindings: " <> name <> ": " <> err
     Right bs -> pure $ first locatedNameText <$> bs
 
@@ -63,7 +63,7 @@ evalUDTExpr input = do
   udtBindings     <- parseBindings "Nat UDT fixture" natUDTSource
   let allBindings = preludeBindings <> udtBindings
   case first errorBundlePretty (runParser (parseLongExpr <* eof) "" input)
-         >>= first renderSugarError . desugarTerm of
+         >>= first renderSugarError . sugarTerm of
     Left err -> pure $ Left err
     Right aupt -> do
       let bindings = allBindings

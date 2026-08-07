@@ -3,12 +3,16 @@
 {-# LANGUAGE DerivingVia       #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE LambdaCase        #-}
+{-# LANGUAGE TupleSections     #-}
 {-# LANGUAGE TypeFamilies      #-}
 
--- |The surface AST: what the parser produces. 'UnprocessedParsedTermF'
--- composes the shared base functors with the surface-only forms (let, list,
--- case, and imports). 'AUPT' is shared by the parsed and immediately
--- desugared surface phases; 'Parsed' and 'Sugared' mark public boundaries.
+-- |The surface AST. Each surface phase has its own term type composed of
+-- fragment functors: the parser produces 'PAUPT', whose base functor
+-- 'ParsedTermF' is 'UnprocessedParsedTermF' (the shared base functors plus
+-- the surface-only forms: let, list, case, and imports) extended with the
+-- sugar-only fragment 'SugarTermF'. 'Telomare.Sugar' removes that fragment,
+-- returning 'AUPT' — so a desugared tree structurally cannot contain raw
+-- sugar forms.
 module Telomare.IR.Surface where
 
 import Control.Comonad.Cofree (Cofree ((:<)))
@@ -21,14 +25,6 @@ import Telomare.IR.Base (BasicBase (..), BasicExprF (..), CarryAnno (..),
                          HighBase (..), HighTermF (..), LamBase (..),
                          LamTermF (..))
 import Telomare.IR.Loc (LocTag, LocatedName, locatedNameText)
-
--- |A value produced by a complete public parser entry point.
-newtype Parsed a = Parsed { unParsed :: a }
-  deriving (Eq, Show, Functor, Foldable, Traversable)
-
--- |A parsed value after immediate surface sugar has been eliminated.
-newtype Sugared a = Sugared { unSugared :: a }
-  deriving (Eq, Show, Functor, Foldable, Traversable)
 
 -- |AST for patterns in `case` expressions
 data PatternF t f
@@ -80,10 +76,9 @@ data ModuleItem f
   | ModuleDefinitionItem (DefinitionF f)
   deriving (Eq, Show, Functor, Foldable, Traversable)
 
--- |Firstly parsed AST. 'LamPatUPF' and 'LetSugarUPF' are the raw
--- (pre-desugared) forms the parser emits; 'Telomare.Sugar' eliminates them
--- (rewriting into 'UnprocessedParsedTermL'/'LetUPF') before any later stage
--- walks the tree.
+-- |The desugared surface AST base functor: the shared fragments plus the
+-- surface-only forms every later stage consumes. The parser's raw sugar
+-- forms live in 'SugarTermF', which 'ParsedTermF' adds on top of this.
 data UnprocessedParsedTermF p f
   = UnprocessedParsedTermH (HighTermF f)
   | UnprocessedParsedTermL (LamTermF LocatedName String f)
@@ -96,8 +91,6 @@ data UnprocessedParsedTermF p f
   -- TODO: check if adding this doesn't create partial functions
   | ImportQualifiedUPF String String
   | ImportUPF String
-  | LamPatUPF [(LocTag, p)] f
-  | LetSugarUPF [DefinitionF f] f
   deriving (Eq, Show, Functor, Foldable, Traversable, Generic1)
   deriving Eq1 via (Generically1 (UnprocessedParsedTermF p))
 instance HighBase (UnprocessedParsedTermF p) where
@@ -147,9 +140,21 @@ instance (Show p) => Show1 (UnprocessedParsedTermF p) where
                           . showChar ']'
       in showString "CaseUPF " . showsPrecFunc 11 scrutinee . showChar ' '
          . showPatterns patterns
-    LamPatUPF pats body ->
-      showString "LamPatUPF " . shows pats . showChar ' ' . showsPrecFunc 11 body
-    LetSugarUPF defs body ->
+
+-- |The sugar-only surface forms: present in 'ParsedTermF', eliminated by
+-- 'Telomare.Sugar' (rewritten into plain 'UnprocessedParsedTermL' lambdas
+-- and 'LetUPF' bindings).
+data SugarTermF p f
+  = LamPatF [(LocTag, p)] f
+  | LetSugarF [DefinitionF f] f
+  deriving (Eq, Show, Functor, Foldable, Traversable, Generic1)
+  deriving Eq1 via (Generically1 (SugarTermF p))
+
+instance (Show p) => Show1 (SugarTermF p) where
+  liftShowsPrec showsPrecFunc _ _ = \case
+    LamPatF pats body ->
+      showString "LamPatF " . shows pats . showChar ' ' . showsPrecFunc 11 body
+    LetSugarF defs body ->
       let showAnnot = \case
             Nothing       -> showString "Nothing"
             Just (loc, t) -> showString "(Just (" . shows loc . showString ", "
@@ -164,7 +169,60 @@ instance (Show p) => Show1 (UnprocessedParsedTermF p) where
           showDefs ds = showChar '['
                         . foldr (.) id (intersperse (showString ", ") (fmap showDef ds))
                         . showChar ']'
-      in showString "LetSugarUPF " . showDefs defs . showChar ' ' . showsPrecFunc 11 body
+      in showString "LetSugarF " . showDefs defs . showChar ' ' . showsPrecFunc 11 body
+
+-- |The parsed-phase base functor: everything in 'UnprocessedParsedTermF'
+-- plus the sugar fragment. 'Telomare.Sugar' is the stage that removes
+-- 'ParsedTermSugar', producing plain 'AUPT' trees.
+data ParsedTermF p f
+  = ParsedTermUP (UnprocessedParsedTermF p f)
+  | ParsedTermSugar (SugarTermF p f)
+  deriving (Eq, Show, Functor, Foldable, Traversable, Generic1)
+  deriving Eq1 via (Generically1 (ParsedTermF p))
+
+instance HighBase (ParsedTermF p) where
+  embedH = ParsedTermUP . embedH
+  extractH = \case
+    ParsedTermUP x -> extractH x
+    _              -> Nothing
+instance BasicBase (ParsedTermF p) where
+  embedB = ParsedTermUP . embedB
+  extractB = \case
+    ParsedTermUP x -> extractB x
+    _              -> Nothing
+instance LamBase (ParsedTermF p) where
+  type LamVar (ParsedTermF p) = String
+  type LamT (ParsedTermF p) = LocatedName
+
+  embedL = ParsedTermUP . embedL
+  extractL = \case
+    ParsedTermUP x -> extractL x
+    _              -> Nothing
+
+instance (Show p) => Show1 (ParsedTermF p) where
+  liftShowsPrec showsPrecFunc showList d = \case
+    ParsedTermUP x    -> liftShowsPrec showsPrecFunc showList d x
+    ParsedTermSugar x -> liftShowsPrec showsPrecFunc showList d x
+
+-- |Convert the pattern type inside one layer ('CaseUPF' is the only
+-- constructor mentioning it). Used by 'Telomare.Sugar' to desugar the
+-- terms embedded in pattern annotations.
+traverseUPTPatterns :: Applicative m
+                    => (p -> m q)
+                    -> UnprocessedParsedTermF p f
+                    -> m (UnprocessedParsedTermF q f)
+traverseUPTPatterns f = \case
+  CaseUPF scrutinee alternatives ->
+    CaseUPF scrutinee <$> traverse (\(p, b) -> (, b) <$> f p) alternatives
+  UnprocessedParsedTermH x -> pure $ UnprocessedParsedTermH x
+  UnprocessedParsedTermL x -> pure $ UnprocessedParsedTermL x
+  UnprocessedParsedTermB x -> pure $ UnprocessedParsedTermB x
+  LetUPF bindings body     -> pure $ LetUPF bindings body
+  ListUPF terms            -> pure $ ListUPF terms
+  IntUPF n                 -> pure $ IntUPF n
+  StringUPF s              -> pure $ StringUPF s
+  ImportQualifiedUPF a b   -> pure $ ImportQualifiedUPF a b
+  ImportUPF s              -> pure $ ImportUPF s
 
 type Pattern = Fix (PatternF UnprocessedParsedTerm)
 newtype UnprocessedParsedTerm = UnprocessedParsedTerm { unUnprocessedParsedTerm :: UPT}
@@ -175,12 +233,24 @@ newtype AnnotatedUPT = AnnotatedUPT { unAnnotatedUPT :: AUPT }
 type AUPT = Cofree (UnprocessedParsedTermF PatternA) LocTag
 type PatternA = Fix (PatternF AnnotatedUPT)
 
+-- |The parsed-phase family, mirroring the 'AUPT' one. Only the parser and
+-- 'Telomare.Sugar' traffic in these.
+newtype AnnotatedPUPT = AnnotatedPUPT { unAnnotatedPUPT :: PAUPT }
+  deriving (Eq, Show)
+type PAUPT = Cofree (ParsedTermF PatternP) LocTag
+type PatternP = Fix (PatternF AnnotatedPUPT)
+
 instance CarryAnno (Fix (UnprocessedParsedTermF PatternA)) where
   type CarryWrap (Fix (UnprocessedParsedTermF PatternA)) = UnprocessedParsedTermF PatternA
 
   getEmbed _ = Fix
 instance CarryAnno AUPT where
   type CarryWrap AUPT = UnprocessedParsedTermF PatternA
+
+  getEmbed (a :< _) = (a :<)
+
+instance CarryAnno PAUPT where
+  type CarryWrap PAUPT = ParsedTermF PatternP
 
   getEmbed (a :< _) = (a :<)
 

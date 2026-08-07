@@ -40,8 +40,7 @@ import Telomare.Parse (TelomareParser, parseLongExpr, parseSingleDefinition,
 import Telomare.PrettyPrint
 import Telomare.Resolve (process)
 import Telomare.Size.IR (DeferredEvalF (..), PartialExpr, deferredEE)
-import Telomare.Sugar (SugarError, desugarDefs, desugarTerm, renderSugarError,
-                       sugarDefs)
+import Telomare.Sugar (SugarError, renderSugarError, sugarDefs, sugarTerm)
 import Telomare.TypeCheck (inferType)
 import Text.Megaparsec
 import Text.Megaparsec.Char
@@ -62,13 +61,13 @@ desugaredRepl = either (fail . renderSugarError) pure
 parseReplAssignment :: TelomareParser [(String, AUPT)]
 parseReplAssignment = do
   def <- parseSingleDefinition <* eof
-  fmap (first locatedNameText) <$> desugaredRepl (desugarDefs [def])
+  fmap (first locatedNameText) <$> desugaredRepl (sugarDefs [def])
 
 -- | Parse only an expression
 parseReplExpr :: TelomareParser [(String, AUPT)]
 parseReplExpr = do
   expr <- parseLongExpr <* eof
-  desugaredExpr <- desugaredRepl (desugarTerm expr)
+  desugaredExpr <- desugaredRepl (sugarTerm expr)
   pure [("_tmp_", desugaredExpr)]
 
 -- | Information about what has the REPL parsed.
@@ -92,7 +91,7 @@ runReplParser prelude str = fmap (prelude <>) <$> first errorBundlePretty (runPa
 parseDefinitionsFile :: String -> Either String [(String, AUPT)]
 parseDefinitionsFile str = do
   defs <- runParseDefinitions "" str
-  bindings <- first renderSugarError . fmap unSugared $ sugarDefs defs
+  bindings <- first renderSugarError $ sugarDefs defs
   pure $ first locatedNameText <$> bindings
 
 -- Common functions

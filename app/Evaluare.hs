@@ -174,7 +174,7 @@ loadModules filenames = do
   where
     parseAndDesugar name str =
       runParseModule name str
-        >>= first renderSugarError . fmap unSugared . sugarModule
+        >>= first renderSugarError . sugarModule
 
 mainWidgetInit
   :: (forall t m.

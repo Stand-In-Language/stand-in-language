@@ -247,16 +247,16 @@ formatTimestampMinutesUTC rawTimestamp = do
   pure . T.pack $ formatTime defaultTimeLocale "%Y-%m-%dT%H:%MZ" (zonedTimeToUTC zonedTime)
 
 --------------------------------------------------------------------------------
--- Helpers: centralize parsing through runParseModule + desugarModule
+-- Helpers: centralize parsing through runParseModule + sugarModule
 
 parseTelomareModule :: T.Text -> Either String ParseResult
 parseTelomareModule text =
   runParseModule "" (T.unpack text)
-    >>= first renderSugarError . fmap unSugared . sugarModule
+    >>= first renderSugarError . sugarModule
 
 -- |Raw parse only, keeping the megaparsec bundle so parse diagnostics can
--- use 'errorOffset'. Callers run 'desugarModule' on the result themselves.
-parseTelomareModuleDetailed :: T.Text -> Either (ParseErrorBundle String Void) (Parsed [ModuleItem AUPT])
+-- use 'errorOffset'. Callers run 'sugarModule' on the result themselves.
+parseTelomareModuleDetailed :: T.Text -> Either (ParseErrorBundle String Void) [ModuleItem PAUPT]
 parseTelomareModuleDetailed = runParseModuleDetailed "" . T.unpack
 
 storeParsedDoc
@@ -268,7 +268,7 @@ storeParsedDoc
 storeParsedDoc gState uri version text = do
   modules <- liftIO $ readTVarIO (moduleBindings gState)
   let detailedParse = parseTelomareModuleDetailed text
-      desugared = fmap unSugared . sugarModule <$> detailedParse
+      desugared = sugarModule <$> detailedParse
       parseRes = case desugared of
         Left parseErr      -> Left $ errorBundlePretty parseErr
         Right (Left err)   -> Left $ renderSugarError err

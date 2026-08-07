@@ -39,7 +39,7 @@ import Telomare.Size (SizingReport (..), SizingSettings (..),
                       buildUnsizedLocMap, evalStaticCheck, locateSizingFailure,
                       sizeTermM, term3ToUnsizedExpr)
 import Telomare.Size.IR (SizedRecursion (..), VoidF)
-import Telomare.Sugar (desugarDefs, desugarTerm, renderSugarError, sugarModule,
+import Telomare.Sugar (renderSugarError, sugarDefs, sugarModule, sugarTerm,
                        wrapMain)
 import Telomare.TypeCheck (typeCheck)
 import Text.Megaparsec (errorBundlePretty, runParser)
@@ -221,7 +221,7 @@ compileModulesWith so modulesStrings s =
     parseAndDesugar (moduleName, content) =
       ( moduleName
       , runParseModule moduleName content
-          >>= first renderSugarError . fmap unSugared . sugarModule )
+          >>= first renderSugarError . sugarModule )
 
 runMainCore :: [(String, String)] -- ^All modules as (Module_Name, Module_Content)
             -> String -- ^Module's name with `main` function
@@ -320,7 +320,7 @@ eval2IExpr extraModuleBindings str = do
   resolved <- first show $ resolveAllImports extraModuleBindings aux
   first errorBundlePretty (runParser parseOneExprOrDefinitions "" str)
     >>= first renderSugarError
-        . either (desugarDefs >=> wrapMain resolved) desugarTerm
+        . either (sugarDefs >=> wrapMain resolved) sugarTerm
     >>= first show . process . AnnotatedUPT
     >>= tt . first show . compileUnitTest
     where

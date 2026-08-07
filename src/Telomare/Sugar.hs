@@ -1,13 +1,14 @@
 {-# LANGUAGE LambdaCase #-}
 
 -- |The desugaring pass that runs immediately after parsing. The grammar in
--- 'Telomare.Parse' is deliberately dumb: it emits the raw forms
--- 'LamPatUPF' (multi-pattern lambdas), 'LetSugarUPF' (lets whose entries
--- may be list assignments or carry refinement annotations).
--- 'desugarTerm' eliminates both, rewriting them into the plain
--- 'UnprocessedParsedTermL'/'LetUPF'/'CheckF' vocabulary every later stage
--- consumes. Everything here is a pure @AUPT@ builder, so source spans are
--- exactly what the grammar alone produces.
+-- 'Telomare.Parse' is deliberately dumb: it emits 'PAUPT' trees whose
+-- 'SugarTermF' fragment carries the raw forms 'LamPatF' (multi-pattern
+-- lambdas) and 'LetSugarF' (lets whose entries may be list assignments or
+-- carry refinement annotations). 'sugarTerm' removes that fragment,
+-- rewriting the raw forms into the plain
+-- 'UnprocessedParsedTermL'/'LetUPF'/'CheckF' vocabulary — so the resulting
+-- 'AUPT' structurally cannot contain them. Source spans are exactly what
+-- the grammar alone produces.
 --
 -- Sugar that survives this pass ('CaseUPF', builtin names) is expanded
 -- later, in 'Telomare.Desugar'.
@@ -15,10 +16,8 @@ module Telomare.Sugar
   ( SugarError (..)
   , renderSugarError
   , sugarErrorLoc
-  , desugarTerm
-  , desugarDefs
-  , desugarModule
   , sugarTerm
+  , sugarPattern
   , sugarDefs
   , sugarModule
   , wrapMain
@@ -80,48 +79,50 @@ sugarErrorLoc = \case
   UDTArityMismatch loc _ _ _ -> Just loc
   MissingMain              -> Nothing
 
--- |Rewrite away every raw form, bottom-up. The result contains no
--- 'LamPatUPF' or 'LetSugarUPF' nodes, including inside pattern
--- annotations.
-desugarTerm :: AUPT -> Either SugarError AUPT
-desugarTerm (loc :< term) = case term of
-  LamPatUPF pats body -> do
-    pats' <- traverse (traverse desugarPattern) pats
-    body' <- desugarTerm body
+-- |Remove the sugar fragment, bottom-up. This is the type change that
+-- guarantees no 'LamPatF' or 'LetSugarF' node survives, including inside
+-- pattern annotations.
+sugarTerm :: PAUPT -> Either SugarError AUPT
+sugarTerm (loc :< term) = case term of
+  ParsedTermSugar (LamPatF pats body) -> do
+    pats' <- traverse (traverse sugarPattern) pats
+    body' <- sugarTerm body
     pure $ buildMultiLambda loc pats' body'
-  LetSugarUPF defs body -> do
-    bindings <- desugarDefs defs
-    body' <- desugarTerm body
+  ParsedTermSugar (LetSugarF defs body) -> do
+    bindings <- sugarDefs defs
+    body' <- sugarTerm body
     pure $ loc :< LetUPF bindings body'
-  CaseUPF scrutinee alternatives -> do
-    scrutinee' <- desugarTerm scrutinee
-    alternatives' <- traverse (\(p, b) -> (,) <$> desugarPattern p <*> desugarTerm b) alternatives
-    pure $ loc :< CaseUPF scrutinee' alternatives'
-  other -> (loc :<) <$> traverse desugarTerm other
+  ParsedTermUP upf -> do
+    upf' <- traverse sugarTerm upf
+    (loc :<) <$> traverseUPTPatterns sugarPattern upf'
 
 -- |Patterns carry embedded terms in their annotations (@(v : T)@), which
--- the parser now leaves raw too.
-desugarPattern :: PatternA -> Either SugarError PatternA
-desugarPattern (Fix pattern') = case pattern' of
-  PatternAnnotatedF inner (AnnotatedUPT typeExpr) ->
-    fmap Fix $ PatternAnnotatedF <$> desugarPattern inner
-                                 <*> (AnnotatedUPT <$> desugarTerm typeExpr)
-  other -> Fix <$> traverse desugarPattern other
+-- the parser leaves raw too.
+sugarPattern :: PatternP -> Either SugarError PatternA
+sugarPattern (Fix pattern') = Fix <$> case pattern' of
+  PatternAnnotatedF inner (AnnotatedPUPT typeExpr) ->
+    PatternAnnotatedF <$> sugarPattern inner
+                      <*> (AnnotatedUPT <$> sugarTerm typeExpr)
+  PatternVarF name    -> pure $ PatternVarF name
+  PatternIntF n       -> pure $ PatternIntF n
+  PatternStringF s    -> pure $ PatternStringF s
+  PatternIgnoreF      -> pure PatternIgnoreF
+  PatternPairF a b    -> PatternPairF <$> sugarPattern a <*> sugarPattern b
 
 -- |Desugar a block of raw definitions into plain (name, value) bindings.
 -- Single definitions fold their refinement annotation into a 'CheckF';
 -- list assignments expand into one binding per name.
-desugarDefs :: [DefinitionF AUPT] -> Either SugarError [(LocatedName, AUPT)]
-desugarDefs defs = concat <$> traverse (traverse desugarTerm >=> expandDef) defs
+sugarDefs :: [DefinitionF PAUPT] -> Either SugarError [(LocatedName, AUPT)]
+sugarDefs defs = concat <$> traverse (traverse sugarTerm >=> expandDef) defs
 
 -- |Desugar a parsed module: imports pass through, definitions expand into
 -- their bindings.
-desugarModule :: [ModuleItem AUPT] -> Either SugarError [Either AUPT (String, AUPT)]
-desugarModule = fmap concat . traverse item where
+sugarModule :: [ModuleItem PAUPT] -> Either SugarError [Either AUPT (String, AUPT)]
+sugarModule = fmap concat . traverse item where
   item = \case
     ModuleImportItem importDecl -> pure [Left $ importDeclTerm importDecl]
     ModuleDefinitionItem def -> fmap (Right . first locatedNameText)
-                                 <$> (traverse desugarTerm def >>= expandDef)
+                                 <$> (traverse sugarTerm def >>= expandDef)
 
   importDeclTerm importDecl = case parsedImportQualifier importDecl of
     Nothing -> parsedImportLoc importDecl :< ImportUPF
@@ -129,17 +130,6 @@ desugarModule = fmap concat . traverse item where
     Just qualifier -> parsedImportLoc importDecl :< ImportQualifiedUPF
       (locatedNameText qualifier)
       (locatedNameText $ parsedImportModule importDecl)
-
-sugarTerm :: Parsed AUPT -> Either SugarError (Sugared AUPT)
-sugarTerm (Parsed term) = Sugared <$> desugarTerm term
-
-sugarDefs :: Parsed [DefinitionF AUPT]
-          -> Either SugarError (Sugared [(LocatedName, AUPT)])
-sugarDefs (Parsed defs) = Sugared <$> desugarDefs defs
-
-sugarModule :: Parsed [ModuleItem AUPT]
-            -> Either SugarError (Sugared [Either AUPT (String, AUPT)])
-sugarModule (Parsed items) = Sugared <$> desugarModule items
 
 -- |Wrap a module's bindings (plus any extra module bindings, e.g. an
 -- already-desugared prelude) in a let around its @main@ definition. This

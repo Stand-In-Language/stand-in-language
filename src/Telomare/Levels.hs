@@ -156,7 +156,7 @@ parseModules = traverse parseOne
     parseOne (name, src) =
       either (Left . ((name <> ": ") <>)) (Right . (name,)) $
         runParseModule name src
-          >>= first renderSugarError . fmap unSugared . sugarModule
+          >>= first renderSugarError . sugarModule
 
 lookupEntry :: DefId
             -> [(String, [Either AUPT (String, AUPT)])]
