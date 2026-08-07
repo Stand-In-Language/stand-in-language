@@ -63,8 +63,11 @@ jobs:
           signingKey: '${{ secrets.CACHIX_SIGNING_KEY }}'
           extraPullNames: nix-community
       - name: stylish-haskell formatting
+        # Format the tracked Haskell files only, so this command behaves the
+        # same on developer checkouts (where recursing over `.` would wander
+        # into .direnv/ and dist-newstyle/) as it does here.
         run: |
-          nix develop -c stylish-haskell -irv .
+          nix develop -c bash -c "git ls-files -z '*.hs' | xargs -0 stylish-haskell -iv"
           output=$(git diff)
           if [ "$output" = "" ]; then
               echo "Success! No formatting suggestions."
@@ -93,7 +96,7 @@ jobs:
           extraPullNames: nix-community
       - name: hlint linting
         run: |
-          output=$(nix develop -c hlint . --no-exit-code)
+          output=$(nix develop -c bash -c "git ls-files -z '*.hs' | xargs -0 hlint --no-exit-code")
           if [ "$output" = "No hints" ]; then
               echo "Success! No Hlint suggestions."
           else

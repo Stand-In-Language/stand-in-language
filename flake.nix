@@ -122,7 +122,9 @@
             fi
 
             lint_status=0
-            hlint . || lint_status=$?
+            if [ "''${#hs_files[@]}" -gt 0 ]; then
+              hlint "''${hs_files[@]}" || lint_status=$?
+            fi
 
             if [ "$format_status" -ne 0 ]; then
               printf 'Formatting check failed\n'
@@ -137,6 +139,36 @@
             printf 'Formatting and linting are OK\n'
           '';
         }}/bin/telomare-format-lint-check";
+      };
+      # Apply formatting in place and lint, over the tracked Haskell files
+      # only. Scoping to `git ls-files` is what keeps this identical to CI:
+      # recursing over `.` locally wanders into untracked trees like
+      # .direnv/ and dist-newstyle/ and aborts on read-only store files.
+      apps.format = {
+        type = "app";
+        program = "${pkgs.writeShellApplication {
+          name = "telomare-format";
+          runtimeInputs = [
+            pkgs.git
+            pkgs.haskell.packages.ghc96.hlint
+            pkgs.haskell.packages.ghc96.stylish-haskell
+          ];
+          text = ''
+            mapfile -t hs_files < <(git ls-files '*.hs')
+            if [ "''${#hs_files[@]}" -eq 0 ]; then
+              echo "No tracked Haskell files found"
+              exit 0
+            fi
+
+            echo "Formatting ''${#hs_files[@]} tracked Haskell files"
+            stylish-haskell -i "''${hs_files[@]}"
+
+            echo "Linting"
+            hlint "''${hs_files[@]}"
+
+            echo "Formatting applied and linting passed"
+          '';
+        }}/bin/telomare-format";
       };
       apps.push-cachix = {
         type = "app";
@@ -222,7 +254,39 @@
         }}/bin/telomare-push-cachix";
       };
 
-      checks = self'.packages;
+      # `nix flake check` builds the packages and verifies formatting and
+      # linting. The flake source only contains tracked files, so this
+      # covers the same file set as `nix run .#format` / `.#format-lint`
+      # and the CI format/lint jobs.
+      checks = self'.packages // {
+        format-lint = pkgs.runCommand "telomare-format-lint-check"
+          {
+            nativeBuildInputs = [
+              pkgs.diffutils
+              pkgs.findutils
+              pkgs.haskell.packages.ghc96.hlint
+              pkgs.haskell.packages.ghc96.stylish-haskell
+            ];
+            LC_ALL = "C.UTF-8";
+          } ''
+            cp -r ${self} source
+            chmod -R u+w source
+            cd source
+            find . -type f -name '*.hs' -print0 | xargs -0 stylish-haskell -i
+            cd ..
+            if ! diff -ru ${self} source; then
+              echo "Formatting check failed: stylish-haskell has the suggestions diffed above."
+              echo "Run 'nix run .#format' to apply them."
+              exit 1
+            fi
+            cd source
+            if ! find . -type f -name '*.hs' -print0 | xargs -0 hlint; then
+              echo "Linting check failed: fix the hints above or add exceptions to .hlint.yaml."
+              exit 1
+            fi
+            touch $out
+          '';
+      };
     };
   };
 }
