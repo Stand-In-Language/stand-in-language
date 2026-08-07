@@ -346,8 +346,8 @@ name is the generated validator. This classification is not parser behavior.
 
 | Source form | Parsed representation | Immediate Sugar result |
 | --- | --- | --- |
-| `\p1 p2 -> e` | `LamPatUPF` | nested `LamF`, with cases for patterns |
-| `let defs in e` | `LetSugarUPF` | `LetUPF` |
+| `\p1 p2 -> e` | `LamPatF` | nested `LamF`, with cases for patterns |
+| `let defs in e` | `LetSugarF` | `LetUPF` |
 | `x : T = e` | annotated `SingleDefF` | `CheckF T e` |
 | `[a, b] = e` | `ListDefF` | one binding per name |
 | `[T, ...] = \h -> [...]` | `ListDefF` | UDT bindings and validator |
@@ -361,8 +361,8 @@ pipeline. In pipeline order:
 
 | Stage | Modules | What happens |
 | --- | --- | --- |
-| Parse | `Telomare.Parse` | megaparsec grammar producing `Parsed` raw surface values: no expansion, resolving, or semantic checks. Modules use `ModuleItem`; multi-pattern lambdas, refinement annotations, and list definitions remain as written. Complete public runners reject trailing input. |
-| Sugar | `Telomare.Sugar` | converts `Parsed` to `Sugared` and eliminates `LamPatUPF`/`LetSugarUPF`: multi-pattern lambdas become nested lambdas with hygienic case destructuring, list definitions and UDT conventions expand into bindings, and refinement annotations fold into `CheckF`. |
+| Parse | `Telomare.Parse` | megaparsec grammar producing raw `PAUPT` surface trees: no expansion, resolving, or semantic checks. Modules use `ModuleItem`; multi-pattern lambdas, refinement annotations, and list definitions remain as written. Complete public runners reject trailing input. |
+| Sugar | `Telomare.Sugar` | removes the `SugarTermF` fragment (`PAUPT -> AUPT`), eliminating `LamPatF`/`LetSugarF` by type: multi-pattern lambdas become nested lambdas with hygienic case destructuring, list definitions and UDT conventions expand into bindings, and refinement annotations fold into `CheckF`. |
 | Desugar | `Telomare.Desugar` | later `AUPT -> AUPT` rewrites: case lowering, builtin binding and optimization. |
 | Resolve | `Telomare.Resolve` | import resolution, scope checking, de Bruijn conversion, hash folding, and core lowering (`splitExpr`: `Term2 -> Term3`). Documents the dual `process`/`processWlet` pipeline. |
 | Type check | `Telomare.TypeCheck` | unification-based check of `Term3` against the main type. |

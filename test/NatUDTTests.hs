@@ -25,7 +25,7 @@ import Telomare.Parse (parseLongExpr, runParseDefinitions)
 import Telomare.PrettyPrint
 import Telomare.Resolve (process, pruneBindings)
 import Telomare.Size (SizingSettings (SizingSettings))
-import Telomare.Sugar (sugarTerm, renderSugarError, sugarDefs)
+import Telomare.Sugar (renderSugarError, sugarDefs, sugarTerm)
 import Test.Tasty
 import Test.Tasty.HUnit
 import Text.Megaparsec (eof, errorBundlePretty, runParser)

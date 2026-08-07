@@ -8,8 +8,11 @@
   `Telomare.Machine` step algebra, `Telomare.Eval.Reference` /
   `Telomare.Eval.Meter`, and `Telomare.Driver`. The IR vocabulary moved
   to `Telomare.IR.*` and the error types to `Telomare.Error`.
-* Parser APIs now expose an explicit parse-then-sugar pipeline. Complete
-  runners return `Parsed` values, Sugar returns `Sugared` values, module
+* Parser APIs now expose an explicit parse-then-sugar pipeline. Each surface
+  phase has its own term type: the parser produces `PAUPT` (base functor
+  `ParsedTermF` = `UnprocessedParsedTermF` plus the `SugarTermF` fragment),
+  and `Telomare.Sugar` removes the sugar fragment, returning `AUPT` — so
+  desugared trees structurally cannot contain raw sugar forms. Module
   syntax uses `ModuleItem`/`ImportDecl`, and complete expression runners reject
   trailing input. The old parse-time expansion APIs and `Telomare.Parse.Sugar`
   module were removed.
