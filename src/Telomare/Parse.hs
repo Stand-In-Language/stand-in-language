@@ -313,27 +313,23 @@ parsePatternAnnotated = parens body <?> "annotated pattern"
       pure . embed $ PatternAnnotatedF p (AnnotatedPUPT typeExpr)
 
 -- |Parse an atomic expression.
-parseAtom :: TelomareParser PAUPT
-parseAtom = choice $ try <$> [ parseHash
-                             , parseString
-                             , parseNumber
-                             , parsePair
-                             , parseUnsizedRecursion
-                             , parseList
-                             , parseChurch
-                             , parseVariable
-                             , parens (scn *> parseLongExpr <* scn)
-                             ]
-
--- |Compatibility name for callers parsing an expression atom.
 parseSingleExpr :: TelomareParser PAUPT
-parseSingleExpr = parseAtom
+parseSingleExpr = choice $ try <$> [ parseHash
+                                   , parseString
+                                   , parseNumber
+                                   , parsePair
+                                   , parseUnsizedRecursion
+                                   , parseList
+                                   , parseChurch
+                                   , parseVariable
+                                   , parens (scn *> parseLongExpr <* scn)
+                                   ]
 
 -- |Parse application of functions.
 parseApplied :: TelomareParser PAUPT
 parseApplied = do
   (x, fargs) <- captureSourceSpan . L.lineFold scn
-    $ \sc' -> parseAtom `sepBy1` try sc'
+    $ \sc' -> parseSingleExpr `sepBy1` try sc'
   case fargs of
     f:args -> pure $ foldl (\a b -> x :< embedL (AppF a b)) f args
     []     -> fail "expected expression"
@@ -342,7 +338,7 @@ parseApplied = do
 -- keeps a following, less-indented grammar delimiter from turning a complete
 -- atom into a failed multiline application.
 parseApplication :: TelomareParser PAUPT
-parseApplication = try parseApplied <|> parseAtom
+parseApplication = try parseApplied <|> parseSingleExpr
 
 -- |Parse lambda expression. Emits the raw multi-pattern form;
 -- 'Telomare.Sugar.buildMultiLambda' turns it into nested plain lambdas
