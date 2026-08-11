@@ -22,7 +22,7 @@ import qualified Data.Map as Map
 import Control.Comonad.Cofree
 import Data.Fix (Fix (..))
 import Data.Functor.Foldable
-import Data.List (elemIndex)
+import Data.List (elemIndex, intercalate)
 import Text.Read (readMaybe)
 -- import Data.SBV (sFPHalf)
 
@@ -99,7 +99,7 @@ prettyPrintPattern :: (s -> String) -> Fix (PatternF s) -> String
 prettyPrintPattern pp = go . project where
   go = \case
     (PatternIntF x) -> show x
-    (PatternVarF x) -> x
+    (PatternVarF x) -> locatedNameText x
     (PatternStringF x) ->  show x
     (PatternPairF x y) -> "(" <> prettyPrintPattern pp x <> ", " <> prettyPrintPattern pp y <> ")"
     PatternIgnoreF -> "_"
@@ -172,10 +172,6 @@ instance Show MultiLineShowUPT where
                           "  " <> ind x <> "\n" <>
                           concatMap (\(p,v) -> "  , (" <> prettyPrintPattern (show . MultiLineShowUPT) p <> ",\n    " <> ind v <> ")\n") ls <>
                           "  ]"
-      (UDTUPF ss x) -> "UDTUP " <> show ss <> "\n" <>
-                        "  " <> ind x
-      (ImportUPF s) -> "ImportUP " <> show s
-      (ImportQualifiedUPF s1 s2) -> "ImportQualifiedUP " <> show s1 <> " " <> show s2
 
 newtype PrettyUPT = PrettyUPT UnprocessedParsedTerm
 

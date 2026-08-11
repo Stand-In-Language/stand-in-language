@@ -1,53 +1,31 @@
-{-# LANGUAGE LambdaCase          #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeFamilies        #-}
 
 module Telomare.Parse where
 
-import Control.Comonad.Cofree (Cofree (..), unwrap)
-import qualified Control.Comonad.Trans.Cofree as C (CofreeF (..))
-import Control.Lens.Plated (Plated (..))
-import Control.Monad (join, void)
-import Control.Monad.State (State)
-import Data.Bifunctor (Bifunctor (first, second), bimap)
-import Data.Char (isUpper)
-import Data.Fix (Fix (..))
-import Data.Functor (($>))
-import Data.Functor.Foldable (Base, cata, embed, para, project)
-import Data.Functor.Foldable.TH (MakeBaseFunctor (makeBaseFunctor))
-import Data.Maybe (fromJust)
+import Control.Comonad.Cofree (Cofree (..))
+import Control.Monad (void)
+import Data.Bifunctor (first)
+import Data.Functor.Foldable (embed)
 import Data.Void (Void)
-import Data.Word (Word8)
-import GHC.Desugar (AnnotationWrapper (AnnotationWrapper))
-import qualified System.IO.Strict as Strict
-import Telomare.Error
 import Telomare.IR.Base
-import Telomare.IR.Builder
-import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.IR.Surface
-import Telomare.IR.Types
-import Telomare.Parse.Sugar (AssignmentEntry (..), buildMultiLambda,
-                             expandAssignmentEntry)
-import Telomare.PrettyPrint.Indent (indentSansFirstLine)
 import Text.Megaparsec (MonadParsec (eof, notFollowedBy, try), ParseErrorBundle,
                         Parsec, Pos,
                         SourcePos (sourceColumn, sourceLine, sourceName),
                         between, choice, errorBundlePretty, getOffset,
                         getSourcePos, many, manyTill, optional, runParser,
-                        sepBy, some, unPos, (<?>), (<|>))
+                        sepBy, sepBy1, some, unPos, (<?>), (<|>))
 import Text.Megaparsec.Char (alphaNumChar, char, letterChar, space1, string)
 import qualified Text.Megaparsec.Char.Lexer as L
 import Text.Megaparsec.Debug (dbg)
-import Text.Megaparsec.Pos (Pos)
-import Text.Read (readMaybe)
-import Text.Show.Deriving (deriveShow1)
 
 -- |TelomareParser :: * -> *
 type TelomareParser = Parsec Void String
 
 -- |Parse a variable.
-parseVariable :: TelomareParser AUPT
+parseVariable :: TelomareParser ParsedSurfaceTerm
 parseVariable = do
   (loc, str) <- withSourceSpan identifierRaw
   pure $ loc :< embedL (VarF str)
@@ -84,11 +62,14 @@ symbol = L.symbol sc
 
 -- |This is to parse reserved words.
 reserved :: String -> TelomareParser ()
-reserved w = (lexeme . try) (string w *> notFollowedBy alphaNumChar)
+reserved w = (lexeme . try) (string w *> notFollowedBy identifierContinue)
 
 -- |List of reserved words
 rws :: [String]
-rws = ["let", "in", "if", "then", "else", "case", "of", "import"]
+rws = ["let", "in", "if", "then", "else", "case", "of", "import", "qualified", "as"]
+
+identifierContinue :: TelomareParser Char
+identifierContinue = alphaNumChar <|> char '_' <|> char '.'
 
 -- |Variable identifiers can consist of alphanumeric characters, underscore,
 -- and must start with an English alphabet letter
@@ -98,7 +79,7 @@ identifier = lexeme identifierRaw
 identifierRaw :: TelomareParser String
 identifierRaw = try $ p >>= check
   where
-    p = (:) <$> letterChar <*> many (alphaNumChar <|> char '_' <|> char '.' <?> "variable")
+    p = (:) <$> letterChar <*> many (identifierContinue <?> "variable")
     check x = if x `elem` rws
               then fail ("keyword " <> (show x <> " cannot be an identifier"))
               else pure x
@@ -119,12 +100,22 @@ curlies = between (symbol "{") (symbol "}")
 commaSep :: TelomareParser a -> TelomareParser [a]
 commaSep p = p `sepBy` symbol ","
 
+commaSep1 :: TelomareParser a -> TelomareParser [a]
+commaSep1 p = p `sepBy1` symbol ","
+
 -- |Integer TelomareParser used by `parseNumber` and `parseChurch`
 integer :: TelomareParser Integer
 integer = lexeme integerRaw
 
 integerRaw :: TelomareParser Integer
-integerRaw = toInteger <$> L.decimal
+integerRaw = L.decimal
+
+naturalIntRaw :: TelomareParser Int
+naturalIntRaw = do
+  value <- integerRaw
+  if value <= toInteger (maxBound :: Int)
+    then pure $ fromInteger value
+    else fail "natural literal exceeds the supported range"
 
 sourcePositionFromPos :: Int -> SourcePos -> SourcePosition
 sourcePositionFromPos offset pos = SourcePosition
@@ -143,13 +134,15 @@ sourceLocFromPositions (startOffset, start) (endOffset, end) = SourceLoc SourceS
   }
 
 withSourceSpan :: TelomareParser a -> TelomareParser (LocTag, a)
-withSourceSpan parser = do
+withSourceSpan parser = captureSourceSpan parser <* sc
+
+captureSourceSpan :: TelomareParser a -> TelomareParser (LocTag, a)
+captureSourceSpan parser = do
   startOffset <- getOffset
   start <- getSourcePos
   x <- parser
   endOffset <- getOffset
   end <- getSourcePos
-  sc
   pure (sourceLocFromPositions (startOffset, start) (endOffset, end), x)
 
 getSourceLoc :: TelomareParser LocTag
@@ -159,72 +152,72 @@ getSourceLoc = do
   pure $ sourceLocFromPositions (offset, pos) (offset, pos)
 
 -- |Parse string literal.
-parseString :: TelomareParser AUPT
+parseString :: TelomareParser ParsedSurfaceTerm
 parseString = do
   (x, str) <- withSourceSpan (char '"' >> manyTill L.charLiteral (char '"'))
-  pure $ x :< StringUPF str
+  pure $ x :< ParsedTermUP (StringUPF str)
 
 -- |Parse number (Integer).
-parseNumber :: TelomareParser AUPT
+parseNumber :: TelomareParser ParsedSurfaceTerm
 parseNumber = do
-  (x, i) <- withSourceSpan integerRaw
-  pure $ x :< (IntUPF . fromInteger $ i)
+  (x, i) <- withSourceSpan naturalIntRaw
+  pure $ x :< ParsedTermUP (IntUPF i)
 
 -- |Parse a pair.
-parsePair :: TelomareParser AUPT
-parsePair = parens $ do
-  x <- getSourceLoc
-  a <- scn *> parseLongExpr <* scn
-  _ <- symbol "," <* scn
-  b <- parseLongExpr <* scn
+parsePair :: TelomareParser ParsedSurfaceTerm
+parsePair = do
+  (x, (a, b)) <- captureSourceSpan . parens $ do
+    a <- scn *> parseLongExpr <* scn
+    _ <- symbol "," <* scn
+    b <- parseLongExpr <* scn
+    pure (a, b)
   pure $ x :< embedB (PairSF a b)
 
 -- |Parse unsized recursion triple
-parseUnsizedRecursion :: TelomareParser AUPT
-parseUnsizedRecursion = curlies $ do
-  x <- getSourceLoc
-  a <- scn *> parseLongExpr <* scn
-  _ <- symbol "," <* scn
-  b <- parseLongExpr <* scn
-  _ <- symbol "," <* scn
-  c <- parseLongExpr <* scn
+parseUnsizedRecursion :: TelomareParser ParsedSurfaceTerm
+parseUnsizedRecursion = do
+  (x, (a, b, c)) <- captureSourceSpan . curlies $ do
+    a <- scn *> parseLongExpr <* scn
+    _ <- symbol "," <* scn
+    b <- parseLongExpr <* scn
+    _ <- symbol "," <* scn
+    c <- parseLongExpr <* scn
+    pure (a, b, c)
   pure $ x :< embedH (RecursionF a b c)
 
 -- |Parse a list.
-parseList :: TelomareParser AUPT
+parseList :: TelomareParser ParsedSurfaceTerm
 parseList = do
-  x <- getSourceLoc
-  exprs <- brackets (commaSep (scn *> parseLongExpr <*scn))
-  pure $ x :< ListUPF exprs
+  (x, exprs) <- captureSourceSpan $ brackets (commaSep (scn *> parseLongExpr <*scn))
+  pure $ x :< ParsedTermUP (ListUPF exprs)
 
 -- TODO: make error more descriptive
 -- |Parse ITE (which stands for "if then else").
-parseITE :: TelomareParser AUPT
+parseITE :: TelomareParser ParsedSurfaceTerm
 parseITE = do
-  x <- getSourceLoc
-  reserved "if" <* scn
-  cond <- (parseLongExpr <|> parseSingleExpr) <* scn
-  reserved "then" <* scn
-  thenExpr <- (parseLongExpr <|> parseSingleExpr) <* scn
-  reserved "else" <* scn
-  elseExpr <- parseLongExpr <* scn
+  (x, (cond, thenExpr, elseExpr)) <- captureSourceSpan $ do
+    reserved "if" <* scn
+    cond <- parseLongExpr <* scn
+    reserved "then" <* scn
+    thenExpr <- parseLongExpr <* scn
+    reserved "else" <* scn
+    elseExpr <- parseLongExpr <* scn
+    pure (cond, thenExpr, elseExpr)
   pure $ x :< embedH (ITEF cond thenExpr elseExpr)
 
-parseHash :: TelomareParser AUPT
+parseHash :: TelomareParser ParsedSurfaceTerm
 parseHash = do
-  x <- getSourceLoc
-  symbol "#" <* scn
-  upt <- parseSingleExpr
+  (x, upt) <- captureSourceSpan $ symbol "#" <* scn *> parseSingleExpr
   pure $ x :< embedH (HashF upt)
 
-parseListAssignment :: TelomareParser AssignmentEntry
-parseListAssignment = do
+parseListDefinition :: TelomareParser (DefinitionF ParsedSurfaceTerm)
+parseListDefinition = do
   x <- getSourceLoc
-  names <- (brackets (commaSep (scn *> locatedNameParser <* scn)) <* scn)
+  names <- (brackets (commaSep1 (scn *> locatedNameParser <* scn)) <* scn)
            <?> "list assignment names"
   (scn *> symbol "=") <?> "list assignment ="
   expr <- (scn *> parseLongExpr <* scn) <?> "list assignment body"
-  pure $ ListAssignment x names expr
+  pure $ ListDefF x names expr
 
 locatedIdentifier :: TelomareParser (LocTag, String)
 locatedIdentifier = lexeme $ withSourceSpan identifierRaw
@@ -232,23 +225,24 @@ locatedIdentifier = lexeme $ withSourceSpan identifierRaw
 locatedNameParser :: TelomareParser LocatedName
 locatedNameParser = uncurry locatedName <$> locatedIdentifier
 
-parseCase :: TelomareParser AUPT
+parseCase :: TelomareParser ParsedSurfaceTerm
 parseCase = do
-  x <- getSourceLoc
-  reserved "case" <* scn
-  iexpr <- parseLongExpr <* scn
-  reserved "of" <* scn
-  lpc <- some $ try parseSingleCase <* scn
-  pure $ x :< CaseUPF iexpr lpc
+  (x, (iexpr, lpc)) <- captureSourceSpan $ do
+    reserved "case" <* scn
+    iexpr <- parseLongExpr <* scn
+    reserved "of" <* scn
+    lpc <- some $ try parseSingleCase <* scn
+    pure (iexpr, lpc)
+  pure $ x :< ParsedTermUP (CaseUPF iexpr lpc)
 
-parseSingleCase :: TelomareParser (PatternA, AUPT)
+parseSingleCase :: TelomareParser (PatternP, ParsedSurfaceTerm)
 parseSingleCase = do
   p <- parsePattern <* scn
   reserved "->" <* scn
   c <- parseLongExpr <* scn
   pure (p, c)
 
-parsePattern :: TelomareParser PatternA
+parsePattern :: TelomareParser PatternP
 parsePattern = choice $ try <$> [ parsePatternIgnore
                                  , parsePatternVar
                                  , parsePatternAnnotated
@@ -257,17 +251,17 @@ parsePattern = choice $ try <$> [ parsePatternIgnore
                                  , parsePatternPair
                                  ]
 
-parseLocatedPattern :: TelomareParser (LocTag, PatternA)
+parseLocatedPattern :: TelomareParser (LocTag, PatternP)
 parseLocatedPattern = choice $ try <$> [ parseLocatedPatternVar
                                        , parseLocatedPatternOther
                                        ]
 
-parseLocatedPatternVar :: TelomareParser (LocTag, PatternA)
+parseLocatedPatternVar :: TelomareParser (LocTag, PatternP)
 parseLocatedPatternVar = do
   (loc, name) <- locatedIdentifier <* scn
-  pure (loc, embed $ PatternVarF name)
+  pure (loc, embed . PatternVarF $ locatedName loc name)
 
-parseLocatedPatternOther :: TelomareParser (LocTag, PatternA)
+parseLocatedPatternOther :: TelomareParser (LocTag, PatternP)
 parseLocatedPatternOther = do
   loc <- getSourceLoc
   pattern' <- choice $ try <$> [ parsePatternIgnore
@@ -278,45 +272,48 @@ parseLocatedPatternOther = do
                                ]
   pure (loc, pattern')
 
-parsePatternPair :: TelomareParser PatternA
+parsePatternPair :: TelomareParser PatternP
 parsePatternPair = parens $ do
   p <- scn *> parsePattern <* scn
   _ <- symbol "," <* scn
   b <- parsePattern <* scn
   pure . embed $ PatternPairF p b
 
-parsePatternInt :: TelomareParser PatternA
-parsePatternInt = embed . PatternIntF . fromInteger <$> integer
+parsePatternInt :: TelomareParser PatternP
+parsePatternInt = embed . PatternIntF <$> lexeme naturalIntRaw
 
-parsePatternString :: TelomareParser PatternA
+parsePatternString :: TelomareParser PatternP
 parsePatternString =  embed . PatternStringF <$> (char '"' >> manyTill L.charLiteral (char '"'))
 
-parsePatternVar :: TelomareParser PatternA
-parsePatternVar =  embed . PatternVarF <$> (identifier <* scn)
+parsePatternVar :: TelomareParser PatternP
+parsePatternVar = do
+  (loc, name) <- locatedIdentifier <* scn
+  pure . embed . PatternVarF $ locatedName loc name
 -- Pattern annotations are only accepted in parenthesised form
 -- (parsePatternAnnotated). Allowing a bare @v : T@ here would shadow
 -- the parenthesised path because parsePatternVar runs first in
 -- parsePattern's @choice@.
 
 
-parsePatternIgnore :: TelomareParser PatternA
+parsePatternIgnore :: TelomareParser PatternP
 parsePatternIgnore = symbol "_" >> pure (embed PatternIgnoreF)
 
 -- |Parse a parenthesised pattern with a type/refinement annotation,
 -- e.g. @(aa : Nat)@. The stored typeExpr is the raw check function;
--- 'buildMultiLambda' applies it to the bound value and uses the result as
--- the case scrutinee, forcing runtime validation before destructuring.
-parsePatternAnnotated :: TelomareParser PatternA
+-- 'Telomare.Expand.buildMultiLambda' applies it to the bound value and uses
+-- the result as the case scrutinee, forcing runtime validation before
+-- destructuring.
+parsePatternAnnotated :: TelomareParser PatternP
 parsePatternAnnotated = parens body <?> "annotated pattern"
   where
     body = do
       p <- (scn *> parsePattern <* scn) <?> "pattern before ':'"
       symbol ":" <* scn
       typeExpr <- (parseLongExpr <* scn) <?> "type expression after ':'"
-      pure . embed $ PatternAnnotatedF p (AnnotatedUPT typeExpr)
+      pure . embed $ PatternAnnotatedF p (AnnotatedPST typeExpr)
 
--- |Parse a single expression.
-parseSingleExpr :: TelomareParser AUPT
+-- |Parse an atomic expression.
+parseSingleExpr :: TelomareParser ParsedSurfaceTerm
 parseSingleExpr = choice $ try <$> [ parseHash
                                    , parseString
                                    , parseNumber
@@ -329,25 +326,32 @@ parseSingleExpr = choice $ try <$> [ parseHash
                                    ]
 
 -- |Parse application of functions.
-parseApplied :: TelomareParser AUPT
+parseApplied :: TelomareParser ParsedSurfaceTerm
 parseApplied = do
-  x <- getSourceLoc
-  fargs <- L.lineFold scn $ \sc' ->
-    parseSingleExpr `sepBy` try sc'
+  (x, fargs) <- captureSourceSpan . L.lineFold scn
+    $ \sc' -> parseSingleExpr `sepBy1` try sc'
   case fargs of
-    (f:args) ->
-      pure $ foldl (\a b -> x :< embedL (AppF a b)) f args
-    _ -> fail "expected expression"
+    f:args -> pure $ foldl (\a b -> x :< embedL (AppF a b)) f args
+    []     -> fail "expected expression"
 
--- |Parse lambda expression.
-parseLambda :: TelomareParser AUPT
+-- |Parse an atom or a whitespace-separated application. The atom fallback
+-- keeps a following, less-indented grammar delimiter from turning a complete
+-- atom into a failed multiline application.
+parseApplication :: TelomareParser ParsedSurfaceTerm
+parseApplication = try parseApplied <|> parseSingleExpr
+
+-- |Parse lambda expression. Emits the raw multi-pattern form;
+-- 'Telomare.Expand.buildMultiLambda' turns it into nested plain lambdas
+-- with case destructuring.
+parseLambda :: TelomareParser ParsedSurfaceTerm
 parseLambda = do
-  x <- getSourceLoc
-  symbol "\\" <* scn
-  variables <- some parseLocatedPattern <* scn
-  symbol "->" <* scn
-  term1expr <- parseLongExpr <* scn
-  pure $ buildMultiLambda x variables term1expr
+  (x, (variables, term1expr)) <- captureSourceSpan $ do
+    symbol "\\" <* scn
+    variables <- some parseLocatedPattern <* scn
+    symbol "->" <* scn
+    term1expr <- parseLongExpr <* scn
+    pure (variables, term1expr)
+  pure $ x :< ParsedTermSugar (LamPatF variables term1expr)
 
 -- |Parser that fails if indent level is not `pos`.
 parseSameLvl :: Pos -> TelomareParser a -> TelomareParser a
@@ -356,105 +360,79 @@ parseSameLvl pos parser = do
   if pos == lvl then parser else fail "Expected same indentation."
 
 -- |Parse let expression. Accepts both plain @name = value@ assignments
--- and list assignments @[n1, n2, ...] = value@. UDT declarations are
--- a specialized list-assignment convention.
-parseLet :: TelomareParser AUPT
+-- and list assignments @[n1, n2, ...] = value@. Entries are kept raw;
+-- 'Telomare.Expand' expands list assignments and UDT declarations into
+-- their per-slot bindings.
+parseLet :: TelomareParser ParsedSurfaceTerm
 parseLet = do
-  x <- getSourceLoc
-  reserved "let" <* scn
-  lvl <- L.indentLevel
-  entries <- manyTill (parseSameLvl lvl parseAssignmentEntry) (reserved "in") <* scn
-  expr <- parseLongExpr <* scn
-  let bindingsList = entries >>= expandAssignmentEntry
-  pure $ x :< LetUPF bindingsList expr
+  (x, (entries, expr)) <- captureSourceSpan $ do
+    reserved "let" <* scn
+    lvl <- L.indentLevel
+    entries <- manyTill (parseSameLvl lvl parseDefinition) (reserved "in") <* scn
+    expr <- parseLongExpr <* scn
+    pure (entries, expr)
+  pure $ x :< ParsedTermSugar (LetSugarF entries expr)
 
 -- |Parse long expression.
-parseLongExpr :: TelomareParser AUPT
-parseLongExpr = choice $ try <$> [ parseLet
-                                 , parseITE
-                                 , parseLambda
-                                 , parseApplied
-                                 , parseCase
-                                 , parseSingleExpr
-                                 ]
+parseLongExpr :: TelomareParser ParsedSurfaceTerm
+parseLongExpr = choice [ parseLet
+                       , parseITE
+                       , parseLambda
+                       , parseCase
+                       , parseApplication
+                       ]
 
 -- |Parse church numerals (church numerals are a "$" appended to an integer, without any whitespace separation).
-parseChurch :: TelomareParser AUPT
+parseChurch :: TelomareParser ParsedSurfaceTerm
 parseChurch = do
-  (x, upt) <- withSourceSpan (char '$' *> integerRaw)
-  pure . (x :<) . embedH . ChurchF $ fromInteger upt
+  (x, upt) <- withSourceSpan (char '$' *> naturalIntRaw)
+  pure . (x :<) . embedH $ ChurchF upt
 
--- |Parse refinement check.
-parseRefinementCheck :: TelomareParser (AUPT -> AUPT)
-parseRefinementCheck = do
+-- |Parse a refinement annotation @: T@, keeping the type expression raw.
+-- The 'LocTag' is captured at the @:@; 'Telomare.Expand' folds the
+-- annotation into a 'CheckF' node carrying it.
+parseRefinementAnnotation :: TelomareParser (LocTag, ParsedSurfaceTerm)
+parseRefinementAnnotation = do
   x <- getSourceLoc
-  (\a b -> x :< embedH (CheckF a b)) <$> (symbol ":" *> parseLongExpr)
+  typeExpr <- symbol ":" *> parseLongExpr
+  pure (x, typeExpr)
 
--- |Parse assignment add adding binding to ParserState.
-parseAssignment :: TelomareParser (String, AUPT)
-parseAssignment = do
-  (var, expr) <- parseLocatedAssignment
-  pure (locatedNameText var, expr)
-
-parseLocatedAssignment :: TelomareParser (LocatedName, AUPT)
-parseLocatedAssignment = do
+-- |Parse a single @name (: check)? = value@ definition, kept raw.
+parseSingleDefinition :: TelomareParser (DefinitionF ParsedSurfaceTerm)
+parseSingleDefinition = do
   (loc, var) <- locatedIdentifier <* scn
-  annotation <- optional . try $ parseRefinementCheck
+  annotation <- optional . try $ parseRefinementAnnotation
   scn *> symbol "=" <?> "assignment ="
   expr <- scn *> parseLongExpr <* scn
-  case annotation of
-    Just annot -> pure (locatedName loc var, annot expr)
-    _          -> pure (locatedName loc var, expr)
+  pure $ SingleDefF (locatedName loc var) annotation expr
 
--- |Parse top level expressions.
-parseTopLevel :: TelomareParser AUPT
-parseTopLevel = parseTopLevelWithExtraModuleBindings []
+parseImportDecl :: TelomareParser ImportDecl
+parseImportDecl = do
+  (loc, (moduleName, qualifier)) <- captureSourceSpan $ do
+    reserved "import" <* scn
+    qualified <- optional . try $ reserved "qualified" <* scn
+    moduleName <- locatedNameParser <* scn
+    qualifier <- case qualified of
+      Nothing -> pure Nothing
+      Just () -> do
+        reserved "as" <* scn
+        Just <$> locatedNameParser
+    pure (moduleName, qualifier)
+  pure $ ImportDecl loc moduleName qualifier
 
-parseImport :: TelomareParser AUPT
-parseImport = do
-  x <- getSourceLoc
-  reserved "import" <* scn
-  var <- identifier <* scn
-  pure $ x :< ImportUPF var
+-- |A single definition is either a name=value assignment or a list
+-- assignment `[n1, n2, …] = expr` (UDTs are a specialized list-assignment
+-- convention that 'Telomare.Expand' recognizes during expansion).
+parseDefinition :: TelomareParser (DefinitionF ParsedSurfaceTerm)
+parseDefinition = parseSingleDefinition <|> parseListDefinition
 
-parseImportQualified :: TelomareParser AUPT
-parseImportQualified = do
-  x <- getSourceLoc
-  reserved "import" <* scn
-  reserved "qualified" <* scn
-  m <- identifier <* scn
-  reserved "as" <* scn
-  qualifier <- identifier <* scn
-  pure $ x :< ImportQualifiedUPF qualifier m
+-- |Parse a whole input of definitions, kept raw.
+parseDefinitions :: TelomareParser [DefinitionF ParsedSurfaceTerm]
+parseDefinitions = scn *> many parseDefinition <* scn <* eof
 
--- |A single top-level entry is either a name=value assignment or a list
--- assignment `[n1, n2, …] = expr`. UDTs are recognized as a specialized
--- uppercase-lambda list assignment during expansion.
-parseAssignmentEntry :: TelomareParser AssignmentEntry
-parseAssignmentEntry =
-  uncurry SingleAssignment <$> parseLocatedAssignment
-    <|> parseListAssignment
-
--- |Parse assignments, expanding list assignments into their per-slot bindings.
-parseAssignmentEntries :: TelomareParser [(String, AUPT)]
-parseAssignmentEntries = do
-  fmap (first locatedNameText) <$> parseLocatedAssignmentEntries
-
-parseLocatedAssignmentEntries :: TelomareParser [(LocatedName, AUPT)]
-parseLocatedAssignmentEntries = do
-  entries <- scn *> many parseAssignmentEntry <* eof
-  pure (expandAssignmentEntry =<< entries)
-
--- |Parse top level expressions. Fails with a megaparsec error if the
--- module has no @main@ definition, instead of crashing with 'fromJust'.
-parseTopLevelWithExtraModuleBindings :: [(String, AUPT)]
-                                     -> TelomareParser AUPT
-parseTopLevelWithExtraModuleBindings lst = do
-  x <- getSourceLoc
-  bindingList <- parseLocatedAssignmentEntries
-  case lookup "main" $ first locatedNameText <$> bindingList of
-    Just m  -> pure $ x :< LetUPF ((first (locatedName UnknownLoc) <$> lst) <> bindingList) m
-    Nothing -> fail "missing 'main' definition"
+-- |Parse one complete expression, rejecting any trailing input.
+parseExpression :: TelomareParser ParsedSurfaceTerm
+parseExpression = scn *> parseLongExpr <* scn <* eof
 
 -- |Helper function to test parsers without a result.
 runTelomareParser_ :: Show a => TelomareParser a -> String -> IO ()
@@ -478,79 +456,41 @@ parseSuccessful parser str =
     Right _ -> pure True
     Left _  -> pure False
 
-runParseLongExpr :: String -> Either String UnprocessedParsedTerm
-runParseLongExpr str = bimap errorBundlePretty convert $ runParser parseLongExpr "" str
-  where
-    convert = UnprocessedParsedTerm . cata f where
-      f :: C.CofreeF (UnprocessedParsedTermF PatternA) LocTag (Fix (UnprocessedParsedTermF Pattern)) -> Fix (UnprocessedParsedTermF Pattern)
-      f (_ C.:< f') = embed $ case f' of
-        UnprocessedParsedTermB x -> UnprocessedParsedTermB x
-        UnprocessedParsedTermH x -> UnprocessedParsedTermH x
-        LetUPF bindings x        -> LetUPF bindings x
-        ListUPF x                -> ListUPF x
-        IntUPF n                 -> IntUPF n
-        StringUPF s              -> StringUPF s
-        UDTUPF names x           -> UDTUPF names x
-        CaseUPF x matches        -> CaseUPF x $ fmap cp matches
-        ImportQualifiedUPF a b   -> ImportQualifiedUPF a b
-        ImportUPF s              -> ImportUPF s
-      cp (p, b) = (cata (embed . pf) p, b)
-      pf = \case
-        PatternVarF s ->PatternVarF s
-        PatternAnnotatedF x (AnnotatedUPT t) -> PatternAnnotatedF x (UnprocessedParsedTerm $ cata f t)
-        PatternIntF n -> PatternIntF n
-        PatternStringF s -> PatternStringF s
-        PatternIgnoreF -> PatternIgnoreF
-        PatternPairF a b -> PatternPairF a b
+-- |One item inside a module: an import declaration or a raw definition.
+parseModuleItem :: TelomareParser (ModuleItem ParsedSurfaceTerm)
+parseModuleItem = scn *>
+  (ModuleImportItem <$> try parseImportDecl
+    <|> ModuleDefinitionItem <$> parseDefinition)
+  <* scn
 
-parsePrelude :: String -> Either String [(String, AnnotatedUPT)]
-parsePrelude = parsePreludeNamed ""
+parseModuleItems :: TelomareParser [ModuleItem ParsedSurfaceTerm]
+parseModuleItems = scn *> many parseModuleItem <* eof
 
--- |`parsePrelude`, recording the source name in every location it produces so
--- diagnostics can say which file a term came from.
-parsePreludeNamed :: String -> String -> Either String [(String, AnnotatedUPT)]
-parsePreludeNamed name str = let result = runParser parseAssignmentEntries name str
-                             in bimap errorBundlePretty (fmap (second AnnotatedUPT)) result
+-- |Parse a module into raw items, keeping the megaparsec error bundle so
+-- callers (the LSP server) can compute diagnostic ranges. The first
+-- argument is the source name recorded in every location produced.
+runParseModuleDetailed :: String -> String
+                       -> Either (ParseErrorBundle String Void) [ModuleItem ParsedSurfaceTerm]
+runParseModuleDetailed = runParser parseModuleItems
 
--- |One parser step inside a module: returns a list because list assignments
--- expand into multiple (name, value) bindings.
--- TODO change this type to something more reasonable
-parseImportOrAssignment :: TelomareParser [Either AUPT (String, AUPT)]
-parseImportOrAssignment = do
-  maybeImport <- optional $ scn *> (try parseImportQualified <|> try parseImport) <* scn
-  case maybeImport of
-    Nothing -> do
-      maybeEntry <- optional $ scn *> try parseAssignmentEntry <* scn
-      case maybeEntry of
-        Nothing    -> fail "Expected either an import statement or an assignment"
-        Just entry -> pure (Right . first locatedNameText <$> expandAssignmentEntry entry)
-    Just imp -> pure [Left imp]
+-- |'runParseModuleDetailed' with the error pretty-printed.
+runParseModule :: String -> String -> Either String [ModuleItem ParsedSurfaceTerm]
+runParseModule name = first errorBundlePretty . runParseModuleDetailed name
 
-parseWithPrelude :: [(String, AnnotatedUPT)]   -- ^Prelude
-                 -> String                     -- ^Raw string to be parsed
-                 -> Either String AnnotatedUPT -- ^Error on Left
-parseWithPrelude prelude str = bimap errorBundlePretty AnnotatedUPT $ runParser (parseTopLevelWithExtraModuleBindings prelude') "" str where
-  prelude' = fmap (second unAnnotatedUPT) prelude
+-- |Parse an input that is only definitions (e.g. a prelude file), kept
+-- raw. The first argument is the source name recorded in every location
+-- produced.
+runParseDefinitions :: String -> String -> Either String [DefinitionF ParsedSurfaceTerm]
+runParseDefinitions name = first errorBundlePretty . runParser parseDefinitions name
 
-parseModule :: String -> Either String [Either AnnotatedUPT (String, AnnotatedUPT)]
-parseModule = parseModuleNamed ""
+-- |Parse one complete expression, recording the supplied source name.
+runParseExpression :: String -> String -> Either String ParsedSurfaceTerm
+runParseExpression name = first errorBundlePretty . runParser parseExpression name
 
--- |`parseModule`, recording the source name in every location it produces so
--- diagnostics can say which file a term came from.
-parseModuleNamed :: String -> String -> Either String [Either AnnotatedUPT (String, AnnotatedUPT)]
-parseModuleNamed name str = first errorBundlePretty $ parseModuleDetailedNamed name str
-
-parseModuleDetailed :: String -> Either (ParseErrorBundle String Void) [Either AnnotatedUPT (String, AnnotatedUPT)]
-parseModuleDetailed = parseModuleDetailedNamed ""
-
-parseModuleDetailedNamed :: String -> String -> Either (ParseErrorBundle String Void) [Either AnnotatedUPT (String, AnnotatedUPT)]
-parseModuleDetailedNamed name = wrapUp . runParser (concat <$> (scn *> many parseImportOrAssignment <* eof)) name where
-  wrapUp = second (fmap (bimap AnnotatedUPT (second AnnotatedUPT)))
-
--- |Parse either a single expression or top level definitions defaulting to the `main` definition.
---  This function was made for telomare-evaluare
-parseOneExprOrTopLevelDefs :: [(String, AUPT)] -> TelomareParser AUPT
-parseOneExprOrTopLevelDefs extraModuleBindings =
-  choice $ try <$> [ parseTopLevelWithExtraModuleBindings extraModuleBindings
-                   , parseLongExpr
-                   ]
+-- |Parse either a whole block of top level definitions or a single
+-- expression. Made for telomare-evaluare and the REPL's @:l@; the caller
+-- decides what to do with each shape (typically 'Telomare.Expand.wrapMain'
+-- for definitions).
+parseOneExprOrDefinitions :: TelomareParser (Either [DefinitionF ParsedSurfaceTerm] ParsedSurfaceTerm)
+parseOneExprOrDefinitions =
+  (Left <$> try parseDefinitions) <|> (Right <$> parseExpression)

@@ -67,7 +67,7 @@ import Control.Comonad.Cofree (Cofree ((:<)))
 import qualified Control.Comonad.Trans.Cofree as CofreeT
 import Control.Monad.Except (ExceptT, runExceptT, throwError)
 import Control.Monad.State.Strict (State, get, gets, modify', put, runState)
-import Data.Bifunctor (bimap, second)
+import Data.Bifunctor (bimap, first, second)
 import Data.Char (chr, ord)
 import Data.Functor.Foldable (cata, embed)
 import Data.List (sortOn)
@@ -77,13 +77,14 @@ import Data.Maybe (fromMaybe)
 import System.IO (hFlush, isEOF, stdout)
 
 import Telomare.Error
+import Telomare.Expand (expandModule, renderExpansionError)
 import Telomare.IR.Base
 import Telomare.IR.Builder
 import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.IR.Surface
 import Telomare.IR.Types
-import Telomare.Parse (parseModuleNamed)
+import Telomare.Parse (runParseModule)
 import Telomare.Resolve (main2Term3, main2Term3let)
 import Telomare.TypeCheck (typeCheck)
 
@@ -474,8 +475,7 @@ compileFast modulesStrings entry =
        | (moduleName, Left err) <- parsed ] of
     errs@(_ : _) -> Left $ unlines errs
     [] -> do
-      let named = [(n, m) | (n, Right m) <- parsed]
-          modules = second (fmap (bimap unAnnotatedUPT (second unAnnotatedUPT))) <$> named
+      let modules = [(n, m) | (n, Right m) <- parsed]
           mainType = embed $ PairTypeP
             (embed $ ArrTypeP (embed ZeroTypeP) (embed ZeroTypeP))
             (embed AnyType)
@@ -483,10 +483,13 @@ compileFast modulesStrings entry =
       case typeCheck mainType tcTerm of
         Just e  -> Left . renderEvalError $ TCE e
         Nothing -> pure ()
-      t3 <- resolved $ main2Term3let modules entry
-      term3ToFast (ownerMap named) t3
+      runtimeTerm <- resolved $ main2Term3let modules entry
+      term3ToFast (ownerMap modules) runtimeTerm
   where
-    parsed = fmap (\(n, content) -> (n, parseModuleNamed n content)) modulesStrings
+    parsed = fmap parseAndExpand modulesStrings
+    parseAndExpand (n, content) =
+      (n, runParseModule n content
+            >>= first renderExpansionError . expandModule)
     resolved = either (Left . renderEvalError . RE) Right
 
 -- |`Term3` to the runtime IR. There is no sizing here: `Term3Unsized` becomes
@@ -527,17 +530,18 @@ term3ToFast owners = cata go
 type LocKey = (Maybe FilePath, Int)
 
 -- |Which top-level definition each source position belongs to.
-ownerMap :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -> Map LocKey String
+ownerMap :: ExpandedModules -> Map LocKey String
 ownerMap parsed = Map.fromListWith keepFirst
   [ (key, moduleName <> "." <> defName)
   | (moduleName, entries) <- parsed
-  , Right (defName, AnnotatedUPT body) <- entries
+  , ExpandedModuleBinding name body <- entries
+  , let defName = locatedNameText name
   , key <- positionsIn body
   ]
   where
     keepFirst _ old = old
 
-positionsIn :: AUPT -> [LocKey]
+positionsIn :: ExpandedSurfaceTerm -> [LocKey]
 positionsIn (loc :< term) = maybe id (:) (locKey loc) (foldMap positionsIn term)
 
 locKey :: LocTag -> Maybe LocKey

@@ -27,6 +27,7 @@ import System.Process hiding (createPipe)
 import Telomare.Driver
 import Telomare.Error
 import Telomare.Eval.Reference
+import Telomare.Expand
 import Telomare.IR.Base
 import Telomare.IR.Builder
 import Telomare.IR.Core
@@ -47,7 +48,94 @@ main :: IO ()
 main = defaultMain tests
 
 tests :: TestTree
-tests = testGroup "Parser Tests" [unitTests]
+tests = testGroup "Parser Tests" [unitTests, expansionTests]
+
+-- |The expansion pass ('Telomare.Expand') as a stage of its own: raw
+-- parser output goes in, expanded trees or 'ExpansionError's come out.
+expansionTests :: TestTree
+expansionTests = testGroup "Expansion pass"
+  [ testCase "multi-pattern lambda expands through buildMultiLambda" $ do
+      raw <- runTelomareParser parseLongExpr "\\(x, y) z -> x"
+      case raw of
+        loc :< ParsedTermSugar (LamPatF pats body) ->
+          case (,,) <$> traverse (traverse expandPattern) pats
+                    <*> expandTerm body
+                    <*> expandTerm raw of
+            Left err -> assertFailure $ renderExpansionError err
+            Right (pats', body', expanded) ->
+              stripParserLocs expanded @?= stripParserLocs (buildMultiLambda loc pats' body')
+        _ -> assertFailure $ "expected raw LamPatF, got: " <> show raw
+  , testCase "annotated pattern lambda cases on the validator result" $ do
+      raw <- runTelomareParser parseLongExpr "\\(v : Nat) -> v"
+      case expandTerm raw of
+        Right (_ :< UnprocessedParsedTermL (LamF binder
+                (_ :< CaseUPF
+                  (_ :< UnprocessedParsedTermL (AppF
+                    (_ :< UnprocessedParsedTermL (VarF "Nat"))
+                    (_ :< UnprocessedParsedTermL (VarF bound))))
+                  [(Fix (PatternVarF name), _)])))
+          | locatedNameText name == "v" ->
+          bound @?= locatedNameText binder
+        other -> assertFailure $ "unexpected expansion: " <> show other
+  , testCase "refinement annotation folds into CheckF" $ do
+      defs <- runTelomareParser parseDefinitions "main : T = 0\n"
+      case expandDefs defs of
+        Right [(name, _ :< UnprocessedParsedTermH (CheckF
+                 (_ :< UnprocessedParsedTermL (VarF "T"))
+                 (_ :< IntUPF 0)))] ->
+          locatedNameText name @?= "main"
+        other -> assertFailure $ "unexpected expansion: " <> show other
+  , testCase "list assignment arity mismatch is an ExpansionError" $ do
+      defs <- runTelomareParser parseDefinitions "[a, b] = [1, 2, 3]\n"
+      case expandDefs defs of
+        Left (ListArityMismatch _ 2 3) -> pure ()
+        other -> assertFailure $ "expected ListArityMismatch: " <> show other
+  , testCase "UDT declaration whose body is not a list is an ExpansionError" $ do
+      defs <- runTelomareParser parseDefinitions "[T, mk] = \\h -> 0\n"
+      case expandDefs defs of
+        Left (UDTBodyNotList _ "T" _) -> pure ()
+        other -> assertFailure $ "expected UDTBodyNotList: " <> show other
+  , testCase "UDT declaration validates names against body slots" $ do
+      defs <- runTelomareParser parseDefinitions "[T, mk] = \\h -> [0, 1]\n"
+      case expandDefs defs of
+        Left (UDTArityMismatch _ "T" 2 2) -> pure ()
+        other -> assertFailure $ "expected UDTArityMismatch: " <> show other
+  , testCase "UDT with only its validator and no slots is valid" $ do
+      defs <- runTelomareParser parseDefinitions "[T] = \\h -> []\n"
+      case expandDefs defs of
+        Right bindings | any ((== "T") . locatedNameText . fst) bindings -> pure ()
+        other -> assertFailure $ "unexpected empty UDT expansion: " <> show other
+  , testCase "repeated literal patterns get distinct lambda binders" $ do
+      raw <- runTelomareParser parseExpression "\\0 0 -> 1"
+      case expandTerm raw of
+        Right (_ :< UnprocessedParsedTermL (LamF firstBinder
+                 (_ :< UnprocessedParsedTermL (LamF secondBinder _)))) ->
+          assertBool "generated binders must be distinct"
+            (locatedNameText firstBinder /= locatedNameText secondBinder)
+        other -> assertFailure $ "unexpected pattern lambda expansion: " <> show other
+  , testCase "case expansion errors follow pattern-before-body source order" $ do
+      raw <- runTelomareParser parseExpression
+        "case 0 of (x : let [T, mk] = \\h -> 0 in T) -> let [a, b] = [1] in x"
+      case expandTerm raw of
+        Left UDTBodyNotList{} -> pure ()
+        other -> assertFailure $ "expected pattern annotation error first: " <> show other
+  , testCase "module expansion retains typed import and binding locations" $ do
+      raw <- either assertFailure pure $
+        runParseModule "Example" "import qualified Data.List as L\nmain = 0\n"
+      case expandModule raw of
+        Right [ ExpandedModuleImport importDecl
+              , ExpandedModuleBinding mainName _
+              ] -> do
+          locatedNameText (parsedImportModule importDecl) @?= "Data.List"
+          locatedNameText <$> parsedImportQualifier importDecl @?= Just "L"
+          locatedNameText mainName @?= "main"
+          assertBool "binding location should survive expansion"
+            (locatedNameLoc mainName /= UnknownLoc)
+        other -> assertFailure $ "unexpected expanded module: " <> show other
+  , testCase "wrapMain without a main definition is MissingMain" $ do
+      defs <- runTelomareParser parseDefinitions "foo = 0\n"
+      (expandDefs defs >>= wrapMain []) @?= Left MissingMain
+  ]
 
 unitTests :: TestTree
 unitTests = testGroup "Unit tests"
@@ -56,8 +144,8 @@ unitTests = testGroup "Unit tests"
       res @?= True
     -- Keep structured Megaparsec errors available for LSP ranges while
     -- preserving pretty text for CLI-style diagnostics.
-  , testCase "parseModuleDetailed exposes parse error offsets for diagnostics" $ do
-      case parseModuleDetailed "main = if 0 then 1" of
+  , testCase "runParseModuleDetailed exposes parse error offsets for diagnostics" $ do
+      case runParseModuleDetailed "" "main = if 0 then 1" of
         Left bundle -> do
           errorOffset (NE.head $ bundleErrors bundle) >= 0 @?= True
           null (errorBundlePretty bundle) @?= False
@@ -67,7 +155,7 @@ unitTests = testGroup "Unit tests"
   , testCase "variable source spans exclude trailing whitespace" $ do
       case runParser parseVariable "" "foo   0" of
         Left err -> assertFailure $ errorBundlePretty err
-        Right (SourceLoc span :< UnprocessedParsedTermL (VarF "foo")) -> do
+        Right (SourceLoc span :< ParsedTermUP (UnprocessedParsedTermL (VarF "foo"))) -> do
           sourcePositionLine (sourceSpanStart span) @?= 1
           sourcePositionColumn (sourceSpanStart span) @?= 1
           sourcePositionLine (sourceSpanEnd span) @?= 1
@@ -76,7 +164,7 @@ unitTests = testGroup "Unit tests"
   , testCase "let binding source spans exclude trailing whitespace" $ do
       case runParser parseLongExpr "" "let foo   = 0 in foo" of
         Left err -> assertFailure $ errorBundlePretty err
-        Right (_ :< LetUPF [(name, _)] _) | SourceLoc span <- locatedNameLoc name -> do
+        Right (_ :< ParsedTermSugar (LetSugarF [SingleDefF name Nothing _] _)) | SourceLoc span <- locatedNameLoc name -> do
           locatedNameText name @?= "foo"
           sourcePositionLine (sourceSpanStart span) @?= 1
           sourcePositionColumn (sourceSpanStart span) @?= 5
@@ -86,15 +174,91 @@ unitTests = testGroup "Unit tests"
   , testCase "lambda binding source spans exclude trailing whitespace" $ do
       case runParser parseLongExpr "" "\\foo   -> foo" of
         Left err -> assertFailure $ errorBundlePretty err
-        Right (_ :< UnprocessedParsedTermL (LamF binder _)) -> case locatedNameLoc binder of
+        Right (_ :< ParsedTermSugar (LamPatF [(binderLoc, Fix (PatternVarF name))] _))
+          | locatedNameText name == "foo" -> case binderLoc of
           SourceLoc span -> do
-            locatedNameText binder @?= "foo"
             sourcePositionLine (sourceSpanStart span) @?= 1
             sourcePositionColumn (sourceSpanStart span) @?= 2
             sourcePositionLine (sourceSpanEnd span) @?= 1
             sourcePositionColumn (sourceSpanEnd span) @?= 5
           loc -> assertFailure $ "unexpected lambda binder location: " <> show loc
         Right parsed -> assertFailure $ "unexpected parse result: " <> show parsed
+  , testCase "complete expressions reject trailing input" $ do
+      case runParseExpression "" "0 ???" of
+        Left _  -> pure ()
+        Right x -> assertFailure $ "accepted trailing input: " <> show x
+  , testCase "complete expression-or-definitions rejects trailing input" $ do
+      case runParser parseOneExprOrDefinitions "" "0 ???" of
+        Left _  -> pure ()
+        Right x -> assertFailure $ "accepted trailing input: " <> show x
+  , testCase "keywords use the same boundary as identifiers" $ do
+      case runParseExpression "" "let in_value = 0 in in_value" of
+        Right _  -> pure ()
+        Left err -> assertFailure err
+  , testCase "oversized natural literals are rejected in every grammar position" $ do
+      let tooLarge = show (toInteger (maxBound :: Int) + 1)
+          inputs = [tooLarge, "$" <> tooLarge, "\\" <> tooLarge <> " -> 0"]
+      forM_ inputs $ \input -> case runParseExpression "" input of
+        Left _  -> pure ()
+        Right x -> assertFailure $ "accepted oversized literal " <> input <> ": " <> show x
+  , testCase "empty list expressions remain valid but empty list definitions do not" $ do
+      case (runParseExpression "" "[]", runParseDefinitions "" "[] = []") of
+        (Right _, Left _) -> pure ()
+        results -> assertFailure $ "unexpected empty-list parse results: " <> show results
+  , testCase "module parser returns direct import and definition items" $ do
+      case runParseModule "Example" "import qualified Data.List as L\nmain = 0\n" of
+        Right [ ModuleImportItem (ImportDecl _ moduleName (Just qualifier))
+              , ModuleDefinitionItem (SingleDefF mainName Nothing _)
+              ] -> do
+          locatedNameText moduleName @?= "Data.List"
+          locatedNameText qualifier @?= "L"
+          locatedNameText mainName @?= "main"
+        other -> assertFailure $ "unexpected raw module: " <> show other
+  , testCase "application syntax is left associative" $ do
+      case runParseExpression "" "f x y" of
+        Right (_ :< ParsedTermUP (UnprocessedParsedTermL (AppF
+          (_ :< ParsedTermUP (UnprocessedParsedTermL (AppF
+            (_ :< ParsedTermUP (UnprocessedParsedTermL (VarF "f")))
+            (_ :< ParsedTermUP (UnprocessedParsedTermL (VarF "x"))))))
+          (_ :< ParsedTermUP (UnprocessedParsedTermL (VarF "y")))))) -> pure ()
+        other -> assertFailure $ "unexpected application tree: " <> show other
+  , testCase "case pattern variables retain source locations" $ do
+      case runParseExpression "CaseSource" "case x of (a, b) -> a" of
+        Right (_ :< ParsedTermUP (CaseUPF _
+          [(Fix (PatternPairF (Fix (PatternVarF a)) (Fix (PatternVarF b))), _)])) -> do
+            locatedNameText a @?= "a"
+            locatedNameText b @?= "b"
+            case (locatedNameLoc a, locatedNameLoc b) of
+              (SourceLoc aSpan, SourceLoc bSpan) -> do
+                sourceSpanFile aSpan @?= Just "CaseSource"
+                sourceSpanFile bSpan @?= Just "CaseSource"
+              locs -> assertFailure $ "expected source locations: " <> show locs
+        other -> assertFailure $ "unexpected case tree: " <> show other
+  , testCase "compound expressions carry complete source spans" $ do
+      case runParseExpression "SpanSource" "\\x -> x" of
+        Right (SourceLoc span :< ParsedTermSugar (LamPatF _ _)) -> do
+          sourceSpanFile span @?= Just "SpanSource"
+          sourcePositionColumn (sourceSpanStart span) @?= 1
+          sourcePositionColumn (sourceSpanEnd span) @?= 8
+        other -> assertFailure $ "unexpected lambda span: " <> show other
+  , testCase "all shipped Telomare programs parse and expand" $ do
+      let programs = [ "Prelude.tel"
+                     , "simpleplus.tel"
+                     , "tictactoe.tel"
+                     , "testchar.tel"
+                     , "tc_ultra_minimal.tel"
+                     , "test/programs/limits/unbounded-input-recursion.tel"
+                     , "test/programs/limits/over-budget-recursion.tel"
+                     ]
+      forM_ programs $ \path -> do
+        content <- Strict.readFile path
+        case runParseModule path content
+               >>= first renderExpansionError . expandModule of
+          Right _  -> pure ()
+          Left err -> assertFailure $ path <> ": " <> err
+  , testCase "surface Show is total for empty collections" $ do
+      assertBool "empty list should render"
+        ((not . null . show) ((UnknownLoc :< ListUPF []) :: ExpandedSurfaceTerm))
   , testCase "test function applied to a string that has whitespaces in both sides inside a structure" $ do
       res1 <- parseSuccessful parseLongExpr "(foo \"woops\" , 0)"
       res2 <- parseSuccessful parseLongExpr "(foo \"woops\" )"
@@ -126,10 +290,10 @@ unitTests = testGroup "Unit tests"
       res <- parseSuccessful (parseLambda <* eof) testLambdawITEwPair
       res @?= True
   , testCase "test parse assignment with Complete Lambda with ITE with Pair" $ do
-      res <- parseSuccessful (parseTopLevel <* eof) testParseAssignmentwCLwITEwPair1
+      res <- parseSuccessful (parseDefinitions <* eof) testParseAssignmentwCLwITEwPair1
       res @?= True
   , testCase "test if testParseTopLevelwCLwITEwPair parses successfuly" $ do
-      res <- parseSuccessful (parseTopLevel <* eof) testParseTopLevelwCLwITEwPair
+      res <- parseSuccessful (parseDefinitions <* eof) testParseTopLevelwCLwITEwPair
       res @?= True
   , testCase "test main2Term3 with CL with ITE with Pair parses" $ do
       res <- runTestMainwCLwITEwPair
@@ -162,22 +326,22 @@ unitTests = testGroup "Unit tests"
       res <- runTestMainWType
       res @?= True
   , testCase "testShowBoard0" $ do
-      res <- parseSuccessful (parseTopLevel <* scn <* eof) testShowBoard0
+      res <- parseSuccessful (parseDefinitions <* scn <* eof) testShowBoard0
       res @?= True
   , testCase "testShowBoard1" $ do
-      res <- parseSuccessful (parseTopLevel <* scn <* eof) testShowBoard1
+      res <- parseSuccessful (parseDefinitions <* scn <* eof) testShowBoard1
       res @?= True
   , testCase "testShowBoard2" $ do
-      res <- parseSuccessful (parseTopLevel <* scn <* eof) testShowBoard2
+      res <- parseSuccessful (parseDefinitions <* scn <* eof) testShowBoard2
       res @?= True
   , testCase "testShowBoard3" $ do
-      res <- parseSuccessful (parseTopLevel <* scn <* eof) testShowBoard3
+      res <- parseSuccessful (parseDefinitions <* scn <* eof) testShowBoard3
       res @?= True
   , testCase "testShowBoard4" $ do
-      res <- parseSuccessful (parseTopLevel <* scn <* eof) testShowBoard4
+      res <- parseSuccessful (parseDefinitions <* scn <* eof) testShowBoard4
       res @?= True
   , testCase "testShowBoard5" $ do
-      res <- parseSuccessful (parseTopLevel <* scn <* eof) testShowBoard5
+      res <- parseSuccessful (parseDefinitions <* scn <* eof) testShowBoard5
       res @?= True
   , testCase "testShowBoard6" $ do
       res <- parseSuccessful parseApplied testShowBoard6
@@ -195,7 +359,7 @@ unitTests = testGroup "Unit tests"
       res <- parseSuccessful (parseApplied <* scn <* eof) testLetShowBoard3
       res @?= True
   , testCase "testLetShowBoard4" $ do
-      res <- parseSuccessful (parseTopLevel <* scn <* eof) testLetShowBoard4
+      res <- parseSuccessful (parseDefinitions <* scn <* eof) testLetShowBoard4
       res @?= True
   , testCase "testLetShowBoard5" $ do
       res <- parseSuccessful (parseLet <* scn <* eof) testLetShowBoard5
@@ -231,36 +395,13 @@ unitTests = testGroup "Unit tests"
       res <- parseSuccessful (parseLet <* scn <* eof) testLetIncorrectIndentation2
       res `compare` False @?= EQ
   , testCase "Case within top level definitions" $ do
-      res' <- runTelomareParser parseTopLevel caseExpr0
-      let res = stripParserLocs res'
-      res @?= caseExpr0UPT
-  , testCase "Simple import parsing" $ do
-      res' <- runTelomareParser parseImport importExpr0str
-      stripParserLocs res' @?= importExpr0
-  , testCase "Simple import qualified parsing" $ do
-      res' <- runTelomareParser parseImportQualified importQualifiedExpr0str
-      stripParserLocs res' @?= importQualifiedExpr0
-  , testCase "Simple import parsing with ." $ do
-      res' <- runTelomareParser parseImport importExpr1str
-      stripParserLocs res' @?= importExpr1
-  , testCase "Simple import qualified parsing with ." $ do
-      res' <- runTelomareParser parseImportQualified importQualifiedExpr1str
-      stripParserLocs res' @?= importQualifiedExpr1
+      defs <- runTelomareParser parseDefinitions caseExpr0
+      case expandDefs defs >>= wrapMain [] of
+        Left err  -> assertFailure $ renderExpansionError err
+        Right res -> stripParserLocs res @?= caseExpr0UPT
   ]
 
-importQualifiedExpr1str = "import qualified Data.List as L"
-importQualifiedExpr1 = UnknownLoc :< ImportQualifiedUPF "L" "Data.List"
-
-importExpr1str = "import Control.Monad"
-importExpr1 = UnknownLoc :< ImportUPF "Control.Monad"
-
-importQualifiedExpr0str = "import qualified Foo as F"
-importQualifiedExpr0 = UnknownLoc :< ImportQualifiedUPF "F" "Foo"
-
-importExpr0str = "import Foo"
-importExpr0 = UnknownLoc :< ImportUPF "Foo"
-
-stripParserLocs :: AUPT -> AUPT
+stripParserLocs :: ExpandedSurfaceTerm -> ExpandedSurfaceTerm
 stripParserLocs (loc :< term) = UnknownLoc :< case term of
   LetUPF bindings body -> LetUPF ((\(name, value) -> (locatedName UnknownLoc $ locatedNameText name, stripParserLocs value)) <$> bindings) (stripParserLocs body)
   UnprocessedParsedTermL (LamF name body) -> UnprocessedParsedTermL (LamF (locatedName UnknownLoc $ locatedNameText name) (stripParserLocs body))
@@ -269,7 +410,8 @@ stripParserLocs (loc :< term) = UnknownLoc :< case term of
 
 stripPatternLocs :: PatternA -> PatternA
 stripPatternLocs (Fix patternF) = Fix $ case patternF of
-  PatternAnnotatedF pat term -> PatternAnnotatedF (stripPatternLocs pat) (AnnotatedUPT . stripParserLocs $ unAnnotatedUPT term)
+  PatternVarF name -> PatternVarF (locatedName UnknownLoc $ locatedNameText name)
+  PatternAnnotatedF pat term -> PatternAnnotatedF (stripPatternLocs pat) (AnnotatedEST . stripParserLocs $ unAnnotatedEST term)
   other -> stripPatternLocs <$> other
 
 caseExpr0UPT =
@@ -278,7 +420,7 @@ caseExpr0UPT =
       , UnknownLoc :< UnprocessedParsedTermL (LamF (locatedName UnknownLoc "a")
           (UnknownLoc :< CaseUPF (UnknownLoc :< UnprocessedParsedTermL (VarF "a"))
             [ (Fix $ PatternIntF 0, UnknownLoc :< UnprocessedParsedTermL (VarF "a"))
-            , (Fix $ PatternVarF "x", UnknownLoc :< UnprocessedParsedTermL (AppF (UnknownLoc :< UnprocessedParsedTermL (VarF "succ")) (UnknownLoc :< UnprocessedParsedTermL (VarF "a"))))
+            , (Fix $ PatternVarF (locatedName UnknownLoc "x"), UnknownLoc :< UnprocessedParsedTermL (AppF (UnknownLoc :< UnprocessedParsedTermL (VarF "succ")) (UnknownLoc :< UnprocessedParsedTermL (VarF "a"))))
             ]))
       )
     , ( locatedName UnknownLoc "main"
@@ -297,7 +439,8 @@ caseExpr0 = unlines
   ]
 
 test2UPT str =
-  case parseModule str of
+  case runParseModule "" str
+         >>= first renderExpansionError . expandModule of
     Right _ -> return True
     Left _  -> return False
 
@@ -381,7 +524,8 @@ testLambdawITEwPair = unlines
 
 runTestParsePrelude = do
   preludeFile <- Strict.readFile "Prelude.tel"
-  case parsePrelude preludeFile of
+  case runParseDefinitions "" preludeFile
+         >>= first renderExpansionError . expandDefs of
     Right _ -> return True
     Left _  -> return False
 

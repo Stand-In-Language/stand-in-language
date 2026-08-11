@@ -44,6 +44,7 @@ module Telomare.Levels
   ) where
 
 import Control.Comonad.Cofree (Cofree ((:<)))
+import Data.Bifunctor (first)
 import Data.Foldable (toList)
 import Data.List (foldl', intercalate, sortOn)
 import Data.Map (Map)
@@ -52,13 +53,14 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 
 import Telomare.Error
+import Telomare.Expand (expandModule, renderExpansionError)
 import Telomare.IR.Base
 import Telomare.IR.Builder
 import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.IR.Surface
 import Telomare.IR.Types
-import Telomare.Parse (parseModuleNamed)
+import Telomare.Parse (runParseModule)
 
 -- |A top-level definition, or a @let@ binding qualified by the definition it
 -- appears in.
@@ -145,38 +147,43 @@ summarize entryId st = LevelsInfo
 -- Each module is parsed under its bare name, the same way
 -- `Telomare.Eval.compileModulesWith` parses it, so that a site's location here
 -- and the same site's location in the sizing report are the same string.
+-- Expansion runs here too: this module walks the AST directly and only
+-- understands the expanded vocabulary.
 parseModules :: [(String, String)]
-             -> Either String [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
+             -> Either String ExpandedModules
 parseModules = traverse parseOne
   where
     parseOne (name, src) =
-      either (Left . ((name <> ": ") <>)) (Right . (name,)) (parseModuleNamed name src)
+      either (Left . ((name <> ": ") <>)) (Right . (name,)) $
+        runParseModule name src
+          >>= first renderExpansionError . expandModule
 
 lookupEntry :: DefId
-            -> [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])]
-            -> Maybe AUPT
-lookupEntry entryId parsed = unAnnotatedUPT <$> lookup (defName entryId)
+            -> ExpandedModules
+            -> Maybe ExpandedSurfaceTerm
+lookupEntry entryId parsed = lookup (defName entryId)
   [ (name, def)
   | (moduleName, entries) <- parsed
   , moduleName == defModule entryId
-  , Right (name, def) <- entries
+  , ExpandedModuleBinding locatedName' def <- entries
+  , let name = locatedNameText locatedName'
   ]
 
 data DefInfo = DefInfo
   { diId   :: !DefId
-  , diBody :: !AUPT
+  , diBody :: !ExpandedSurfaceTerm
   }
 
 type GlobalEnv = Map String DefInfo
 
 data LocalInfo = LocalInfo
   { liId   :: !DefId
-  , liBody :: !AUPT
+  , liBody :: !ExpandedSurfaceTerm
   }
 
 type LocalEnv = Map String LocalInfo
 
-type AEnv = Map String AUPT
+type AEnv = Map String ExpandedSurfaceTerm
 
 type Binds = Map String (BindingKey, Int)
 
@@ -189,27 +196,29 @@ data St = St
 emptySt :: St
 emptySt = St Set.empty [] Map.empty
 
-globalEnv :: [(String, [Either AnnotatedUPT (String, AnnotatedUPT)])] -> GlobalEnv
+globalEnv :: ExpandedModules -> GlobalEnv
 globalEnv = foldl' addModule Map.empty
   where
     addModule env (moduleName, entries) = foldl' (addDef moduleName) env entries
     addDef moduleName env = \case
-      Right (name, def) -> Map.insertWith keepExisting name
-        (DefInfo (DefId moduleName name) (unAnnotatedUPT def)) env
-      Left _ -> env
+      ExpandedModuleBinding locatedName' def ->
+        let name = locatedNameText locatedName'
+        in Map.insertWith keepExisting name
+             (DefInfo (DefId moduleName name) def) env
+      ExpandedModuleImport _ -> env
     keepExisting _ old = old
 
-collectLams :: AUPT -> ([String], AUPT)
+collectLams :: ExpandedSurfaceTerm -> ([String], ExpandedSurfaceTerm)
 collectLams (_ :< UnprocessedParsedTermL (LamF (LocatedName (_, n)) b)) =
   let (ps, body) = collectLams b in (n : ps, body)
 collectLams x = ([], x)
 
-spine :: AUPT -> (AUPT, [AUPT])
+spine :: ExpandedSurfaceTerm -> (ExpandedSurfaceTerm, [ExpandedSurfaceTerm])
 spine (_ :< UnprocessedParsedTermL (AppF f x)) =
   let (h, args) = spine f in (h, args <> [x])
 spine x = (x, [])
 
-varName :: AUPT -> Maybe String
+varName :: ExpandedSurfaceTerm -> Maybe String
 varName (_ :< UnprocessedParsedTermL (VarF v)) = Just v
 varName _                                      = Nothing
 
@@ -221,12 +230,12 @@ maximumOr _ xs = maximum xs
 -- inside its own body. This is what lets an offset compose along a call chain:
 -- passing an argument to a parameter that is itself used one level down puts
 -- that argument one level down.
-paramOffsets :: AEnv -> Set String -> AUPT -> [Int]
+paramOffsets :: AEnv -> Set String -> ExpandedSurfaceTerm -> [Int]
 paramOffsets env guard def =
   let (params, body) = collectLams def
   in fmap (\p -> occDepth env guard p 0 body) params
 
-occDepth :: AEnv -> Set String -> String -> Int -> AUPT -> Int
+occDepth :: AEnv -> Set String -> String -> Int -> ExpandedSurfaceTerm -> Int
 occDepth env guard p d t@(_ :< node) = case node of
   UnprocessedParsedTermL (VarF v) -> if v == p then d else 0
   UnprocessedParsedTermL (LamF (LocatedName (_, n)) b)
@@ -245,7 +254,7 @@ occDepth env guard p d t@(_ :< node) = case node of
         (occDepth env guard p d body : fmap (occDepth env guard p d . snd) bs)
   other -> maximumOr 0 (fmap (occDepth env guard p d) (toList other))
 
-headOffsets :: AEnv -> Set String -> AUPT -> [Int]
+headOffsets :: AEnv -> Set String -> ExpandedSurfaceTerm -> [Int]
 headOffsets env guard h = case varName h of
   Just v
     | v `Set.notMember` guard
@@ -257,7 +266,7 @@ offAt offs j = if j < length offs then offs !! j else 0
 
 -- |The walk. A definition is entered at most once per level, which is what
 -- bounds the traversal.
-walk :: GlobalEnv -> LocalEnv -> Binds -> DefId -> [DefId] -> Int -> AUPT -> St -> St
+walk :: GlobalEnv -> LocalEnv -> Binds -> DefId -> [DefId] -> Int -> ExpandedSurfaceTerm -> St -> St
 walk gs ls bn owner path d t@(ann :< node) st = case node of
   UnprocessedParsedTermH (RecursionF a b c) ->
     let obs = Observation (SiteKey owner (sourceRef ann)) d path

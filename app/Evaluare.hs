@@ -6,7 +6,7 @@ import Control.Comonad.Cofree (Cofree ((:<)))
 import qualified Control.Exception as Exception
 import Control.Monad
 import Control.Monad.Fix (MonadFix)
-import Data.Bifunctor (bimap, first, second)
+import Data.Bifunctor (first)
 import Data.Either (fromLeft)
 import Data.Map (Map)
 import qualified Data.Map as Map
@@ -19,15 +19,12 @@ import Reflex.Vty
 import System.Environment (getArgs)
 import qualified System.IO.Strict as Strict
 import qualified Telomare.Driver as TE
-import Telomare.Error
+import Telomare.Expand (expandModule, renderExpansionError)
 import qualified Telomare.IR.Base as Tel
 import Telomare.IR.Base
-import Telomare.IR.Builder
 import Telomare.IR.Core
-import Telomare.IR.Loc
 import Telomare.IR.Surface
-import Telomare.IR.Types
-import Telomare.Parse (parseModule)
+import Telomare.Parse (runParseModule)
 import Telomare.PrettyPrint (PrettyCompiledExpr (..))
 import Text.Read (readMaybe)
 
@@ -167,16 +164,17 @@ nodify = removeExtraNumbers . fmap go . allNodes 0 where
     x -> [(i, x)]
 
 
--- parseModule :: String -> Either String [Either AnnotatedUPT (String, AnnotatedUPT)]
 -- TODO: Load modules qualifed
-loadModules :: [String] -> IO [(String, [Either AUPT (String, AUPT)])]
+loadModules :: [String] -> IO ExpandedModules
 loadModules filenames = do
   filesStrings :: [String] <- mapM Strict.readFile filenames
-  case mapM parseModule filesStrings of
-    Right p -> pure $ zip filesStrings (fmap convertModule p)
-    Left pe -> error pe
+  case zipWithM parseAndExpand filenames filesStrings of
+    Right parsed -> pure $ zip filenames parsed
+    Left pe      -> error pe
   where
-    convertModule = fmap (bimap unAnnotatedUPT (second unAnnotatedUPT))
+    parseAndExpand name str =
+      runParseModule name str
+        >>= first renderExpansionError . expandModule
 
 mainWidgetInit
   :: (forall t m.
@@ -193,7 +191,7 @@ mainWidgetInit w = mainWidget (initManager_ w)
 
 main :: IO ()
 main = do
-  modules :: [(String, [Either AUPT (String, AUPT)])] <- getArgs >>= loadModules
+  modules :: ExpandedModules <- getArgs >>= loadModules
   let go :: Text -> IO ()
       go textErr =
         mainWidgetInit $ do

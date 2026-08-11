@@ -47,8 +47,8 @@ library
                      , Telomare.Levels
                      , Telomare.Machine
                      , Telomare.Eval.Meter
+                     , Telomare.Expand
                      , Telomare.Parse
-                     , Telomare.Parse.Sugar
                      , Telomare.PrettyPrint
                      , Telomare.PrettyPrint.Indent
                      , Telomare.Resolve

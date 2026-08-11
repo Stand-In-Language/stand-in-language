@@ -20,6 +20,7 @@ import qualified System.IO.Strict as Strict
 import Telomare.Driver
 import Telomare.Error
 import Telomare.Eval.Reference
+import Telomare.Expand
 import Telomare.IR.Base
 import Telomare.IR.Builder
 import Telomare.IR.Core
@@ -559,17 +560,18 @@ main = do
   preludeFile <- Strict.readFile "Prelude.tel"
 
   let
-    prelude' = case parsePrelude preludeFile of
+    prelude' = case runParseDefinitions "" preludeFile
+                      >>= first renderExpansionError . expandDefs of
       Right p -> p
-      Left pe -> error $ show pe
-    prelude :: [(String, [Either AUPT (String, AUPT)])]
-    prelude = [("Prelude", Right . second unAnnotatedUPT <$> prelude')]
-    parseAuxModule :: String -> (String, [Either AUPT (String, AUPT)])
+      Left pe -> error pe
+    prelude :: ExpandedModules
+    prelude = [("Prelude", uncurry ExpandedModuleBinding <$> prelude')]
+    parseAuxModule :: String -> (String, ExpandedModule)
     parseAuxModule str =
-      case sequence ("AuxModule", parseModule ("import Prelude\n" <> str)) of
-      -- case sequence ("AuxModule", parseModule str) of
-        Left e    -> error $ show e
-        Right pam -> second (fmap (bimap unAnnotatedUPT (second unAnnotatedUPT))) pam
+      case runParseModule "" ("import Prelude\n" <> str)
+             >>= first renderExpansionError . expandModule of
+        Left e    -> error e
+        Right pam -> ("AuxModule", pam)
     parse :: Bool -> String -> Either String Term3
     parse appLet str = if appLet
       then first show $ main2Term3let (parseAuxModule str:prelude) "AuxModule"

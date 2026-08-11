@@ -13,15 +13,17 @@ import Control.Monad (unless)
 import Data.Bifunctor (Bifunctor (first, second))
 import Data.List (isInfixOf)
 import qualified System.IO.Strict as Strict
+import Telomare.Desugar (desugarTerm)
 import Telomare.Driver (SizingOption (..), compile, runStaticChecks)
 import Telomare.Error
+import Telomare.Expand (expandDefs, expandTerm, renderExpansionError)
 import Telomare.IR.Base
 import Telomare.IR.Builder
 import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.IR.Surface
 import Telomare.IR.Types
-import Telomare.Parse (parseLongExpr, parsePrelude)
+import Telomare.Parse (parseLongExpr, runParseDefinitions)
 import Telomare.PrettyPrint
 import Telomare.Resolve (process, pruneBindings)
 import Telomare.Size (SizingSettings (SizingSettings))
@@ -43,13 +45,14 @@ natUDTSource = unlines
   , "  ]"
   ]
 
-parseBindings :: String -> String -> IO [(String, AnnotatedUPT)]
+parseBindings :: String -> String -> IO [(String, ExpandedSurfaceTerm)]
 parseBindings name raw =
-  case parsePrelude raw of
+  case runParseDefinitions "" raw
+         >>= first renderExpansionError . expandDefs of
     Left err -> error $ "parseBindings: " <> name <> ": " <> err
-    Right bs -> pure bs
+    Right bs -> pure $ first locatedNameText <$> bs
 
-loadBindings :: FilePath -> IO [(String, AnnotatedUPT)]
+loadBindings :: FilePath -> IO [(String, ExpandedSurfaceTerm)]
 loadBindings path = do
   raw <- Strict.readFile path
   parseBindings path raw
@@ -60,14 +63,15 @@ evalUDTExpr input = do
   preludeBindings <- loadBindings "Prelude.tel"
   udtBindings     <- parseBindings "Nat UDT fixture" natUDTSource
   let allBindings = preludeBindings <> udtBindings
-  case runParser (parseLongExpr <* eof) "" input of
-    Left err -> pure $ Left (errorBundlePretty err)
+  case first errorBundlePretty (runParser (parseLongExpr <* eof) "" input)
+         >>= first renderExpansionError . expandTerm of
+    Left err -> pure $ Left err
     Right aupt -> do
-      let bindings = fmap (second unAnnotatedUPT) allBindings
+      let bindings = allBindings
           term = UnknownLoc :< LetUPF (first (locatedName UnknownLoc) <$> pruneBindings aupt bindings) aupt
           compile' :: Term3 -> Either EvalError CompiledExpr
           compile' = compile (DebugSizing (SizingSettings 255 False)) runStaticChecks
-      case first RE (process $ AnnotatedUPT term) >>= compile' of
+      case first RE (process $ desugarTerm term) >>= compile' of
         Left err -> pure $ Left (show err)
         Right iexpr -> case eval iexpr of
           Left e       -> pure . Left . show $ e

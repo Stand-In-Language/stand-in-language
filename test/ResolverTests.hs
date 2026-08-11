@@ -13,6 +13,7 @@ import Control.Monad.Except (ExceptT, MonadError, catchError, runExceptT,
                              throwError)
 import Data.Algorithm.Diff (getGroupedDiff)
 import Data.Algorithm.DiffOutput (ppDiff)
+import Data.Bifunctor (first)
 import Data.List (isInfixOf, isPrefixOf, sortOn)
 import Debug.Trace (trace, traceShow, traceShowId)
 import System.IO
@@ -25,6 +26,7 @@ import Telomare.Desugar
 import Telomare.Driver
 import Telomare.Error
 import Telomare.Eval.Reference
+import Telomare.Expand
 import qualified Telomare.Fast as Fast
 import Telomare.IR.Base
 import Telomare.IR.Builder
@@ -38,7 +40,7 @@ import Telomare.Size (SizingSettings (SizingSettings))
 import Test.Tasty
 import Test.Tasty.HUnit
 import Test.Tasty.QuickCheck as QC
-import Text.Megaparsec (eof)
+import Text.Megaparsec (eof, errorBundlePretty, runParser)
 import Text.Show.Pretty (ppShow)
 
 type Term2' = Term2
@@ -321,14 +323,90 @@ unitTests = testGroup "Unit tests"
     -- Missing definitions should point at the unresolved variable so CLI
     -- messages and LSP diagnostics can direct users to the real source site.
   , testCase "missing definition error reports source location" $ do
-      case parseWithPrelude [] "main = foo 0" of
+      case parseMainWith [] "main = foo 0" of
         Left err -> assertFailure err
-        Right term -> case process term of
+        Right term -> case process (desugarTerm term) of
           Left err -> do
             let rendered = renderResolverError err
             rendered @?= "missing definition \"foo\" at line 1, column 8"
             show err @?= rendered
           Right _ -> assertFailure "expected missing definition error"
+  , testCase "builtin optimization respects lexical shadows" $ do
+      let a = UnknownLoc
+          name = locatedName a
+          var n = a :< UnprocessedParsedTermL (VarF n)
+          int n = a :< IntUPF n
+          app f x = a :< UnprocessedParsedTermL (AppF f x)
+          shadow n use = a :< LetUPF [(name n, var "replacement")] use
+          samples =
+            [ shadow "left" (app (var "left") (int 1))
+            , shadow "right" (app (var "right") (int 1))
+            , shadow "trace" (app (var "trace") (int 1))
+            , shadow "pair" (app (app (var "pair") (int 1)) (int 2))
+            , shadow "app" (app (app (var "app") (var "f")) (int 2))
+            ]
+      fmap optimizeBuiltinFunctions samples @?= samples
+  , testCase "builtin optimization still rewrites builtin references" $ do
+      let a = UnknownLoc
+          var n = a :< UnprocessedParsedTermL (VarF n)
+          int n = a :< IntUPF n
+          app f x = a :< UnprocessedParsedTermL (AppF f x)
+      case optimizeBuiltinFunctions (app (var "left") (int 1)) of
+        _ :< UnprocessedParsedTermH (HLeftF _) -> pure ()
+        term -> assertFailure $ "left was not optimized: " <> show term
+      case optimizeBuiltinFunctions (app (app (var "pair") (int 1)) (int 2)) of
+        _ :< UnprocessedParsedTermB (PairSF _ _) -> pure ()
+        term -> assertFailure $ "pair was not optimized: " <> show term
+  , testCase "case lowering helpers cannot be captured by local bindings" $ do
+      let source = unlines
+            [ "import Prelude"
+            , "main = \\i ->"
+            , "  let and = 0"
+            , "      foldl = 0"
+            , "      listEqual = 0"
+            , "      abort = 0"
+            , "  in (case 1 of"
+            , "        1 -> \"ok\", 0)"
+            ]
+      result <- testUserDefAdHocTypes source
+      result @?= "ok\ndone"
+  , testCase "missing imported module is a resolver error" $ do
+      let a = UnknownLoc
+          modules = [("Main", [imported a "Missing"])]
+      resolveMain modules "Main" @?= Left (ModuleNotFound "Missing")
+  , testCase "import cycle is a resolver error" $ do
+      let a = UnknownLoc
+          modules =
+            [ ("Main", [imported a "A"])
+            , ("A", [imported a "B"])
+            , ("B", [imported a "Main"])
+            ]
+      resolveMain modules "Main" @?= Left (ImportCycle ["Main", "A", "B", "Main"])
+  , testCase "qualified imports rewrite sibling references" $ do
+      let a = UnknownLoc
+          var name = a :< UnprocessedParsedTermL (VarF name)
+          modules =
+            [ ("A", [binding a "x" (a :< IntUPF 1), binding a "y" (var "x")])
+            , ("Main", [qualifiedImport a "Q" "A", binding a "main" (var "Q.y")])
+            ]
+      case resolveImports modules "Main" of
+        Right bindings -> do
+          fst <$> bindings @?= ["Q.x", "Q.y", "main"]
+          lookup "Q.y" bindings @?= Just (var "Q.x")
+        other -> assertFailure $ "qualified import failed: " <> show other
+  , testCase "qualified imports rewrite transitive references" $ do
+      let a = UnknownLoc
+          var name = a :< UnprocessedParsedTermL (VarF name)
+          modules =
+            [ ("B", [binding a "x" (a :< IntUPF 1)])
+            , ("A", [qualifiedImport a "B" "B", binding a "y" (var "B.x")])
+            , ("Main", [qualifiedImport a "Q" "A", binding a "main" (var "Q.y")])
+            ]
+      case resolveImports modules "Main" of
+        Right bindings -> do
+          fst <$> bindings @?= ["Q.B.x", "Q.y", "main"]
+          lookup "Q.y" bindings @?= Just (var "Q.B.x")
+        other -> assertFailure $ "transitive qualified import failed: " <> show other
   , testCase "test backward cycle let" $ do
       let backwardCycleLet = wrapRecursiveBackwardLet cycleLet
       result <- try ( testUserDefAdHocTypes backwardCycleLet ) :: IO (Either SomeException String)
@@ -342,12 +420,12 @@ unitTests = testGroup "Unit tests"
         Left err -> trimEnd (removeCallStack (show err)) @?= trimEnd runForwardCycleLet
         Right res -> trimEnd res @?= trimEnd runForwardCycleLet
   , testCase "different values get different hashes" $ do
-      let res1 = generateAllHashes <$> runTelomareParser2Term2 (AnnotatedUPT <$> parseLet) hashtest0
-          res2 = generateAllHashes <$> runTelomareParser2Term2 (AnnotatedUPT <$> parseLet) hashtest1
+      let res1 = generateAllHashes <$> runTelomareParser2Term2 parseLet hashtest0
+          res2 = generateAllHashes <$> runTelomareParser2Term2 parseLet hashtest1
       (res1 == res2) `compare` False @?= EQ
   , testCase "same functions have the same hash even with different variable names" $ do
-     let res1 = generateAllHashes <$> runTelomareParser2Term2 (AnnotatedUPT <$> parseLet) hashtest2
-         res2 = generateAllHashes <$> runTelomareParser2Term2 (AnnotatedUPT <$> parseLet) hashtest3
+     let res1 = generateAllHashes <$> runTelomareParser2Term2 parseLet hashtest2
+         res2 = generateAllHashes <$> runTelomareParser2Term2 parseLet hashtest3
      res1 @?= res2
   , testCase "Ad hoc user defined types success" $ do
       res <- testUserDefAdHocTypes userDefAdHocTypesSuccess
@@ -374,6 +452,17 @@ unitTests = testGroup "Unit tests"
       res <- runMain_ aux222 "Main"
       res @?= "whattt\ndone"
   ]
+
+binding :: LocTag -> String -> ExpandedSurfaceTerm -> ExpandedModuleItem ExpandedSurfaceTerm
+binding loc name = ExpandedModuleBinding (locatedName loc name)
+
+imported :: LocTag -> String -> ExpandedModuleItem ExpandedSurfaceTerm
+imported loc moduleName = ExpandedModuleImport $
+  ImportDecl loc (locatedName loc moduleName) Nothing
+
+qualifiedImport :: LocTag -> String -> String -> ExpandedModuleItem ExpandedSurfaceTerm
+qualifiedImport loc qualifier moduleName = ExpandedModuleImport $
+  ImportDecl loc (locatedName loc moduleName) (Just $ locatedName loc qualifier)
 
 runBackwardCycleLet = "runMainCore failed: RE (DefinitionCycle [\"xyz\",\"abc\",\"def\",\"ghi\",\"jkl\",\"xyz\"])"
 
@@ -512,6 +601,31 @@ hashtest3 = unlines [ "let b = \\x -> x"
                , "in (# b)"
                ]
 
+-- |Parse and expand a whole program (definitions ending in @main@),
+-- with extra module bindings in scope. Local successor of the old
+-- @parseWithPrelude@.
+parseMainWith :: [(String, ExpandedSurfaceTerm)] -> String -> Either String ExpandedSurfaceTerm
+parseMainWith prelude str = do
+  defs <- runParseDefinitions "" str
+  bindings <- first renderExpansionError $ expandDefs defs
+  first renderExpansionError $ wrapMain prelude bindings
+
+-- |Parse and expand a file of definitions (a prelude).
+parsePreludeDefs :: String -> Either String [(String, ExpandedSurfaceTerm)]
+parsePreludeDefs str = do
+  defs <- runParseDefinitions "" str
+  bindings <- first renderExpansionError $ expandDefs defs
+  pure $ first locatedNameText <$> bindings
+
+-- |Helper function to compile to Term2. Lived in "Telomare.Resolve" while
+-- expansion still ran inside the parser; now that parsers return raw
+-- terms it composes the expansion pass itself, and only this suite uses it.
+runTelomareParser2Term2 :: TelomareParser ParsedSurfaceTerm -> String -> Either ResolverError Term2
+runTelomareParser2Term2 parser str =
+    first (ParseError . errorBundlePretty) (runParser parser "" str)
+    >>= first (ParseError . renderExpansionError) . expandTerm
+    >>= process2Term2 . desugarTerm
+
 -- TODO: do something with this
 showAllTransformations :: String -- ^ Telomare code
                        -> IO ()
@@ -521,16 +635,16 @@ showAllTransformations input = do
         putStrLn "\n-----------------------------------------------------------------"
         putStrLn $ "----" <> description <> ":\n"
         putStrLn body
-      prelude = case parsePrelude preludeFile of
+      prelude = case parsePreludeDefs preludeFile of
                   Right x  -> x
                   Left err -> error err
-      upt = case parseWithPrelude prelude input of
+      upt = case parseMainWith prelude input of
               Right x -> x
               Left x  -> error x
   section "Input" input
-  section "Parse: UnprocessedParsedTerm" $ show upt
-  section "Desugar: optimizeBuiltinFunctions" . show . optimizeBuiltinFunctions . unAnnotatedUPT $ upt
-  let optimizeBuiltinFunctionsVar = optimizeBuiltinFunctions (unAnnotatedUPT upt)
+  section "Parse + Expand: UnprocessedParsedTerm" $ show upt
+  section "Desugar: optimizeBuiltinFunctions" . show . optimizeBuiltinFunctions $ upt
+  let optimizeBuiltinFunctionsVar = optimizeBuiltinFunctions upt
       str1 = lines . show $ optimizeBuiltinFunctionsVar
       str0 = lines . show $ upt
       diff = getGroupedDiff str0 str1
@@ -540,7 +654,7 @@ showAllTransformations input = do
   --     diff = getGroupedDiff str1 str2
   -- section "optimizeBindingsReference" . show $ optimizeBindingsReferenceVar
   -- section "Diff optimizeBindingsReference" $ ppDiff diff
-  let validateVariablesVar = validateVariables (AnnotatedUPT optimizeBuiltinFunctionsVar)
+  let validateVariablesVar = validateVariables (desugarTerm upt)
       str3 = lines . show $ validateVariablesVar
       diff = getGroupedDiff str3 str1
   section "Resolve: validateVariables" . show $ validateVariablesVar

@@ -8,7 +8,7 @@ import Control.Comonad.Cofree (Cofree ((:<)))
 import qualified Control.Monad.State as State
 import Data.Fix (Fix (..))
 import qualified System.IO.Strict as Strict
-import Telomare.Desugar (pattern2UPT)
+import Telomare.Desugar (patternToTerm)
 import Telomare.Driver (runMainWithInput)
 import Telomare.Error
 import Telomare.IR.Base
@@ -58,15 +58,15 @@ caseExprStrWithPatternIgnore p = unlines
   ]
 
 showPatternTerm :: PatternA -> String
-showPatternTerm = prettyAUPT . pattern2UPT UnknownLoc
+showPatternTerm = prettyExpandedTerm . patternToTerm UnknownLoc
 
-prettyAUPT :: AUPT -> String
-prettyAUPT (_ :< term) = case term of
+prettyExpandedTerm :: ExpandedSurfaceTerm -> String
+prettyExpandedTerm (_ :< term) = case term of
   IntUPF i      -> show i
   UnprocessedParsedTermL (VarF str) -> str
   StringUPF str -> show str
-  UnprocessedParsedTermB (PairSF x y) -> "(" <> prettyAUPT x <> "," <> prettyAUPT y <> ")"
-  UnprocessedParsedTermL (AppF x y)   -> prettyAUPT x <> " " <> prettyAUPT y
+  UnprocessedParsedTermB (PairSF x y) -> "(" <> prettyExpandedTerm x <> "," <> prettyExpandedTerm y <> ")"
+  UnprocessedParsedTermL (AppF x y)   -> prettyExpandedTerm x <> " " <> prettyExpandedTerm y
   _             -> error $ "unexpected generated case test term: " <> show term
 
 runCaseExpWithPattern :: (PatternA -> String) -> PatternA -> IO String
@@ -153,14 +153,14 @@ instance Arbitrary PatternA where
         PatternVarF _ -> do
           s <- State.get
           State.modify (+ 1)
-          pure . Fix . PatternVarF $ "var" <> show s
+          pure . Fix . PatternVarF . locatedName UnknownLoc $ "var" <> show s
         PatternPairF x y -> Fix <$> (PatternPairF <$> go x <*> go y)
         other -> pure $ Fix other
     leaves :: Gen PatternA
     leaves = oneof
       [ Fix . PatternStringF <$> elements (fmap (("s" <>) . show) [1..9])
       , Fix . PatternIntF <$> elements [0..9]
-      , pure . Fix $ PatternVarF ""
+      , pure . Fix . PatternVarF $ locatedName UnknownLoc ""
       ]
     genTree :: Int -> Gen PatternA
     genTree = \case
@@ -171,9 +171,9 @@ instance Arbitrary PatternA where
         ]
 
   shrink (Fix patternF) = case patternF of
-    PatternVarF str -> case str of
-      "" -> []
-      _  -> pure . Fix . PatternVarF $ tail str
+    PatternVarF name -> case locatedNameText name of
+      ""  -> []
+      str -> pure . Fix . PatternVarF . locatedName UnknownLoc $ tail str
     PatternStringF s -> case s of
       "" -> []
       _  -> pure . Fix . PatternStringF $ tail s

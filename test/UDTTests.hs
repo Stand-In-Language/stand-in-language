@@ -14,16 +14,18 @@ import Data.Ratio
 import Debug.Trace
 import NatUDTTests (natUDTTests)
 import qualified System.IO.Strict as Strict
+import Telomare.Desugar (desugarTerm)
 import Telomare.Driver (SizingOption (..), compile, compileUnitTest,
                         compileUnitTestNoAbort, runStaticChecks)
 import Telomare.Error
+import Telomare.Expand (expandDefs, expandTerm, renderExpansionError)
 import Telomare.IR.Base
 import Telomare.IR.Builder
 import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.IR.Surface
 import Telomare.IR.Types
-import Telomare.Parse (TelomareParser, parseLongExpr, parsePrelude)
+import Telomare.Parse (TelomareParser, parseLongExpr, runParseDefinitions)
 import Telomare.PrettyPrint
 import Telomare.Resolve (process, pruneBindings)
 import Telomare.Size (SizingSettings (SizingSettings))
@@ -53,25 +55,27 @@ rightToMaybe :: Either String a -> Maybe a
 rightToMaybe (Right x) = Just x
 rightToMaybe _         = Nothing
 
-loadPreludeBindings :: IO [(String, AnnotatedUPT)]
+loadPreludeBindings :: IO [(String, ExpandedSurfaceTerm)]
 loadPreludeBindings = do
   preludeResult <- Strict.readFile "Prelude.tel"
-  case parsePrelude preludeResult of
+  case runParseDefinitions "" preludeResult
+         >>= first renderExpansionError . expandDefs of
     Left _   -> pure []
-    Right bs -> pure bs
+    Right bs -> pure $ first locatedNameText <$> bs
 
 evalExprString :: String -> IO (Either String String)
 evalExprString input = do
   preludeBindings <- loadPreludeBindings
-  let parseResult = runParser (parseLongExpr <* eof) "" input
+  let parseResult = first errorBundlePretty (runParser (parseLongExpr <* eof) "" input)
+        >>= first renderExpansionError . expandTerm
   case parseResult of
-    Left err -> pure $ Left (errorBundlePretty err)
+    Left err -> pure $ Left err
     Right aupt -> do
-      let bindings = fmap (second unAnnotatedUPT) preludeBindings
+      let bindings = preludeBindings
           term = UnknownLoc :< LetUPF (first (locatedName UnknownLoc) <$> pruneBindings aupt bindings) aupt
           compile' :: Term3 -> Either EvalError CompiledExpr
           compile' = compile (DebugSizing (SizingSettings 255 False)) runStaticChecks
-      case first RE (process $ AnnotatedUPT term) >>= compile' of
+      case first RE (process $ desugarTerm term) >>= compile' of
         Left err -> pure $ Left (show err)
         Right iexpr -> case eval iexpr of
                          Left e -> pure . Left . show $ e

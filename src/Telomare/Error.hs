@@ -25,6 +25,7 @@ data TypeCheckError
 data ResolverError
   = NoMainFunction String
   | ModuleNotFound String
+  | ImportCycle [String]
   | DefinitionCycle [String]
   | MissingDefinitions [String]
   | MissingDefinitionAt LocTag String
@@ -38,6 +39,7 @@ renderResolverError :: ResolverError -> String
 renderResolverError = \case
   NoMainFunction moduleName -> "NoMainFunction " <> show moduleName
   ModuleNotFound moduleName -> "ModuleNotFound " <> show moduleName
+  ImportCycle names -> "ImportCycle " <> show names
   DefinitionCycle names -> "DefinitionCycle " <> show names
   MissingDefinitions names -> "MissingDefinitions " <> show names
   MissingDefinitionAt loc name ->

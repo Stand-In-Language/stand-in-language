@@ -46,7 +46,7 @@ import qualified Data.ByteArray as BA
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
 import Data.Char (ord)
-import Data.Fix (Fix)
+import Data.Fix (Fix (..))
 import qualified Data.Foldable as F
 import Data.Functor.Foldable (Base, Corecursive (ana, apo, embed),
                               Recursive (..))
@@ -57,9 +57,9 @@ import Data.Map.Strict (Map, fromList, keys)
 import Data.Monoid (Sum (..))
 import Data.Set (Set, (\\))
 import qualified Data.Set as Set
+import Data.Void (absurd)
 import Debug.Trace (trace, traceShow, traceShowId)
-import Telomare.Desugar (addBuiltins, optimizeBuiltinFunctions, removeCaseUPs,
-                         rewriteOuterTag)
+import Telomare.Desugar (desugarTerm, rewriteOuterTag)
 import Telomare.Error
 import Telomare.IR.Base
 import Telomare.IR.Builder
@@ -67,9 +67,7 @@ import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.IR.Surface
 import Telomare.IR.Types
-import Telomare.Parse (TelomareParser, identifier)
 import Telomare.PrettyPrint (prettyPrint)
-import Text.Megaparsec (errorBundlePretty, runParser)
 
 debug :: Bool
 debug = False
@@ -94,8 +92,8 @@ s2t anno = ints2t anno . fmap ord
 instance MonadFail (Either ResolverError) where
   fail = Left . MissingDefinitions . pure
 
--- |Collect all free variable names in a `AnnotatedUPT` expresion
-varsUPT :: AUPT -> Set String
+-- |Collect all free variable names in an 'AnnotatedEST' expression.
+varsUPT :: ExpandedSurfaceTerm -> Set String
 varsUPT = cata alg where
   alg (VarAFP _ n)     = Set.singleton n
   alg (LamAFP _ str x) = del (locatedNameText str) x
@@ -105,7 +103,7 @@ varsUPT = cata alg where
 
 -- |Like 'varsUPT' but also descends into 'Pattern' type annotations so that
 -- names referenced via @: T@ patterns (e.g. UDT validators) are included.
-freeVarsDeep :: AUPT -> Set String
+freeVarsDeep :: ExpandedSurfaceTerm -> Set String
 freeVarsDeep = cata alg where
   alg (VarAFP _ n)           = Set.singleton n
   alg (LamAFP _ n body)      = Set.delete (locatedNameText n) body
@@ -116,19 +114,21 @@ freeVarsDeep = cata alg where
 
   patternRefs :: PatternA -> Set String
   patternRefs = cata palg where
-    palg :: PatternF AnnotatedUPT (Set String) -> Set String
-    palg (PatternAnnotatedF inner ty) = inner <> freeVarsDeep (unAnnotatedUPT ty)
+    palg :: PatternF AnnotatedEST (Set String) -> Set String
+    palg (PatternAnnotatedF inner ty) = inner <> freeVarsDeep (unAnnotatedEST ty)
     palg e                            = F.fold e
 
 -- |Keep only bindings transitively reachable from @root@. Unreachable
 -- bindings are skipped by 'process' and 'compile', giving large speedups
 -- when a snippet only uses a small slice of a large Prelude+UDT environment.
 --
--- 'freeVarsDeep' also accounts for names that 'removeCaseUPs' (called
--- inside 'process') injects into case alternatives: @and@, @listEqual@,
+-- 'freeVarsDeep' also accounts for names that 'desugarTerm' injects into
+-- case alternatives before 'process': @and@, @listEqual@,
 -- @foldl@, @abort@. Without these the pruned LetUPF would fail with
 -- MissingDefinitions after case expansion.
-pruneBindings :: AUPT -> [(String, AUPT)] -> [(String, AUPT)]
+pruneBindings :: ExpandedSurfaceTerm
+              -> [(String, ExpandedSurfaceTerm)]
+              -> [(String, ExpandedSurfaceTerm)]
 pruneBindings root bs = filter ((`Set.member` reachable) . fst) bs
   where
     seed      = freeVarsDeep root
@@ -136,10 +136,10 @@ pruneBindings root bs = filter ((`Set.member` reachable) . fst) bs
     expand r  = r <> F.fold (Map.restrictKeys bmap r)
     reachable = until (\s -> expand s == s) expand seed
 
-mkLambda4FreeVarUPs :: AUPT -> AUPT
+mkLambda4FreeVarUPs :: ExpandedSurfaceTerm -> ExpandedSurfaceTerm
 mkLambda4FreeVarUPs aupt@(anno :< _) = go aupt freeVars where
   freeVars = Set.toList . varsUPT $ aupt
-  go :: AUPT -> [String] -> AUPT
+  go :: ExpandedSurfaceTerm -> [String] -> ExpandedSurfaceTerm
   go x = \case
     []     -> x
     (y:ys) -> LamP (locatedName UnknownLoc y) $ go x ys
@@ -241,11 +241,13 @@ openLambda name body@(anno :< _) = LamP (Open name) body
 closedLambda :: String -> Term1 -> Term1
 closedLambda name body@(anno :< _) = LamP (Closed name) body
 
--- |Transformation from `AnnotatedUPT` to `Term1` validating and inlining `VarUP`s
-validateVariables :: AnnotatedUPT
+-- |Transform a case-free surface term to 'Term1', validating and inlining
+-- variables.
+validateVariables :: DesugaredSurfaceTerm
                   -> Either ResolverError Term1
-validateVariables (AnnotatedUPT term) =
-  let validateWithEnvironment :: AUPT -> StateT (Map String Term1) (Either ResolverError) Term1
+validateVariables term =
+  let validateWithEnvironment :: DesugaredSurfaceTerm
+                              -> StateT (Map String Term1) (Either ResolverError) Term1
       validateWithEnvironment = \case
         anno :< LetUPF preludeMap inner -> do
           oldPrelude <- State.get
@@ -347,6 +349,7 @@ validateVariables (AnnotatedUPT term) =
                                                                 <*> validateWithEnvironment e
         anno :< IntUPF x -> pure $ i2t anno x
         anno :< StringUPF s -> pure $ s2t anno s
+        anno :< UnprocessedParsedTermB ZeroSF -> pure $ anno :< ParserTermB ZeroSF
         anno :< UnprocessedParsedTermB (PairSF a b) -> (\x y -> anno :< ParserTermB (PairSF x y)) <$> validateWithEnvironment a
                                                             <*> validateWithEnvironment b
         anno :< ListUPF l -> foldr (\x y -> anno :< ParserTermB (PairSF x y)) (anno :< ParserTermB ZeroSF) <$> mapM validateWithEnvironment l
@@ -363,9 +366,12 @@ validateVariables (AnnotatedUPT term) =
         anno :< UnprocessedParsedTermH (HTraceF x) -> (\y -> anno :< embedH (HTraceF y)) <$> validateWithEnvironment x
         anno :< UnprocessedParsedTermH (CheckF cf x) -> (\y y'-> anno :< embedH (CheckF y y')) <$> validateWithEnvironment cf <*> validateWithEnvironment x
         anno :< UnprocessedParsedTermH (HashF x) -> (\y -> anno :< embedH (HashF y)) <$> validateWithEnvironment x
+        -- Cases cannot survive 'desugarTerm'; the witness field is 'Void'.
+        _ :< CaseNodeUPF v _ _ -> absurd v
   in State.evalStateT (validateWithEnvironment term) Map.empty
 
-annotateUnsizedCount :: AUPT -> Cofree (UnprocessedParsedTermF PatternA) (LocTag, Int)
+annotateUnsizedCount :: DesugaredSurfaceTerm
+                     -> Cofree DesugaredSurfaceTermF (LocTag, Int)
 annotateUnsizedCount = capTop . flip evalStateT 0 . cata f where
   f = \case
     anno C.:< x -> case x of
@@ -383,8 +389,8 @@ annotateUnsizedCount = capTop . flip evalStateT 0 . cata f where
 
 
 -- convert let bindings to nested lambda/app brackets
-letsToApps :: AnnotatedUPT -> Either ResolverError Term1
-letsToApps (AnnotatedUPT term) =
+letsToApps :: DesugaredSurfaceTerm -> Either ResolverError Term1
+letsToApps term =
    -- Topological sort with cycle detection
   let topologicalSort names deps = go [] Set.empty names
         where
@@ -485,117 +491,127 @@ generateAllHashes x@(anno :< _) = transform interm x where
     (anno :< ParserTermH (HashF term1)) -> bs2Term2 . term2Hash $ term1
     x                      -> x
 
--- |Process an `AnnotatedUPT` to a `Term3` with failing capability.
-process :: AnnotatedUPT
+-- |Process a fully desugared surface term to 'Term3'.
+process :: DesugaredSurfaceTerm
         -> Either ResolverError Term3
 process upt = (\dt -> debugTrace ("Resolver process term:\n" <> prettyPrint dt) dt) . splitExpr <$> process2Term2 upt
 
-processWlet :: AnnotatedUPT -> Either ResolverError Term3
+processWlet :: DesugaredSurfaceTerm -> Either ResolverError Term3
 processWlet = fmap (splitExpr . (\dt -> debugTrace ("Resolver processWlet before split:\n" <> pt dt) dt)) . process2Term2let where
   pt x = prettyPrint $ fg x
   fg :: Term2 -> Fix (ParserTermF (LamType ()) Int)
   fg = forget
 
-process2Term2 :: AnnotatedUPT
+process2Term2 :: DesugaredSurfaceTerm
               -> Either ResolverError Term2
 process2Term2 = fmap generateAllHashes
-              . debruijinize <=< (fmap tf . validateVariables)
-              . AnnotatedUPT
-              . removeCaseUPs
-              . optimizeBuiltinFunctions
-              . addBuiltins
-              . unAnnotatedUPT
-                 where tf x = debugTrace ("reg Term1:\n" <> prettyPrint x) x
+               . debruijinize <=< (fmap tf . validateVariables)
+                  where tf x = debugTrace ("reg Term1:\n" <> prettyPrint x) x
 
-process2Term2let :: AnnotatedUPT -> Either ResolverError Term2
+process2Term2let :: DesugaredSurfaceTerm -> Either ResolverError Term2
 process2Term2let = fmap generateAllHashes
-                 . debruijinizeApp <=< fmap tf . letsToApps
-                 . AnnotatedUPT
-                 . removeCaseUPs
-                 . optimizeBuiltinFunctions
-                 . addBuiltins
-                 . unAnnotatedUPT
-                 where tf x = debugTrace ("wLet Term1:\n" <> prettyPrint x) x
+                  . debruijinizeApp <=< fmap tf . letsToApps
+                  where tf x = debugTrace ("wLet Term1:\n" <> prettyPrint x) x
 
--- |Helper function to compile to Term2
-runTelomareParser2Term2 :: TelomareParser AnnotatedUPT -- ^Parser to run
-                        -> String                      -- ^Raw string to be parsed
-                        -> Either ResolverError Term2         -- ^Error on Left
-runTelomareParser2Term2 parser str =
-  first (ParseError . errorBundlePretty) (runParser parser "" str) >>= process2Term2
+resolveAllImports :: ExpandedModules -- ^All modules
+                  -> ExpandedModule -- ^Module whose imports should be resolved
+                  -> Either ResolverError [(String, ExpandedSurfaceTerm)]
+resolveAllImports modules = resolveItems modules []
 
-resolveImports' :: [(String, [Either AUPT (String, AUPT)])]
-                -> [Either AUPT (String, AUPT)] -- ^Main module with both Import and Assignment
-                -> [Either AUPT (String, AUPT)]
-resolveImports' modules xs = lefts <> rights
-  where
-    lefts' = reverse . filter isLeft $ xs
-    lefts = case lefts' of
-      [] -> lefts'
-      (y:ys) -> case y of
-        (Left (_ :< (ImportUPF var))) ->
-          case lookup var modules of
-            Nothing -> error $ "Import error from " <> var -- TODO make return Either and get rid of this
-            Just x  -> x
-        (Left (_ :< (ImportQualifiedUPF q v))) ->
-          case lookup v modules of
-            Nothing -> error $ "Import error from " <> v -- TODO make return Either and get rid of this
-            Just x  -> (fmap . fmap . first) (\str -> q <> "." <> str) x
-        e -> error $ "Expected import statement. Got:\n" <> show e
-    rights = filter isRight xs
-    isLeft (Left _) = True
-    isLeft _        = False
-    isRight (Right _) = True
-    isRight _         = False
-
-resolveAllImports' :: [(String, [Either AUPT (String, AUPT)])]
-                   -> [Either AUPT (String, AUPT)]
-                   -> [Either AUPT (String, AUPT)]
-resolveAllImports' modules x =
-  let resolved = resolveImports' modules x
-  in if resolved == x
-     then resolved
-     else resolveAllImports' modules resolved
-
-resolveAllImports :: [(String, [Either AUPT (String, AUPT)])] -- ^All the modules
-                  -> [Either AUPT (String, AUPT)] -- ^Module to be resolved (i.e. list of either Import_UPT or top level definitions)
-                  -> [(String, AUPT)]
-resolveAllImports x y = removeRights <$> resolveAllImports' x y
-  where
-    removeRights = \case
-      Left x -> error $ "resolveImports: Left when should be all Right: " <> show x -- TODO make return Either and get rid of this
-      Right x -> x
-
-resolveImports :: [(String, [Either AUPT (String, AUPT)])]
+resolveImports :: ExpandedModules
                -> String
-               -> [(String, AUPT)]
-resolveImports modules moduleName = resolveAllImports modules principal
-  where
-    principal = case lookup moduleName modules of
-      Nothing -> error $ "resolveImports: Module " <> moduleName <> " not found" -- TODO make return Either and get rid of this
-      Just x  -> x
+               -> Either ResolverError [(String, ExpandedSurfaceTerm)]
+resolveImports modules = resolveModule modules []
 
-resolveMain :: [(String, [Either AUPT (String, AUPT)])] -- ^Modules: [(ModuleName, [Either Import (VariableName, BindedUPT)])]
+resolveModule :: ExpandedModules
+              -> [String]
+              -> String
+              -> Either ResolverError [(String, ExpandedSurfaceTerm)]
+resolveModule modules stack moduleName
+  | moduleName `elem` stack =
+      Left . ImportCycle $ dropWhile (/= moduleName) stack <> [moduleName]
+  | otherwise = case lookup moduleName modules of
+      Nothing    -> Left $ ModuleNotFound moduleName
+      Just items -> resolveItems modules (stack <> [moduleName]) items
+
+resolveItems :: ExpandedModules
+             -> [String]
+             -> ExpandedModule
+             -> Either ResolverError [(String, ExpandedSurfaceTerm)]
+resolveItems modules stack = fmap concat . traverse resolveItem
+  where
+    resolveItem = \case
+      ExpandedModuleBinding name value -> Right [(locatedNameText name, value)]
+      ExpandedModuleImport importDecl -> do
+        bindings <- resolveModule modules stack
+          (locatedNameText $ parsedImportModule importDecl)
+        pure $ case parsedImportQualifier importDecl of
+          Nothing        -> bindings
+          Just qualifier -> qualifyBindings (locatedNameText qualifier) bindings
+
+qualifyBindings :: String
+                -> [(String, ExpandedSurfaceTerm)]
+                -> [(String, ExpandedSurfaceTerm)]
+qualifyBindings qualifier bindings =
+  [ (qualify name, qualifyTerm names qualifier value)
+  | (name, value) <- bindings
+  ]
+  where
+    names = Set.fromList $ fst <$> bindings
+    qualify name = qualifier <> "." <> name
+
+qualifyTerm :: Set String -> String -> ExpandedSurfaceTerm -> ExpandedSurfaceTerm
+qualifyTerm names qualifier = go Set.empty
+  where
+    go bound (loc :< term) = loc :< case term of
+      UnprocessedParsedTermL (VarF name)
+        | name `Set.member` names && name `Set.notMember` bound ->
+            UnprocessedParsedTermL $ VarF (qualifier <> "." <> name)
+      UnprocessedParsedTermL (LamF name body) ->
+        UnprocessedParsedTermL . LamF name $
+          go (Set.insert (locatedNameText name) bound) body
+      LetUPF bindings body ->
+        let localNames = Set.fromList $ letBindingName <$> bindings
+            bound' = bound <> localNames
+        in LetUPF (fmap (fmap $ go bound') bindings) (go bound' body)
+      CaseUPF scrutinee alternatives ->
+        CaseUPF (go bound scrutinee)
+          [ (qualifyPattern bound pattern', go (bound <> patternNames pattern') body)
+          | (pattern', body) <- alternatives
+          ]
+      other -> fmap (go bound) other
+
+    qualifyPattern bound (Fix pattern') = Fix $ case pattern' of
+      PatternAnnotatedF pattern'' (AnnotatedEST annotation) ->
+        PatternAnnotatedF (qualifyPattern bound pattern'')
+          (AnnotatedEST $ go bound annotation)
+      other -> fmap (qualifyPattern bound) other
+
+    patternNames = cata $ \case
+      PatternVarF name      -> Set.singleton $ locatedNameText name
+      PatternAnnotatedF p _ -> p
+      p                     -> F.fold p
+
+resolveMain :: ExpandedModules -- ^Modules and their typed expanded items
             -> String -- ^Module name with main
-            -> Either ResolverError AUPT
+            -> Either ResolverError ExpandedSurfaceTerm
 resolveMain allModules mainModule = case lookup mainModule allModules of
   Nothing -> Left $ ModuleNotFound mainModule
-  Just lst -> let resolved :: [(String, AUPT)]
-                  resolved = resolveImports allModules mainModule
-                  maybeMain = lookup "main" resolved
-              in case maybeMain of
-                   Nothing -> Left $ NoMainFunction mainModule
-                   Just x ->
-                     let loc = case x of loc' :< _ -> loc'
-                         locatedBindings = first (locatedName (GeneratedLoc "resolveMain.binding" (Just loc))) <$> pruneBindings x resolved
-                     in Right $ GeneratedLoc "resolveMain" (Just loc) :< LetUPF locatedBindings x
+  Just _ -> do
+    resolved <- resolveImports allModules mainModule
+    case lookup "main" resolved of
+      Nothing -> Left $ NoMainFunction mainModule
+      Just x ->
+        let loc = case x of loc' :< _ -> loc'
+            locatedBindings = first (locatedName (GeneratedLoc "resolveMain.binding" (Just loc))) <$> pruneBindings x resolved
+        in Right $ GeneratedLoc "resolveMain" (Just loc) :< LetUPF locatedBindings x
 
-main2Term3 :: [(String, [Either AUPT (String, AUPT)])] -- ^Modules: [(ModuleName, [Either Import (VariableName, BindedUPT)])]
+main2Term3 :: ExpandedModules
            -> String -- ^Module name with main
            -> Either ResolverError Term3 -- ^Error on Left
-main2Term3 moduleBindings s = resolveMain moduleBindings s >>= process . AnnotatedUPT
+main2Term3 moduleBindings s = resolveMain moduleBindings s >>= process . desugarTerm
 
-main2Term3let :: [(String, [Either AUPT (String, AUPT)])] -- ^Modules: [(ModuleName, [Either Import (VariableName, BindedUPT)])]
-           -> String -- ^Module name with main
-           -> Either ResolverError Term3 -- ^Error on Left
-main2Term3let moduleBindings s = resolveMain moduleBindings s >>= processWlet . AnnotatedUPT
+main2Term3let :: ExpandedModules
+            -> String -- ^Module name with main
+            -> Either ResolverError Term3 -- ^Error on Left
+main2Term3let moduleBindings s = resolveMain moduleBindings s >>= processWlet . desugarTerm

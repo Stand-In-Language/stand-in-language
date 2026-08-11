@@ -192,17 +192,7 @@ instance Arbitrary UnprocessedParsedTerm where
       , (3, pure . cycle $ lambdaTerms <> letTerms)
       , (1, cycle <$> shuffle (lambdaTerms <> letTerms))
       ]
-    genImportName :: Gen String
-    genImportName = do
-      firstChar <- elements $ ['a'..'z'] <> ['A'..'Z']
-      len <- choose (3, 15)
-      rest <- vectorOf (len - 1)
-                       (frequency [ (10, elements (['a'..'z'] <> ['A'..'Z'] <> ['0'..'9']))
-                                  , (1, pure '_')
-                                  , (1, pure '.')
-                                  ])
-      return (firstChar : rest)
-    mkUPT :: UnprocessedParsedTermF Pattern UPT -> UnprocessedParsedTerm
+    mkUPT :: UnprocessedParsedTermF () Pattern UPT -> UnprocessedParsedTerm
     mkUPT = UnprocessedParsedTerm . Fix
     wrap :: UnprocessedParsedTerm -> UPT
     wrap = unUnprocessedParsedTerm
@@ -218,8 +208,6 @@ instance Arbitrary UnprocessedParsedTerm where
                                  0 -> leaves varList
                                  x -> oneof
                                    [ leaves varList
-                                   , mkUPT . ImportUPF <$> genImportName
-                                   , (\m a -> mkUPT (ImportQualifiedUPF m a)) <$> genImportName <*> genImportName
                                    , mkUPT . UnprocessedParsedTermH . HashF . wrap <$> recur (i - 1)
                                    , mkUPT . UnprocessedParsedTermH . HLeftF . wrap <$> recur (i - 1)
                                    , mkUPT . UnprocessedParsedTermH . HRightF . wrap <$> recur (i - 1)
