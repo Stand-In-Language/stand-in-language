@@ -56,16 +56,10 @@ import Text.Megaparsec.Error (ParseErrorBundle (..), errorBundlePretty,
 --------------------------------------------------------------------------------
 -- Document state tracking
 
--- Results of parsing and expanding a module.
-type ParseResult = ExpandedModule
-
--- Store module bindings for evaluation context
-type ModuleBindings = [(String, ParseResult)]
-
 data DocState = DocState
   { docText        :: T.Text
   , docVersion     :: Int
-  , docParse       :: Either String ParseResult
+  , docParse       :: Either String ExpandedModule
   , docDiagnostics :: [LSPTypes.Diagnostic]
   } deriving (Show)
 
@@ -79,7 +73,7 @@ data SymbolIndex = SymbolIndex
 -- Global state for prelude and other module bindings
 data GlobalState = GlobalState
   { docStore       :: DocStore
-  , moduleBindings :: TVar ModuleBindings
+  , moduleBindings :: TVar ExpandedModules
   }
 
 --------------------------------------------------------------------------------
@@ -117,7 +111,7 @@ main = do
     }
 
 -- Load Prelude.tel and parse it
-loadPrelude :: IO ModuleBindings
+loadPrelude :: IO ExpandedModules
 loadPrelude = do
   -- Try to load Prelude.tel from common locations
   let preludePaths = ["Prelude.tel", "lib/Prelude.tel", "../lib/Prelude.tel"]
@@ -248,7 +242,7 @@ formatTimestampMinutesUTC rawTimestamp = do
 --------------------------------------------------------------------------------
 -- Helpers: centralize parsing through runParseModule + expandModule
 
-parseTelomareModule :: T.Text -> Either String ParseResult
+parseTelomareModule :: T.Text -> Either String ExpandedModule
 parseTelomareModule text =
   runParseModule "" (T.unpack text)
     >>= first renderExpansionError . expandModule
@@ -347,14 +341,14 @@ expansionDiagnostics text err =
   where
     range = maybe fallbackRange (locTagToRangeIn text) $ expansionErrorLoc err
 
-loadImportedModuleBinding :: GlobalState -> LSPTypes.Uri -> ImportDecl -> IO ModuleBindings
+loadImportedModuleBinding :: GlobalState -> LSPTypes.Uri -> ImportDecl -> IO ExpandedModules
 loadImportedModuleBinding gState currentUri moduleImport = do
   mModule <- loadImportedModule gState currentUri (importModuleName moduleImport)
   pure $ case mModule of
     Nothing             -> []
     Just (_, _, parsed) -> [(importModuleName moduleImport, parsed)]
 
-importDiagnostics :: T.Text -> ModuleBindings -> ParseResult -> [LSPTypes.Diagnostic]
+importDiagnostics :: T.Text -> ExpandedModules -> ExpandedModule -> [LSPTypes.Diagnostic]
 importDiagnostics text modules parsed =
   [ mkDiagnostic (moduleImportRange text moduleImport) "resolver" $
       T.pack ("module not found " <> show (importModuleName moduleImport))
@@ -365,7 +359,7 @@ importDiagnostics text modules parsed =
 moduleImportRange :: T.Text -> ImportDecl -> Range
 moduleImportRange text = locTagToRangeIn text . locatedNameLoc . parsedImportModule
 
-undefinedVariableDiagnostics :: T.Text -> ModuleBindings -> ParseResult -> [LSPTypes.Diagnostic]
+undefinedVariableDiagnostics :: T.Text -> ExpandedModules -> ExpandedModule -> [LSPTypes.Diagnostic]
 undefinedVariableDiagnostics text modules parsed =
   dedupeDiagnostics
     [ mkDiagnostic range "resolver" $ T.pack ("missing definition " <> show name)
@@ -377,7 +371,7 @@ undefinedVariableDiagnostics text modules parsed =
 builtinNames :: [String]
 builtinNames = ["zero", "left", "right", "trace", "pair", "app"]
 
-importedDefinitionNames :: ModuleBindings -> ParseResult -> [String]
+importedDefinitionNames :: ExpandedModules -> ExpandedModule -> [String]
 importedDefinitionNames modules parsed =
   [ maybe name (<> ('.' : name)) (importQualifier moduleImport)
   | moduleImport <- moduleImports parsed
@@ -386,11 +380,11 @@ importedDefinitionNames modules parsed =
   , let name = locatedNameText locatedName'
   ]
 
-currentDefinitionNames :: ParseResult -> [String]
+currentDefinitionNames :: ExpandedModule -> [String]
 currentDefinitionNames parsed =
   [ locatedNameText name | ExpandedModuleBinding name _ <- parsed ]
 
-unresolvedReferences :: T.Text -> Set.Set String -> ParseResult -> [(String, Range)]
+unresolvedReferences :: T.Text -> Set.Set String -> ExpandedModule -> [(String, Range)]
 unresolvedReferences text globals parsed =
   concatMap (unresolvedTerm text globals)
     [term | ExpandedModuleBinding _ term <- parsed]
@@ -432,7 +426,7 @@ diagnosticKey :: LSPTypes.Diagnostic -> (Range, Maybe T.Text, T.Text)
 diagnosticKey diagnostic =
   (diagnostic ^. LSP.range, diagnostic ^. LSP.source, diagnostic ^. LSP.message)
 
-resolverDiagnostics :: T.Text -> ModuleBindings -> ParseResult -> [LSPTypes.Diagnostic]
+resolverDiagnostics :: T.Text -> ExpandedModules -> ExpandedModule -> [LSPTypes.Diagnostic]
 resolverDiagnostics text modules parsed =
   case main2Term3 (("Current", parsed) : modules) "Current" of
     Left NoMainFunction{} -> []
@@ -561,7 +555,7 @@ referencesAt uri includeDeclaration position docState =
               ranges = if includeDeclaration then defs <> refs else refs
           in LSPTypes.Location uri <$> ranges
 
-importedDefinitionIndex :: GlobalState -> LSPTypes.Uri -> ParseResult -> IO (Map.Map T.Text LSPTypes.Location)
+importedDefinitionIndex :: GlobalState -> LSPTypes.Uri -> ExpandedModule -> IO (Map.Map T.Text LSPTypes.Location)
 importedDefinitionIndex gState currentUri parsed = do
   imports <- mapM (loadImportedDefinitionIndex gState currentUri) $ moduleImports parsed
   pure . Map.unions $ imports
@@ -586,11 +580,11 @@ importModuleName = locatedNameText . parsedImportModule
 importQualifier :: ImportDecl -> Maybe String
 importQualifier = fmap locatedNameText . parsedImportQualifier
 
-moduleImports :: ParseResult -> [ImportDecl]
+moduleImports :: ExpandedModule -> [ImportDecl]
 moduleImports parsed =
   [ importDecl | ExpandedModuleImport importDecl <- parsed ]
 
-loadImportedModule :: GlobalState -> LSPTypes.Uri -> String -> IO (Maybe (LSPTypes.Uri, T.Text, ParseResult))
+loadImportedModule :: GlobalState -> LSPTypes.Uri -> String -> IO (Maybe (LSPTypes.Uri, T.Text, ExpandedModule))
 loadImportedModule gState currentUri moduleName = do
   candidates <- moduleFileCandidates currentUri moduleName
   mPath <- firstExistingFile candidates
@@ -638,7 +632,7 @@ symbolAtPosition position index =
     locatedDefinition = fst <$> find (positionInRange position . locationRange . snd) (Map.toList $ symbolDefinitions index)
     locatedReference = fst <$> find (any (positionInRange position) . snd) (Map.toList $ symbolReferences index)
 
-buildSymbolIndex :: LSPTypes.Uri -> T.Text -> ParseResult -> SymbolIndex
+buildSymbolIndex :: LSPTypes.Uri -> T.Text -> ExpandedModule -> SymbolIndex
 buildSymbolIndex uri text parsed = SymbolIndex definitions references
   where
     definitions = topLevelDefinitions uri text parsed
@@ -648,7 +642,7 @@ buildSymbolIndex uri text parsed = SymbolIndex definitions references
       , (name, range) <- termReferences text [] term
       ]
 
-topLevelDefinitions :: LSPTypes.Uri -> T.Text -> ParseResult -> Map.Map T.Text LSPTypes.Location
+topLevelDefinitions :: LSPTypes.Uri -> T.Text -> ExpandedModule -> Map.Map T.Text LSPTypes.Location
 topLevelDefinitions uri text parsed = Map.fromList
   [ (T.pack $ locatedNameText name, LSPTypes.Location uri range)
   | ExpandedModuleBinding name _ <- parsed
@@ -684,7 +678,7 @@ termReferences text bound (loc :< term) =
       concatMap (termReferences text bound) (patternAnnotationTerms pat)
         <> termReferences text (patternBoundNames pat <> bound) body
 
-localDefinitionAt :: LSPTypes.Uri -> T.Text -> Position -> ParseResult -> Maybe LSPTypes.Location
+localDefinitionAt :: LSPTypes.Uri -> T.Text -> Position -> ExpandedModule -> Maybe LSPTypes.Location
 localDefinitionAt uri text position parsed =
   listToMaybe [ location
               | ExpandedModuleBinding _ term <- parsed
@@ -910,7 +904,7 @@ getTextInRange text (Range (Position startLine startChar) (Position endLine endC
 --------------------------------------------------------------------------------
 -- Partial evaluation using eval2IExpr
 
-evaluateExpression :: ModuleBindings -> T.Text -> Either String String
+evaluateExpression :: ExpandedModules -> T.Text -> Either String String
 evaluateExpression bindings expr =
   case eval2IExpr bindings (T.unpack expr) of
     Left err    -> Left err
