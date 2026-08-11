@@ -8,7 +8,7 @@ import Control.Comonad.Cofree (Cofree ((:<)))
 import qualified Control.Monad.State as State
 import Data.Fix (Fix (..))
 import qualified System.IO.Strict as Strict
-import Telomare.Desugar (pattern2UPT)
+import Telomare.Desugar (patternToTerm)
 import Telomare.Driver (runMainWithInput)
 import Telomare.Error
 import Telomare.IR.Base
@@ -58,15 +58,15 @@ caseExprStrWithPatternIgnore p = unlines
   ]
 
 showPatternTerm :: PatternA -> String
-showPatternTerm = prettyAUPT . pattern2UPT UnknownLoc
+showPatternTerm = prettyExpandedTerm . patternToTerm UnknownLoc
 
-prettyAUPT :: AUPT -> String
-prettyAUPT (_ :< term) = case term of
+prettyExpandedTerm :: ExpandedSurfaceTerm -> String
+prettyExpandedTerm (_ :< term) = case term of
   IntUPF i      -> show i
   UnprocessedParsedTermL (VarF str) -> str
   StringUPF str -> show str
-  UnprocessedParsedTermB (PairSF x y) -> "(" <> prettyAUPT x <> "," <> prettyAUPT y <> ")"
-  UnprocessedParsedTermL (AppF x y)   -> prettyAUPT x <> " " <> prettyAUPT y
+  UnprocessedParsedTermB (PairSF x y) -> "(" <> prettyExpandedTerm x <> "," <> prettyExpandedTerm y <> ")"
+  UnprocessedParsedTermL (AppF x y)   -> prettyExpandedTerm x <> " " <> prettyExpandedTerm y
   _             -> error $ "unexpected generated case test term: " <> show term
 
 runCaseExpWithPattern :: (PatternA -> String) -> PatternA -> IO String

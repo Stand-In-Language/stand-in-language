@@ -20,6 +20,7 @@ import qualified System.IO.Strict as Strict
 import Telomare.Driver
 import Telomare.Error
 import Telomare.Eval.Reference
+import Telomare.Expand
 import Telomare.IR.Base
 import Telomare.IR.Builder
 import Telomare.IR.Core
@@ -31,7 +32,6 @@ import Telomare.Parse
 import Telomare.PrettyPrint
 import Telomare.Resolve
 import Telomare.Size (SizingSettings (SizingSettings))
-import Telomare.Sugar
 import Telomare.TypeCheck
 import Test.Hspec
 import Test.Hspec.Core.QuickCheck (modifyMaxSuccess)
@@ -561,15 +561,15 @@ main = do
 
   let
     prelude' = case runParseDefinitions "" preludeFile
-                      >>= first renderSugarError . sugarDefs of
+                      >>= first renderExpansionError . expandDefs of
       Right p -> p
       Left pe -> error pe
-    prelude :: [(String, [Either AUPT (String, AUPT)])]
-    prelude = [("Prelude", Right . first locatedNameText <$> prelude')]
-    parseAuxModule :: String -> (String, [Either AUPT (String, AUPT)])
+    prelude :: ExpandedModules
+    prelude = [("Prelude", uncurry ExpandedModuleBinding <$> prelude')]
+    parseAuxModule :: String -> (String, ExpandedModule)
     parseAuxModule str =
       case runParseModule "" ("import Prelude\n" <> str)
-             >>= first renderSugarError . sugarModule of
+             >>= first renderExpansionError . expandModule of
         Left e    -> error e
         Right pam -> ("AuxModule", pam)
     parse :: Bool -> String -> Either String Term3

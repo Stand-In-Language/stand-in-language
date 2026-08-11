@@ -13,8 +13,10 @@ import Control.Monad (unless)
 import Data.Bifunctor (Bifunctor (first, second))
 import Data.List (isInfixOf)
 import qualified System.IO.Strict as Strict
+import Telomare.Desugar (desugarTerm)
 import Telomare.Driver (SizingOption (..), compile, runStaticChecks)
 import Telomare.Error
+import Telomare.Expand (expandDefs, expandTerm, renderExpansionError)
 import Telomare.IR.Base
 import Telomare.IR.Builder
 import Telomare.IR.Core
@@ -25,7 +27,6 @@ import Telomare.Parse (parseLongExpr, runParseDefinitions)
 import Telomare.PrettyPrint
 import Telomare.Resolve (process, pruneBindings)
 import Telomare.Size (SizingSettings (SizingSettings))
-import Telomare.Sugar (renderSugarError, sugarDefs, sugarTerm)
 import Test.Tasty
 import Test.Tasty.HUnit
 import Text.Megaparsec (eof, errorBundlePretty, runParser)
@@ -44,14 +45,14 @@ natUDTSource = unlines
   , "  ]"
   ]
 
-parseBindings :: String -> String -> IO [(String, AUPT)]
+parseBindings :: String -> String -> IO [(String, ExpandedSurfaceTerm)]
 parseBindings name raw =
   case runParseDefinitions "" raw
-         >>= first renderSugarError . sugarDefs of
+         >>= first renderExpansionError . expandDefs of
     Left err -> error $ "parseBindings: " <> name <> ": " <> err
     Right bs -> pure $ first locatedNameText <$> bs
 
-loadBindings :: FilePath -> IO [(String, AUPT)]
+loadBindings :: FilePath -> IO [(String, ExpandedSurfaceTerm)]
 loadBindings path = do
   raw <- Strict.readFile path
   parseBindings path raw
@@ -63,14 +64,14 @@ evalUDTExpr input = do
   udtBindings     <- parseBindings "Nat UDT fixture" natUDTSource
   let allBindings = preludeBindings <> udtBindings
   case first errorBundlePretty (runParser (parseLongExpr <* eof) "" input)
-         >>= first renderSugarError . sugarTerm of
+         >>= first renderExpansionError . expandTerm of
     Left err -> pure $ Left err
     Right aupt -> do
       let bindings = allBindings
           term = UnknownLoc :< LetUPF (first (locatedName UnknownLoc) <$> pruneBindings aupt bindings) aupt
           compile' :: Term3 -> Either EvalError CompiledExpr
           compile' = compile (DebugSizing (SizingSettings 255 False)) runStaticChecks
-      case first RE (process $ AnnotatedUPT term) >>= compile' of
+      case first RE (process $ desugarTerm term) >>= compile' of
         Left err -> pure $ Left (show err)
         Right iexpr -> case eval iexpr of
           Left e       -> pure . Left . show $ e

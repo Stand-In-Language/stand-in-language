@@ -1,25 +1,25 @@
 {-# LANGUAGE LambdaCase #-}
 
--- |The desugaring pass that runs immediately after parsing. The grammar in
--- 'Telomare.Parse' is deliberately dumb: it emits 'PAUPT' trees whose
+-- |The surface expansion pass that runs immediately after parsing. The grammar in
+-- 'Telomare.Parse' is deliberately dumb: it emits 'ParsedSurfaceTerm' trees whose
 -- 'SugarTermF' fragment carries the raw forms 'LamPatF' (multi-pattern
 -- lambdas) and 'LetSugarF' (lets whose entries may be list assignments or
--- carry refinement annotations). 'sugarTerm' removes that fragment,
+-- carry refinement annotations). 'expandTerm' removes that fragment,
 -- rewriting the raw forms into the plain
 -- 'UnprocessedParsedTermL'/'LetUPF'/'CheckF' vocabulary — so the resulting
--- 'AUPT' structurally cannot contain them. Source spans are exactly what
+-- 'ExpandedSurfaceTerm' structurally cannot contain them. Source spans are exactly what
 -- the grammar alone produces.
 --
--- Sugar that survives this pass ('CaseUPF', builtin names) is expanded
+-- Surface forms that survive this pass ('CaseUPF', builtin names) are lowered
 -- later, in 'Telomare.Desugar'.
-module Telomare.Sugar
-  ( SugarError (..)
-  , renderSugarError
-  , sugarErrorLoc
-  , sugarTerm
-  , sugarPattern
-  , sugarDefs
-  , sugarModule
+module Telomare.Expand
+  ( ExpansionError (..)
+  , renderExpansionError
+  , expansionErrorLoc
+  , expandTerm
+  , expandPattern
+  , expandDefs
+  , expandModule
   , wrapMain
   , buildMultiLambda
   ) where
@@ -35,10 +35,10 @@ import Telomare.IR.Base
 import Telomare.IR.Loc
 import Telomare.IR.Surface
 
--- |Errors the desugaring pass can produce. These were runtime 'error'
+-- |Errors the expansion pass can produce. These were runtime 'error'
 -- calls (or a megaparsec parse failure, for 'MissingMain') when
--- desugaring still ran inside the parser.
-data SugarError
+-- expansion still ran inside the parser.
+data ExpansionError
   = ListArityMismatch LocTag Int Int
     -- ^ @[a, b] = expr@ where @expr@'s final list literal has a different
     -- number of slots than there are names. Fields: location of the list
@@ -54,8 +54,8 @@ data SugarError
     -- ^ 'wrapMain' found no @main@ among the top-level definitions.
   deriving (Eq, Show)
 
-renderSugarError :: SugarError -> String
-renderSugarError = \case
+renderExpansionError :: ExpansionError -> String
+renderExpansionError = \case
   ListArityMismatch loc nNames nSlots ->
     "list assignment arity mismatch: " <> show nNames <> " names for "
     <> show nSlots <> " values" <> atLoc loc
@@ -70,10 +70,10 @@ renderSugarError = \case
   where
     atLoc loc = maybe "" (" at " <>) (renderLocTag loc)
 
--- |The source location a 'SugarError' points at, when it has one. Used by
+-- |The source location an 'ExpansionError' points at, when it has one. Used by
 -- the LSP server to attach diagnostics to a range.
-sugarErrorLoc :: SugarError -> Maybe LocTag
-sugarErrorLoc = \case
+expansionErrorLoc :: ExpansionError -> Maybe LocTag
+expansionErrorLoc = \case
   ListArityMismatch loc _ _ -> Just loc
   UDTBodyNotList loc _ _   -> Just loc
   UDTArityMismatch loc _ _ _ -> Just loc
@@ -82,62 +82,62 @@ sugarErrorLoc = \case
 -- |Remove the sugar fragment, bottom-up. This is the type change that
 -- guarantees no 'LamPatF' or 'LetSugarF' node survives, including inside
 -- pattern annotations.
-sugarTerm :: PAUPT -> Either SugarError AUPT
-sugarTerm (loc :< term) = case term of
+expandTerm :: ParsedSurfaceTerm -> Either ExpansionError ExpandedSurfaceTerm
+expandTerm (loc :< term) = case term of
   ParsedTermSugar (LamPatF pats body) -> do
-    pats' <- traverse (traverse sugarPattern) pats
-    body' <- sugarTerm body
+    pats' <- traverse (traverse expandPattern) pats
+    body' <- expandTerm body
     pure $ buildMultiLambda loc pats' body'
   ParsedTermSugar (LetSugarF defs body) -> do
-    bindings <- sugarDefs defs
-    body' <- sugarTerm body
+    bindings <- expandDefs defs
+    body' <- expandTerm body
     pure $ loc :< LetUPF bindings body'
+  ParsedTermUP (CaseUPF scrutinee alternatives) -> do
+    scrutinee' <- expandTerm scrutinee
+    alternatives' <- traverse expandAlternative alternatives
+    pure $ loc :< CaseUPF scrutinee' alternatives'
   ParsedTermUP upf -> do
-    upf' <- traverse sugarTerm upf
-    (loc :<) <$> traverseUPTPatterns sugarPattern upf'
+    upf' <- traverse expandTerm upf
+    (loc :<) <$> traverseUPTPatterns expandPattern upf'
+  where
+    expandAlternative (pattern', body) =
+      (,) <$> expandPattern pattern' <*> expandTerm body
 
 -- |Patterns carry embedded terms in their annotations (@(v : T)@), which
 -- the parser leaves raw too.
-sugarPattern :: PatternP -> Either SugarError PatternA
-sugarPattern (Fix pattern') = Fix <$> case pattern' of
-  PatternAnnotatedF inner (AnnotatedPUPT typeExpr) ->
-    PatternAnnotatedF <$> sugarPattern inner
-                      <*> (AnnotatedUPT <$> sugarTerm typeExpr)
+expandPattern :: PatternP -> Either ExpansionError PatternA
+expandPattern (Fix pattern') = Fix <$> case pattern' of
+  PatternAnnotatedF inner (AnnotatedPST typeExpr) ->
+    PatternAnnotatedF <$> expandPattern inner
+                       <*> (AnnotatedEST <$> expandTerm typeExpr)
   PatternVarF name    -> pure $ PatternVarF name
   PatternIntF n       -> pure $ PatternIntF n
   PatternStringF s    -> pure $ PatternStringF s
   PatternIgnoreF      -> pure PatternIgnoreF
-  PatternPairF a b    -> PatternPairF <$> sugarPattern a <*> sugarPattern b
+  PatternPairF a b    -> PatternPairF <$> expandPattern a <*> expandPattern b
 
--- |Desugar a block of raw definitions into plain (name, value) bindings.
+-- |Expand a block of raw definitions into plain (name, value) bindings.
 -- Single definitions fold their refinement annotation into a 'CheckF';
 -- list assignments expand into one binding per name.
-sugarDefs :: [DefinitionF PAUPT] -> Either SugarError [(LocatedName, AUPT)]
-sugarDefs defs = concat <$> traverse (traverse sugarTerm >=> expandDef) defs
+expandDefs :: [DefinitionF ParsedSurfaceTerm] -> Either ExpansionError [(LocatedName, ExpandedSurfaceTerm)]
+expandDefs defs = concat <$> traverse (traverse expandTerm >=> expandDef) defs
 
--- |Desugar a parsed module: imports pass through, definitions expand into
+-- |Expand a parsed module: imports pass through, definitions expand into
 -- their bindings.
-sugarModule :: [ModuleItem PAUPT] -> Either SugarError [Either AUPT (String, AUPT)]
-sugarModule = fmap concat . traverse item where
+expandModule :: [ModuleItem ParsedSurfaceTerm] -> Either ExpansionError ExpandedModule
+expandModule = fmap concat . traverse item where
   item = \case
-    ModuleImportItem importDecl -> pure [Left $ importDeclTerm importDecl]
-    ModuleDefinitionItem def -> fmap (Right . first locatedNameText)
-                                 <$> (traverse sugarTerm def >>= expandDef)
-
-  importDeclTerm importDecl = case parsedImportQualifier importDecl of
-    Nothing -> parsedImportLoc importDecl :< ImportUPF
-      (locatedNameText $ parsedImportModule importDecl)
-    Just qualifier -> parsedImportLoc importDecl :< ImportQualifiedUPF
-      (locatedNameText qualifier)
-      (locatedNameText $ parsedImportModule importDecl)
+    ModuleImportItem importDecl -> pure [ExpandedModuleImport importDecl]
+    ModuleDefinitionItem def -> fmap (uncurry ExpandedModuleBinding)
+                                 <$> (traverse expandTerm def >>= expandDef)
 
 -- |Wrap a module's bindings (plus any extra module bindings, e.g. an
--- already-desugared prelude) in a let around its @main@ definition. This
+-- already-expanded prelude) in a let around its @main@ definition. This
 -- is the semantic check that used to fail the parse itself when a module
 -- had no @main@.
-wrapMain :: [(String, AUPT)]       -- ^extra module bindings (e.g. prelude)
-         -> [(LocatedName, AUPT)]  -- ^desugared module bindings
-         -> Either SugarError AUPT
+wrapMain :: [(String, ExpandedSurfaceTerm)]       -- ^extra module bindings (e.g. prelude)
+         -> [(LocatedName, ExpandedSurfaceTerm)]  -- ^expanded module bindings
+         -> Either ExpansionError ExpandedSurfaceTerm
 wrapMain extraModuleBindings bindings =
   case lookup "main" (first locatedNameText <$> bindings) of
     Just m -> Right $ loc :< LetUPF ((first (locatedName UnknownLoc) <$> extraModuleBindings) <> bindings) m
@@ -145,9 +145,9 @@ wrapMain extraModuleBindings bindings =
   where
     loc = GeneratedLoc "wrapMain" Nothing
 
--- |Expand one definition (whose contents are already desugared) into its
+-- |Expand one definition (whose contents are already expanded) into its
 -- bindings.
-expandDef :: DefinitionF AUPT -> Either SugarError [(LocatedName, AUPT)]
+expandDef :: DefinitionF ExpandedSurfaceTerm -> Either ExpansionError [(LocatedName, ExpandedSurfaceTerm)]
 expandDef = \case
   SingleDefF name Nothing body -> pure [(name, body)]
   SingleDefF name (Just (annotLoc, typeExpr)) body ->
@@ -182,7 +182,7 @@ lambdaVarNames = zipWith nameFor [0 :: Int ..]
 -- This avoids putting a function-valued lambda inside a case body, which
 -- would cause the case-rewrite to type-mismatch against the (Pair-typed)
 -- abort fallback.
-buildMultiLambda :: LocTag -> [(LocTag, PatternA)] -> AUPT -> AUPT
+buildMultiLambda :: LocTag -> [(LocTag, PatternA)] -> ExpandedSurfaceTerm -> ExpandedSurfaceTerm
 buildMultiLambda lt patterns body =
   let varNames = lambdaVarNames patterns
       destructured = foldr applyDestructure body (zip (snd <$> patterns) (locatedNameText <$> varNames))
@@ -200,7 +200,7 @@ buildMultiLambda lt patterns body =
              -- Use the validator result as the case scrutinee instead of
              -- CheckUPF: hash-based UDT validators are runtime values that
              -- the static refinement analyzer cannot symbolically evaluate.
-             let tyApplied = AppP (unAnnotatedUPT typeExpr) bound
+             let tyApplied = AppP (unAnnotatedEST typeExpr) bound
              in lt :< CaseUPF tyApplied [(innerPat, inner)]
            _ ->
              lt :< CaseUPF bound
@@ -209,13 +209,13 @@ buildMultiLambda lt patterns body =
                ]
 
 -- TODO rethink this
-isUDTAssignment :: [String] -> AUPT -> Bool
+isUDTAssignment :: [String] -> ExpandedSurfaceTerm -> Bool
 isUDTAssignment (name:_) (LamP _ _) = case name of
   firstChar:_ -> isUpper firstChar
   _           -> False
 isUDTAssignment _ _ = False
 
-expandPlainListAssignment :: LocTag -> [LocatedName] -> AUPT -> Either SugarError [(LocatedName, AUPT)]
+expandPlainListAssignment :: LocTag -> [LocatedName] -> ExpandedSurfaceTerm -> Either ExpansionError [(LocatedName, ExpandedSurfaceTerm)]
 expandPlainListAssignment loc locatedNames body =
   case listAssignmentSlots body of
     Just (slots, wrapBody)
@@ -233,7 +233,7 @@ expandPlainListAssignment loc locatedNames body =
 -- |Find a final list literal in a plain list assignment, preserving lambdas
 -- and lets around each extracted slot. This lets `[f, g] = \x -> [...]`
 -- bind `f` and `g` as functions rather than trying to project from a lambda.
-listAssignmentSlots :: AUPT -> Maybe ([AUPT], AUPT -> AUPT)
+listAssignmentSlots :: ExpandedSurfaceTerm -> Maybe ([ExpandedSurfaceTerm], ExpandedSurfaceTerm -> ExpandedSurfaceTerm)
 listAssignmentSlots = go where
   go (l :< ListUPF xs) = Just (xs, id)
   go (l :< LetUPF binds inner) = do
@@ -249,7 +249,7 @@ listAssignmentIntermediate loc = case locStartLineColumn loc of
   Just (line, column) -> "__list_assignment_" <> show line <> "_" <> show column
   Nothing             -> "__list_assignment"
 
-accessAt :: LocTag -> Int -> AUPT -> AUPT
+accessAt :: LocTag -> Int -> ExpandedSurfaceTerm -> ExpandedSurfaceTerm
 accessAt loc 0 e = loc :< embedH (HLeftF e)
 accessAt loc n e = loc :< embedH (HLeftF (iterate (\x -> loc :< embedH (HRightF x)) e !! n))
 
@@ -274,7 +274,7 @@ accessAt loc n e = loc :< embedH (HLeftF (iterate (\x -> loc :< embedH (HRightF 
 -- > mk  = left (right (right __udt_T))
 -- > unT = left (right (right (right __udt_T)))
 -- > op1 = let h = __udt_T_hash; T = validatorFor T h in op1Body
-expandUDTLocated :: LocTag -> [LocatedName] -> AUPT -> Either SugarError [(LocatedName, AUPT)]
+expandUDTLocated :: LocTag -> [LocatedName] -> ExpandedSurfaceTerm -> Either ExpansionError [(LocatedName, ExpandedSurfaceTerm)]
 expandUDTLocated loc locatedNames body =
   case names of
     tname:_ -> expandUDTLocated' loc locatedNames tname body
@@ -282,7 +282,7 @@ expandUDTLocated loc locatedNames body =
   where
     names = locatedNameText <$> locatedNames
 
-expandUDTLocated' :: LocTag -> [LocatedName] -> String -> AUPT -> Either SugarError [(LocatedName, AUPT)]
+expandUDTLocated' :: LocTag -> [LocatedName] -> String -> ExpandedSurfaceTerm -> Either ExpansionError [(LocatedName, ExpandedSurfaceTerm)]
 expandUDTLocated' loc locatedNames tname body =
   case body of
     (LamP hParam inner) -> do
@@ -327,7 +327,7 @@ expandUDTLocated' loc locatedNames tname body =
 -- |Find the final list literal in a UDT body and return a wrapper that
 -- reapplies any surrounding lets. Hoisted methods get the same let
 -- context as the core tuple, but not the sibling method bodies.
-udtSlots :: LocTag -> String -> AUPT -> Either SugarError ([AUPT], AUPT -> AUPT)
+udtSlots :: LocTag -> String -> ExpandedSurfaceTerm -> Either ExpansionError ([ExpandedSurfaceTerm], ExpandedSurfaceTerm -> ExpandedSurfaceTerm)
 udtSlots loc tname = go where
   go (l :< ListUPF xs) = Right (xs, id)
   go (l :< LetUPF binds inner) = do
@@ -340,7 +340,7 @@ udtSlots loc tname = go where
 -- Annotated pattern lambdas use the validator's result as the case
 -- scrutinee, so destructuring works on a validated value without an
 -- extra ITE.
-autoValidator :: LocTag -> String -> String -> AUPT
+autoValidator :: LocTag -> String -> String -> ExpandedSurfaceTerm
 autoValidator loc tname hParam =
   LamP (locatedName (GeneratedLoc "annotated pattern lambda" (Just loc)) "__udt_v")
     (ITEP

@@ -77,6 +77,7 @@ import Data.Maybe (fromMaybe)
 import System.IO (hFlush, isEOF, stdout)
 
 import Telomare.Error
+import Telomare.Expand (expandModule, renderExpansionError)
 import Telomare.IR.Base
 import Telomare.IR.Builder
 import Telomare.IR.Core
@@ -85,7 +86,6 @@ import Telomare.IR.Surface
 import Telomare.IR.Types
 import Telomare.Parse (runParseModule)
 import Telomare.Resolve (main2Term3, main2Term3let)
-import Telomare.Sugar (renderSugarError, sugarModule)
 import Telomare.TypeCheck (typeCheck)
 
 -- |A recursion site: the token the sizing pass would have sized, where it is
@@ -486,10 +486,10 @@ compileFast modulesStrings entry =
       runtimeTerm <- resolved $ main2Term3let modules entry
       term3ToFast (ownerMap modules) runtimeTerm
   where
-    parsed = fmap parseAndDesugar modulesStrings
-    parseAndDesugar (n, content) =
+    parsed = fmap parseAndExpand modulesStrings
+    parseAndExpand (n, content) =
       (n, runParseModule n content
-            >>= first renderSugarError . sugarModule)
+            >>= first renderExpansionError . expandModule)
     resolved = either (Left . renderEvalError . RE) Right
 
 -- |`Term3` to the runtime IR. There is no sizing here: `Term3Unsized` becomes
@@ -530,17 +530,18 @@ term3ToFast owners = cata go
 type LocKey = (Maybe FilePath, Int)
 
 -- |Which top-level definition each source position belongs to.
-ownerMap :: [(String, [Either AUPT (String, AUPT)])] -> Map LocKey String
+ownerMap :: ExpandedModules -> Map LocKey String
 ownerMap parsed = Map.fromListWith keepFirst
   [ (key, moduleName <> "." <> defName)
   | (moduleName, entries) <- parsed
-  , Right (defName, body) <- entries
+  , ExpandedModuleBinding name body <- entries
+  , let defName = locatedNameText name
   , key <- positionsIn body
   ]
   where
     keepFirst _ old = old
 
-positionsIn :: AUPT -> [LocKey]
+positionsIn :: ExpandedSurfaceTerm -> [LocKey]
 positionsIn (loc :< term) = maybe id (:) (locKey loc) (foldMap positionsIn term)
 
 locKey :: LocTag -> Maybe LocKey

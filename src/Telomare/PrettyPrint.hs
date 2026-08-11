@@ -172,8 +172,6 @@ instance Show MultiLineShowUPT where
                           "  " <> ind x <> "\n" <>
                           concatMap (\(p,v) -> "  , (" <> prettyPrintPattern (show . MultiLineShowUPT) p <> ",\n    " <> ind v <> ")\n") ls <>
                           "  ]"
-      (ImportUPF s) -> "ImportUP " <> show s
-      (ImportQualifiedUPF s1 s2) -> "ImportQualifiedUP " <> show s1 <> " " <> show s2
 
 newtype PrettyUPT = PrettyUPT UnprocessedParsedTerm
 

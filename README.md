@@ -340,18 +340,18 @@ UDTs deliberately retain the existing list-definition convention:
   [ constructorBody, extractorBody, operationBody ]
 ```
 
-Sugar recognizes this only when the first name starts uppercase and the body
+Expansion recognizes this only when the first name starts uppercase and the body
 is a lambda. There must be exactly one more name than body slots: the extra
 name is the generated validator. This classification is not parser behavior.
 
-| Source form | Parsed representation | Immediate Sugar result |
+| Source form | Parsed representation | Immediate expansion result |
 | --- | --- | --- |
 | `\p1 p2 -> e` | `LamPatF` | nested `LamF`, with cases for patterns |
 | `let defs in e` | `LetSugarF` | `LetUPF` |
 | `x : T = e` | annotated `SingleDefF` | `CheckF T e` |
 | `[a, b] = e` | `ListDefF` | one binding per name |
 | `[T, ...] = \h -> [...]` | `ListDefF` | UDT bindings and validator |
-| `import ...` | `ModuleImportItem ImportDecl` | resolver-compatible import term |
+| `import ...` | `ModuleImportItem ImportDecl` | `ExpandedModuleImport ImportDecl` |
 | `case e of ...` | `CaseUPF` | lowered later by `Telomare.Desugar` |
 
 ## Compiler stages
@@ -361,10 +361,10 @@ pipeline. In pipeline order:
 
 | Stage | Modules | What happens |
 | --- | --- | --- |
-| Parse | `Telomare.Parse` | megaparsec grammar producing raw `PAUPT` surface trees: no expansion, resolving, or semantic checks. Modules use `ModuleItem`; multi-pattern lambdas, refinement annotations, and list definitions remain as written. Complete public runners reject trailing input. |
-| Sugar | `Telomare.Sugar` | removes the `SugarTermF` fragment (`PAUPT -> AUPT`), eliminating `LamPatF`/`LetSugarF` by type: multi-pattern lambdas become nested lambdas with hygienic case destructuring, list definitions and UDT conventions expand into bindings, and refinement annotations fold into `CheckF`. |
-| Desugar | `Telomare.Desugar` | later `AUPT -> AUPT` rewrites: case lowering, builtin binding and optimization. |
-| Resolve | `Telomare.Resolve` | import resolution, scope checking, de Bruijn conversion, hash folding, and core lowering (`splitExpr`: `Term2 -> Term3`). Documents the dual `process`/`processWlet` pipeline. |
+| Parse | `Telomare.Parse` | megaparsec grammar producing raw `ParsedSurfaceTerm` trees: no expansion, resolving, or semantic checks. Modules use `ModuleItem`; multi-pattern lambdas, refinement annotations, and list definitions remain as written. Complete public runners reject trailing input. |
+| Expand | `Telomare.Expand` | removes the `SugarTermF` fragment (`ParsedSurfaceTerm -> ExpandedSurfaceTerm`), eliminating `LamPatF`/`LetSugarF` by type: multi-pattern lambdas become nested lambdas with hygienic case destructuring, list definitions and UDT conventions expand into bindings, and refinement annotations fold into `CheckF`. Module imports remain typed `ImportDecl` values in `ExpandedModuleItem`. |
+| Desugar | `Telomare.Desugar` | binds and optimizes builtins and removes the case capability (`ExpandedSurfaceTerm -> DesugaredSurfaceTerm`), lowering cases to nested conditionals before resolution. |
+| Resolve | `Telomare.Resolve` | resolves typed module imports, scope-checks only `DesugaredSurfaceTerm`, performs de Bruijn conversion and hash folding, and lowers core terms (`splitExpr`: `Term2 -> Term3`). Documents the dual `process`/`processWlet` pipeline. |
 | Type check | `Telomare.TypeCheck` | unification-based check of `Term3` against the main type. |
 | Size (totality) | `Telomare.Size`, `Telomare.Size.IR`, `Telomare.Machine` | telomare's distinguishing stage: `sizeTermM` abstractly interprets the program over symbolic input and infers a finite iteration count for every recursion site, then bakes the counts in (`Term3 -> CompiledExpr`). A program that cannot be sized does not compile. `Machine` is the shared step-algebra the sizing pass and the evaluators are assembled from. |
 | Evaluate | `Telomare.Eval.Reference`, `Telomare.Eval.Meter`, `Telomare.Fast` | the reference interpreter, the step-counting meter, and the fuel-based fast path (which skips sizing). |

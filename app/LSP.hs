@@ -1,7 +1,6 @@
 {-# LANGUAGE DataKinds           #-}
 {-# LANGUAGE FlexibleContexts    #-}
 {-# LANGUAGE KindSignatures      #-}
-{-# LANGUAGE LambdaCase          #-}
 {-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeOperators       #-}
@@ -20,7 +19,7 @@ import Data.Fix (Fix (..))
 import Data.List (find, sortOn)
 import qualified Data.List.NonEmpty as NE
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
+import Data.Maybe (listToMaybe, mapMaybe)
 import qualified Data.Set as Set
 import qualified Data.Text as T
 import Data.Time (defaultTimeLocale, formatTime, parseTimeM, zonedTimeToUTC)
@@ -44,21 +43,21 @@ import Language.LSP.Server
 
 import Telomare.Driver (eval2IExpr)
 import Telomare.Error
+import Telomare.Expand (ExpansionError, expandModule, expansionErrorLoc,
+                        renderExpansionError)
 import Telomare.IR.Base
 import Telomare.IR.Loc
 import Telomare.IR.Surface
 import Telomare.Parse (runParseModule, runParseModuleDetailed)
 import Telomare.Resolve (main2Term3)
-import Telomare.Sugar (SugarError, renderSugarError, sugarErrorLoc, sugarModule)
 import Text.Megaparsec.Error (ParseErrorBundle (..), errorBundlePretty,
                               errorOffset)
 
 --------------------------------------------------------------------------------
 -- Document state tracking
 
--- Results of parsing and desugaring a module:
---   a list of either imports or (name, binding) pairs.
-type ParseResult = [Either AUPT (String, AUPT)]
+-- Results of parsing and expanding a module.
+type ParseResult = ExpandedModule
 
 -- Store module bindings for evaluation context
 type ModuleBindings = [(String, ParseResult)]
@@ -247,16 +246,16 @@ formatTimestampMinutesUTC rawTimestamp = do
   pure . T.pack $ formatTime defaultTimeLocale "%Y-%m-%dT%H:%MZ" (zonedTimeToUTC zonedTime)
 
 --------------------------------------------------------------------------------
--- Helpers: centralize parsing through runParseModule + sugarModule
+-- Helpers: centralize parsing through runParseModule + expandModule
 
 parseTelomareModule :: T.Text -> Either String ParseResult
 parseTelomareModule text =
   runParseModule "" (T.unpack text)
-    >>= first renderSugarError . sugarModule
+    >>= first renderExpansionError . expandModule
 
 -- |Raw parse only, keeping the megaparsec bundle so parse diagnostics can
--- use 'errorOffset'. Callers run 'sugarModule' on the result themselves.
-parseTelomareModuleDetailed :: T.Text -> Either (ParseErrorBundle String Void) [ModuleItem PAUPT]
+-- use 'errorOffset'. Callers run 'expandModule' on the result themselves.
+parseTelomareModuleDetailed :: T.Text -> Either (ParseErrorBundle String Void) [ModuleItem ParsedSurfaceTerm]
 parseTelomareModuleDetailed = runParseModuleDetailed "" . T.unpack
 
 storeParsedDoc
@@ -268,23 +267,23 @@ storeParsedDoc
 storeParsedDoc gState uri version text = do
   modules <- liftIO $ readTVarIO (moduleBindings gState)
   let detailedParse = parseTelomareModuleDetailed text
-      desugared = sugarModule <$> detailedParse
-      parseRes = case desugared of
+      expanded = expandModule <$> detailedParse
+      parseRes = case expanded of
         Left parseErr      -> Left $ errorBundlePretty parseErr
-        Right (Left err)   -> Left $ renderSugarError err
+        Right (Left err)   -> Left $ renderExpansionError err
         Right (Right tree) -> Right tree
-  diagnostics' <- case desugared of
+  diagnostics' <- case expanded of
     Left err -> pure $ parseDiagnostics text err
-    Right (Left err) -> pure $ sugarDiagnostics err
+    Right (Left err) -> pure $ expansionDiagnostics text err
     Right (Right parsed) -> do
       importedModules <- liftIO $ concat <$> mapM (loadImportedModuleBinding gState uri) (moduleImports parsed)
       let modules' = importedModules <> modules
           importDiagnostics' = importDiagnostics text modules' parsed
-          semanticDiagnostics = undefinedVariableDiagnostics modules' parsed
+          semanticDiagnostics = undefinedVariableDiagnostics text modules' parsed
       pure . dedupeDiagnostics $ importDiagnostics'
           <> semanticDiagnostics
           <> if null importDiagnostics'
-             then resolverDiagnostics modules' parsed
+             then resolverDiagnostics text modules' parsed
              else []
   liftIO . atomically . modifyTVar' (docStore gState) $
     Map.insert (toNormalizedUri uri) (DocState text version parseRes diagnostics')
@@ -340,18 +339,15 @@ parseDiagnostics text bundle =
       (T.pack $ errorBundlePretty bundle)
   ]
 
--- |Desugaring errors point at the 'LocTag' the 'SugarError' carries (falling
+-- |Expansion errors point at the 'LocTag' the 'ExpansionError' carries (falling
 -- back to the start of the document when it has none).
-sugarDiagnostics :: SugarError -> [LSPTypes.Diagnostic]
-sugarDiagnostics err =
-  [ mkDiagnostic range "desugar" (T.pack $ renderSugarError err) ]
+expansionDiagnostics :: T.Text -> ExpansionError -> [LSPTypes.Diagnostic]
+expansionDiagnostics text err =
+  [ mkDiagnostic range "expand" (T.pack $ renderExpansionError err) ]
   where
-    range = case sugarErrorLoc err >>= locStartLineColumn of
-      -- LocTag positions are 1-based; LSP positions are 0-based.
-      Just (line, column) -> pointRange (line - 1) (column - 1)
-      Nothing             -> pointRange 0 0
+    range = maybe fallbackRange (locTagToRangeIn text) $ expansionErrorLoc err
 
-loadImportedModuleBinding :: GlobalState -> LSPTypes.Uri -> ModuleImport -> IO ModuleBindings
+loadImportedModuleBinding :: GlobalState -> LSPTypes.Uri -> ImportDecl -> IO ModuleBindings
 loadImportedModuleBinding gState currentUri moduleImport = do
   mModule <- loadImportedModule gState currentUri (importModuleName moduleImport)
   pure $ case mModule of
@@ -366,35 +362,14 @@ importDiagnostics text modules parsed =
   , importModuleName moduleImport `notElem` (fst <$> modules)
   ]
 
-moduleImportRange :: T.Text -> ModuleImport -> Range
-moduleImportRange text moduleImport =
-  let moduleName = T.pack $ importModuleName moduleImport
-      importLines = zip [0..] $ T.lines text
-  in fromMaybe fallbackRange $ listToMaybe
-       [ textRange line column (T.length moduleName)
-       | (line, lineText) <- importLines
-       , "import" `T.isPrefixOf` T.stripStart lineText
-       , Just column <- [findIdentifierColumn moduleName lineText]
-       ]
+moduleImportRange :: T.Text -> ImportDecl -> Range
+moduleImportRange text = locTagToRangeIn text . locatedNameLoc . parsedImportModule
 
-findIdentifierColumn :: T.Text -> T.Text -> Maybe Int
-findIdentifierColumn name lineText = go 0 lineText
-  where
-    go column remaining
-      | T.null remaining = Nothing
-      | T.isPrefixOf name remaining && beforeBoundary column && afterBoundary remaining = Just column
-      | otherwise = go (column + 1) (T.tail remaining)
-    beforeBoundary column =
-      column == 0 || not (lspIdentChar . T.last $ T.take column lineText)
-    afterBoundary remaining =
-      let afterName = T.drop (T.length name) remaining
-      in T.null afterName || not (lspIdentChar $ T.head afterName)
-
-undefinedVariableDiagnostics :: ModuleBindings -> ParseResult -> [LSPTypes.Diagnostic]
-undefinedVariableDiagnostics modules parsed =
+undefinedVariableDiagnostics :: T.Text -> ModuleBindings -> ParseResult -> [LSPTypes.Diagnostic]
+undefinedVariableDiagnostics text modules parsed =
   dedupeDiagnostics
     [ mkDiagnostic range "resolver" $ T.pack ("missing definition " <> show name)
-    | (name, range) <- unresolvedReferences globals parsed
+    | (name, range) <- unresolvedReferences text globals parsed
     ]
   where
     globals = Set.fromList $ builtinNames <> importedDefinitionNames modules parsed <> currentDefinitionNames parsed
@@ -407,23 +382,26 @@ importedDefinitionNames modules parsed =
   [ maybe name (<> ('.' : name)) (importQualifier moduleImport)
   | moduleImport <- moduleImports parsed
   , Just moduleParsed <- [lookup (importModuleName moduleImport) modules]
-  , Right (name, _) <- moduleParsed
+  , ExpandedModuleBinding locatedName' _ <- moduleParsed
+  , let name = locatedNameText locatedName'
   ]
 
 currentDefinitionNames :: ParseResult -> [String]
-currentDefinitionNames parsed = [name | Right (name, _) <- parsed]
+currentDefinitionNames parsed =
+  [ locatedNameText name | ExpandedModuleBinding name _ <- parsed ]
 
-unresolvedReferences :: Set.Set String -> ParseResult -> [(String, Range)]
-unresolvedReferences globals parsed =
-  concatMap (unresolvedTerm globals) [term | Right (_, term) <- parsed]
+unresolvedReferences :: T.Text -> Set.Set String -> ParseResult -> [(String, Range)]
+unresolvedReferences text globals parsed =
+  concatMap (unresolvedTerm text globals)
+    [term | ExpandedModuleBinding _ term <- parsed]
 
-unresolvedTerm :: Set.Set String -> AUPT -> [(String, Range)]
-unresolvedTerm globals = go Set.empty
+unresolvedTerm :: T.Text -> Set.Set String -> ExpandedSurfaceTerm -> [(String, Range)]
+unresolvedTerm text globals = go Set.empty
   where
     go bound (loc :< term) = case term of
       UnprocessedParsedTermL (VarF name)
         | name `Set.member` bound || name `Set.member` globals -> []
-        | otherwise -> [(name, locTagToRange loc)]
+        | otherwise -> [(name, locTagToRangeIn text loc)]
       LetUPF bindings body ->
         let localNames = Set.fromList $ letBindingName <$> bindings
             bound' = localNames <> bound
@@ -444,7 +422,8 @@ unresolvedTerm globals = go Set.empty
       _ -> []
 
     caseRefs bound (pat, body) =
-      go (Set.union (Set.fromList $ patternBoundNames pat) bound) body
+      concatMap (go bound) (patternAnnotationTerms pat)
+        <> go (Set.union (Set.fromList $ patternBoundNames pat) bound) body
 
 dedupeDiagnostics :: [LSPTypes.Diagnostic] -> [LSPTypes.Diagnostic]
 dedupeDiagnostics = Map.elems . Map.fromList . fmap (\diagnostic -> (diagnosticKey diagnostic, diagnostic))
@@ -453,18 +432,18 @@ diagnosticKey :: LSPTypes.Diagnostic -> (Range, Maybe T.Text, T.Text)
 diagnosticKey diagnostic =
   (diagnostic ^. LSP.range, diagnostic ^. LSP.source, diagnostic ^. LSP.message)
 
-resolverDiagnostics :: ModuleBindings -> ParseResult -> [LSPTypes.Diagnostic]
-resolverDiagnostics modules parsed =
+resolverDiagnostics :: T.Text -> ModuleBindings -> ParseResult -> [LSPTypes.Diagnostic]
+resolverDiagnostics text modules parsed =
   case main2Term3 (("Current", parsed) : modules) "Current" of
     Left NoMainFunction{} -> []
-    Left err              -> resolverErrorDiagnostics err
+    Left err              -> resolverErrorDiagnostics text err
     Right _               -> []
 
-resolverErrorDiagnostics :: ResolverError -> [LSPTypes.Diagnostic]
-resolverErrorDiagnostics err =
+resolverErrorDiagnostics :: T.Text -> ResolverError -> [LSPTypes.Diagnostic]
+resolverErrorDiagnostics text err =
   case err of
     MissingDefinitionAt loc _ ->
-      [mkDiagnostic (locTagToRange loc) "resolver" (T.pack $ renderResolverError err)]
+      [mkDiagnostic (locTagToRangeIn text loc) "resolver" (T.pack $ renderResolverError err)]
     _ ->
       [mkDiagnostic fallbackRange "resolver" (T.pack $ renderResolverError err)]
 
@@ -481,34 +460,32 @@ mkDiagnostic range source message =
     Nothing
     Nothing
 
-locTagToRange :: LocTag -> Range
-locTagToRange loc = case loc of
-  SourceLoc sourceSpan -> sourceSpanToRange sourceSpan
-  _                    -> locTagStartToRange loc
+-- |Convert parser offsets through the document text. Megaparsec columns use
+-- tab stops, while LSP character positions count a tab as one character.
+locTagToRangeIn :: T.Text -> LocTag -> Range
+locTagToRangeIn text loc = case loc of
+  SourceLoc sourceSpan ->
+    Range
+      (offsetToPosition text . sourcePositionOffset $ sourceSpanStart sourceSpan)
+      (offsetToPosition text . sourcePositionOffset $ sourceSpanEnd sourceSpan)
+  _ -> locTagStartToRange loc
 
 locTagStartToRange :: LocTag -> Range
 locTagStartToRange loc = case locStartLineColumn loc of
   Just (line, column) -> pointRange (line - 1) (column - 1)
   Nothing             -> fallbackRange
 
-sourceSpanToRange :: SourceSpan -> Range
-sourceSpanToRange sourceSpan =
-  Range
-    (sourcePositionToLSP $ sourceSpanStart sourceSpan)
-    (sourcePositionToLSP $ sourceSpanEnd sourceSpan)
-
-sourcePositionToLSP :: SourcePosition -> Position
-sourcePositionToLSP pos =
-  Position
-    (fromIntegral . max 0 $ sourcePositionLine pos - 1)
-    (fromIntegral . max 0 $ sourcePositionColumn pos - 1)
-
 offsetToRange :: T.Text -> Int -> Range
 offsetToRange text offset =
+  let position@(Position line character) = offsetToPosition text offset
+  in Range position (Position line $ character + 1)
+
+offsetToPosition :: T.Text -> Int -> Position
+offsetToPosition text offset =
   let prefix = T.take offset text
       line = T.count "\n" prefix
       column = T.length . last $ T.splitOn "\n" prefix
-  in pointRange line column
+  in Position (fromIntegral line) (fromIntegral column)
 
 pointRange :: Int -> Int -> Range
 pointRange line column =
@@ -565,7 +542,7 @@ definitionAt gState uri position docState = case docParse docState of
     let currentIndex = buildSymbolIndex uri (docText docState) parsed
         definitions = symbolDefinitions currentIndex <> importedDefinitions
     pure $ do
-      localDefinitionAt uri position parsed <|> do
+      localDefinitionAt uri (docText docState) position parsed <|> do
         symbol <- symbolAtPosition position currentIndex
         Map.lookup symbol definitions
 
@@ -589,7 +566,7 @@ importedDefinitionIndex gState currentUri parsed = do
   imports <- mapM (loadImportedDefinitionIndex gState currentUri) $ moduleImports parsed
   pure . Map.unions $ imports
 
-loadImportedDefinitionIndex :: GlobalState -> LSPTypes.Uri -> ModuleImport -> IO (Map.Map T.Text LSPTypes.Location)
+loadImportedDefinitionIndex :: GlobalState -> LSPTypes.Uri -> ImportDecl -> IO (Map.Map T.Text LSPTypes.Location)
 loadImportedDefinitionIndex gState currentUri moduleImport = do
   mModule <- loadImportedModule gState currentUri (importModuleName moduleImport)
   case mModule of
@@ -598,23 +575,20 @@ loadImportedDefinitionIndex gState currentUri moduleImport = do
       let definitions = symbolDefinitions $ buildSymbolIndex moduleUri moduleText moduleParsed
       pure $ qualifyDefinitions moduleImport definitions
 
-qualifyDefinitions :: ModuleImport -> Map.Map T.Text LSPTypes.Location -> Map.Map T.Text LSPTypes.Location
+qualifyDefinitions :: ImportDecl -> Map.Map T.Text LSPTypes.Location -> Map.Map T.Text LSPTypes.Location
 qualifyDefinitions moduleImport definitions = case importQualifier moduleImport of
   Nothing        -> definitions
   Just qualifier -> Map.mapKeys ((T.pack qualifier <> ".") <>) definitions
 
-data ModuleImport = ModuleImport
-  { importModuleName :: String
-  , importQualifier  :: Maybe String
-  } deriving (Eq, Show)
+importModuleName :: ImportDecl -> String
+importModuleName = locatedNameText . parsedImportModule
 
-moduleImports :: ParseResult -> [ModuleImport]
-moduleImports = mapMaybe $ \case
-  Left (_ :< ImportUPF moduleName) ->
-    Just $ ModuleImport moduleName Nothing
-  Left (_ :< ImportQualifiedUPF qualifier moduleName) ->
-    Just $ ModuleImport moduleName (Just qualifier)
-  _ -> Nothing
+importQualifier :: ImportDecl -> Maybe String
+importQualifier = fmap locatedNameText . parsedImportQualifier
+
+moduleImports :: ParseResult -> [ImportDecl]
+moduleImports parsed =
+  [ importDecl | ExpandedModuleImport importDecl <- parsed ]
 
 loadImportedModule :: GlobalState -> LSPTypes.Uri -> String -> IO (Maybe (LSPTypes.Uri, T.Text, ParseResult))
 loadImportedModule gState currentUri moduleName = do
@@ -670,144 +644,113 @@ buildSymbolIndex uri text parsed = SymbolIndex definitions references
     definitions = topLevelDefinitions uri text parsed
     references = Map.fromListWith (<>)
       [ (T.pack name, [range])
-      | Right (_, term) <- parsed
-      , (name, range) <- termReferences [] term
+      | ExpandedModuleBinding _ term <- parsed
+      , (name, range) <- termReferences text [] term
       ]
 
 topLevelDefinitions :: LSPTypes.Uri -> T.Text -> ParseResult -> Map.Map T.Text LSPTypes.Location
 topLevelDefinitions uri text parsed = Map.fromList
-  [ (T.pack name, LSPTypes.Location uri range)
-  | Right (name, _) <- parsed
-  , Just range <- [findTopLevelDefinition text (T.pack name)]
+  [ (T.pack $ locatedNameText name, LSPTypes.Location uri range)
+  | ExpandedModuleBinding name _ <- parsed
+  , let range = locTagToRangeIn text $ locatedNameLoc name
+  , SourceLoc _ <- [locatedNameLoc name]
   ]
 
-findTopLevelDefinition :: T.Text -> T.Text -> Maybe Range
-findTopLevelDefinition text name =
-  let indexedLines = zip [0..] $ T.lines text
-      matchingLines =
-        [ textRange line column (T.length name)
-        | (line, lineText) <- indexedLines
-        , Just column <- [findTopLevelIdentifier name lineText]
-        ]
-  in listToMaybe matchingLines
-
-findTopLevelIdentifier :: T.Text -> T.Text -> Maybe Int
-findTopLevelIdentifier name lineText
-  | not (isTopLevelLine lineText) = Nothing
-  | T.isInfixOf "=" lineText = findIdentifierInLhs name lineText
-  | T.stripEnd lineText == name = Just 0
-  | otherwise = Nothing
-
-isTopLevelLine :: T.Text -> Bool
-isTopLevelLine lineText =
-  not (T.null lineText)
-    && notElem (T.head lineText) [' ', '\t']
-    && not ("--" `T.isPrefixOf` lineText)
-
-findIdentifierInLhs :: T.Text -> T.Text -> Maybe Int
-findIdentifierInLhs name lineText = go 0 lhs
-  where
-    lhs = T.takeWhile (/= '=') lineText
-    go column remaining
-      | T.null remaining = Nothing
-      | T.isPrefixOf name remaining && beforeBoundary column && afterBoundary remaining = Just column
-      | otherwise = go (column + 1) (T.tail remaining)
-    beforeBoundary column =
-      column == 0 || not (lspIdentChar . T.last $ T.take column lhs)
-    afterBoundary remaining =
-      let afterName = T.drop (T.length name) remaining
-      in T.null afterName || not (lspIdentChar $ T.head afterName)
-
-termReferences :: [String] -> AUPT -> [(String, Range)]
-termReferences bound (loc :< term) =
+termReferences :: T.Text -> [String] -> ExpandedSurfaceTerm -> [(String, Range)]
+termReferences text bound (loc :< term) =
   let children = case term of
         UnprocessedParsedTermL (VarF name)
           | name `elem` bound -> []
-          | otherwise         -> [(name, locTagToRange loc)]
-        UnprocessedParsedTermH (ITEF i t e) -> termReferences bound i <> termReferences bound t <> termReferences bound e
+          | otherwise         -> [(name, locTagToRangeIn text loc)]
+        UnprocessedParsedTermH (ITEF i t e) -> termReferences text bound i <> termReferences text bound t <> termReferences text bound e
         LetUPF bindings body ->
           let localNames = letBindingName <$> bindings
               bound' = localNames <> bound
-          in concatMap (termReferences bound' . letBindingValue) bindings <> termReferences bound' body
-        ListUPF items -> concatMap (termReferences bound) items
-        UnprocessedParsedTermB (PairSF a b) -> termReferences bound a <> termReferences bound b
-        UnprocessedParsedTermL (AppF f x) -> termReferences bound f <> termReferences bound x
-        UnprocessedParsedTermL (LamF var body) -> termReferences (locatedNameText var : bound) body
-        UnprocessedParsedTermH (HLeftF x) -> termReferences bound x
-        UnprocessedParsedTermH (HRightF x) -> termReferences bound x
-        UnprocessedParsedTermH (HTraceF x) -> termReferences bound x
-        UnprocessedParsedTermH (CheckF checkExpr body) -> termReferences bound checkExpr <> termReferences bound body
-        UnprocessedParsedTermH (HashF x) -> termReferences bound x
-        CaseUPF scrutinee cases -> termReferences bound scrutinee <> concatMap caseReferences cases
+          in concatMap (termReferences text bound' . letBindingValue) bindings <> termReferences text bound' body
+        ListUPF items -> concatMap (termReferences text bound) items
+        UnprocessedParsedTermB (PairSF a b) -> termReferences text bound a <> termReferences text bound b
+        UnprocessedParsedTermL (AppF f x) -> termReferences text bound f <> termReferences text bound x
+        UnprocessedParsedTermL (LamF var body) -> termReferences text (locatedNameText var : bound) body
+        UnprocessedParsedTermH (HLeftF x) -> termReferences text bound x
+        UnprocessedParsedTermH (HRightF x) -> termReferences text bound x
+        UnprocessedParsedTermH (HTraceF x) -> termReferences text bound x
+        UnprocessedParsedTermH (CheckF checkExpr body) -> termReferences text bound checkExpr <> termReferences text bound body
+        UnprocessedParsedTermH (HashF x) -> termReferences text bound x
+        CaseUPF scrutinee cases -> termReferences text bound scrutinee <> concatMap caseReferences cases
         _ -> []
   in children
   where
-    caseReferences (pat, body) = termReferences (patternBoundNames pat <> bound) body
+    caseReferences (pat, body) =
+      concatMap (termReferences text bound) (patternAnnotationTerms pat)
+        <> termReferences text (patternBoundNames pat <> bound) body
 
-localDefinitionAt :: LSPTypes.Uri -> Position -> ParseResult -> Maybe LSPTypes.Location
-localDefinitionAt uri position parsed =
+localDefinitionAt :: LSPTypes.Uri -> T.Text -> Position -> ParseResult -> Maybe LSPTypes.Location
+localDefinitionAt uri text position parsed =
   listToMaybe [ location
-              | Right (_, term) <- parsed
-              , location <- foldMap pure $ localTermDefinitionAt uri position Map.empty term
+              | ExpandedModuleBinding _ term <- parsed
+              , location <- foldMap pure $ localTermDefinitionAt uri text position Map.empty term
               ]
 
 localTermDefinitionAt :: LSPTypes.Uri
+                      -> T.Text
                       -> Position
                       -> Map.Map String (Maybe LSPTypes.Location)
-                      -> AUPT
+                      -> ExpandedSurfaceTerm
                       -> Maybe LSPTypes.Location
-localTermDefinitionAt uri position env (loc :< term) = case term of
+localTermDefinitionAt uri text position env (loc :< term) = case term of
   UnprocessedParsedTermL (VarF name)
-    | positionInRange position (locTagToRange loc) -> join $ Map.lookup name env
+    | positionInRange position (locTagToRangeIn text loc) -> join $ Map.lookup name env
     | otherwise -> Nothing
   LetUPF bindings body ->
     let bindingLocations = Map.fromList
-          [ (locatedNameText name, Just $ LSPTypes.Location uri (locTagToRange $ locatedNameLoc name))
+          [ (locatedNameText name, Just $ LSPTypes.Location uri (locTagToRangeIn text $ locatedNameLoc name))
           | (name, _) <- bindings
           ]
         env' = bindingLocations <> env
         bindingDefinition = listToMaybe
-          [ LSPTypes.Location uri (locTagToRange $ locatedNameLoc name)
+          [ LSPTypes.Location uri (locTagToRangeIn text $ locatedNameLoc name)
           | (name, _) <- bindings
-          , positionInRange position (locTagToRange $ locatedNameLoc name)
+          , positionInRange position (locTagToRangeIn text $ locatedNameLoc name)
           ]
         bindingRefs = listToMaybe
           [ location
           | binding <- bindings
-          , location <- foldMap pure $ localTermDefinitionAt uri position env' (letBindingValue binding)
+          , location <- foldMap pure $ localTermDefinitionAt uri text position env' (letBindingValue binding)
           ]
-    in bindingDefinition <|> bindingRefs <|> localTermDefinitionAt uri position env' body
+    in bindingDefinition <|> bindingRefs <|> localTermDefinitionAt uri text position env' body
   UnprocessedParsedTermH (ITEF i t e) -> firstJust [i, t, e]
   ListUPF items -> firstJust items
   UnprocessedParsedTermB (PairSF a b) -> firstJust [a, b]
   UnprocessedParsedTermL (AppF f x) -> firstJust [f, x]
   UnprocessedParsedTermL (LamF name body) ->
     let nameLoc = locatedNameLoc name
-        location = LSPTypes.Location uri (locTagToRange nameLoc)
+        location = LSPTypes.Location uri (locTagToRangeIn text nameLoc)
         env' = Map.insert (locatedNameText name) (Just location) env
-    in if positionInRange position (locTagToRange nameLoc)
+    in if positionInRange position (locTagToRangeIn text nameLoc)
          then Just location
-         else localTermDefinitionAt uri position env' body
-  UnprocessedParsedTermH (HLeftF x) -> localTermDefinitionAt uri position env x
-  UnprocessedParsedTermH (HRightF x) -> localTermDefinitionAt uri position env x
-  UnprocessedParsedTermH (HTraceF x) -> localTermDefinitionAt uri position env x
+         else localTermDefinitionAt uri text position env' body
+  UnprocessedParsedTermH (HLeftF x) -> localTermDefinitionAt uri text position env x
+  UnprocessedParsedTermH (HRightF x) -> localTermDefinitionAt uri text position env x
+  UnprocessedParsedTermH (HTraceF x) -> localTermDefinitionAt uri text position env x
   UnprocessedParsedTermH (CheckF checkExpr body) -> firstJust [checkExpr, body]
-  UnprocessedParsedTermH (HashF x) -> localTermDefinitionAt uri position env x
+  UnprocessedParsedTermH (HashF x) -> localTermDefinitionAt uri text position env x
   CaseUPF scrutinee cases ->
-    localTermDefinitionAt uri position env scrutinee
+    localTermDefinitionAt uri text position env scrutinee
       <|> listToMaybe (mapMaybe caseDefinition cases)
   _ -> Nothing
   where
-    firstJust = listToMaybe . mapMaybe (localTermDefinitionAt uri position env)
+    firstJust = listToMaybe . mapMaybe (localTermDefinitionAt uri text position env)
     caseDefinition (pat, caseBody) =
       let bindings = patternBoundNamesLocated pat
-          bindingLocation name = LSPTypes.Location uri (locTagToRange $ locatedNameLoc name)
+          bindingLocation name = LSPTypes.Location uri (locTagToRangeIn text $ locatedNameLoc name)
           env' = foldr (\name -> Map.insert (locatedNameText name) (Just $ bindingLocation name)) env bindings
       in listToMaybe [ bindingLocation name
                      | name <- bindings
-                     , positionInRange position (locTagToRange $ locatedNameLoc name)
+                      , positionInRange position (locTagToRangeIn text $ locatedNameLoc name)
                      ]
-         <|> localTermDefinitionAt uri position env' caseBody
+         <|> listToMaybe
+           (mapMaybe (localTermDefinitionAt uri text position env) $ patternAnnotationTerms pat)
+         <|> localTermDefinitionAt uri text position env' caseBody
 
 patternBoundNames :: PatternA -> [String]
 patternBoundNames = fmap locatedNameText . patternBoundNamesLocated
@@ -819,14 +762,16 @@ patternBoundNamesLocated (Fix patternF) = case patternF of
   PatternPairF left right -> patternBoundNamesLocated left <> patternBoundNamesLocated right
   _                       -> []
 
+patternAnnotationTerms :: PatternA -> [ExpandedSurfaceTerm]
+patternAnnotationTerms (Fix patternF) = case patternF of
+  PatternAnnotatedF pat annotation ->
+    patternAnnotationTerms pat <> [unAnnotatedEST annotation]
+  PatternPairF left right ->
+    patternAnnotationTerms left <> patternAnnotationTerms right
+  _ -> []
+
 lspIdentChar :: Char -> Bool
 lspIdentChar c = isAsciiLower c || isAsciiUpper c || isDigit c || c == '_' || c == '.' || c == '\''
-
-textRange :: Int -> Int -> Int -> Range
-textRange line column len =
-  Range
-    (Position (fromIntegral line) (fromIntegral column))
-    (Position (fromIntegral line) (fromIntegral $ column + len))
 
 positionInRange :: Position -> Range -> Bool
 positionInRange (Position line char) (Range (Position startLine startChar) (Position endLine endChar)) =

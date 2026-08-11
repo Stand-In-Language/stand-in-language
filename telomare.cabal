@@ -47,13 +47,13 @@ library
                      , Telomare.Levels
                      , Telomare.Machine
                      , Telomare.Eval.Meter
+                     , Telomare.Expand
                      , Telomare.Parse
                      , Telomare.PrettyPrint
                      , Telomare.PrettyPrint.Indent
                      , Telomare.Resolve
                      , Telomare.Size
                      , Telomare.Size.IR
-                     , Telomare.Sugar
                      , Telomare.TypeCheck
   build-depends:       base
                      , binary

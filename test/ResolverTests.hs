@@ -26,6 +26,7 @@ import Telomare.Desugar
 import Telomare.Driver
 import Telomare.Error
 import Telomare.Eval.Reference
+import Telomare.Expand
 import qualified Telomare.Fast as Fast
 import Telomare.IR.Base
 import Telomare.IR.Builder
@@ -36,7 +37,6 @@ import Telomare.IR.Types
 import Telomare.Parse
 import Telomare.Resolve
 import Telomare.Size (SizingSettings (SizingSettings))
-import Telomare.Sugar
 import Test.Tasty
 import Test.Tasty.HUnit
 import Test.Tasty.QuickCheck as QC
@@ -325,7 +325,7 @@ unitTests = testGroup "Unit tests"
   , testCase "missing definition error reports source location" $ do
       case parseMainWith [] "main = foo 0" of
         Left err -> assertFailure err
-        Right term -> case process term of
+        Right term -> case process (desugarTerm term) of
           Left err -> do
             let rendered = renderResolverError err
             rendered @?= "missing definition \"foo\" at line 1, column 8"
@@ -372,27 +372,22 @@ unitTests = testGroup "Unit tests"
       result @?= "ok\ndone"
   , testCase "missing imported module is a resolver error" $ do
       let a = UnknownLoc
-          modules = [("Main", [Left (a :< ImportUPF "Missing")])]
+          modules = [("Main", [imported a "Missing"])]
       resolveMain modules "Main" @?= Left (ModuleNotFound "Missing")
-  , testCase "malformed residual import is a resolver error" $ do
-      let a = UnknownLoc
-          modules = [("Main", [Left (a :< IntUPF 1)])]
-      resolveMain modules "Main" @?= Left (MalformedImport a)
   , testCase "import cycle is a resolver error" $ do
       let a = UnknownLoc
-          imported moduleName = Left (a :< ImportUPF moduleName)
           modules =
-            [ ("Main", [imported "A"])
-            , ("A", [imported "B"])
-            , ("B", [imported "Main"])
+            [ ("Main", [imported a "A"])
+            , ("A", [imported a "B"])
+            , ("B", [imported a "Main"])
             ]
       resolveMain modules "Main" @?= Left (ImportCycle ["Main", "A", "B", "Main"])
   , testCase "qualified imports rewrite sibling references" $ do
       let a = UnknownLoc
           var name = a :< UnprocessedParsedTermL (VarF name)
           modules =
-            [ ("A", [Right ("x", a :< IntUPF 1), Right ("y", var "x")])
-            , ("Main", [Left (a :< ImportQualifiedUPF "Q" "A"), Right ("main", var "Q.y")])
+            [ ("A", [binding a "x" (a :< IntUPF 1), binding a "y" (var "x")])
+            , ("Main", [qualifiedImport a "Q" "A", binding a "main" (var "Q.y")])
             ]
       case resolveImports modules "Main" of
         Right bindings -> do
@@ -403,9 +398,9 @@ unitTests = testGroup "Unit tests"
       let a = UnknownLoc
           var name = a :< UnprocessedParsedTermL (VarF name)
           modules =
-            [ ("B", [Right ("x", a :< IntUPF 1)])
-            , ("A", [Left (a :< ImportQualifiedUPF "B" "B"), Right ("y", var "B.x")])
-            , ("Main", [Left (a :< ImportQualifiedUPF "Q" "A"), Right ("main", var "Q.y")])
+            [ ("B", [binding a "x" (a :< IntUPF 1)])
+            , ("A", [qualifiedImport a "B" "B", binding a "y" (var "B.x")])
+            , ("Main", [qualifiedImport a "Q" "A", binding a "main" (var "Q.y")])
             ]
       case resolveImports modules "Main" of
         Right bindings -> do
@@ -457,6 +452,17 @@ unitTests = testGroup "Unit tests"
       res <- runMain_ aux222 "Main"
       res @?= "whattt\ndone"
   ]
+
+binding :: LocTag -> String -> ExpandedSurfaceTerm -> ExpandedModuleItem ExpandedSurfaceTerm
+binding loc name = ExpandedModuleBinding (locatedName loc name)
+
+imported :: LocTag -> String -> ExpandedModuleItem ExpandedSurfaceTerm
+imported loc moduleName = ExpandedModuleImport $
+  ImportDecl loc (locatedName loc moduleName) Nothing
+
+qualifiedImport :: LocTag -> String -> String -> ExpandedModuleItem ExpandedSurfaceTerm
+qualifiedImport loc qualifier moduleName = ExpandedModuleImport $
+  ImportDecl loc (locatedName loc moduleName) (Just $ locatedName loc qualifier)
 
 runBackwardCycleLet = "runMainCore failed: RE (DefinitionCycle [\"xyz\",\"abc\",\"def\",\"ghi\",\"jkl\",\"xyz\"])"
 
@@ -595,30 +601,30 @@ hashtest3 = unlines [ "let b = \\x -> x"
                , "in (# b)"
                ]
 
--- |Parse and desugar a whole program (definitions ending in @main@),
+-- |Parse and expand a whole program (definitions ending in @main@),
 -- with extra module bindings in scope. Local successor of the old
 -- @parseWithPrelude@.
-parseMainWith :: [(String, AUPT)] -> String -> Either String AnnotatedUPT
+parseMainWith :: [(String, ExpandedSurfaceTerm)] -> String -> Either String ExpandedSurfaceTerm
 parseMainWith prelude str = do
   defs <- runParseDefinitions "" str
-  bindings <- first renderSugarError $ sugarDefs defs
-  first renderSugarError $ AnnotatedUPT <$> wrapMain prelude bindings
+  bindings <- first renderExpansionError $ expandDefs defs
+  first renderExpansionError $ wrapMain prelude bindings
 
--- |Parse and desugar a file of definitions (a prelude).
-parsePreludeDefs :: String -> Either String [(String, AUPT)]
+-- |Parse and expand a file of definitions (a prelude).
+parsePreludeDefs :: String -> Either String [(String, ExpandedSurfaceTerm)]
 parsePreludeDefs str = do
   defs <- runParseDefinitions "" str
-  bindings <- first renderSugarError $ sugarDefs defs
+  bindings <- first renderExpansionError $ expandDefs defs
   pure $ first locatedNameText <$> bindings
 
 -- |Helper function to compile to Term2. Lived in "Telomare.Resolve" while
--- desugaring still ran inside the parser; now that parsers return raw
--- terms it composes the Sugar pass itself, and only this suite uses it.
-runTelomareParser2Term2 :: TelomareParser PAUPT -> String -> Either ResolverError Term2
+-- expansion still ran inside the parser; now that parsers return raw
+-- terms it composes the expansion pass itself, and only this suite uses it.
+runTelomareParser2Term2 :: TelomareParser ParsedSurfaceTerm -> String -> Either ResolverError Term2
 runTelomareParser2Term2 parser str =
-  first (ParseError . errorBundlePretty) (runParser parser "" str)
-    >>= first (ParseError . renderSugarError) . sugarTerm
-    >>= process2Term2 . AnnotatedUPT
+    first (ParseError . errorBundlePretty) (runParser parser "" str)
+    >>= first (ParseError . renderExpansionError) . expandTerm
+    >>= process2Term2 . desugarTerm
 
 -- TODO: do something with this
 showAllTransformations :: String -- ^ Telomare code
@@ -636,9 +642,9 @@ showAllTransformations input = do
               Right x -> x
               Left x  -> error x
   section "Input" input
-  section "Parse + Sugar: UnprocessedParsedTerm" $ show upt
-  section "Desugar: optimizeBuiltinFunctions" . show . optimizeBuiltinFunctions . unAnnotatedUPT $ upt
-  let optimizeBuiltinFunctionsVar = optimizeBuiltinFunctions (unAnnotatedUPT upt)
+  section "Parse + Expand: UnprocessedParsedTerm" $ show upt
+  section "Desugar: optimizeBuiltinFunctions" . show . optimizeBuiltinFunctions $ upt
+  let optimizeBuiltinFunctionsVar = optimizeBuiltinFunctions upt
       str1 = lines . show $ optimizeBuiltinFunctionsVar
       str0 = lines . show $ upt
       diff = getGroupedDiff str0 str1
@@ -648,7 +654,7 @@ showAllTransformations input = do
   --     diff = getGroupedDiff str1 str2
   -- section "optimizeBindingsReference" . show $ optimizeBindingsReferenceVar
   -- section "Diff optimizeBindingsReference" $ ppDiff diff
-  let validateVariablesVar = validateVariables (AnnotatedUPT optimizeBuiltinFunctionsVar)
+  let validateVariablesVar = validateVariables (desugarTerm upt)
       str3 = lines . show $ validateVariablesVar
       diff = getGroupedDiff str3 str1
   section "Resolve: validateVariables" . show $ validateVariablesVar

@@ -19,13 +19,13 @@ import Reflex.Vty
 import System.Environment (getArgs)
 import qualified System.IO.Strict as Strict
 import qualified Telomare.Driver as TE
+import Telomare.Expand (expandModule, renderExpansionError)
 import qualified Telomare.IR.Base as Tel
 import Telomare.IR.Base
 import Telomare.IR.Core
 import Telomare.IR.Surface
 import Telomare.Parse (runParseModule)
 import Telomare.PrettyPrint (PrettyCompiledExpr (..))
-import Telomare.Sugar (renderSugarError, sugarModule)
 import Text.Read (readMaybe)
 
 type VtyExample t m =
@@ -165,16 +165,16 @@ nodify = removeExtraNumbers . fmap go . allNodes 0 where
 
 
 -- TODO: Load modules qualifed
-loadModules :: [String] -> IO [(String, [Either AUPT (String, AUPT)])]
+loadModules :: [String] -> IO ExpandedModules
 loadModules filenames = do
   filesStrings :: [String] <- mapM Strict.readFile filenames
-  case zipWithM parseAndDesugar filenames filesStrings of
+  case zipWithM parseAndExpand filenames filesStrings of
     Right parsed -> pure $ zip filenames parsed
     Left pe      -> error pe
   where
-    parseAndDesugar name str =
+    parseAndExpand name str =
       runParseModule name str
-        >>= first renderSugarError . sugarModule
+        >>= first renderExpansionError . expandModule
 
 mainWidgetInit
   :: (forall t m.
@@ -191,7 +191,7 @@ mainWidgetInit w = mainWidget (initManager_ w)
 
 main :: IO ()
 main = do
-  modules :: [(String, [Either AUPT (String, AUPT)])] <- getArgs >>= loadModules
+  modules :: ExpandedModules <- getArgs >>= loadModules
   let go :: Text -> IO ()
       go textErr =
         mainWidgetInit $ do

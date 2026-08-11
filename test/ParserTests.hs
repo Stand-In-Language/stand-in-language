@@ -27,6 +27,7 @@ import System.Process hiding (createPipe)
 import Telomare.Driver
 import Telomare.Error
 import Telomare.Eval.Reference
+import Telomare.Expand
 import Telomare.IR.Base
 import Telomare.IR.Builder
 import Telomare.IR.Core
@@ -35,7 +36,6 @@ import Telomare.IR.Surface
 import Telomare.IR.Types
 import Telomare.Parse
 import Telomare.Resolve
-import Telomare.Sugar
 import Test.QuickCheck
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -48,26 +48,26 @@ main :: IO ()
 main = defaultMain tests
 
 tests :: TestTree
-tests = testGroup "Parser Tests" [unitTests, sugarTests]
+tests = testGroup "Parser Tests" [unitTests, expansionTests]
 
--- |The desugaring pass ('Telomare.Sugar') as a stage of its own: raw
--- parser output goes in, sugar-free trees or 'SugarError's come out.
-sugarTests :: TestTree
-sugarTests = testGroup "Sugar pass"
-  [ testCase "multi-pattern lambda desugars through buildMultiLambda" $ do
+-- |The expansion pass ('Telomare.Expand') as a stage of its own: raw
+-- parser output goes in, expanded trees or 'ExpansionError's come out.
+expansionTests :: TestTree
+expansionTests = testGroup "Expansion pass"
+  [ testCase "multi-pattern lambda expands through buildMultiLambda" $ do
       raw <- runTelomareParser parseLongExpr "\\(x, y) z -> x"
       case raw of
         loc :< ParsedTermSugar (LamPatF pats body) ->
-          case (,,) <$> traverse (traverse sugarPattern) pats
-                    <*> sugarTerm body
-                    <*> sugarTerm raw of
-            Left err -> assertFailure $ renderSugarError err
-            Right (pats', body', desugared) ->
-              stripParserLocs desugared @?= stripParserLocs (buildMultiLambda loc pats' body')
+          case (,,) <$> traverse (traverse expandPattern) pats
+                    <*> expandTerm body
+                    <*> expandTerm raw of
+            Left err -> assertFailure $ renderExpansionError err
+            Right (pats', body', expanded) ->
+              stripParserLocs expanded @?= stripParserLocs (buildMultiLambda loc pats' body')
         _ -> assertFailure $ "expected raw LamPatF, got: " <> show raw
   , testCase "annotated pattern lambda cases on the validator result" $ do
       raw <- runTelomareParser parseLongExpr "\\(v : Nat) -> v"
-      case sugarTerm raw of
+      case expandTerm raw of
         Right (_ :< UnprocessedParsedTermL (LamF binder
                 (_ :< CaseUPF
                   (_ :< UnprocessedParsedTermL (AppF
@@ -76,46 +76,65 @@ sugarTests = testGroup "Sugar pass"
                   [(Fix (PatternVarF name), _)])))
           | locatedNameText name == "v" ->
           bound @?= locatedNameText binder
-        other -> assertFailure $ "unexpected desugaring: " <> show other
+        other -> assertFailure $ "unexpected expansion: " <> show other
   , testCase "refinement annotation folds into CheckF" $ do
       defs <- runTelomareParser parseDefinitions "main : T = 0\n"
-      case sugarDefs defs of
+      case expandDefs defs of
         Right [(name, _ :< UnprocessedParsedTermH (CheckF
                  (_ :< UnprocessedParsedTermL (VarF "T"))
                  (_ :< IntUPF 0)))] ->
           locatedNameText name @?= "main"
-        other -> assertFailure $ "unexpected desugaring: " <> show other
-  , testCase "list assignment arity mismatch is a SugarError" $ do
+        other -> assertFailure $ "unexpected expansion: " <> show other
+  , testCase "list assignment arity mismatch is an ExpansionError" $ do
       defs <- runTelomareParser parseDefinitions "[a, b] = [1, 2, 3]\n"
-      case sugarDefs defs of
+      case expandDefs defs of
         Left (ListArityMismatch _ 2 3) -> pure ()
         other -> assertFailure $ "expected ListArityMismatch: " <> show other
-  , testCase "UDT declaration whose body is not a list is a SugarError" $ do
+  , testCase "UDT declaration whose body is not a list is an ExpansionError" $ do
       defs <- runTelomareParser parseDefinitions "[T, mk] = \\h -> 0\n"
-      case sugarDefs defs of
+      case expandDefs defs of
         Left (UDTBodyNotList _ "T" _) -> pure ()
         other -> assertFailure $ "expected UDTBodyNotList: " <> show other
   , testCase "UDT declaration validates names against body slots" $ do
       defs <- runTelomareParser parseDefinitions "[T, mk] = \\h -> [0, 1]\n"
-      case sugarDefs defs of
+      case expandDefs defs of
         Left (UDTArityMismatch _ "T" 2 2) -> pure ()
         other -> assertFailure $ "expected UDTArityMismatch: " <> show other
   , testCase "UDT with only its validator and no slots is valid" $ do
       defs <- runTelomareParser parseDefinitions "[T] = \\h -> []\n"
-      case sugarDefs defs of
+      case expandDefs defs of
         Right bindings | any ((== "T") . locatedNameText . fst) bindings -> pure ()
-        other -> assertFailure $ "unexpected empty UDT desugaring: " <> show other
+        other -> assertFailure $ "unexpected empty UDT expansion: " <> show other
   , testCase "repeated literal patterns get distinct lambda binders" $ do
       raw <- runTelomareParser parseExpression "\\0 0 -> 1"
-      case sugarTerm raw of
+      case expandTerm raw of
         Right (_ :< UnprocessedParsedTermL (LamF firstBinder
                  (_ :< UnprocessedParsedTermL (LamF secondBinder _)))) ->
           assertBool "generated binders must be distinct"
             (locatedNameText firstBinder /= locatedNameText secondBinder)
-        other -> assertFailure $ "unexpected pattern lambda desugaring: " <> show other
+        other -> assertFailure $ "unexpected pattern lambda expansion: " <> show other
+  , testCase "case expansion errors follow pattern-before-body source order" $ do
+      raw <- runTelomareParser parseExpression
+        "case 0 of (x : let [T, mk] = \\h -> 0 in T) -> let [a, b] = [1] in x"
+      case expandTerm raw of
+        Left UDTBodyNotList{} -> pure ()
+        other -> assertFailure $ "expected pattern annotation error first: " <> show other
+  , testCase "module expansion retains typed import and binding locations" $ do
+      raw <- either assertFailure pure $
+        runParseModule "Example" "import qualified Data.List as L\nmain = 0\n"
+      case expandModule raw of
+        Right [ ExpandedModuleImport importDecl
+              , ExpandedModuleBinding mainName _
+              ] -> do
+          locatedNameText (parsedImportModule importDecl) @?= "Data.List"
+          locatedNameText <$> parsedImportQualifier importDecl @?= Just "L"
+          locatedNameText mainName @?= "main"
+          assertBool "binding location should survive expansion"
+            (locatedNameLoc mainName /= UnknownLoc)
+        other -> assertFailure $ "unexpected expanded module: " <> show other
   , testCase "wrapMain without a main definition is MissingMain" $ do
       defs <- runTelomareParser parseDefinitions "foo = 0\n"
-      (sugarDefs defs >>= wrapMain []) @?= Left MissingMain
+      (expandDefs defs >>= wrapMain []) @?= Left MissingMain
   ]
 
 unitTests :: TestTree
@@ -222,7 +241,7 @@ unitTests = testGroup "Unit tests"
           sourcePositionColumn (sourceSpanStart span) @?= 1
           sourcePositionColumn (sourceSpanEnd span) @?= 8
         other -> assertFailure $ "unexpected lambda span: " <> show other
-  , testCase "all shipped Telomare programs parse and desugar" $ do
+  , testCase "all shipped Telomare programs parse and expand" $ do
       let programs = [ "Prelude.tel"
                      , "simpleplus.tel"
                      , "tictactoe.tel"
@@ -234,12 +253,12 @@ unitTests = testGroup "Unit tests"
       forM_ programs $ \path -> do
         content <- Strict.readFile path
         case runParseModule path content
-               >>= first renderSugarError . sugarModule of
+               >>= first renderExpansionError . expandModule of
           Right _  -> pure ()
           Left err -> assertFailure $ path <> ": " <> err
   , testCase "surface Show is total for empty collections" $ do
       assertBool "empty list should render"
-        ((not . null . show) ((UnknownLoc :< ListUPF []) :: AUPT))
+        ((not . null . show) ((UnknownLoc :< ListUPF []) :: ExpandedSurfaceTerm))
   , testCase "test function applied to a string that has whitespaces in both sides inside a structure" $ do
       res1 <- parseSuccessful parseLongExpr "(foo \"woops\" , 0)"
       res2 <- parseSuccessful parseLongExpr "(foo \"woops\" )"
@@ -377,40 +396,12 @@ unitTests = testGroup "Unit tests"
       res `compare` False @?= EQ
   , testCase "Case within top level definitions" $ do
       defs <- runTelomareParser parseDefinitions caseExpr0
-      case sugarDefs defs >>= wrapMain [] of
-        Left err  -> assertFailure $ renderSugarError err
+      case expandDefs defs >>= wrapMain [] of
+        Left err  -> assertFailure $ renderExpansionError err
         Right res -> stripParserLocs res @?= caseExpr0UPT
-  , testCase "Simple import parsing" $ do
-      res' <- runTelomareParser parseImport importExpr0str >>= sugaredForTest
-      stripParserLocs res' @?= importExpr0
-  , testCase "Simple import qualified parsing" $ do
-      res' <- runTelomareParser parseImportQualified importQualifiedExpr0str >>= sugaredForTest
-      stripParserLocs res' @?= importQualifiedExpr0
-  , testCase "Simple import parsing with ." $ do
-      res' <- runTelomareParser parseImport importExpr1str >>= sugaredForTest
-      stripParserLocs res' @?= importExpr1
-  , testCase "Simple import qualified parsing with ." $ do
-      res' <- runTelomareParser parseImportQualified importQualifiedExpr1str >>= sugaredForTest
-      stripParserLocs res' @?= importQualifiedExpr1
   ]
 
--- |Run the sugar pass inside a test, failing the test on a 'SugarError'.
-sugaredForTest :: PAUPT -> IO AUPT
-sugaredForTest = either (assertFailure . renderSugarError) pure . sugarTerm
-
-importQualifiedExpr1str = "import qualified Data.List as L"
-importQualifiedExpr1 = UnknownLoc :< ImportQualifiedUPF "L" "Data.List"
-
-importExpr1str = "import Control.Monad"
-importExpr1 = UnknownLoc :< ImportUPF "Control.Monad"
-
-importQualifiedExpr0str = "import qualified Foo as F"
-importQualifiedExpr0 = UnknownLoc :< ImportQualifiedUPF "F" "Foo"
-
-importExpr0str = "import Foo"
-importExpr0 = UnknownLoc :< ImportUPF "Foo"
-
-stripParserLocs :: AUPT -> AUPT
+stripParserLocs :: ExpandedSurfaceTerm -> ExpandedSurfaceTerm
 stripParserLocs (loc :< term) = UnknownLoc :< case term of
   LetUPF bindings body -> LetUPF ((\(name, value) -> (locatedName UnknownLoc $ locatedNameText name, stripParserLocs value)) <$> bindings) (stripParserLocs body)
   UnprocessedParsedTermL (LamF name body) -> UnprocessedParsedTermL (LamF (locatedName UnknownLoc $ locatedNameText name) (stripParserLocs body))
@@ -420,7 +411,7 @@ stripParserLocs (loc :< term) = UnknownLoc :< case term of
 stripPatternLocs :: PatternA -> PatternA
 stripPatternLocs (Fix patternF) = Fix $ case patternF of
   PatternVarF name -> PatternVarF (locatedName UnknownLoc $ locatedNameText name)
-  PatternAnnotatedF pat term -> PatternAnnotatedF (stripPatternLocs pat) (AnnotatedUPT . stripParserLocs $ unAnnotatedUPT term)
+  PatternAnnotatedF pat term -> PatternAnnotatedF (stripPatternLocs pat) (AnnotatedEST . stripParserLocs $ unAnnotatedEST term)
   other -> stripPatternLocs <$> other
 
 caseExpr0UPT =
@@ -449,7 +440,7 @@ caseExpr0 = unlines
 
 test2UPT str =
   case runParseModule "" str
-         >>= first renderSugarError . sugarModule of
+         >>= first renderExpansionError . expandModule of
     Right _ -> return True
     Left _  -> return False
 
@@ -534,7 +525,7 @@ testLambdawITEwPair = unlines
 runTestParsePrelude = do
   preludeFile <- Strict.readFile "Prelude.tel"
   case runParseDefinitions "" preludeFile
-         >>= first renderSugarError . sugarDefs of
+         >>= first renderExpansionError . expandDefs of
     Right _ -> return True
     Left _  -> return False
 

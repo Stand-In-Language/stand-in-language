@@ -14,9 +14,11 @@ import Data.Ratio
 import Debug.Trace
 import NatUDTTests (natUDTTests)
 import qualified System.IO.Strict as Strict
+import Telomare.Desugar (desugarTerm)
 import Telomare.Driver (SizingOption (..), compile, compileUnitTest,
                         compileUnitTestNoAbort, runStaticChecks)
 import Telomare.Error
+import Telomare.Expand (expandDefs, expandTerm, renderExpansionError)
 import Telomare.IR.Base
 import Telomare.IR.Builder
 import Telomare.IR.Core
@@ -27,7 +29,6 @@ import Telomare.Parse (TelomareParser, parseLongExpr, runParseDefinitions)
 import Telomare.PrettyPrint
 import Telomare.Resolve (process, pruneBindings)
 import Telomare.Size (SizingSettings (SizingSettings))
-import Telomare.Sugar (renderSugarError, sugarDefs, sugarTerm)
 
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -54,11 +55,11 @@ rightToMaybe :: Either String a -> Maybe a
 rightToMaybe (Right x) = Just x
 rightToMaybe _         = Nothing
 
-loadPreludeBindings :: IO [(String, AUPT)]
+loadPreludeBindings :: IO [(String, ExpandedSurfaceTerm)]
 loadPreludeBindings = do
   preludeResult <- Strict.readFile "Prelude.tel"
   case runParseDefinitions "" preludeResult
-         >>= first renderSugarError . sugarDefs of
+         >>= first renderExpansionError . expandDefs of
     Left _   -> pure []
     Right bs -> pure $ first locatedNameText <$> bs
 
@@ -66,7 +67,7 @@ evalExprString :: String -> IO (Either String String)
 evalExprString input = do
   preludeBindings <- loadPreludeBindings
   let parseResult = first errorBundlePretty (runParser (parseLongExpr <* eof) "" input)
-        >>= first renderSugarError . sugarTerm
+        >>= first renderExpansionError . expandTerm
   case parseResult of
     Left err -> pure $ Left err
     Right aupt -> do
@@ -74,7 +75,7 @@ evalExprString input = do
           term = UnknownLoc :< LetUPF (first (locatedName UnknownLoc) <$> pruneBindings aupt bindings) aupt
           compile' :: Term3 -> Either EvalError CompiledExpr
           compile' = compile (DebugSizing (SizingSettings 255 False)) runStaticChecks
-      case first RE (process $ AnnotatedUPT term) >>= compile' of
+      case first RE (process $ desugarTerm term) >>= compile' of
         Left err -> pure $ Left (show err)
         Right iexpr -> case eval iexpr of
                          Left e -> pure . Left . show $ e
