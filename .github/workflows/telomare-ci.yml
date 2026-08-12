@@ -39,9 +39,6 @@ jobs:
             echo "REPL test failed: expected 8, got '$REPL_OUTPUT'"
             exit 1
         fi
-        echo building for legacy nix-shell:
-        nix-build
-        nix-shell --run "echo OK"
         echo ${{ github.ref }}
         echo ${{ github.repository }}
   format:
