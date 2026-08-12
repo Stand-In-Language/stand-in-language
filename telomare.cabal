@@ -115,55 +115,6 @@ executable telomare-repl
                      , telomare
   default-language:    Haskell2010
 
-executable telomare-evaluare
-  hs-source-dirs: app
-  main-is: Evaluare.hs
-  ghc-options: -threaded -Wall
-  build-depends:
-                base,
-                containers,
-                free,
-                mtl,
-                reflex,
-                reflex-vty,
-                stm,
-                strict,
-                telomare,
-                text,
-                time,
-                transformers,
-                vty
-  default-language: Haskell2010
-  default-extensions:
-    BangPatterns
-    ConstraintKinds
-    CPP
-    DataKinds
-    DefaultSignatures
-    DeriveFunctor
-    DeriveGeneric
-    FlexibleContexts
-    FlexibleInstances
-    FunctionalDependencies
-    GADTs
-    GeneralizedNewtypeDeriving
-    KindSignatures
-    LambdaCase
-    MultiParamTypeClasses
-    MultiWayIf
-    OverloadedStrings
-    PatternGuards
-    PolyKinds
-    QuasiQuotes
-    RankNTypes
-    RecursiveDo
-    ScopedTypeVariables
-    StandaloneDeriving
-    TemplateHaskell
-    TupleSections
-    TypeApplications
-    TypeFamilies
-
 executable telomare-lsp
   main-is:             LSP.hs
   hs-source-dirs:      app

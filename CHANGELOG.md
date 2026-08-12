@@ -25,6 +25,8 @@
 * Removed dead code: the unbuildable benchmarks, the C serializer FFI
   (`cbits/`, `ctest/`), the commented-out HVM/LLVM/Chez backends,
   `Telomare.Decompiler`, and orphaned fixture files.
+* Removed the `telomare-evaluare` executable and its flake app; its
+  interactive evaluation functionality lives in the LSP app now.
 
 ## 0.1.0.0 -- YYYY-mm-dd
 

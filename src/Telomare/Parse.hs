@@ -488,7 +488,7 @@ runParseExpression :: String -> String -> Either String ParsedSurfaceTerm
 runParseExpression name = first errorBundlePretty . runParser parseExpression name
 
 -- |Parse either a whole block of top level definitions or a single
--- expression. Made for telomare-evaluare and the REPL's @:l@; the caller
+-- expression. Made for the REPL's @:l@; the caller
 -- decides what to do with each shape (typically 'Telomare.Expand.wrapMain'
 -- for definitions).
 parseOneExprOrDefinitions :: TelomareParser (Either [DefinitionF ParsedSurfaceTerm] ParsedSurfaceTerm)

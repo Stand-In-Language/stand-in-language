@@ -9,8 +9,6 @@ cradle:
     - path: "app/Repl.hs"
       component: "telomare:exe:telomare-repl"
 
-    - path: "app/Evaluare.hs"
-      component: "telomare:exe:telomare-evaluare"
 
     - path: "app/LSP.hs"
       component: "telomare:exe:telomare-lsp"
