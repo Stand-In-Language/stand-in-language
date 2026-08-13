@@ -15,6 +15,8 @@
       imports = [ inputs.haskell-flake.flakeModule ];
       perSystem = { self', system, pkgs, ... }:
         let
+          # The GHC package set used for the build and all tooling.
+          hsPkgs = pkgs.haskell.packages.ghc96;
           lspVersion =
             if self ? lastModifiedDate then
               let
@@ -29,35 +31,7 @@
               "unknown";
         in {
         haskellProjects.default = {
-          basePackages = pkgs.haskell.packages.ghc96;
-          # To get access to non-Haskell dependencies one most add them to `extraBuildDepends`
-          # and then use the haskell package `which` to locate the Filepath of the executable
-          # that's being added. In this toy example we'll be using the non-Haskell dependency
-          # `cowsay` findable in nixpkgs like so:
-          #
-          # telomare = {
-          #   extraBuildDepends = [ pkgs.cowsay
-          #                       ];
-          # };
-          #
-          # An example of Haskell code using `cowsay` would be:
-          # ```haskell
-          # cowsayBin :: FilePath
-          # cowsayBin = $(staticWhich "cowsay")
-
-          # cowsay :: IO String
-          # cowsay = do
-          #   (_, mhout, _, _) <- createProcess (shell $ show cowsayBin <> " hola") { std_out = CreatePipe }
-          #   case mhout of
-          #     Just hout -> hGetContents hout
-          #     Nothing -> pure "mhout failed"
-          # ```
-          # settings = {
-          #   semaphore-compat = {
-          #     check = false;
-          #     jailbreak = true;
-          #   };
-          # };
+          basePackages = hsPkgs;
           devShell = {
             enable = true;
             tools = hp: {
@@ -86,41 +60,48 @@
           '';
         }}/bin/telomare-lsp";
       };
-      apps.format-lint = {
+      # Format and lint the tracked Haskell files. `--check` reports needed
+      # changes without applying them; otherwise formatting is applied in
+      # place. Scoping to `git ls-files` is what keeps this identical to CI:
+      # recursing over `.` locally wanders into untracked trees like
+      # .direnv/ and dist-newstyle/ and aborts on read-only store files.
+      apps.format = {
         type = "app";
         program = "${pkgs.writeShellApplication {
-          name = "telomare-format-lint-check";
+          name = "telomare-format";
           runtimeInputs = [
             pkgs.diffutils
             pkgs.git
-            # Use the project's GHC 9.6 tools so format-lint matches the
-            # hlint/stylish-haskell that the devShell and CI use.
-            pkgs.haskell.packages.ghc96.hlint
-            pkgs.haskell.packages.ghc96.stylish-haskell
+            hsPkgs.hlint
+            hsPkgs.stylish-haskell
           ];
           text = ''
             mapfile -t hs_files < <(git ls-files '*.hs')
-            tmp_dir="$(mktemp -d)"
-            trap 'rm -rf "$tmp_dir"' EXIT
+            if [ "''${#hs_files[@]}" -eq 0 ]; then
+              echo "No tracked Haskell files found"
+              exit 0
+            fi
 
             format_status=0
-            if [ "''${#hs_files[@]}" -gt 0 ]; then
+            if [ "''${1:-}" = "--check" ]; then
+              tmp_dir="$(mktemp -d)"
+              trap 'rm -rf "$tmp_dir"' EXIT
               for hs_file in "''${hs_files[@]}"; do
                 formatted_file="$tmp_dir/$(basename "$hs_file")"
                 stylish-haskell "$hs_file" > "$formatted_file"
-
                 if ! cmp -s "$hs_file" "$formatted_file"; then
                   printf '%s needs formatting. Suggested diff:\n' "$hs_file"
                   diff -u "$hs_file" "$formatted_file" || true
                   format_status=1
                 fi
               done
+            else
+              echo "Formatting ''${#hs_files[@]} tracked Haskell files"
+              stylish-haskell -i "''${hs_files[@]}"
             fi
 
             lint_status=0
-            if [ "''${#hs_files[@]}" -gt 0 ]; then
-              hlint "''${hs_files[@]}" || lint_status=$?
-            fi
+            hlint "''${hs_files[@]}" || lint_status=$?
 
             if [ "$format_status" -ne 0 ]; then
               printf 'Formatting check failed\n'
@@ -134,37 +115,13 @@
 
             printf 'Formatting and linting are OK\n'
           '';
-        }}/bin/telomare-format-lint-check";
-      };
-      # Apply formatting in place and lint, over the tracked Haskell files
-      # only. Scoping to `git ls-files` is what keeps this identical to CI:
-      # recursing over `.` locally wanders into untracked trees like
-      # .direnv/ and dist-newstyle/ and aborts on read-only store files.
-      apps.format = {
-        type = "app";
-        program = "${pkgs.writeShellApplication {
-          name = "telomare-format";
-          runtimeInputs = [
-            pkgs.git
-            pkgs.haskell.packages.ghc96.hlint
-            pkgs.haskell.packages.ghc96.stylish-haskell
-          ];
-          text = ''
-            mapfile -t hs_files < <(git ls-files '*.hs')
-            if [ "''${#hs_files[@]}" -eq 0 ]; then
-              echo "No tracked Haskell files found"
-              exit 0
-            fi
-
-            echo "Formatting ''${#hs_files[@]} tracked Haskell files"
-            stylish-haskell -i "''${hs_files[@]}"
-
-            echo "Linting"
-            hlint "''${hs_files[@]}"
-
-            echo "Formatting applied and linting passed"
-          '';
         }}/bin/telomare-format";
+      };
+      apps.format-lint = {
+        type = "app";
+        program = "${pkgs.writeShellScriptBin "telomare-format-lint-check" ''
+          exec ${self'.apps.format.program} --check
+        ''}/bin/telomare-format-lint-check";
       };
       apps.push-cachix = {
         type = "app";
@@ -260,8 +217,8 @@
             nativeBuildInputs = [
               pkgs.diffutils
               pkgs.findutils
-              pkgs.haskell.packages.ghc96.hlint
-              pkgs.haskell.packages.ghc96.stylish-haskell
+              hsPkgs.hlint
+              hsPkgs.stylish-haskell
             ];
             LC_ALL = "C.UTF-8";
           } ''
