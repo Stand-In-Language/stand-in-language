@@ -14,28 +14,25 @@ import qualified Control.Comonad.Trans.Cofree as C
 import Data.Bifunctor (bimap)
 import Data.Fix (Fix (..))
 import qualified Data.Foldable as F
-import Data.Functor.Foldable (Base, Corecursive (embed), Recursive (..))
+import Data.Functor.Foldable (Corecursive (embed), Recursive (..))
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Map.Strict (keys)
 import Data.Set (Set)
 import qualified Data.Set as Set
-import Telomare.Error
 import Telomare.IR.Base
-import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.IR.Surface
-import Telomare.IR.Types
 
 -- | Finds all PatternInt leaves returning "directions" to these leaves through pairs
 -- in the form of a combination of RightUP and LeftUP from the root
 -- e.g. PatternPair (PatternVar "x") (PatternPair (PatternInt 0) (PatternVar "y"))
 --      will return [LeftUP . RightUP]
 findInts :: LocTag -> PatternA -> [DesugaredSurfaceTerm -> DesugaredSurfaceTerm]
-findInts anno = cata alg where
+findInts _anno = cata alg where
   alg = \case
     PatternPairF x y      -> ((. HLeft) <$> x) <> ((. HRight) <$> y)
-    PatternIntF x         -> [id]
+    PatternIntF _x        -> [id]
     PatternAnnotatedF x _ -> x
     _                     -> []
 
@@ -44,16 +41,16 @@ findInts anno = cata alg where
 -- e.g. PatternPair (PatternVar "x") (PatternPair (PatternString "Hello, world!") (PatternVar "y"))
 --      will return [LeftUP . RightUP]
 findStrings :: LocTag -> PatternA -> [DesugaredSurfaceTerm -> DesugaredSurfaceTerm]
-findStrings anno = cata alg where
+findStrings _anno = cata alg where
   alg = \case
     PatternPairF x y      -> ((. HLeft) <$> x) <> ((. HRight) <$> y)
-    PatternStringF x      -> [id]
+    PatternStringF _x     -> [id]
     PatternAnnotatedF x _ -> x
     _                     -> []
 
 findPatternVars :: LocTag -> PatternA
                 -> Map String (DesugaredSurfaceTerm -> DesugaredSurfaceTerm)
-findPatternVars anno = cata alg where
+findPatternVars _anno = cata alg where
   alg = \case
     PatternPairF x y      -> ((. HLeft) <$> x) <> ((. HRight) <$> y)
     PatternVarF name      -> Map.singleton (locatedNameText name) id
@@ -70,7 +67,6 @@ pairStructureCheck p upt = let a = GeneratedLoc "pairStructureCheck" Nothing in
 
 pairRoute2Dirs :: PatternA -> [DesugaredSurfaceTerm -> DesugaredSurfaceTerm]
 pairRoute2Dirs = cata alg where
-  anno = (GeneratedLoc "pairRoute2Dirs" Nothing :<)
   alg = \case
     PatternPairF x y      -> [id] <> ((. HLeft) <$> x) <> ((. HRight) <$> y)
     PatternAnnotatedF x _ -> x
@@ -160,9 +156,9 @@ lowerCases :: ExpandedSurfaceTerm -> DesugaredSurfaceTerm
 lowerCases = cata go where
   go = \case
     anno C.:< CaseUPF x ls ->
-      let duplicate x = (x,x)
+      let duplicate el = (el,el)
           pairApplyList :: ([a -> a], a) -> [a]
-          pairApplyList x = ($ snd x) <$> fst x
+          pairApplyList pr = ($ snd pr) <$> fst pr
           patterns = fst <$> ls
           resultCaseAlts = snd <$> ls
           dirs2LeavesOnUPT f = fmap (\y -> anno :< ListUPF y) $ (($ x) <$>) . f <$> patterns
@@ -186,7 +182,7 @@ lowerCases = cata go where
 -- outer resolved let. The aliases cannot be written in source, so nested
 -- bindings cannot capture the generated references.
 addCaseHelperAliases :: ExpandedSurfaceTerm -> ExpandedSurfaceTerm
-addCaseHelperAliases term@(loc :< LetUPF bindings body) =
+addCaseHelperAliases _term@(loc :< LetUPF bindings body) =
   loc :< LetUPF (aliases <> bindings) body
   where
     aliases =

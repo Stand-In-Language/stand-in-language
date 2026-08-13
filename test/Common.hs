@@ -3,30 +3,22 @@
 {-# LANGUAGE LambdaCase          #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections       #-}
+{-# OPTIONS_GHC -Wno-orphans #-}
 module Common where
 
-import Control.Applicative
 import Control.Comonad.Cofree (Cofree ((:<)))
 import Data.Bifunctor
 import Data.Fix (Fix (..))
 import Data.Functor.Foldable (Corecursive (..))
-import qualified Data.Map as Map
-import System.IO
-import System.Posix.IO
-import System.Posix.Process
-import System.Posix.Types (ProcessID)
 import Telomare.Error
 import Telomare.IR.Base
-import Telomare.IR.Builder
 import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.IR.Surface
 import Telomare.IR.Types
-import Telomare.Parse
 import Telomare.Resolve
 import Telomare.TypeCheck
 import Test.QuickCheck
-import Test.QuickCheck.Gen
 
 class TestableIExpr a where
   getIExpr :: a -> StuckExpr -- maybe this should be StuckExpr
@@ -81,7 +73,7 @@ instance Arbitrary TestIExpr where
                  pure2 = pure . TestIExpr
              in case i of
                   0 -> oneof $ fmap pure2 [ZeroB, EnvB, GateB]
-                  x -> oneof
+                  _x -> oneof
                     [ pure2 ZeroB
                     , pure2 EnvB
                     , pure2 GateB
@@ -95,12 +87,13 @@ instance Arbitrary TestIExpr where
     ZeroB -> []
     StuckEE EnvSF -> []
     StuckEE GateSF -> []
-    StuckEE (LeftSF x) -> TestIExpr x : (fmap (lift1Texpr LeftB) . shrink $ TestIExpr x)
-    StuckEE (RightSF x) -> TestIExpr x : (fmap (lift1Texpr RightB) . shrink $ TestIExpr x)
-    StuckEE (SetEnvSF x) -> TestIExpr x : (fmap (lift1Texpr SetEnvB) . shrink $ TestIExpr x)
-    StuckEE (DeferSF fi x) -> TestIExpr x : (fmap (lift1Texpr (StuckEE . DeferSF fi)) . shrink $ TestIExpr x)
+    StuckEE (LeftSF lx) -> TestIExpr lx : (fmap (lift1Texpr LeftB) . shrink $ TestIExpr lx)
+    StuckEE (RightSF rx) -> TestIExpr rx : (fmap (lift1Texpr RightB) . shrink $ TestIExpr rx)
+    StuckEE (SetEnvSF sx) -> TestIExpr sx : (fmap (lift1Texpr SetEnvB) . shrink $ TestIExpr sx)
+    StuckEE (DeferSF fi dx) -> TestIExpr dx : (fmap (lift1Texpr (StuckEE . DeferSF fi)) . shrink $ TestIExpr dx)
     PairB a b -> TestIExpr a : TestIExpr  b :
       [lift2Texpr PairB a' b' | (a', b') <- shrink (TestIExpr a, TestIExpr b)]
+    _ -> error "Common.shrink: unexpected TestIExpr constructor"
 
 instance Arbitrary DataType where
   arbitrary = sized gen where
@@ -111,6 +104,7 @@ instance Arbitrary DataType where
            , PairType <$> gen half <*> gen half
            ]
 
+zeroTyped :: TestIExpr -> Bool
 zeroTyped = null . typeCheck (embed ZeroTypeP) . fromTelomare . getIExpr
 
 genTypedTree :: Maybe DataType -> DataType -> Int -> Gen StuckExpr
@@ -160,6 +154,7 @@ instance Arbitrary DataTypedIExpr where
   arbitrary = IExprWrapper <$> sized (genTypedTree Nothing ZeroType)
   shrink (IExprWrapper x) = fmap (IExprWrapper . getIExpr) . filter zeroTyped . shrink $ TestIExpr x
 
+typeable :: TestableIExpr a => a -> Bool
 typeable x = case inferType (fromTelomare $ getIExpr x) of
   Left _ -> False
   _      -> True
@@ -168,6 +163,7 @@ instance Arbitrary ValidTestIExpr where
   arbitrary = ValidTestIExpr <$> suchThat arbitrary typeable
   shrink (ValidTestIExpr te) = fmap ValidTestIExpr . filter typeable $ shrink te
 
+simpleArrowTyped :: TestableIExpr a => a -> Bool
 simpleArrowTyped x = inferType (fromTelomare $ getIExpr x) == Right (embed $ ArrTypeP (embed ZeroTypeP) (embed ZeroTypeP))
 
 instance Arbitrary ArrowTypedTestIExpr where
@@ -180,12 +176,12 @@ instance Arbitrary UnprocessedParsedTerm where
     leaves varList =
       oneof $
           (if not (null varList) then ((UnprocessedParsedTerm . Fix . UnprocessedParsedTermL . VarF <$> elements varList) :) else id)
-          [ UnprocessedParsedTerm . Fix . StringUPF <$> elements (fmap (("s" <>) . show) [1..9]) -- chooseAny
+          [ UnprocessedParsedTerm . Fix . StringUPF <$> elements (fmap (("s" <>) . show) [1..9 :: Integer]) -- chooseAny
           , UnprocessedParsedTerm . Fix . IntUPF <$> elements [0..9]
           , UnprocessedParsedTerm . Fix . UnprocessedParsedTermH . ChurchF <$> elements [0..9]
           ]
     lambdaTerms = ["w", "x", "y", "z"]
-    letTerms = fmap (("l" <>) . show) [1..255]
+    letTerms = fmap (("l" <>) . show) [1..255 :: Integer]
     identifierList :: Gen [String]
     identifierList = frequency
       [ (1, pure . cycle $ letTerms)
@@ -206,7 +202,7 @@ instance Arbitrary UnprocessedParsedTerm where
                               vectorOf listSize $ genTree varList childShare
                         in case i of
                                  0 -> leaves varList
-                                 x -> oneof
+                                 _x -> oneof
                                    [ leaves varList
                                    , mkUPT . UnprocessedParsedTermH . HashF . wrap <$> recur (i - 1)
                                    , mkUPT . UnprocessedParsedTermH . HLeftF . wrap <$> recur (i - 1)
@@ -267,7 +263,9 @@ instance Arbitrary UnprocessedParsedTerm where
             mk y = UnprocessedParsedTerm . Fix . UnprocessedParsedTermL . LamF v $ unUnprocessedParsedTerm y
         in x'' : fmap mk (shrink x'')
       Fix (UnprocessedParsedTermH (ITEF i' t' e')) ->
-        let [i'', t'', e''] = fmap UnprocessedParsedTerm [i', t', e']
+        let (i'', t'', e'') = case fmap UnprocessedParsedTerm [i', t', e'] of
+              [a, b, c] -> (a, b, c)
+              _         -> error "Common.shrink: unexpected ITEF child list"
             mk ni nt ne = UnprocessedParsedTerm . Fix . UnprocessedParsedTermH $ ITEF (unUnprocessedParsedTerm ni) (unUnprocessedParsedTerm nt) (unUnprocessedParsedTerm ne)
         in i'' : t'' : e'' : [mk ni nt ne | (ni, nt, ne) <- shrink (i'', t'', e'')]
       Fix (ListUPF l) ->
@@ -288,7 +286,9 @@ instance Arbitrary UnprocessedParsedTerm where
             l' = fmap (second UnprocessedParsedTerm) l
             shrinkBinding (n, v) = (n,) <$> shrink v
             removeAt n xs = let (f,s) = splitAt n xs in (f <> tail s)
-            makeOptions f n xs = let (pa,c:pz) = splitAt n xs in ((pa ++) . (:pz) <$> f c)
+            makeOptions f n xs = case splitAt n xs of
+              (pa, c:pz) -> (pa ++) . (:pz) <$> f c
+              (_, [])    -> error "Common.shrink: unexpected empty suffix in makeOptions"
             mkLet binds b = UnprocessedParsedTerm . Fix $ LetUPF (fmap (second unUnprocessedParsedTerm) binds) (unUnprocessedParsedTerm b)
             lessBindings = if length l' > 1
               then [mkLet (removeAt n l') body' | n <- [0..length l' - 1]]
@@ -313,24 +313,13 @@ instance Arbitrary Term1 where
           [ pure $ UnknownLoc :< ParserTermB ZeroSF
           ]
     lambdaTerms = ["w", "x", "y", "z"]
-    letTerms = fmap (("l" <>) . show) [1..255]
-    identifierList = frequency
-      [ (1, pure . cycle $ letTerms)
-      , (3, pure . cycle $ lambdaTerms <> letTerms)
-      , (1, cycle <$> shuffle (lambdaTerms <> letTerms))
-      ]
     genTree :: [String] -> Int -> Gen Term1
     genTree varList i = let half = div i 2
                             third = div i 3
                             recur = genTree varList
-                            childList = do
-                              -- listSize <- chooseInt (0, i)
-                              listSize <- choose (0, i)
-                              let childShare = div i listSize
-                              vectorOf listSize $ genTree varList childShare
                         in case i of
                                  0 -> leaves varList
-                                 x -> oneof
+                                 _x -> oneof
                                    [ leaves varList
                                    , (UnknownLoc :<) . ParserTermH . HashF <$> recur (i - 1)
                                    , (UnknownLoc :<) . ParserTermH . HLeftF <$> recur (i - 1)
@@ -354,6 +343,7 @@ instance Arbitrary Term1 where
     anno :< ParserTermH (ITEF i t e) -> i : t : e : [anno :< ParserTermH (ITEF ni nt ne) | (ni, nt, ne) <- shrink (i,t,e)]
     anno :< ParserTermB (PairSF a b) -> a : b : [anno :< ParserTermB (PairSF na nb) | (na, nb) <- shrink (a,b)]
     anno :< ParserTermL (AppF f i) -> f : i : [anno :< ParserTermL (AppF nf ni) | (nf, ni) <- shrink (f,i)]
+    _ -> error "Common.shrink: unexpected Term1 constructor"
 
 instance Arbitrary Term2 where
   arbitrary = do
@@ -379,3 +369,4 @@ instance Arbitrary Term2 where
     anno :< ParserTermH (ITEF i t e) -> i : t : e : [anno :< ParserTermH (ITEF ni nt ne) | (ni, nt, ne) <- shrink (i,t,e)]
     anno :< ParserTermB (PairSF a b) -> a : b : [anno :< ParserTermB (PairSF na nb) | (na, nb) <- shrink (a,b)]
     anno :< ParserTermL (AppF f i) -> f : i : [anno :< ParserTermL (AppF nf ni) | (nf, ni) <- shrink (f,i)]
+    _ -> error "Common.shrink: unexpected Term2 constructor"

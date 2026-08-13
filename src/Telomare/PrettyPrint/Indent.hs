@@ -84,8 +84,10 @@ indentation n = ' ' : ' ' : indentation (n - 1)
 
 indentSansFirstLine :: Int -> String -> String
 indentSansFirstLine i x = removeLastNewLine res where
-  res = unlines $ (\(s:ns) -> s:((indentation i <>) <$> ns)) (lines x)
+  res = unlines $ indentTail (lines x)
+  indentTail (s:ns) = s:((indentation i <>) <$> ns)
+  indentTail []     = error "Telomare.PrettyPrint.Indent.indentSansFirstLine: unexpected empty list of lines"
   removeLastNewLine str =
     case reverse str of
       '\n' : rest -> reverse rest
-      x           -> str
+      _           -> str

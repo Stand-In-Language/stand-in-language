@@ -4,10 +4,7 @@
 module Telomare.PrettyPrint where
 
 import Control.Monad.State (State)
-import Data.Map (Map)
-import Telomare.Error
 import Telomare.IR.Base
-import Telomare.IR.Builder
 import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.IR.Surface
@@ -15,15 +12,11 @@ import Telomare.IR.Types
 import Telomare.PrettyPrint.Indent (indentSansFirstLine, indentWithChildren',
                                     indentWithOneChild', indentWithTwoChildren')
 
-import qualified Control.Comonad.Trans.Cofree as CofreeT (CofreeF (..))
 import qualified Control.Monad.State as State
-import qualified Data.Map as Map
 
 import Control.Comonad.Cofree
 import Data.Fix (Fix (..))
 import Data.Functor.Foldable
-import Data.List (elemIndex, intercalate)
-import Text.Read (readMaybe)
 -- import Data.SBV (sFPHalf)
 
 
@@ -38,6 +31,12 @@ instance (PrettyPrintable1 f, PrettyPrintable x) => PrettyPrintable (f x) where
 
 prettyPrint :: PrettyPrintable p => p -> String
 prettyPrint x = State.evalState (showP x) 0
+
+instance PrettyPrintable Char where
+  showP = pure . (:[])
+
+instance PrettyPrintable FunctionIndex where
+  showP = pure . ("F" <>) . show . fromEnum
 
 instance (Show l, Show v) => PrettyPrintable1 (LamTermF l v) where
   showP1 = \case
@@ -64,6 +63,8 @@ instance PrettyPrintable1 HighTermF where
 instance (Show l, Show v) => PrettyPrintable1 (ParserTermF l v) where
   showP1 = \case
       ParserTermB x            -> showP1 x
+      ParserTermH _            -> error "Telomare.PrettyPrint.showP1: unexpected ParserTermH"
+      ParserTermL _            -> error "Telomare.PrettyPrint.showP1: unexpected ParserTermL"
       TUnsizedRepeaterF        -> pure "*"
 
 newtype PrettyDataType = PrettyDataType DataType
@@ -126,34 +127,35 @@ instance Show MultiLineShowUPT where
     -- alg :: Base UnprocessedParsedTerm String -> String
     alg = \case
       UnprocessedParsedTermB x -> case x of
-        PairSF x y -> "PairUP\n" <>
-                          "  " <> ind x <> "\n" <>
+        ZeroSF -> error "Telomare.PrettyPrint.MultiLineShowUPT: unexpected ZeroSF"
+        PairSF x' y -> "PairUP\n" <>
+                          "  " <> ind x' <> "\n" <>
                           "  " <> ind y
       UnprocessedParsedTermH x -> case x of
-        (ITEF x y z) -> "ITEUP\n" <>
-                          "  " <> ind x <> "\n" <>
+        (ITEF x' y z) -> "ITEUP\n" <>
+                          "  " <> ind x' <> "\n" <>
                           "  " <> ind y <> "\n" <>
                           "  " <> ind z
-        (ChurchF x) -> "ChurchUP " <> show x
-        (HLeftF x) -> "LeftUP\n" <>
-                        "  " <> ind x
-        (HRightF x) -> "RightUP\n" <>
-                          "  " <> ind x
-        (HTraceF x) -> "TraceUP\n" <>
-                          "  " <> ind x
-        (RecursionF x y z) -> "UnsizedRecursionUP\n" <>
-                          "  " <> ind x <> "\n" <>
+        (ChurchF x') -> "ChurchUP " <> show x'
+        (HLeftF x') -> "LeftUP\n" <>
+                        "  " <> ind x'
+        (HRightF x') -> "RightUP\n" <>
+                          "  " <> ind x'
+        (HTraceF x') -> "TraceUP\n" <>
+                          "  " <> ind x'
+        (RecursionF x' y z) -> "UnsizedRecursionUP\n" <>
+                          "  " <> ind x' <> "\n" <>
                           "  " <> ind y <> "\n" <>
                           "  " <> ind z
-        (HashF x) -> "HashUP\n" <>
-                        "  " <> ind x
-        (CheckF x y) -> "CheckUP\n" <>
-                          "  " <> ind x <> "\n" <>
+        (HashF x') -> "HashUP\n" <>
+                        "  " <> ind x'
+        (CheckF x' y) -> "CheckUP\n" <>
+                          "  " <> ind x' <> "\n" <>
                           "  " <> ind y
       UnprocessedParsedTermL x -> case x of
         VarF str -> "VarUP " <> str
-        (AppF x y) -> "AppUP\n" <>
-                          "  " <> ind x <> "\n" <>
+        (AppF x' y) -> "AppUP\n" <>
+                          "  " <> ind x' <> "\n" <>
                           "  " <> ind y
         (LamF str y) -> "LamUP " <> locatedNameText str <> "\n" <>
                           "  " <> ind y
@@ -180,40 +182,41 @@ instance Show PrettyUPT where
     -- alg :: Base UnprocessedParsedTerm String -> String
     alg = \case
       UnprocessedParsedTermB x -> case x of
-        PairSF x y -> if length (lines (x <> y)) > 1
-                        then "( " <> indentSansFirstLine 2 x <> "\n" <>
+        ZeroSF -> error "Telomare.PrettyPrint.PrettyUPT: unexpected ZeroSF"
+        PairSF x' y -> if length (lines (x' <> y)) > 1
+                        then "( " <> indentSansFirstLine 2 x' <> "\n" <>
                               ", " <> indentSansFirstLine 2 y <> "\n" <>
                               ")"
-                        else "(" <> x <> ", " <> y <>")"
+                        else "(" <> x' <> ", " <> y <>")"
       UnprocessedParsedTermL x -> case x of
         VarF str -> str
-        (AppF x y) -> (if (length . words $ x) == 1 then x else "(" <> x <> ")") <> " " <>
+        (AppF x' y) -> (if (length . words $ x') == 1 then x' else "(" <> x' <> ")") <> " " <>
                         if (length . words $ y) == 1 then y else "(" <> y <> ")"
         (LamF str y) -> "\\ " <> locatedNameText str <> " -> " <> indentSansFirstLine (6 + length (locatedNameText str)) y
       UnprocessedParsedTermH x -> case x of
-        (ITEF x y z) -> "if " <> indentSansFirstLine 3 x <> "\n" <>
+        (ITEF x' y z) -> "if " <> indentSansFirstLine 3 x' <> "\n" <>
                             "  then " <> indentSansFirstLine 7 y <> "\n" <>
                             "  else " <> indentSansFirstLine 7 z
-        (ChurchF x) -> "$" <> show x
-        (HLeftF x) -> "left (" <> indentSansFirstLine 6 x <> ")"
-        (HRightF x) -> "right (" <> indentSansFirstLine 7 x <> ")"
-        (HTraceF x) -> "trace (" <> indentSansFirstLine 7 x <> ")"
-        (RecursionF x y z) -> "{ " <> indentSansFirstLine 2 x <>
+        (ChurchF x') -> "$" <> show x'
+        (HLeftF x') -> "left (" <> indentSansFirstLine 6 x' <> ")"
+        (HRightF x') -> "right (" <> indentSansFirstLine 7 x' <> ")"
+        (HTraceF x') -> "trace (" <> indentSansFirstLine 7 x' <> ")"
+        (RecursionF x' y z) -> "{ " <> indentSansFirstLine 2 x' <>
                                       ", " <> indentSansFirstLine 2 y <>
                                       ", " <> indentSansFirstLine 2 z <>
                                       "}"
-        (HashF x) -> "# " <> indentSansFirstLine 2 x
-        (CheckF x y) -> if length (lines (x <> y)) > 1
+        (HashF x') -> "# " <> indentSansFirstLine 2 x'
+        (CheckF x' y) -> if length (lines (x' <> y)) > 1
                             then "(" <> indentSansFirstLine 2 y <> " : " <> "\n" <>
                                 "    " <> indentSansFirstLine 4 y <> ")"
-                            else "(" <> y <> " : " <> x <> ")"
+                            else "(" <> y <> " : " <> x' <> ")"
       IntUPF i -> show i
       StringUPF str -> show str
       (LetUPF ls x) ->
         "let " <> indentSansFirstLine 4 (unlines (assignList <$> ls)) <> "\n" <>
         "in " <> indentSansFirstLine 3 x
           where
-            assignList (name, upt) = locatedNameText name <> " = " <> indentSansFirstLine (3 + length (locatedNameText name)) upt
+            assignList (name, upt') = locatedNameText name <> " = " <> indentSansFirstLine (3 + length (locatedNameText name)) upt'
       (ListUPF []) -> "[]"
       (ListUPF [x]) -> "[" <> x <> "]"
       (ListUPF ls) ->
@@ -282,9 +285,9 @@ newtype PrettyStuckExpr = PrettyStuckExpr StuckExpr
 instance Show PrettyStuckExpr where
   show (PrettyStuckExpr x) = f x where
     f :: StuckExpr -> String
-    f x = case b2i x of
+    f e = case b2i e of
       Just n -> show n
-      _ -> case x of
+      _ -> case e of
         BasicEE (PairSF a b) -> "(" <> f a <> "," <> f b <> ")"
         z                    -> show z
 
@@ -293,8 +296,8 @@ newtype PrettyCompiledExpr = PrettyCompiledExpr CompiledExpr
 instance Show PrettyCompiledExpr where
   show (PrettyCompiledExpr x) = f x where
     f :: CompiledExpr -> String
-    f x = case b2i x of
+    f e = case b2i e of
       Just n -> show n
-      _ -> case x of
+      _ -> case e of
         BasicEE (PairSF a b) -> "(" <> f a <> "," <> f b <> ")"
         z                    -> show z

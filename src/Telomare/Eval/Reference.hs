@@ -4,7 +4,12 @@
 {-# LANGUAGE LambdaCase           #-}
 {-# LANGUAGE ScopedTypeVariables  #-}
 {-# LANGUAGE TypeFamilies         #-}
+{-# LANGUAGE TypeOperators        #-}
 {-# LANGUAGE UndecidableInstances #-}
+-- The 'AbstractRunTime' instances must live here rather than in
+-- 'Telomare.IR.Core' (the class's home): their bodies are built from
+-- 'Telomare.Machine' step algebras, and Machine imports IR.Core.
+{-# OPTIONS_GHC -Wno-orphans #-}
 
 -- |The reference evaluators: the 'AbstractRunTime' instances for
 -- 'CompiledExpr' (the production path) and 'StuckExpr' (the REPL/test
@@ -17,55 +22,15 @@
 module Telomare.Eval.Reference where
 
 import Control.Applicative
-import Control.Comonad.Cofree (Cofree ((:<)), hoistCofree)
-import qualified Control.Comonad.Trans.Cofree as CofreeT (CofreeF (..))
-import Control.Lens.Plated (transform)
-import Control.Monad
-import Control.Monad.Except
-import Control.Monad.Reader (Reader, ReaderT, ask, local, runReaderT)
-import qualified Control.Monad.Reader as Reader
-import qualified Control.Monad.State.Lazy as StateL
-import Control.Monad.State.Strict (State, StateT)
-import qualified Control.Monad.State.Strict as State
-import Control.Monad.Trans.Class
-import Data.Bifunctor
-import Data.Char (chr)
-import Data.Fix (Fix (..), hoistFix')
-import Data.Foldable
-import Data.Functor.Classes
-import Data.Functor.Foldable
-import Data.Functor.Foldable.TH
-import Data.Kind
-import Data.List (nub, nubBy, partition, sortBy)
-import Data.Map.Strict (Map)
-import qualified Data.Map.Strict as Map
-import Data.Maybe (fromMaybe)
-import Data.Monoid
--- import Data.SBV ((.<), (.>))
-import Control.Comonad.Trans.Cofree (CofreeF, headF)
-import Control.Exception (Exception)
-import Control.Exception.Base (throw)
 import Control.Monad.IO.Class (MonadIO (..))
-import Control.Monad.Reader.Class
-import Data.Functor.Identity (Identity (Identity), runIdentity)
-import Data.Semigroup (Max (..))
-import Data.Set (Set)
+import Data.Char (chr)
+import Data.Functor.Foldable
 import qualified Data.Set as Set
-import Data.Void
-import Debug.Trace
-import GHC.Generics (Generic)
-import Telomare.Error
 import Telomare.IR.Base
-import Telomare.IR.Builder
 import Telomare.IR.Core
-import Telomare.IR.Loc
-import Telomare.IR.Surface
-import Telomare.IR.Types
 import Telomare.Machine
 import Telomare.PrettyPrint
-import Telomare.PrettyPrint.Indent (indentWithChildren', indentWithOneChild,
-                                    indentWithOneChild', indentWithTwoChildren,
-                                    indentWithTwoChildren', sindent)
+import Telomare.PrettyPrint.Indent (indentWithTwoChildren')
 import Telomare.Size.IR
 
 regularEval :: forall f g. (Base g ~ f, BasicBase f, StuckBase f, AbortBase f, IndexedInputBase f, UnsizedBase f
@@ -75,7 +40,7 @@ regularEval = transformNoDefer f . cata ss where
   unhandledError z = error ("regularEval unhandled case\n" <> prettyPrint (embed z))
   ss :: f g -> g
   ss = \case
-    UnsizedFW (RefinementWrapperF lt tc c) ->
+    UnsizedFW (RefinementWrapperF _lt tc c) ->
       let innerTC = appB (LeftB EnvB) (RightB EnvB)
           performTC = deferB removeRefinementWrappersTC . SetEnvB $ PairB (SetEnvB $ PairB (AbortEE AbortF) innerTC) (RightB EnvB)
       in SetEnvB $ PairB performTC (PairB tc c)
@@ -96,9 +61,9 @@ instance {-# OVERLAPPING #-} PrettyPrintable (PPOut CompiledExpr) where
       BasicEE ZeroSF -> pure ""
       BasicEE (PairSF a b) -> liftA2 (<>) (doLet a) (f b)
       z -> indentWithTwoChildren' "#!#" (pure "") (showP z)
-    doLet x = case cata lf x of
+    doLet letExpr = case cata lf letExpr of
       Just n -> pure [chr n]
-      _      -> indentWithTwoChildren' "#/#" (pure "") (showP x)
+      _      -> indentWithTwoChildren' "#/#" (pure "") (showP letExpr)
     lf = \case
       BasicFW ZeroSF -> Just 0
       BasicFW (PairSF n (Just 0)) -> succ <$> n
@@ -123,7 +88,7 @@ evalPartial :: (Base g ~ f, Traversable f, BasicBase f, StuckBase f, DeferredEva
 evalPartial = cata removeBarriers . transformNoDefer step where
   step = deferStep (basicStep (stuckStep (deferredEvalStep' wrapUnknownStep)))
   deferStep handleOther = \case
-    StuckFW (DeferSF id x) -> deferB (fromEnum id) . cata removeBarriers $ transformNoDefer (step . addBarrier) x
+    StuckFW (DeferSF deferId x) -> deferB (fromEnum deferId) . cata removeBarriers $ transformNoDefer (step . addBarrier) x
     x -> handleOther x
   addBarrier = \case
     StuckFW EnvSF -> embedD $ BarrierF EnvB

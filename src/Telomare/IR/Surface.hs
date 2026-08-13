@@ -19,7 +19,6 @@
 module Telomare.IR.Surface where
 
 import Control.Comonad.Cofree (Cofree ((:<)))
-import qualified Control.Comonad.Trans.Cofree as CofreeT (CofreeF (..))
 import Data.Fix (Fix (..))
 import Data.Functor.Classes (Eq1 (..), Show1 (..))
 import Data.List (intersperse)
@@ -42,7 +41,7 @@ data PatternF t f
   deriving Eq1 via (Generically1 (PatternF t))
 
 instance Show o => Show1 (PatternF o) where
-  liftShowsPrec showsPrec' showList prec = \case
+  liftShowsPrec showsPrec' _showList _prec = \case
     PatternVarF s -> showString "PatternVar " . shows (locatedNameText s)
     PatternAnnotatedF p x -> showString "PatternAnnotated " . showsPrec' 0 p . showChar ' ' . shows x
     PatternIntF x -> showString "PatternInt " . shows x
@@ -137,11 +136,11 @@ instance LamBase (UnprocessedParsedTermF c p) where
     _                        -> Nothing
 
 instance (Show c, Show p) => Show1 (UnprocessedParsedTermF c p) where
-  liftShowsPrec showsPrecFunc showList d term = case term of
+  liftShowsPrec showsPrecFunc showListFunc d term = case term of
 
-    UnprocessedParsedTermB x -> liftShowsPrec showsPrecFunc showList d x
-    UnprocessedParsedTermH x -> liftShowsPrec showsPrecFunc showList d x
-    UnprocessedParsedTermL x -> liftShowsPrec showsPrecFunc showList d x
+    UnprocessedParsedTermB x -> liftShowsPrec showsPrecFunc showListFunc d x
+    UnprocessedParsedTermH x -> liftShowsPrec showsPrecFunc showListFunc d x
+    UnprocessedParsedTermL x -> liftShowsPrec showsPrecFunc showListFunc d x
     LetUPF bindings body ->
       let showBinding (str, x) = showChar '(' . shows (locatedNameText str) . showString ", "
                                  . showsPrecFunc 11 x . showChar ')'
@@ -222,9 +221,9 @@ instance LamBase (ParsedTermF p) where
     _              -> Nothing
 
 instance (Show p) => Show1 (ParsedTermF p) where
-  liftShowsPrec showsPrecFunc showList d = \case
-    ParsedTermUP x    -> liftShowsPrec showsPrecFunc showList d x
-    ParsedTermSugar x -> liftShowsPrec showsPrecFunc showList d x
+  liftShowsPrec showsPrecFunc showListFunc d = \case
+    ParsedTermUP x    -> liftShowsPrec showsPrecFunc showListFunc d x
+    ParsedTermSugar x -> liftShowsPrec showsPrecFunc showListFunc d x
 
 -- |Convert the pattern type inside one layer ('CaseUPF' is the only
 -- constructor mentioning it). Used by 'Telomare.Expand' to expand the

@@ -14,7 +14,6 @@
 module Telomare.IR.Core where
 
 import Control.Comonad.Cofree (Cofree ((:<)))
-import qualified Control.Comonad.Trans.Cofree as CofreeT (CofreeF (..))
 import Data.Fix (Fix (..))
 import Data.Functor.Classes (Eq1 (..), Show1 (..))
 import Data.Functor.Foldable (Recursive (cata))
@@ -48,9 +47,9 @@ instance Eq1 StuckExprF where
     (StuckExprS x, StuckExprS y) -> liftEq test x y
     _                            -> False
 instance Show1 StuckExprF where
-  liftShowsPrec showsPrec showList prec = \case
-    StuckExprB x -> liftShowsPrec showsPrec showList prec x
-    StuckExprS x -> liftShowsPrec showsPrec showList prec x
+  liftShowsPrec showsPrec' showList' prec = \case
+    StuckExprB x -> liftShowsPrec showsPrec' showList' prec x
+    StuckExprS x -> liftShowsPrec showsPrec' showList' prec x
 
 type StuckExpr = Fix StuckExprF
 
@@ -81,10 +80,10 @@ instance Eq1 CompiledExprF where
     (CompiledExprA x, CompiledExprA y) -> liftEq test x y
     _                                  -> False
 instance Show1 CompiledExprF where
-  liftShowsPrec showsPrec showList prec = \case
-    CompiledExprB x -> liftShowsPrec showsPrec showList prec x
-    CompiledExprS x -> liftShowsPrec showsPrec showList prec x
-    CompiledExprA x -> liftShowsPrec showsPrec showList prec x
+  liftShowsPrec showsPrec' showList' prec = \case
+    CompiledExprB x -> liftShowsPrec showsPrec' showList' prec x
+    CompiledExprS x -> liftShowsPrec showsPrec' showList' prec x
+    CompiledExprA x -> liftShowsPrec showsPrec' showList' prec x
 
 type CompiledExpr = Fix CompiledExprF
 
@@ -111,10 +110,10 @@ instance AbortBase Term3F where
     Term3A x -> Just x
     _ -> Nothing
 instance Show1 Term3F where
-  liftShowsPrec showsPrec' showList prec = \case
-    Term3B x -> liftShowsPrec showsPrec' showList prec x
-    Term3S x -> liftShowsPrec showsPrec' showList prec x
-    Term3A x -> liftShowsPrec showsPrec' showList prec x
+  liftShowsPrec showsPrec' showList' prec = \case
+    Term3B x -> liftShowsPrec showsPrec' showList' prec x
+    Term3S x -> liftShowsPrec showsPrec' showList' prec x
+    Term3A x -> liftShowsPrec showsPrec' showList' prec x
     Term3Unsized urt -> shows $ "Term3Unsized" <> show urt
     Term3CheckingWrapper loc cf c -> shows "Term3CheckingWrapper(" . shows loc . shows ", " . showsPrec' 0 cf . shows ", " . showsPrec' 0 c . shows ")"
 
@@ -127,10 +126,10 @@ data ParserTermF l v f
   deriving (Functor, Foldable, Traversable)
 deriving instance (Show l, Show v, Show a) => Show (ParserTermF l v a)
 instance (Show l, Show v) => Show1 (ParserTermF l v) where
-  liftShowsPrec showsPrecFunc showList d = \case
-    ParserTermB x -> liftShowsPrec showsPrecFunc showList d x
-    ParserTermH x -> liftShowsPrec showsPrecFunc showList d x
-    ParserTermL x -> liftShowsPrec showsPrecFunc showList d x
+  liftShowsPrec showsPrecFunc showListFunc d = \case
+    ParserTermB x -> liftShowsPrec showsPrecFunc showListFunc d x
+    ParserTermH x -> liftShowsPrec showsPrecFunc showListFunc d x
+    ParserTermL x -> liftShowsPrec showsPrecFunc showListFunc d x
     TUnsizedRepeaterF -> showString "TUnsizedRepeaterF"
 instance BasicBase (ParserTermF l v) where
   embedB = ParserTermB
@@ -186,7 +185,7 @@ instance TelomareLike StuckExpr where
   toTelomare = pure
 
 instance TelomareLike Term3 where
-  fromTelomare = verify . cata (convertBasic (convertStuck (\z -> Left "failed converting to Term3"))) where
+  fromTelomare = verify . cata (convertBasic (convertStuck (\_z -> Left "failed converting to Term3"))) where
     verify = \case
       Right x -> x
       Left e -> error e
@@ -200,6 +199,13 @@ instance TelomareLike Term3 where
       Term3B b -> embed' . StuckExprB <$> sequence b
       Term3S s -> embed' . StuckExprS <$> sequence s
     embed' = Fix
+
+instance TelomareLike CompiledExpr where
+  fromTelomare = verify . cata (convertBasic (convertStuck (\_z -> Left "failed to convert to CompiledExpr"))) where
+    verify = \case
+      Left e  -> error e
+      Right x -> x
+  toTelomare = cata (convertBasic (convertStuck (const Nothing)))
 
 instance CarryAnno StuckExpr where
   type CarryWrap StuckExpr = StuckExprF

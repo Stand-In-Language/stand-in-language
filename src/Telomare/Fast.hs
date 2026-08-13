@@ -67,7 +67,7 @@ import Control.Comonad.Cofree (Cofree ((:<)))
 import qualified Control.Comonad.Trans.Cofree as CofreeT
 import Control.Monad.Except (ExceptT, runExceptT, throwError)
 import Control.Monad.State.Strict (State, get, gets, modify', put, runState)
-import Data.Bifunctor (bimap, first, second)
+import Data.Bifunctor (first)
 import Data.Char (chr, ord)
 import Data.Functor.Foldable (cata, embed)
 import Data.List (sortOn)
@@ -79,7 +79,6 @@ import System.IO (hFlush, isEOF, stdout)
 import Telomare.Error
 import Telomare.Expand (expandModule, renderExpansionError)
 import Telomare.IR.Base
-import Telomare.IR.Builder
 import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.IR.Surface

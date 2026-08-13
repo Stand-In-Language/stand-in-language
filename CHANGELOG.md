@@ -27,6 +27,13 @@
   `Telomare.Decompiler`, and orphaned fixture files.
 * Removed the `telomare-evaluare` executable and its flake app; its
   interactive evaluation functionality lives in the LSP app now.
+* Fixed every GHC `-Wall` warning across the library, executables, and test
+  suites (unused imports, name shadowing, incomplete patterns, missing
+  signatures, orphan instances, type defaults). Orphan instances moved to
+  their proper homes: `MonadFail (Either ResolverError)` to `Telomare.Error`,
+  `TelomareLike CompiledExpr` to `Telomare.IR.Core`, and the
+  `PrettyPrintable` `Char`/`FunctionIndex` instances to
+  `Telomare.PrettyPrint`.
 
 ## 0.1.0.0 -- YYYY-mm-dd
 

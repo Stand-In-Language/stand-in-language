@@ -4,6 +4,7 @@
 {-# LANGUAGE LambdaCase           #-}
 {-# LANGUAGE ScopedTypeVariables  #-}
 {-# LANGUAGE TypeFamilies         #-}
+{-# LANGUAGE TypeOperators        #-}
 {-# LANGUAGE UndecidableInstances #-}
 
 -- |The sizing pass: telomare's totality checker. 'sizeTermM' abstractly
@@ -15,54 +16,25 @@
 module Telomare.Size where
 
 import Control.Applicative
-import Control.Comonad.Cofree (Cofree ((:<)), hoistCofree)
 import qualified Control.Comonad.Trans.Cofree as CofreeT (CofreeF (..))
-import Control.Lens.Plated (transform)
-import Control.Monad
-import Control.Monad.Except
-import Control.Monad.Reader (Reader, ReaderT, ask, local, runReaderT)
-import qualified Control.Monad.Reader as Reader
-import qualified Control.Monad.State.Lazy as StateL
-import Control.Monad.State.Strict (State, StateT)
-import qualified Control.Monad.State.Strict as State
-import Control.Monad.Trans.Class
-import Data.Bifunctor
-import Data.Char (chr)
-import Data.Fix (Fix (..), hoistFix')
+import Control.Monad.Reader (runReaderT)
 import Data.Foldable
-import Data.Functor.Classes
 import Data.Functor.Foldable
-import Data.Functor.Foldable.TH
-import Data.Kind
-import Data.List (nub, nubBy, partition, sortBy)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromMaybe)
-import Data.Monoid
 -- import Data.SBV ((.<), (.>))
-import Control.Comonad.Trans.Cofree (CofreeF, headF)
 import Control.Exception (Exception)
 import Control.Exception.Base (throw)
-import Control.Monad.Reader.Class
-import Data.Functor.Identity (Identity (Identity), runIdentity)
-import Data.Semigroup (Max (..))
+import Data.Functor.Identity (Identity, runIdentity)
 import Data.Set (Set)
 import qualified Data.Set as Set
-import Data.Void
 import Debug.Trace
-import GHC.Generics (Generic)
 import Telomare.Error
 import Telomare.IR.Base
-import Telomare.IR.Builder
 import Telomare.IR.Core
 import Telomare.IR.Loc
-import Telomare.IR.Surface
-import Telomare.IR.Types
 import Telomare.Machine hiding (debug, debugTrace)
 import Telomare.PrettyPrint
-import Telomare.PrettyPrint.Indent (indentWithChildren', indentWithOneChild,
-                                    indentWithOneChild', indentWithTwoChildren,
-                                    indentWithTwoChildren', sindent)
 import Telomare.Size.IR
 
 debug :: Bool
@@ -105,9 +77,6 @@ extractInputRestrictions = cleanup . f Nothing where
     GateSwitch l r s ->
       let nl = f expected l
           nr = f expected r
-          pf = \case
-            Just (StrictAccum s _) -> s
-            _ -> Set.empty
       in case (nl, nr) of
         (Nothing, Nothing) -> debugTrace "extractZeroes gate nothing" Nothing
         (Just (StrictAccum sta x), Just (StrictAccum stb _)) -> debugTrace "extractZeroes gate both" $ case f Nothing s of
@@ -128,25 +97,16 @@ findInputLimitStepM :: (InputSizingExprF InputSizingExpr -> StrictAccum InputRes
   -> InputSizingExprF InputSizingExpr -> StrictAccum InputRestrictions InputSizingExpr
 findInputLimitStepM handleOther x = f x where
   f = \case
-    UnsizedFW (RefinementWrapperF lt tc c) ->
+    UnsizedFW (RefinementWrapperF _lt tc c) ->
       let
           performTC = SetEnvB $ PairB (AbortEE AbortF) (appB tc c)
           wrapDefer = \case
             FillFunction GateB i@(IndexedEE _) -> deferredEE . BarrierF . embed $ FillFunction GateB i
-            x -> error $ "findInputLimitStepM eval unexpected:\n" <> prettyPrint x
+            other -> error $ "findInputLimitStepM eval unexpected:\n" <> prettyPrint other
           evalStep = basicStep (stuckStep (abortStep (deferredEvalStep (abortDeferredStep (indexedInputStep' Set.empty wrapDefer)))))
-          convertIL :: InputSizingExpr -> UnsizedExpr
-          convertIL = validate . cata f where
-            f = convertBasic (convertStuck (convertAbort (convertIndexed convertFail)))
-            -- convertFail z = Left ("findInputLimitStepM convert failed on unexpected\n" <> prettyPrint z)
-            convertFail z = Left "findInputLimitStepM convert failed on something unexpected"
-          validate = \case
-            Left e -> error e
-            Right x -> x
-          ev = transformNoDefer evalStep
           stripBarrier = \case
-            DeferredFW (BarrierF x) -> x
-            x -> embed x
+            DeferredFW (BarrierF inner) -> inner
+            other -> embed other
           s = extractInputRestrictions . cata stripBarrier . transformNoDefer evalStep $ performTC
       in StrictAccum s c
     _ -> handleOther x
@@ -165,7 +125,7 @@ term3ToUnsizedExpr = runIdentity . cata conv where
   convertOther (_ CofreeT.:< g) = case g of
     Term3Unsized urt -> pure . unsizedEE . UnsizedStubF urt $ EnvB
     Term3CheckingWrapper loc tc c -> unsizedEE <$> (RefinementWrapperF loc <$> tc <*> c)
-    z -> error "term3ToUnsizedExpr could not convert"
+    _z -> error "term3ToUnsizedExpr could not convert"
 
 -- get simple input limits derived from refinements
 -- returns a set of guaranteed Zeros, where the Integer is the encoded path from root of intput
@@ -218,14 +178,12 @@ sizeTermM sizingSettings x = tidyUp . ($ []) . runReaderT . transformNoDeferM ev
     , sizingFailureKind = kind
     , sizingFailureLoc = Nothing
     }
-  failConvert x = (>>= Left) $ ("sizeTermM convert, unhandled:\n" <>) .  prettyPrint <$> sequence x
-  forceType :: StuckExpr -> StuckExpr
-  forceType = id
-  inputRestrictions = (\x -> debugTrace ("sizeTermM zeros are\n" <> show x) x) $ getInputLimits cm'
+  failConvert unhandled = (>>= Left) $ ("sizeTermM convert, unhandled:\n" <>) .  prettyPrint <$> sequence unhandled
+  inputRestrictions = (\ir -> debugTrace ("sizeTermM zeros are\n" <> show ir) ir) $ getInputLimits cm'
   zeros = zeroes inputRestrictions
   convertNakedEnvs = \case
     StuckFW EnvSF -> ZeroB
-    x -> embed x
+    other -> embed other
   dtt :: UnsizedExpr -> UnsizedExpr
   dtt t = debugTrace ("sizeTermM initial term is\n" <> prettyPrint t) t
   cm' = dtt $ if doCap sizingSettings
@@ -250,14 +208,14 @@ sizeTermM sizingSettings x = tidyUp . ($ []) . runReaderT . transformNoDeferM ev
   clean = verify . cata (convertBasic (convertStuck (convertAbort failConvert)))
   verify = \case
     Left e -> error e
-    Right x -> x
+    Right converted -> converted
   setSizes :: Map UnsizedRecursionToken (Maybe Int) -> UnsizedExpr -> UnsizedExpr
   setSizes sizeMap = cata $ \case
-    UnsizedFW us@(UnsizedStubF tok _) -> case Map.lookup tok sizeMap of
+    UnsizedFW _us@(UnsizedStubF tok _) -> case Map.lookup tok sizeMap of
       Just (Just n) -> debugTrace ("sizeTermM setting size: " <> show (tok, n)) iterate (StuckEE . SetEnvSF) EnvB !! (n + 1)
       _      -> debugTrace ("no size found for " <> show tok) SetEnvB EnvB
-    UnsizedFW (TraceF _ x) -> x
-    x -> embed x
+    UnsizedFW (TraceF _ inner) -> inner
+    other -> embed other
   foldAborted = cata f where
     f = \case
       AbortFW (AbortedF (AbortRecursion i)) -> case b2i i of
@@ -267,14 +225,13 @@ sizeTermM sizingSettings x = tidyUp . ($ []) . runReaderT . transformNoDeferM ev
       AbortFW (AbortedF (AbortUnsizeable t)) -> case b2i t of
         Just i' -> Just . UnsizableSR $ toEnum i'
         _ -> error $ "sizeTermM foldAborted unexpected AbortUnsizeable value:\n" <> prettyPrint t
-      x                                 -> Data.Foldable.fold x
-  unhandledMerge x y = error ("sizeTermM unhandledMerge: " <> show (x,y))
-  unhandledGate x = error ("sizeTermM unhandled gate input: " <> show x)
+      other                             -> Data.Foldable.fold other
+  unhandledGate g = error ("sizeTermM unhandled gate input: " <> show g)
   gateResult = gateBasicResult (gateAbortResult (gateIndexedResult (gateSuperResult gateResult unhandledGate)))
   unsizedTest :: UnsizedRecursionToken -> UnsizedExpr -> UnsizedExpr
   unsizedTest ri = unsizedTestIndexed zeros (unsizedTestSuper (unsizedTest ri) (const id)) ri
-  unsizedTest' ri = (\x -> debugTrace ("unsizedTest evaluated to value of\n" <> prettyPrint x) x) . unsizedTest ri
-  unhandledError x = throw $ UGException ("sizeTermM unhandled case\n" <> prettyPrint x)
+  unsizedTest' ri = (\v -> debugTrace ("unsizedTest evaluated to value of\n" <> prettyPrint v) v) . unsizedTest ri
+  unhandledError err = throw $ UGException ("sizeTermM unhandled case\n" <> prettyPrint err)
   evalStep = basicStepM (stuckStepM (abortStepM (indexedAbortStepM (indexedInputStepM zeros (indexedSuperStepM (superStepM gateResult evalStep (superAbortStepM evalStep (unsizedStepM''' (maxSizingSize sizingSettings) zeros unsizedTest' unhandledError))))))))
 
 
@@ -285,7 +242,6 @@ getSizesM maxSize x = tidyUp . ($ []) . runReaderT . transformNoDeferM evalStep 
     , sizingFailureKind = kind
     , sizingFailureLoc = Nothing
     }
-  failConvert x = error $ "getSizesM convert, unhandled:\n" <> prettyPrint x
   inputRestrictions = getInputLimits x
   zeros = zeroes inputRestrictions
   cm = removeRefinementWrappers $ capMain (initialInput inputRestrictions) x
@@ -302,34 +258,32 @@ getSizesM maxSize x = tidyUp . ($ []) . runReaderT . transformNoDeferM evalStep 
       AbortFW (AbortedF (AbortUnsizeable t)) -> case b2i t of
         Just i' -> Just . UnsizableSR $ toEnum i'
         _ -> error $ "getSizesM foldAborted AbortUnsizeable unexpected value:\n" <> prettyPrint t
-      x                                 -> Data.Foldable.fold x
-  unhandledMerge x y = error ("getSizesM unhandledMerge: " <> show (x,y))
-  unhandledGate x = error ("getSizesM unhandled gate input: " <> show x)
+      other                             -> Data.Foldable.fold other
+  unhandledGate g = error ("getSizesM unhandled gate input: " <> show g)
   gateResult = gateBasicResult (gateAbortResult (gateIndexedResult (gateSuperResult gateResult unhandledGate)))
   unsizedTest :: UnsizedRecursionToken -> UnsizedExpr -> UnsizedExpr
   unsizedTest ri = unsizedTestIndexed zeros (unsizedTestSuper (unsizedTest ri) (const id)) ri
-  unsizedTest' ri = unsizedTest ri . (\x -> debugTrace ("getSizesM value of\n" <> prettyPrint x) x)
-  unhandledError x = error ("getSizesM unhandled case\n" <> prettyPrint x)
+  unsizedTest' ri = unsizedTest ri . (\v -> debugTrace ("getSizesM value of\n" <> prettyPrint v) v)
   evalStep = basicStepM (stuckStepM (abortStepM (indexedAbortStepM (indexedInputStepM zeros (indexedSuperStepM (superStepM gateResult evalStep (superAbortStepM evalStep (unsizedStepM''' maxSize zeros unsizedTest' failAndPrintStack))))))))
 
 removeRefinementWrappers :: (Base g ~ f, BasicBase f, StuckBase f, AbortBase f, UnsizedBase f, Recursive g, Corecursive g) => g -> g
 removeRefinementWrappers = cata f where
   f = \case
-    UnsizedFW (RefinementWrapperF lt tc c) ->
+    UnsizedFW (RefinementWrapperF _lt tc c) ->
       let innerTC = appB (LeftB EnvB) (RightB EnvB)
           performTC = deferB removeRefinementWrappersTC . SetEnvB $ PairB (SetEnvB $ PairB (AbortEE AbortF) innerTC) (RightB EnvB)
       in SetEnvB $ PairB performTC (PairB tc c)
     x -> embed x
 
 evalStaticCheck :: Bool -> StaticCheckExpr -> Maybe BasicExpr
-evalStaticCheck doCap t =
+evalStaticCheck shouldCap t =
   let unhandledError x = error ("evalA unhandled case " <> prettyPrint x)
       runResult = let aStep :: StaticCheckExprF StaticCheckExpr -> StaticCheckExpr
                       aStep = basicStep (stuckStep (abortStep (deferredEvalStep' unhandledError)))
                       eval' :: StaticCheckExpr -> StaticCheckExpr
                       eval' = transformNoDefer aStep
                       inp = deferredEE $ BarrierF EnvB
-                      x = (\x' -> debugTrace ("evalA starting expr:\n" <> prettyPrint x') x') $ if doCap then capMain inp t else t
+                      x = (\x' -> debugTrace ("evalA starting expr:\n" <> prettyPrint x') x') $ if shouldCap then capMain inp t else t
                   in eval' x
       getAborted = \case
         AbortFW (AbortedF e) -> Just e
@@ -338,12 +292,12 @@ evalStaticCheck doCap t =
   in cata getAborted runResult
 
 evalPartialUnsized :: Set Integer -> InputSizingExpr -> SizedRecursion
-evalPartialUnsized zeroes = cata gatherLimits . transformNoDefer step where
-  unsizedTest = unsizedTestIndexed zeroes (unsizedTestDeferred (\_ x -> error ("evalPartialUnsized unsizedTest unhandled:\n" <> prettyPrint x)))
-  step = deferStep (basicStep (stuckStep (deferredEvalStep' (indexedInputStep zeroes (abortStep (abortDeferredStep (unsizedStep 255 unsizedTest step wrapUnknownStep)))))))
+evalPartialUnsized zeroSet = cata gatherLimits . transformNoDefer step where
+  unsizedTest = unsizedTestIndexed zeroSet (unsizedTestDeferred (\_ x -> error ("evalPartialUnsized unsizedTest unhandled:\n" <> prettyPrint x)))
+  step = deferStep (basicStep (stuckStep (deferredEvalStep' (indexedInputStep zeroSet (abortStep (abortDeferredStep (unsizedStep 255 unsizedTest step wrapUnknownStep)))))))
   dof _ =  id
   deferStep handleOther = \case
-    StuckFW (DeferSF id x) -> dof id deferB (fromEnum id) . cata removeBarriers $ transformNoDefer (step . addBarrier) x
+    StuckFW (DeferSF fid x) -> dof fid deferB (fromEnum fid) . cata removeBarriers $ transformNoDefer (step . addBarrier) x
     x -> handleOther x
   addBarrier = \case
     StuckFW EnvSF -> embedD $ BarrierF EnvB
@@ -353,7 +307,7 @@ evalPartialUnsized zeroes = cata gatherLimits . transformNoDefer step where
     x -> embed x
   wrapUnknownStep = deferredEE . BarrierF . embed
   gatherLimits = \case
-    UnsizedFW (RecursionTestF ri x) -> SizedRecursion $ Map.singleton ri Nothing
+    UnsizedFW (RecursionTestF ri _x) -> SizedRecursion $ Map.singleton ri Nothing
     UnsizedFW (SizeStageF sm x) -> sm <> x
     x -> Data.Foldable.fold x
 

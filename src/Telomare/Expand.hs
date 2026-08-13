@@ -235,7 +235,7 @@ expandPlainListAssignment loc locatedNames body =
 -- bind `f` and `g` as functions rather than trying to project from a lambda.
 listAssignmentSlots :: ExpandedSurfaceTerm -> Maybe ([ExpandedSurfaceTerm], ExpandedSurfaceTerm -> ExpandedSurfaceTerm)
 listAssignmentSlots = go where
-  go (l :< ListUPF xs) = Just (xs, id)
+  go (_l :< ListUPF xs) = Just (xs, id)
   go (l :< LetUPF binds inner) = do
     (xs, wrapBody) <- go inner
     pure (xs, \expr -> l :< LetUPF binds (wrapBody expr))
@@ -329,7 +329,7 @@ expandUDTLocated' loc locatedNames tname body =
 -- context as the core tuple, but not the sibling method bodies.
 udtSlots :: LocTag -> String -> ExpandedSurfaceTerm -> Either ExpansionError ([ExpandedSurfaceTerm], ExpandedSurfaceTerm -> ExpandedSurfaceTerm)
 udtSlots loc tname = go where
-  go (l :< ListUPF xs) = Right (xs, id)
+  go (_l :< ListUPF xs) = Right (xs, id)
   go (l :< LetUPF binds inner) = do
     (xs, wrapBody) <- go inner
     pure (xs, \expr -> l :< LetUPF binds (wrapBody expr))
