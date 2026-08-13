@@ -41,12 +41,12 @@ data PartialTypeF f
   deriving Eq1 via (Generically1 PartialTypeF)
   deriving Ord1 via (Generically1 PartialTypeF)
 instance Show1 PartialTypeF where
-  liftShowsPrec showsPrecFunc showList d = \case
+  liftShowsPrec showsPrecFunc _showList _d = \case
     ZeroTypeP -> showString "ZeroTypeP"
     AnyType -> showString "AnyType"
     TypeVariable l i -> showString "TypeVariable " . shows l . showString " " . shows i
     ArrTypeP i o -> showString "ArrTypeP (" . showsPrecFunc 0 i . showString " -> " . showsPrecFunc 0 o . showString ")"
-    PairTypeP a b -> showString "PairTypeP (" . showsPrecFunc 0 b . showString ", " . showsPrecFunc 0 b . showString ")"
+    PairTypeP _a b -> showString "PairTypeP (" . showsPrecFunc 0 b . showString ", " . showsPrecFunc 0 b . showString ")"
 
 type PartialType = Fix PartialTypeF
 

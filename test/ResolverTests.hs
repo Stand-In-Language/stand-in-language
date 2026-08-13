@@ -6,41 +6,32 @@
 module Main where
 
 import CaseTests (qcPropsCase, unitTestsCase)
-import Common
+import Common ()
 import Control.Comonad.Cofree (Cofree ((:<)))
 import Control.Exception (SomeException, try)
-import Control.Monad.Except (ExceptT, MonadError, catchError, runExceptT,
-                             throwError)
+import Control.Monad.Except (MonadError, catchError, throwError)
 import Data.Algorithm.Diff (getGroupedDiff)
 import Data.Algorithm.DiffOutput (ppDiff)
 import Data.Bifunctor (first)
 import Data.List (isInfixOf, isPrefixOf, sortOn)
-import Debug.Trace (trace, traceShow, traceShowId)
-import System.IO
 import qualified System.IO.Strict as Strict
 import System.IO.Unsafe (unsafePerformIO)
-import System.Posix.IO
-import System.Posix.Process
-import System.Posix.Types
 import Telomare.Desugar
 import Telomare.Driver
 import Telomare.Error
-import Telomare.Eval.Reference
 import Telomare.Expand
 import qualified Telomare.Fast as Fast
 import Telomare.IR.Base
-import Telomare.IR.Builder
 import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.IR.Surface
-import Telomare.IR.Types
 import Telomare.Parse
 import Telomare.Resolve
 import Telomare.Size (SizingSettings (SizingSettings))
 import Test.Tasty
 import Test.Tasty.HUnit
 import Test.Tasty.QuickCheck as QC
-import Text.Megaparsec (eof, errorBundlePretty, runParser)
+import Text.Megaparsec (errorBundlePretty, runParser)
 import Text.Show.Pretty (ppShow)
 
 type Term2' = Term2
@@ -55,6 +46,7 @@ tests = testGroup "Tests" [unitTests, qcProps, unitTestsCase, qcPropsCase]
 ---------------------
 ------ Property Tests
 ---------------------
+qcProps :: TestTree
 qcProps = testGroup "Property tests (QuickCheck)"
   [ QC.testProperty "Check recursive let work backward"
       . withMaxSuccess 16
@@ -179,14 +171,16 @@ genRecursiveLetWithCycle :: Gen [String]
 genRecursiveLetWithCycle = do
   assignments <- genRecursiveLet
   cycleLetIndex <- choose (1, length assignments - 1)
-  let (before, assignment : after) = splitAt cycleLetIndex assignments
-      assignment' = takeWhile (/= '=') assignment
-                 <> "= concat ["
-                 <> (drop 2 . dropWhile (/= '=')) assignment
-                 <> " , "
-                 <> ( takeWhile (/= ' ' ) . head) assignments
-                 <> "]"
-  pure $ before <> [assignment'] <> after
+  case splitAt cycleLetIndex assignments of
+    (before, assignment : rest) ->
+      let assignment' = takeWhile (/= '=') assignment
+                     <> "= concat ["
+                     <> (drop 2 . dropWhile (/= '=')) assignment
+                     <> " , "
+                     <> ( takeWhile (/= ' ' ) . head) assignments
+                     <> "]"
+      in pure $ before <> [assignment'] <> rest
+    (_, []) -> error "Main.genRecursiveLetWithCycle: unexpected empty second half of splitAt"
 
 
 -- Variable and Import str generator
@@ -230,6 +224,7 @@ genRecursiveImports = do
     mainModule  = ("Main", "import " <> head moduleNames <> "\nmain = \\input -> (" <> varName <> ",0)")
   pure $ mainModule : zip moduleNames assignments
 
+aux222 :: [(String, String)]
 aux222 =
   [ ("Main", "import Abc\nmain = \\input -> (xyz, 0)")
   , ("Abc", "import Def")
@@ -263,10 +258,11 @@ onlyHashUPsChanged term2 = all (isHash . fst) diffList where
 checkAllHashes :: Term2' -> Bool
 checkAllHashes = noDups . allHashesToTerm2
 
+noDups :: [Term2'] -> Bool
 noDups = not . f []
   where
     f seen (x:xs) = x `elem` seen || f (x:seen) xs
-    f seen []     = False
+    f _seen []    = False
 
 allHashesToTerm2 :: Term2' -> [Term2']
 allHashesToTerm2 term2 =
@@ -464,8 +460,10 @@ qualifiedImport :: LocTag -> String -> String -> ExpandedModuleItem ExpandedSurf
 qualifiedImport loc qualifier moduleName = ExpandedModuleImport $
   ImportDecl loc (locatedName loc moduleName) (Just $ locatedName loc qualifier)
 
+runBackwardCycleLet :: String
 runBackwardCycleLet = "runMainCore failed: RE (DefinitionCycle [\"xyz\",\"abc\",\"def\",\"ghi\",\"jkl\",\"xyz\"])"
 
+runForwardCycleLet :: String
 runForwardCycleLet = "runMainCore failed: RE (DefinitionCycle [\"abc\",\"def\",\"ghi\",\"jkl\",\"xyz\",\"abc\"])"
 
 removeCallStack :: String -> String
@@ -474,6 +472,7 @@ removeCallStack = unlines . takeWhile (/= "CallStack (from HasCallStack):") . li
 trimEnd :: String -> String
 trimEnd s = reverse (dropWhile (`elem` [' ', '\n']) (reverse s))
 
+recursiveLet :: [String]
 recursiveLet =
   [ "abc = def"
   , "def = ghi"
@@ -482,6 +481,7 @@ recursiveLet =
   , "xyz = \"whattt\""
   ]
 
+cycleLet :: [String]
 cycleLet =
   [ "abc = def"
   , "def = ghi"
@@ -510,6 +510,7 @@ tictactoeUnsized = do
         Left e           -> pure $ "run failed: " <> show e
         Right transcript -> pure transcript
 
+fullRunTicTacToeString :: String
 fullRunTicTacToeString = init . unlines $
   [ "1|2|3"
   , "-+-+-"
@@ -555,6 +556,7 @@ testUserDefAdHocTypes input = do
   preludeString <- Strict.readFile "Prelude.tel"
   runMain_ [("Prelude", preludeString), ("DummyModule", input)] "DummyModule"
 
+userDefAdHocTypesSuccess :: String
 userDefAdHocTypesSuccess = unlines
   [ "import Prelude"
   , "[MyInt, mkMyInt, unMyInt] = \\h ->"
@@ -566,6 +568,7 @@ userDefAdHocTypesSuccess = unlines
   , "main = \\i -> (unMyInt (mkMyInt 8), 0)"
   ]
 
+userDefAdHocTypesFailure :: String
 userDefAdHocTypesFailure = unlines
   [ "import Prelude"
   , "[MyInt, mkMyInt, unMyInt] = \\h ->"
@@ -577,26 +580,32 @@ userDefAdHocTypesFailure = unlines
   , "main = \\i -> (mkMyInt 0, 0)"
   ]
 
+topLevelListAssignment :: String
 topLevelListAssignment = unlines
   [ "import Prelude"
   , "[a, b] = [\"left\", \"right\"]"
   , "main = \\i -> (b, 0)"
   ]
 
+lambdaListAssignment :: String
 lambdaListAssignment = unlines
   [ "import Prelude"
   , "[f, g] = \\x -> [\\y -> x, \\z -> z]"
   , "main = \\i -> (f \"kept\" 0, 0)"
   ]
 
+hashtest0 :: String
 hashtest0 = unlines ["let wrapper = 2",
                 "  in (# wrapper)"]
 
+hashtest1 :: String
 hashtest1 = unlines ["let var = 3",
                 "  in (# var)"]
+hashtest2 :: String
 hashtest2 = unlines [ "let a = \\y -> y"
                , "in (# a)"
                ]
+hashtest3 :: String
 hashtest3 = unlines [ "let b = \\x -> x"
                , "in (# b)"
                ]
@@ -656,24 +665,28 @@ showAllTransformations input = do
   -- section "Diff optimizeBindingsReference" $ ppDiff diff
   let validateVariablesVar = validateVariables (desugarTerm upt)
       str3 = lines . show $ validateVariablesVar
-      diff = getGroupedDiff str3 str1
+      diffValidateVariables = getGroupedDiff str3 str1
   section "Resolve: validateVariables" . show $ validateVariablesVar
-  section "Diff Resolve: validateVariables" $ ppDiff diff
-  let Right debruijinizeVar = (>>= debruijinize) validateVariablesVar
+  section "Diff Resolve: validateVariables" $ ppDiff diffValidateVariables
+  let debruijinizeVar = case (>>= debruijinize) validateVariablesVar of
+        Right x -> x
+        Left e  -> error $ "Main.showAllTransformations: unexpected debruijinize failure: " <> show e
       str4 = lines . show $ debruijinizeVar
-      diff = getGroupedDiff str4 str3
+      diffDebruijinize = getGroupedDiff str4 str3
   section "Resolve: debruijinize" . show $ debruijinizeVar
-  section "Diff Resolve: debruijinize" $ ppDiff diff
+  section "Diff Resolve: debruijinize" $ ppDiff diffDebruijinize
   let splitExprVar = splitExpr debruijinizeVar
       str5 = lines . ppShow $ splitExprVar
-      diff = getGroupedDiff str5 str4
+      diffSplitExpr = getGroupedDiff str5 str4
   section "Resolve: splitExpr" . ppShow $ splitExprVar
-  section "Diff Resolve: splitExpr" $ ppDiff diff
-  let Right (Just toTelomareVar) = fmap toTelomare . findChurchSizeD (DebugSizing (SizingSettings 255 False)) $ splitExprVar
+  section "Diff Resolve: splitExpr" $ ppDiff diffSplitExpr
+  let toTelomareVar = case fmap toTelomare . findChurchSizeD (DebugSizing (SizingSettings 255 False)) $ splitExprVar of
+        Right (Just x) -> x
+        other          -> error $ "Main.showAllTransformations: unexpected sizing result: " <> show other
       str6 = lines . show $ toTelomareVar
-      diff = getGroupedDiff str6 str5
+      diffToTelomare = getGroupedDiff str6 str5
   section "Size: findChurchSizeD + toTelomare" . show $ toTelomareVar
-  section "Diff Size: findChurchSizeD + toTelomare" $ ppDiff diff
+  section "Diff Size: findChurchSizeD + toTelomare" $ ppDiff diffToTelomare
   putStrLn "\n-----------------------------------------------------------------"
   putStrLn "---- stepEval:\n"
   x <- stepIEval toTelomareVar

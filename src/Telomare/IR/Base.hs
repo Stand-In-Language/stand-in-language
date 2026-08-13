@@ -8,6 +8,7 @@
 {-# LANGUAGE PatternSynonyms            #-}
 {-# LANGUAGE ScopedTypeVariables        #-}
 {-# LANGUAGE TypeFamilies               #-}
+{-# LANGUAGE TypeOperators              #-}
 {-# LANGUAGE ViewPatterns               #-}
 
 -- |The shared functor vocabulary of the compiler. Telomare's IRs are not
@@ -28,12 +29,13 @@ import Data.Fix (Fix (..))
 import Data.Functor.Classes (Eq1 (..), Show1 (..))
 import Data.Functor.Foldable (Base, Corecursive (embed),
                               Recursive (cata, project))
+import Data.Kind (Type)
 import Data.Map (Map)
 import qualified Data.Map as Map
 import qualified Data.Set as Set
 import Data.Validity (Validity)
 import GHC.Generics (Generic, Generic1, Generically1 (..))
-import Telomare.IR.Loc (LocTag (..), LocatedName)
+import Telomare.IR.Loc (LocTag (..))
 
 class BasicBase g where
   embedB :: BasicExprF x -> g x
@@ -132,12 +134,12 @@ data BasicExprF f
 
 instance Eq1 BasicExprF where
   liftEq test a b = case (a,b) of
-    (ZeroSF, ZeroSF)         -> True
-    (PairSF a b, PairSF c d) -> test a c && test b d
-    _                        -> False
+    (ZeroSF, ZeroSF)           -> True
+    (PairSF a' b', PairSF c d) -> test a' c && test b' d
+    _                          -> False
 
 instance Show1 BasicExprF where
-  liftShowsPrec showsPrec' showList prec = \case
+  liftShowsPrec showsPrec' _showList _prec = \case
     ZeroSF -> shows "ZeroSF"
     PairSF a b -> shows "PairSF (" . showsPrec' 0 a . shows ", " . showsPrec' 0 b . shows ")"
 
@@ -157,7 +159,7 @@ data StuckF f
   deriving (Eq, Ord, Show, Functor, Foldable, Traversable, Generic)
 
 instance Show1 StuckF where
-  liftShowsPrec showsPrec' showList prec = \case
+  liftShowsPrec showsPrec' _showList _prec = \case
     DeferSF fi x -> shows "DeferSF " . shows fi . shows " (" . showsPrec' 0 x . shows ")"
     EnvSF -> shows "EnvSF"
     SetEnvSF x -> shows "SetEnvSF (" . showsPrec' 0 x . shows ")"
@@ -185,17 +187,19 @@ data AbortableF f
   deriving (Eq, Show, Functor, Foldable, Traversable, Generic)
 
 instance Eq1 AbortableF  where
-  liftEq test a b = case (a,b) of
+  liftEq _test a b = case (a,b) of
     (AbortF, AbortF)                  -> True
-    (AbortedF a, AbortedF b) | a == b -> True
+    (AbortedF x, AbortedF y) | x == y -> True
     _                                 -> False
 
 instance Show1 AbortableF where
-  liftShowsPrec showsPrec showList prec = \case
+  liftShowsPrec _showsPrec _showList _prec = \case
     AbortF     -> shows "AbortF"
     AbortedF x -> shows "(AbortedF " . shows x . shows ")"
 
-newtype UnsizedRecursionToken = UnsizedRecursionToken { unUnsizedRecursionToken :: Int } deriving (Eq, Ord, Show, Enum, NFData, Generic)
+newtype UnsizedRecursionToken = UnsizedRecursionToken { unUnsizedRecursionToken :: Int }
+  deriving (Eq, Ord, Show, Enum, Generic)
+  deriving anyclass (NFData)
 
 instance Validity UnsizedRecursionToken
 
@@ -226,7 +230,7 @@ data LamTermF l v f
   deriving (Eq, Show, Functor, Foldable, Traversable, Generic1)
   deriving Eq1 via (Generically1 (LamTermF l v))
 instance (Show l, Show v) => Show1 (LamTermF l v) where
-  liftShowsPrec showsPrecFunc showList d = \case
+  liftShowsPrec showsPrecFunc _showList _d = \case
     VarF s -> showString "VarUPF " . shows s
     AppF f x -> showString "AppUPF " . showsPrecFunc 11 f . showChar ' '
                   . showsPrecFunc 11 x
@@ -246,7 +250,7 @@ data HighTermF f
   deriving (Eq, Show, Functor, Foldable, Traversable, Generic1)
   deriving Eq1 via (Generically1 HighTermF)
 instance Show1 HighTermF where
-  liftShowsPrec showsPrecFunc showList d = \case
+  liftShowsPrec showsPrecFunc _showList _d = \case
     ITEF c t e -> showString "ITEUPF " . showsPrecFunc 11 c . showChar ' '
                     . showsPrecFunc 11 t . showChar ' ' . showsPrecFunc 11 e
     ChurchF n -> showString "ChurchUPF " . shows n
@@ -331,7 +335,7 @@ convertAbortMessage = \case
   x -> "unexpected abort: " <> show x
 
 class CarryAnno g where
-  type CarryWrap g :: * -> *
+  type CarryWrap g :: Type -> Type
 
   getEmbed :: g -> (CarryWrap g) g -> g
 

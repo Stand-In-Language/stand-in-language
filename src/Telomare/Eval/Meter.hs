@@ -53,13 +53,8 @@ import Data.Foldable (asum)
 import Data.Functor.Foldable (cata, project)
 import Numeric.Natural (Natural)
 
-import Telomare.Error
 import Telomare.IR.Base
-import Telomare.IR.Builder
 import Telomare.IR.Core
-import Telomare.IR.Loc
-import Telomare.IR.Surface
-import Telomare.IR.Types
 import Telomare.Machine (abortInd, deferB, doLeft, doRight)
 
 -- |What a run cost.
@@ -154,6 +149,8 @@ runMeter env whole = case project whole of
   StuckFW EnvSF -> case env of
     Just bound -> step >> pure bound
     Nothing    -> unhandled "unapplied environment reference" whole
+
+  _ -> error "Telomare.Eval.Meter.runMeter: unexpected expression"
   where
     settled = step >> pure whole
 

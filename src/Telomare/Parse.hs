@@ -215,7 +215,7 @@ parseListDefinition = do
   x <- getSourceLoc
   names <- (brackets (commaSep1 (scn *> locatedNameParser <* scn)) <* scn)
            <?> "list assignment names"
-  (scn *> symbol "=") <?> "list assignment ="
+  _ <- (scn *> symbol "=") <?> "list assignment ="
   expr <- (scn *> parseLongExpr <* scn) <?> "list assignment body"
   pure $ ListDefF x names expr
 
@@ -308,7 +308,7 @@ parsePatternAnnotated = parens body <?> "annotated pattern"
   where
     body = do
       p <- (scn *> parsePattern <* scn) <?> "pattern before ':'"
-      symbol ":" <* scn
+      _ <- symbol ":" <* scn
       typeExpr <- (parseLongExpr <* scn) <?> "type expression after ':'"
       pure . embed $ PatternAnnotatedF p (AnnotatedPST typeExpr)
 
@@ -346,9 +346,9 @@ parseApplication = try parseApplied <|> parseSingleExpr
 parseLambda :: TelomareParser ParsedSurfaceTerm
 parseLambda = do
   (x, (variables, term1expr)) <- captureSourceSpan $ do
-    symbol "\\" <* scn
+    _ <- symbol "\\" <* scn
     variables <- some parseLocatedPattern <* scn
-    symbol "->" <* scn
+    _ <- symbol "->" <* scn
     term1expr <- parseLongExpr <* scn
     pure (variables, term1expr)
   pure $ x :< ParsedTermSugar (LamPatF variables term1expr)
@@ -402,7 +402,7 @@ parseSingleDefinition :: TelomareParser (DefinitionF ParsedSurfaceTerm)
 parseSingleDefinition = do
   (loc, var) <- locatedIdentifier <* scn
   annotation <- optional . try $ parseRefinementAnnotation
-  scn *> symbol "=" <?> "assignment ="
+  _ <- scn *> symbol "=" <?> "assignment ="
   expr <- scn *> parseLongExpr <* scn
   pure $ SingleDefF (locatedName loc var) annotation expr
 
@@ -488,7 +488,7 @@ runParseExpression :: String -> String -> Either String ParsedSurfaceTerm
 runParseExpression name = first errorBundlePretty . runParser parseExpression name
 
 -- |Parse either a whole block of top level definitions or a single
--- expression. Made for telomare-evaluare and the REPL's @:l@; the caller
+-- expression. Made for the REPL's @:l@; the caller
 -- decides what to do with each shape (typically 'Telomare.Expand.wrapMain'
 -- for definitions).
 parseOneExprOrDefinitions :: TelomareParser (Either [DefinitionF ParsedSurfaceTerm] ParsedSurfaceTerm)

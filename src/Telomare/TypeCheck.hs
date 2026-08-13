@@ -5,28 +5,22 @@ module Telomare.TypeCheck where
 
 import Control.Applicative
 import Control.Comonad.Cofree (Cofree ((:<)))
-import Control.Lens.Plated (transform)
 import Control.Monad.Except
 import Control.Monad.State (State)
 import qualified Control.Monad.State as State
 import Data.Bifunctor (second)
 import qualified Data.DList as DList
 import Data.Fix (Fix (..))
-import Data.Foldable (fold)
 import Data.Functor.Foldable
-import Data.List (nub, sort)
 import Data.Map (Map)
 import qualified Data.Map as Map
-import Data.Semigroup (Max (..))
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Debug.Trace
 import Telomare.Error
 import Telomare.IR.Base
-import Telomare.IR.Builder
 import Telomare.IR.Core
 import Telomare.IR.Loc
-import Telomare.IR.Surface
 import Telomare.IR.Types
 import Telomare.PrettyPrint
 
@@ -50,7 +44,7 @@ withNewEnv anno action = do
   (env, typeMap, v) <- State.get
   State.put (embed $ TypeVariable anno v, typeMap, v + 1)
   result <- action
-  State.modify $ \(_, typeMap, v) -> (env, typeMap, v)
+  State.modify $ \(_, typeMap', v') -> (env, typeMap', v')
   pure (embed $ TypeVariable anno v, result)
 
 setEnv :: PartialType -> AnnotateState ()
@@ -91,7 +85,7 @@ buildTypeMap assocSet =
         Nothing -> debugShowMap typeMap $ pure typeMap
         -- Just (TypeAssociation i t, newAssoc) -> debugTrace ("buildMap for " <> show i) $ case Map.lookup i typeMap of
         -- Just (ta@(TypeAssociation i t), _) | Set.member ta processed -> Left $ RecursiveType i
-        Just (ta@(TypeAssociation i t), newAssoc) | Set.member ta processed -> buildMap processed newAssoc typeMap
+        Just (ta@(TypeAssociation _i _t), newAssoc) | Set.member ta processed -> buildMap processed newAssoc typeMap
         Just (ta@(TypeAssociation i t), newAssoc) -> debugTrace ("buildMap for " <> show i) $ case Map.lookup i typeMap of
           Nothing -> buildMap processed newAssoc $ Map.insert i t typeMap
           Just t2 -> makeAssociations t t2 >>= (\assoc2 -> buildMap (Set.insert ta processed) (newAssoc <> assoc2) typeMap)
@@ -104,12 +98,12 @@ fullyResolve :: (Int -> Maybe PartialType) -> PartialType -> Either TypeCheckErr
 fullyResolve resolve = ($ Set.empty) . cata f where
   f :: PartialTypeF (Set Int -> Either TypeCheckError PartialType) -> Set Int -> Either TypeCheckError PartialType
   f x alreadySeen = case x of
-    t@(TypeVariable anno i) -> case resolve i of
+    _t@(TypeVariable anno i) -> case resolve i of
       Nothing -> pure . embed $ TypeVariable anno i
       Just t -> if Set.member i alreadySeen
         then Left $ RecursiveType i
         else cata f t $ Set.insert i alreadySeen
-    x -> fmap embed (mapM ($ alreadySeen) x)
+    x' -> fmap embed (mapM ($ alreadySeen) x')
 
 
 traceAssociate :: PartialType -> PartialType -> a -> a
@@ -122,7 +116,7 @@ associateVar a b = liftEither (makeAssociations a b) >>= \set -> State.modify (c
   changeState set (curVar, oldSet, v) = (curVar, oldSet <> set, v)
 
 initState :: Term3 -> (PartialType, Set TypeAssociation, Int)
-initState t = (embed $ TypeVariable (GeneratedLoc "TypeChecking initial var" Nothing) 0, Set.empty, 0)
+initState _t = (embed $ TypeVariable (GeneratedLoc "TypeChecking initial var" Nothing) 0, Set.empty, 0)
 
 annotate :: Term3 -> AnnotateState PartialType
 annotate term =
@@ -137,7 +131,7 @@ annotate term =
             (it, (ot, _)) <- withNewEnv anno . withNewEnv anno $ pure ()
             associateVar (debugTrace ("setenv result " <> show xt <> " -- and out type " <> show ot) . embed $ PairTypeP (embed $ ArrTypeP it ot) it) xt
             pure ot
-          StuckFW (DeferSF fi x) -> withNewEnv anno (annotate' x)
+          StuckFW (DeferSF _fi x) -> withNewEnv anno (annotate' x)
                                        >>= \(it, ot) -> pure . embed $ ArrTypeP it ot
           AbortFW AbortF -> do
             (it, _) <- withNewEnv anno $ pure ()
@@ -157,6 +151,7 @@ annotate term =
             pure ra
           Term3CheckingWrapper _ _ c -> annotate' c
           Term3Unsized _ -> State.gets (\(t, _, _) -> t)
+          _ -> error "Telomare.TypeCheck.annotate: unexpected Term3F constructor"
   in annotate' term
 
 partiallyAnnotate :: Term3 -> Either TypeCheckError (PartialType, Int -> Maybe PartialType)

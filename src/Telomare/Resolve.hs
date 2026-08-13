@@ -29,36 +29,32 @@ module Telomare.Resolve where
 
 import Codec.Binary.UTF8.String (encode)
 import Control.Comonad.Cofree (Cofree (..), unwrap)
-import Control.Comonad.Trans.Cofree (CofreeF)
 import qualified Control.Comonad.Trans.Cofree as C
 import Control.Lens.Combinators (transform)
-import Control.Monad (forM, forM_, (<=<))
+import Control.Monad (forM_, (<=<))
 import Control.Monad.Identity (Identity (..))
-import Control.Monad.Reader (MonadReader (ask), reader, runReaderT)
+import Control.Monad.Reader (MonadReader (ask), runReaderT)
 import Control.Monad.State (StateT, evalStateT)
 import qualified Control.Monad.State as State
 import Control.Monad.Trans (lift)
-import Control.Monad.Trans.Reader (ReaderT, local)
-import Control.Monad.Trans.Writer.Strict (WriterT (..), tell, writer)
+import Control.Monad.Trans.Reader (local)
+import Control.Monad.Trans.Writer.Strict (WriterT (..), writer)
 import Crypto.Hash (Digest, SHA256, hash)
-import Data.Bifunctor (Bifunctor (first, second), bimap)
+import Data.Bifunctor (Bifunctor (first, second))
 import qualified Data.ByteArray as BA
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
 import Data.Char (ord)
 import Data.Fix (Fix (..))
 import qualified Data.Foldable as F
-import Data.Functor.Foldable (Base, Corecursive (ana, apo, embed),
-                              Recursive (..))
-import Data.List (delete, elem, elemIndex, find, foldl', intercalate, nubBy,
-                  zip4)
+import Data.Functor.Foldable (Corecursive (ana, embed), Recursive (..))
+import Data.List (find)
 import qualified Data.Map as Map
-import Data.Map.Strict (Map, fromList, keys)
-import Data.Monoid (Sum (..))
-import Data.Set (Set, (\\))
+import Data.Map.Strict (Map)
+import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Void (absurd)
-import Debug.Trace (trace, traceShow, traceShowId)
+import Debug.Trace (trace)
 import Telomare.Desugar (desugarTerm, rewriteOuterTag)
 import Telomare.Error
 import Telomare.IR.Base
@@ -66,7 +62,6 @@ import Telomare.IR.Builder
 import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.IR.Surface
-import Telomare.IR.Types
 import Telomare.PrettyPrint (prettyPrint)
 
 debug :: Bool
@@ -88,9 +83,6 @@ ints2t anno = foldr ((\x y -> anno :< ParserTermB (PairSF x y)) . i2t anno) (ann
 -- |String to ParserTerm
 s2t :: (Foldable t, Functor t) => a -> t Char -> Cofree (ParserTermF l v) a
 s2t anno = ints2t anno . fmap ord
-
-instance MonadFail (Either ResolverError) where
-  fail = Left . MissingDefinitions . pure
 
 -- |Collect all free variable names in an 'AnnotatedEST' expression.
 varsUPT :: ExpandedSurfaceTerm -> Set String
@@ -137,7 +129,7 @@ pruneBindings root bs = filter ((`Set.member` reachable) . fst) bs
     reachable = until (\s -> expand s == s) expand seed
 
 mkLambda4FreeVarUPs :: ExpandedSurfaceTerm -> ExpandedSurfaceTerm
-mkLambda4FreeVarUPs aupt@(anno :< _) = go aupt freeVars where
+mkLambda4FreeVarUPs aupt@(_anno :< _) = go aupt freeVars where
   freeVars = Set.toList . varsUPT $ aupt
   go :: ExpandedSurfaceTerm -> [String] -> ExpandedSurfaceTerm
   go x = \case
@@ -151,19 +143,20 @@ debruijinize = ($ []) . runReaderT . cata f where
   f = \case
     LamAFP a lt x -> embed . LamAFP a (convLam lt) <$> local (lt:) x
     VarAFP a n -> ask >>= \vl -> lift $ findElem a n vl
-    AppAFP a f i -> fmap embed . sequence $ AppAFP a f i
+    AppAFP a fn i -> fmap embed . sequence $ AppAFP a fn i
     x           -> fmap embed . sequence $ liftC conv x
-  liftC f (a C.:< x) = a C.:< f x
+  liftC g (a C.:< x) = a C.:< g x
   conv = \case
     ParserTermB x -> ParserTermB x
     ParserTermH x -> ParserTermH x
     TUnsizedRepeaterF -> TUnsizedRepeaterF
+    ParserTermL _ -> error "Telomare.Resolve.debruijinize: unexpected ParserTermL"
   convLam = \case
     Open _ -> Open ()
     Closed _ -> Closed ()
     LetBinding _ _ -> Open ()
   findElem :: LocTag -> String -> [LamType String] -> m Term2
-  findElem anno n vl = case find (ff n) (zip [0..] vl) of
+  findElem _anno n vl = case find (ff n) (zip [0..] vl) of
     Just (i, _) -> pure $ VarP i
     _           -> fail $ "undefined identifier " <> n
   ff n = \case
@@ -188,13 +181,14 @@ debruijinizeApp = fmap closeLams . ($ []) . runReaderT . cata f where
   f = \case
     LamAFP a lt x -> embed . LamAFP a (convLam lt) <$> local (lt:) x
     VarAFP a n -> ask >>= \vl -> lift $ findElem a n vl
-    AppAFP a f i -> fmap embed . sequence $ AppAFP a f i
+    AppAFP a fn i -> fmap embed . sequence $ AppAFP a fn i
     x           -> fmap embed . sequence $ liftC conv x
-  liftC f (a C.:< x) = a C.:< f x
+  liftC g (a C.:< x) = a C.:< g x
   conv = \case
     ParserTermB x -> ParserTermB x
     ParserTermH x -> ParserTermH x
     TUnsizedRepeaterF -> TUnsizedRepeaterF
+    ParserTermL _ -> error "Telomare.Resolve.debruijinizeApp: unexpected ParserTermL"
   convLam = \case
     Open _ -> Open ()
     Closed _ -> Closed ()
@@ -218,10 +212,11 @@ splitExpr = flip State.evalState (toEnum 0, toEnum 0) . cata f where
       ParserTermB ZeroSF -> pure ZeroB
       ParserTermB (PairSF a b) -> pairS a b
       ParserTermL x -> case x of
-        VarF n             -> pure $ varB n
-        AppF c i           -> appS c i
-        LamF (Open ()) x   -> lamS x
-        LamF (Closed ()) x -> clamS x
+        VarF n                  -> pure $ varB n
+        AppF c i                -> appS c i
+        LamF (Open ()) body     -> lamS body
+        LamF (Closed ()) body   -> clamS body
+        LamF (LetBinding _ _) _ -> error "Telomare.Resolve.splitExpr: unexpected LetBinding"
       ParserTermH h -> case h of
         CheckF tc c -> (\tc' c' -> anno :< Term3CheckingWrapper anno tc' c') <$> tc <*> c
         ITEF i t e -> iteB_ <$> i <*> t <*> e
@@ -230,16 +225,17 @@ splitExpr = flip State.evalState (toEnum 0, toEnum 0) . cata f where
         HTraceF x -> x -- TODO add trace back in, or rethink
         ChurchF n -> i2CB anno n
         RecursionF t r b -> unsizedRecursionWrapper anno t r b
+        HashF _ -> error "Telomare.Resolve.splitExpr: unexpected HashF"
       TUnsizedRepeaterF -> do
         urt <- State.gets snd
         State.modify (\(fi, _) -> (fi, succ urt))
         repeaterAndAbort anno urt
 
 openLambda :: String -> Term1 -> Term1
-openLambda name body@(anno :< _) = LamP (Open name) body
+openLambda name body@(_anno :< _) = LamP (Open name) body
 
 closedLambda :: String -> Term1 -> Term1
-closedLambda name body@(anno :< _) = LamP (Closed name) body
+closedLambda name body@(_anno :< _) = LamP (Closed name) body
 
 -- |Transform a case-free surface term to 'Term1', validating and inlining
 -- variables.
@@ -249,7 +245,7 @@ validateVariables term =
   let validateWithEnvironment :: DesugaredSurfaceTerm
                               -> StateT (Map String Term1) (Either ResolverError) Term1
       validateWithEnvironment = \case
-        anno :< LetUPF preludeMap inner -> do
+        _anno :< LetUPF preludeMap inner -> do
           oldPrelude <- State.get
 
           -- Build dependency graph
@@ -310,7 +306,7 @@ validateVariables term =
                                          Map.findWithDefault Set.empty name deps
                         in go (name : result) inProgress' (delete name remaining)
 
-                  canProcess rn inProgress name =
+                  canProcess rn _inProgress name =
                     all (`notElem` rn) (Set.toList $ Map.findWithDefault Set.empty name deps)
 
                   delete x = filter (/= x)
@@ -318,7 +314,7 @@ validateVariables term =
           -- Only reorder if necessary
           sortedBindings <- if hasForwardRef
             then case topologicalSort originalOrder dependencies of
-              Left cycle -> State.lift . Left $ cycle
+              Left defCycle -> State.lift . Left $ defCycle
               Right sortedNames ->
                 pure [(name, def) | name <- sortedNames,
                       (name', def) <- preludeMap, name == locatedNameText name']
@@ -332,7 +328,7 @@ validateVariables term =
           result <- validateWithEnvironment inner
           State.put oldPrelude
           pure result
-        anno :< UnprocessedParsedTermL (LamF v x) -> do
+        _anno :< UnprocessedParsedTermL (LamF v x) -> do
           oldState <- State.get
           State.modify (Map.insert (locatedNameText v) (VarP (locatedNameText v)))
           result <- validateWithEnvironment x
@@ -372,7 +368,7 @@ validateVariables term =
 
 annotateUnsizedCount :: DesugaredSurfaceTerm
                      -> Cofree DesugaredSurfaceTermF (LocTag, Int)
-annotateUnsizedCount = capTop . flip evalStateT 0 . cata f where
+annotateUnsizedCount = capTop . flip evalStateT (0 :: Integer) . cata f where
   f = \case
     anno C.:< x -> case x of
       ur@(UnprocessedParsedTermH (RecursionF _ _ _)) -> sequence ur >>= \nur -> do
@@ -380,8 +376,8 @@ annotateUnsizedCount = capTop . flip evalStateT 0 . cata f where
         State.put (n + 1)
         lift (Set.singleton n, embed $ AppAFP (anno, 0) ((anno, 0) :< nur) (embed $ VarAFP (anno, 0) (':' : show n)))
       LetUPF bindings inner -> (\b i -> (anno, 0) :< LetUPF b i) <$> traverse rebind bindings <*> inner
-      x -> ((anno, 0) :<) <$> sequence x
-  rebind (n, x) = (\(n', x') -> (n, x')) <$> cap (locatedNameText n) (evalStateT x 0)
+      other -> ((anno, 0) :<) <$> sequence other
+  rebind (n, x) = (\(_n', x') -> (n, x')) <$> cap (locatedNameText n) (evalStateT x 0)
   cap n (vs, x@((anno, _) :< _)) = lift (Set.empty, (n, foldr (\v b -> embed $ LamAFP (anno, length vs) (locatedName anno (':' : show v)) b) x vs))
   -- HACK vars are just placehorders for next step
   capTop (vs, x@((anno, _) :< _)) =
@@ -412,7 +408,7 @@ letsToApps term =
                                   Map.findWithDefault Set.empty name deps
                 in go (name : result) inProgress' (delete name remaining)
 
-          canProcess rn inProgress name =
+          canProcess rn _inProgress name =
             all (`notElem` rn) (Set.toList $ Map.findWithDefault Set.empty name deps)
 
           delete x = filter (/= x)
@@ -442,23 +438,23 @@ letsToApps term =
                 dependencies = Map.fromList $ fmap (second snd) nBindings
                 sortedBindings =
                   case topologicalSort originalOrder dependencies of
-                    Left cycle -> Left cycle
+                    Left defCycle -> Left defCycle
                     Right sortedNames ->
                       pure [(name, def) | name <- sortedNames, (name', (def, _)) <- nBindings, name == name']
-                makeBinding (n,d@((_, c) :< _)) inner@(a :< _) = embed $ AppAFP a (embed $ LamAFP a (LetBinding c n) inner) d
+                makeBinding (n,d@((_, c) :< _)) letBody@(a :< _) = embed $ AppAFP a (embed $ LamAFP a (LetBinding c n) letBody) d
             sortedBindings >>= \sb -> let trans = getTransitive' dependencies refs
                                           sb' = [(n,t) | (n,t) <- sb,  n `elem` trans]
-                                          fst' (x,_,_) = x
                                           newRefs = Set.difference trans (Set.fromList $ fmap fst sb')
                                       in pure (foldr makeBinding nInner $ reverse sb', newRefs)
         x -> WriterT . fmap (first (((anno, urC) :<) . brt)) . runWriterT $ sequence x where
           brt = \case
-            UnprocessedParsedTermL (AppF f x) -> ParserTermL $ AppF f x
-            UnprocessedParsedTermB x -> ParserTermB x
-            UnprocessedParsedTermH x -> ParserTermH x
+            UnprocessedParsedTermL (AppF f arg) -> ParserTermL $ AppF f arg
+            UnprocessedParsedTermB b -> ParserTermB b
+            UnprocessedParsedTermH h -> ParserTermH h
             IntUPF n -> unwrap $ i2t (anno, urC) n
             StringUPF s -> unwrap $ s2t (anno, urC) s
-            ListUPF l -> unwrap $ foldr (\x y -> (anno, urC) :< ParserTermB (PairSF x y)) ((anno, urC) :< ParserTermB ZeroSF) l
+            ListUPF l -> unwrap $ foldr (\el y -> (anno, urC) :< ParserTermB (PairSF el y)) ((anno, urC) :< ParserTermB ZeroSF) l
+            _ -> error "Telomare.Resolve.letsToApps: unexpected constructor"
       cleanup = \case
         Left s -> Left s
         Right (x, refs) -> forgetURCount <$> addRepeaters refs x
@@ -472,7 +468,7 @@ letsToApps term =
         _ -> Left . MissingDefinitions $ Set.toList refs
 
       forgetURCount = cata f where
-        f ((a,c) C.:< x) = a :< x
+        f ((a,_c) C.:< x) = a :< x
   in cleanup . runWriterT . cata buildRefs $ annotateUnsizedCount term
 
 -- |Process an `Term2` to have all `HashUP` replaced by a unique number.
@@ -488,8 +484,8 @@ generateAllHashes x@(anno :< _) = transform interm x where
   bs2Term2 bs = ints2t anno . drop 24 $ fromInteger . toInteger <$> BS.unpack bs
   interm :: Term2 -> Term2
   interm = \case
-    (anno :< ParserTermH (HashF term1)) -> bs2Term2 . term2Hash $ term1
-    x                      -> x
+    (_anno :< ParserTermH (HashF term1)) -> bs2Term2 . term2Hash $ term1
+    other                  -> other
 
 -- |Process a fully desugared surface term to 'Term3'.
 process :: DesugaredSurfaceTerm

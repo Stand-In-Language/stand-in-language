@@ -10,19 +10,16 @@ module NatUDTTests (natUDTTests) where
 
 import Control.Comonad.Cofree (Cofree ((:<)))
 import Control.Monad (unless)
-import Data.Bifunctor (Bifunctor (first, second))
+import Data.Bifunctor (Bifunctor (first))
 import Data.List (isInfixOf)
 import qualified System.IO.Strict as Strict
 import Telomare.Desugar (desugarTerm)
 import Telomare.Driver (SizingOption (..), compile, runStaticChecks)
 import Telomare.Error
 import Telomare.Expand (expandDefs, expandTerm, renderExpansionError)
-import Telomare.IR.Base
-import Telomare.IR.Builder
 import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.IR.Surface
-import Telomare.IR.Types
 import Telomare.Parse (parseLongExpr, runParseDefinitions)
 import Telomare.PrettyPrint
 import Telomare.Resolve (process, pruneBindings)

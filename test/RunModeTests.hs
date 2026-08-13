@@ -16,15 +16,10 @@ import Telomare.Artifact (Artifact (..), decodeArtifact, encodeArtifact,
                           nodeCount, sourcesHash)
 import Telomare.Certificate (renderStaticReport)
 import Telomare.Driver (compileModules, runMainWithInput)
-import Telomare.Error
 import Telomare.Fast (FastError (..), FastMeter (..), compileFast,
                       runFastWithInput)
 import Telomare.IR.Base
-import Telomare.IR.Builder
 import Telomare.IR.Core
-import Telomare.IR.Loc
-import Telomare.IR.Surface
-import Telomare.IR.Types
 import Telomare.Levels (LevelsInfo (..), levelsInfo)
 import Telomare.Machine (appB)
 import Telomare.Size (SizingReport (..))

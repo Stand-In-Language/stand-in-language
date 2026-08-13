@@ -1,33 +1,22 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE LambdaCase        #-}
+{-# OPTIONS_GHC -Wno-orphans #-}
 
 module CaseTests (unitTestsCase, qcPropsCase) where
 
-import Common
 import Control.Comonad.Cofree (Cofree ((:<)))
 import qualified Control.Monad.State as State
 import Data.Fix (Fix (..))
 import qualified System.IO.Strict as Strict
 import Telomare.Desugar (patternToTerm)
 import Telomare.Driver (runMainWithInput)
-import Telomare.Error
 import Telomare.IR.Base
-import Telomare.IR.Builder
-import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.IR.Surface
-import Telomare.IR.Types
-import Telomare.Parse
 import Telomare.PrettyPrint
 import Test.Tasty
 import Test.Tasty.HUnit
 import Test.Tasty.QuickCheck as QC
-
-caseTests :: IO ()
-caseTests = defaultMain tests
-
-tests :: TestTree
-tests = testGroup "Tests" [unitTestsCase, qcPropsCase]
 
 ---------------------
 ------ Property Tests
@@ -72,6 +61,7 @@ prettyExpandedTerm (_ :< term) = case term of
 runCaseExpWithPattern :: (PatternA -> String) -> PatternA -> IO String
 runCaseExpWithPattern p2s p = runTelomareStr $ p2s p
 
+qcPropsCase :: TestTree
 qcPropsCase = testGroup "Property tests on case expressions (QuickCheck)"
   [ QC.testProperty "All case patterns are reachable" $
       \x -> withMaxSuccess 16 . QC.idempotentIOProperty $ (do
@@ -158,7 +148,7 @@ instance Arbitrary PatternA where
         other -> pure $ Fix other
     leaves :: Gen PatternA
     leaves = oneof
-      [ Fix . PatternStringF <$> elements (fmap (("s" <>) . show) [1..9])
+      [ Fix . PatternStringF <$> elements (fmap (("s" <>) . show) [1..9 :: Integer])
       , Fix . PatternIntF <$> elements [0..9]
       , pure . Fix . PatternVarF $ locatedName UnknownLoc ""
       ]

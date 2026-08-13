@@ -4,38 +4,27 @@
 {-# LANGUAGE LambdaCase        #-}
 {-# LANGUAGE PatternSynonyms   #-}
 {-# LANGUAGE TypeFamilies      #-}
+{-# LANGUAGE TypeOperators     #-}
 {-# LANGUAGE ViewPatterns      #-}
 
 module Telomare.Size.IR where
 
-import Control.Applicative
-import Control.Comonad.Cofree (Cofree ((:<)))
 import Control.Monad (liftM2, (<=<))
-import Control.Monad.Except
-import Control.Monad.State.Strict (State, StateT)
-import qualified Control.Monad.State.Strict as State
 import Data.Fix (Fix (..))
 import Data.Functor.Classes (Eq1 (..), Show1 (liftShowsPrec))
 import Data.Functor.Foldable
 import Data.Map (Map)
 import qualified Data.Map as Map
-import Data.Set (Set)
-import qualified Data.Set as Set
-import Data.Validity (Validity (..), declare, trivialValidation)
+import Data.Validity (Validity (..), trivialValidation)
 import Debug.Trace
 import GHC.Generics (Generic)
 
 import Data.Bifunctor (first)
-import Telomare.Error
 import Telomare.IR.Base
-import Telomare.IR.Builder
 import Telomare.IR.Core
 import Telomare.IR.Loc
-import Telomare.IR.Surface
-import Telomare.IR.Types
 import Telomare.PrettyPrint
-import Telomare.PrettyPrint.Indent (indentWithChildren', indentWithOneChild',
-                                    indentWithTwoChildren')
+import Telomare.PrettyPrint.Indent (indentWithOneChild', indentWithTwoChildren')
 
 debug' :: Bool
 debug' = False
@@ -89,10 +78,6 @@ indexedEE :: (Base g ~ f, IndexedInputBase f, Corecursive g) => IndexedInputF g 
 indexedEE = embed . embedI
 deferredEE :: (Base g ~ f, DeferredEvalBase f, Corecursive g) => DeferredEvalF g -> g
 deferredEE = embed . embedD
-
-
-instance PrettyPrintable FunctionIndex where
-  showP = pure . ("F" <>) . show . fromEnum
 
 data GateResult a
   = GateResult
@@ -158,11 +143,10 @@ data SuperPositionF f
 
 instance Eq1 SuperPositionF where
   liftEq test a b = case (a,b) of
-    (EitherPF x a b, EitherPF y c d) -> x == y && test a c && test b d
-    _                                -> False
+    (EitherPF x a' b', EitherPF y c d) -> x == y && test a' c && test b' d
 
 instance Show1 SuperPositionF where
-  liftShowsPrec showsPrec' showList prec = \case
+  liftShowsPrec showsPrec' _showList _prec = \case
     EitherPF x a b -> shows "EitherPF " . shows x . shows " (" . showsPrec' 0 a . shows ", " . showsPrec' 0 b . shows ")"
 
 class ShallowEq a where
@@ -194,15 +178,16 @@ data UnsizedRecursionF f
 
 instance Eq1 UnsizedRecursionF where
   liftEq test a b = case (a, b) of
-    (RecursionTestF ta a, RecursionTestF tb b) -> ta == tb && test a b
-    _                                          -> False
+    (RecursionTestF ta a', RecursionTestF tb b') -> ta == tb && test a' b'
+    _                                            -> False
 
 instance Show1 UnsizedRecursionF where
-  liftShowsPrec showsPrec' showList prec x = case x of
-    RecursionTestF be x -> shows "RecursionTestF (" . shows be . shows " " . showsPrec' 0 x . shows ")"
-    SizeStageF sm x -> shows "SizeStageF " . shows sm
-      . shows " (" . showsPrec' 0 x . shows ")"
-    SizeStepStubF _ _ x -> shows "SizeStepStubF (" . showsPrec' 0 x . shows ")"
+  liftShowsPrec showsPrec' _showList _prec x = case x of
+    RecursionTestF be inner -> shows "RecursionTestF (" . shows be . shows " " . showsPrec' 0 inner . shows ")"
+    SizeStageF sm inner -> shows "SizeStageF " . shows sm
+      . shows " (" . showsPrec' 0 inner . shows ")"
+    SizeStepStubF _ _ inner -> shows "SizeStepStubF (" . showsPrec' 0 inner . shows ")"
+    _ -> error "Telomare.Size.IR.liftShowsPrec: unexpected UnsizedRecursionF constructor"
 
 instance PrettyPrintable1 SuperPositionF where
   showP1 = \case
@@ -226,13 +211,13 @@ data IndexedInputF f
   deriving (Eq, Ord, Show, Functor, Foldable, Traversable, Generic)
 
 instance Eq1 IndexedInputF where
-  liftEq test a b = case (a, b) of
+  liftEq _test a b = case (a, b) of
     (IVarF x, IVarF y) -> x == y
     (AnyF, AnyF)       -> True
     _                  -> False
 
 instance Show1 IndexedInputF where
-  liftShowsPrec showsPrec showList prec x = case x of
+  liftShowsPrec _showsPrec _showList _prec x = case x of
     IVarF n -> shows $ "IVarF " <> show n
     AnyF    -> shows "IgnoreThis"
 
@@ -255,10 +240,10 @@ instance Eq1 DeferredEvalF where
     _                                    -> False
 
 instance Show1 DeferredEvalF where
-  liftShowsPrec showsPrec' showList prec x = case x of
-    BarrierF x -> shows "BarrierF (" . showsPrec' 0 x . shows ")"
-    ManyLefts n x -> shows ("ManyLefts " <> show n) . shows " (" . showsPrec' 0 x . shows ")"
-    ManyRights n x -> shows ("ManyRights " <> show n) . shows " (" . showsPrec' 0 x . shows ")"
+  liftShowsPrec showsPrec' _showList _prec x = case x of
+    BarrierF inner -> shows "BarrierF (" . showsPrec' 0 inner . shows ")"
+    ManyLefts n inner -> shows ("ManyLefts " <> show n) . shows " (" . showsPrec' 0 inner . shows ")"
+    ManyRights n inner -> shows ("ManyRights " <> show n) . shows " (" . showsPrec' 0 inner . shows ")"
 
 instance PrettyPrintable1 DeferredEvalF where
   showP1 = \case
@@ -364,13 +349,6 @@ instance PrettyPrintable1 StaticCheckExprF where
 
 type StaticCheckExpr = Fix StaticCheckExprF
 
-instance TelomareLike CompiledExpr where
-  fromTelomare = verify . cata (convertBasic (convertStuck (\z -> Left "failed to convert to CompiledExpr"))) where
-    verify = \case
-      Left e -> error e
-      Right x -> x
-  toTelomare = cata (convertBasic (convertStuck (const Nothing)))
-
 data UnsizedExprF f
   = UnsizedExprB (BasicExprF f)
   | UnsizedExprS (StuckF f)
@@ -390,13 +368,13 @@ instance StuckBase UnsizedExprF where
     UnsizedExprS x -> Just x
     _ -> Nothing
 instance Show1 UnsizedExprF where
-  liftShowsPrec showsPrec showList prec = \case
-    UnsizedExprB x -> liftShowsPrec showsPrec showList prec x
-    UnsizedExprS x -> liftShowsPrec showsPrec showList prec x
-    UnsizedExprP x -> liftShowsPrec showsPrec showList prec x
-    UnsizedExprA x -> liftShowsPrec showsPrec showList prec x
-    UnsizedExprU x -> liftShowsPrec showsPrec showList prec x
-    UnsizedExprI x -> liftShowsPrec showsPrec showList prec x
+  liftShowsPrec showsPrec' showList' prec = \case
+    UnsizedExprB x -> liftShowsPrec showsPrec' showList' prec x
+    UnsizedExprS x -> liftShowsPrec showsPrec' showList' prec x
+    UnsizedExprP x -> liftShowsPrec showsPrec' showList' prec x
+    UnsizedExprA x -> liftShowsPrec showsPrec' showList' prec x
+    UnsizedExprU x -> liftShowsPrec showsPrec' showList' prec x
+    UnsizedExprI x -> liftShowsPrec showsPrec' showList' prec x
 instance SuperBase UnsizedExprF where
   embedP = UnsizedExprP
   extractP = \case
@@ -503,9 +481,6 @@ instance PrettyPrintable1 InputSizingExprF where
     InputSizingI x -> showP1 x
 type InputSizingExpr = Fix InputSizingExprF
 
-instance PrettyPrintable Char where
-  showP = pure . (:[])
-
 convertSuper :: (SuperBase g, SuperBase h, Base x ~ h, Corecursive x, Monad m) => (g (m x) -> m x) -> g (m x) -> m x
 convertSuper convertOther = \case
   SuperFW x -> superEE <$> sequence x
@@ -553,14 +528,14 @@ anaM' :: (Monad m, Corecursive t, x ~ Base t, Traversable x) => (a -> m (Base t 
 anaM' f = c where c = (fmap embed . mapM c) <=< f
 
 instance TelomareLike UnsizedExpr where
-  fromTelomare = verify . cata (convertBasic (convertStuck (\z -> Left "failed to convert to UnsizedExpr"))) where
+  fromTelomare = verify . cata (convertBasic (convertStuck (\_z -> Left "failed to convert to UnsizedExpr"))) where
     verify = \case
       Left e -> error e
       Right x -> x
   toTelomare = cata (convertBasic (convertStuck (const Nothing)))
 
 instance TelomareLike DeferredExpr where
-  fromTelomare = verify . cata (convertBasic (convertStuck (\z -> Left "failed to convert to DeferredExpr"))) where
+  fromTelomare = verify . cata (convertBasic (convertStuck (\_z -> Left "failed to convert to DeferredExpr"))) where
     verify = \case
       Left e -> error e
       Right x -> x

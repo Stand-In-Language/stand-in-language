@@ -52,14 +52,10 @@ import qualified Data.Map as Map
 import Data.Set (Set)
 import qualified Data.Set as Set
 
-import Telomare.Error
 import Telomare.Expand (expandModule, renderExpansionError)
 import Telomare.IR.Base
-import Telomare.IR.Builder
-import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.IR.Surface
-import Telomare.IR.Types
 import Telomare.Parse (runParseModule)
 
 -- |A top-level definition, or a @let@ binding qualified by the definition it

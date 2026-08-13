@@ -1,6 +1,7 @@
-{-# LANGUAGE DeriveAnyClass #-}
-{-# LANGUAGE DeriveGeneric  #-}
-{-# LANGUAGE LambdaCase     #-}
+{-# LANGUAGE DeriveAnyClass    #-}
+{-# LANGUAGE DeriveGeneric     #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE LambdaCase        #-}
 
 -- |Every error the pipeline can produce, in one place. 'EvalError' unions
 -- the per-stage errors ('ResolverError' from resolution, 'TypeCheckError'
@@ -31,6 +32,9 @@ data ResolverError
   | MissingDefinitionAt LocTag String
   | ParseError String
   deriving (Eq, Ord)
+
+instance MonadFail (Either ResolverError) where
+  fail = Left . MissingDefinitions . pure
 
 instance Show ResolverError where
   showsPrec d err = showParen (d > 10) $ showString (renderResolverError err)

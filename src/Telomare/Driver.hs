@@ -5,18 +5,11 @@
 
 module Telomare.Driver where
 
-import Control.Comonad.Cofree (Cofree ((:<)), hoistCofree)
-import Control.Lens.Plated (Plated (..), transformM)
+import Control.Comonad.Cofree (Cofree ((:<)))
 import Control.Monad (void, (>=>))
 import Control.Monad.State (State, evalState)
 import qualified Control.Monad.State as State
-import Data.Bifunctor (bimap, first, second)
-import Data.Foldable (fold)
-import Data.Map (Map)
-import qualified Data.Map as Map
-import Data.Semigroup (Max (..), Min (..))
-import Data.Set (Set)
-import qualified Data.Set as Set
+import Data.Bifunctor (first)
 import Debug.Trace
 
 import qualified Control.Comonad.Trans.Cofree as CofreeT
@@ -41,7 +34,6 @@ import Telomare.Resolve (main2Term3, main2Term3let, process, resolveAllImports)
 import Telomare.Size (SizingReport (..), SizingSettings (..),
                       buildUnsizedLocMap, evalStaticCheck, locateSizingFailure,
                       sizeTermM, term3ToUnsizedExpr)
-import Telomare.Size.IR (SizedRecursion (..), VoidF)
 import Telomare.TypeCheck (typeCheck)
 import Text.Megaparsec (errorBundlePretty, runParser)
 
@@ -191,6 +183,7 @@ funWrapWith evaluator fun app inp =
       Just (PairB disp newState) -> case b2s disp of
         Just d -> (d, pure $ conv3 newState)
         _ -> ("error converting display value:\n" <> prettyPrint disp, Left . GenericRunTimeError "" $ conv2 disp)
+      Just _ -> error "Telomare.Driver.funWrapWith: unexpected iteration value"
     Left e -> ("runtime error:\n" <> show e, Left e)
 
 -- |Parse and compile a module set, keeping the sizing results. Every problem
@@ -358,7 +351,7 @@ tagIExprWithEval iexpr = evalState (para alg iexpr) 0 where
       i <- statePlus1
       x' <- x
       pure $ (i, basicEval $ SetEnvB iexpr0) :< embedS (SetEnvSF x')
-    StuckFW (DeferSF ind (iexpr0, x)) -> do
+    StuckFW (DeferSF _ind (iexpr0, x)) -> do
       i <- statePlus1
       x' <- x
       pure $ (i, basicEval . StuckEE $ DeferSF (toEnum (-1)) iexpr0) :< embedS (DeferSF (toEnum (-1)) x')
@@ -378,3 +371,4 @@ tagIExprWithEval iexpr = evalState (para alg iexpr) 0 where
     StuckFW GateSF -> do
       i <- statePlus1
       pure $ (i, basicEval $ StuckEE GateSF) :< embedS GateSF
+    _ -> error "Telomare.Driver.tagIExprWithEval: unexpected expression"

@@ -2,47 +2,21 @@
 
 module Main where
 
-import Common
-import Control.Lens.Fold
-import Control.Lens.Plated
 import Control.Monad
 
 import Control.Comonad.Cofree (Cofree ((:<)))
-import Control.Monad.Fix (fix)
-import Control.Monad.IO.Class (liftIO)
-import qualified Control.Monad.State as State
 import Data.Bifunctor
 import Data.Fix (Fix (..))
-import Data.Functor.Foldable
-import Data.List
 import qualified Data.List.NonEmpty as NE
-import Data.Map (Map, fromList, toList)
-import qualified Data.Map as Map
-import Data.Ord
-import qualified Data.Semigroup as Semigroup
-import qualified Data.Set as Set
-import Debug.Trace (trace, traceShowId)
 import qualified System.IO.Strict as Strict
-import System.Process hiding (createPipe)
-import Telomare.Driver
-import Telomare.Error
-import Telomare.Eval.Reference
 import Telomare.Expand
 import Telomare.IR.Base
-import Telomare.IR.Builder
-import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.IR.Surface
-import Telomare.IR.Types
 import Telomare.Parse
-import Telomare.Resolve
-import Test.QuickCheck
 import Test.Tasty
 import Test.Tasty.HUnit
-import Test.Tasty.QuickCheck as QC
 import Text.Megaparsec
-import Text.Megaparsec.Debug
-import Text.Megaparsec.Error
 
 main :: IO ()
 main = defaultMain tests
@@ -155,32 +129,32 @@ unitTests = testGroup "Unit tests"
   , testCase "variable source spans exclude trailing whitespace" $ do
       case runParser parseVariable "" "foo   0" of
         Left err -> assertFailure $ errorBundlePretty err
-        Right (SourceLoc span :< ParsedTermUP (UnprocessedParsedTermL (VarF "foo"))) -> do
-          sourcePositionLine (sourceSpanStart span) @?= 1
-          sourcePositionColumn (sourceSpanStart span) @?= 1
-          sourcePositionLine (sourceSpanEnd span) @?= 1
-          sourcePositionColumn (sourceSpanEnd span) @?= 4
+        Right (SourceLoc srcSpan :< ParsedTermUP (UnprocessedParsedTermL (VarF "foo"))) -> do
+          sourcePositionLine (sourceSpanStart srcSpan) @?= 1
+          sourcePositionColumn (sourceSpanStart srcSpan) @?= 1
+          sourcePositionLine (sourceSpanEnd srcSpan) @?= 1
+          sourcePositionColumn (sourceSpanEnd srcSpan) @?= 4
         Right parsed -> assertFailure $ "unexpected parse result: " <> show parsed
   , testCase "let binding source spans exclude trailing whitespace" $ do
       case runParser parseLongExpr "" "let foo   = 0 in foo" of
         Left err -> assertFailure $ errorBundlePretty err
-        Right (_ :< ParsedTermSugar (LetSugarF [SingleDefF name Nothing _] _)) | SourceLoc span <- locatedNameLoc name -> do
+        Right (_ :< ParsedTermSugar (LetSugarF [SingleDefF name Nothing _] _)) | SourceLoc srcSpan <- locatedNameLoc name -> do
           locatedNameText name @?= "foo"
-          sourcePositionLine (sourceSpanStart span) @?= 1
-          sourcePositionColumn (sourceSpanStart span) @?= 5
-          sourcePositionLine (sourceSpanEnd span) @?= 1
-          sourcePositionColumn (sourceSpanEnd span) @?= 8
+          sourcePositionLine (sourceSpanStart srcSpan) @?= 1
+          sourcePositionColumn (sourceSpanStart srcSpan) @?= 5
+          sourcePositionLine (sourceSpanEnd srcSpan) @?= 1
+          sourcePositionColumn (sourceSpanEnd srcSpan) @?= 8
         Right parsed -> assertFailure $ "unexpected parse result: " <> show parsed
   , testCase "lambda binding source spans exclude trailing whitespace" $ do
       case runParser parseLongExpr "" "\\foo   -> foo" of
         Left err -> assertFailure $ errorBundlePretty err
         Right (_ :< ParsedTermSugar (LamPatF [(binderLoc, Fix (PatternVarF name))] _))
           | locatedNameText name == "foo" -> case binderLoc of
-          SourceLoc span -> do
-            sourcePositionLine (sourceSpanStart span) @?= 1
-            sourcePositionColumn (sourceSpanStart span) @?= 2
-            sourcePositionLine (sourceSpanEnd span) @?= 1
-            sourcePositionColumn (sourceSpanEnd span) @?= 5
+          SourceLoc srcSpan -> do
+            sourcePositionLine (sourceSpanStart srcSpan) @?= 1
+            sourcePositionColumn (sourceSpanStart srcSpan) @?= 2
+            sourcePositionLine (sourceSpanEnd srcSpan) @?= 1
+            sourcePositionColumn (sourceSpanEnd srcSpan) @?= 5
           loc -> assertFailure $ "unexpected lambda binder location: " <> show loc
         Right parsed -> assertFailure $ "unexpected parse result: " <> show parsed
   , testCase "complete expressions reject trailing input" $ do
@@ -236,10 +210,10 @@ unitTests = testGroup "Unit tests"
         other -> assertFailure $ "unexpected case tree: " <> show other
   , testCase "compound expressions carry complete source spans" $ do
       case runParseExpression "SpanSource" "\\x -> x" of
-        Right (SourceLoc span :< ParsedTermSugar (LamPatF _ _)) -> do
-          sourceSpanFile span @?= Just "SpanSource"
-          sourcePositionColumn (sourceSpanStart span) @?= 1
-          sourcePositionColumn (sourceSpanEnd span) @?= 8
+        Right (SourceLoc srcSpan :< ParsedTermSugar (LamPatF _ _)) -> do
+          sourceSpanFile srcSpan @?= Just "SpanSource"
+          sourcePositionColumn (sourceSpanStart srcSpan) @?= 1
+          sourcePositionColumn (sourceSpanEnd srcSpan) @?= 8
         other -> assertFailure $ "unexpected lambda span: " <> show other
   , testCase "all shipped Telomare programs parse and expand" $ do
       let programs = [ "Prelude.tel"
@@ -402,7 +376,7 @@ unitTests = testGroup "Unit tests"
   ]
 
 stripParserLocs :: ExpandedSurfaceTerm -> ExpandedSurfaceTerm
-stripParserLocs (loc :< term) = UnknownLoc :< case term of
+stripParserLocs (_loc :< term) = UnknownLoc :< case term of
   LetUPF bindings body -> LetUPF ((\(name, value) -> (locatedName UnknownLoc $ locatedNameText name, stripParserLocs value)) <$> bindings) (stripParserLocs body)
   UnprocessedParsedTermL (LamF name body) -> UnprocessedParsedTermL (LamF (locatedName UnknownLoc $ locatedNameText name) (stripParserLocs body))
   CaseUPF scrutinee cases -> CaseUPF (stripParserLocs scrutinee) (bimap stripPatternLocs stripParserLocs <$> cases)
@@ -414,6 +388,7 @@ stripPatternLocs (Fix patternF) = Fix $ case patternF of
   PatternAnnotatedF pat term -> PatternAnnotatedF (stripPatternLocs pat) (AnnotatedEST . stripParserLocs $ unAnnotatedEST term)
   other -> stripPatternLocs <$> other
 
+caseExpr0UPT :: ExpandedSurfaceTerm
 caseExpr0UPT =
   UnknownLoc :< LetUPF
     [ ( locatedName UnknownLoc "foo"
@@ -430,6 +405,7 @@ caseExpr0UPT =
     ]
     (UnknownLoc :< UnprocessedParsedTermL (LamF (locatedName UnknownLoc "i")
       (UnknownLoc :< UnprocessedParsedTermB (PairSF (UnknownLoc :< StringUPF "Success") (UnknownLoc :< IntUPF 0)))))
+caseExpr0 :: String
 caseExpr0 = unlines
   [ "foo = \\a -> case a of"
   , "              0 -> a"
@@ -438,38 +414,47 @@ caseExpr0 = unlines
   , "main = \\i -> (\"Success\", 0)"
   ]
 
+test2UPT :: Monad m => String -> m Bool
 test2UPT str =
   case runParseModule "" str
          >>= first renderExpansionError . expandModule of
     Right _ -> return True
     Left _  -> return False
 
+testWtictactoe :: IO Bool
 testWtictactoe = Strict.readFile "tictactoe.tel" >>= test2UPT
 
+runTestMainwCLwITEwPair :: IO Bool
 runTestMainwCLwITEwPair = test2UPT testMainwCLwITEwPair
 
+runTestMainWType :: IO Bool
 runTestMainWType = test2UPT "main : (\\x -> if x then \"fail\" else 0) = 0"
 
+testLetIndentation :: String
 testLetIndentation = unlines
   [ "let x = 0"
   , "    y = 1"
   , "in (x,y)"
   ]
 
+testLetIncorrectIndentation1 :: String
 testLetIncorrectIndentation1 = unlines
   [ "let x = 0"
   , "  y = 1"
   , "in (x,y)"
   ]
 
+testLetIncorrectIndentation2 :: String
 testLetIncorrectIndentation2 = unlines
   [ "let x = 0"
   , "      y = 1"
   , "in (x,y)"
   ]
 
+testPair0 :: String
 testPair0 = "(\"Hello World!\", \"0\")"
 
+testITE1 :: String
 testITE1 = unlines
   [ "if"
   , "  1"
@@ -477,18 +462,21 @@ testITE1 = unlines
   , "else"
   , "  2"
   ]
+testITE2 :: String
 testITE2 = unlines
   [ "if 1"
   , "  then"
   , "                1"
   , "              else 2"
   ]
+testITE3 :: String
 testITE3 = unlines
   [ "if 1"
   , "   then"
   , "                1"
   , "              else 2"
   ]
+testITE4 :: String
 testITE4 = unlines
   [ "if 1"
   , "    then"
@@ -496,6 +484,7 @@ testITE4 = unlines
   , "              else 2"
   ]
 
+testITEwPair :: String
 testITEwPair = unlines
   [ "if"
   , "    1"
@@ -504,6 +493,7 @@ testITEwPair = unlines
   , "    (\"Goodbye, world!\", 1)"
   ]
 
+testCompleteLambdawITEwPair :: String
 testCompleteLambdawITEwPair = unlines
   [ "\\input ->"
   , "  if"
@@ -513,6 +503,7 @@ testCompleteLambdawITEwPair = unlines
   , "    (\"Goodbye, world!\", 1)"
   ]
 
+testLambdawITEwPair :: String
 testLambdawITEwPair = unlines
   [ "\\input ->"
   , "  if"
@@ -522,6 +513,7 @@ testLambdawITEwPair = unlines
   , "    (\"Goodbye, world!\", 1)"
   ]
 
+runTestParsePrelude :: IO Bool
 runTestParsePrelude = do
   preludeFile <- Strict.readFile "Prelude.tel"
   case runParseDefinitions "" preludeFile
@@ -529,6 +521,7 @@ runTestParsePrelude = do
     Right _ -> return True
     Left _  -> return False
 
+testParseAssignmentwCLwITEwPair1 :: String
 testParseAssignmentwCLwITEwPair1 = unlines
   [ "main"
   , "  = \\input"
@@ -538,6 +531,7 @@ testParseAssignmentwCLwITEwPair1 = unlines
   , "     else (\"Goodbye, world!\", 0)"
   ]
 
+testParseTopLevelwCLwITEwPair :: String
 testParseTopLevelwCLwITEwPair = unlines
   [ "main"
   , "  = \\input"
@@ -547,6 +541,7 @@ testParseTopLevelwCLwITEwPair = unlines
   , "      else (\"Goodbye, world!\", 0)"
   ]
 
+testMainwCLwITEwPair :: String
 testMainwCLwITEwPair = unlines
   [ "main"
   , "  = \\input"
@@ -556,26 +551,32 @@ testMainwCLwITEwPair = unlines
   , "      else (\"Goodbye, world!\", 0)"
   ]
 
+testList0 :: String
 testList0 = unlines [ "[ 0"
   , ", 1"
   , ", 2"
   , "]"
   ]
 
+testList1 :: String
 testList1 = "[0,1,2]"
 
+testList2 :: String
 testList2 = "[ 0 , 1 , 2 ]"
 
+testList3 :: String
 testList3 = unlines
   [ "[ 0 , 1"
   , ", 2 ]"
   ]
 
+testList4 :: String
 testList4 = unlines
   [ "[ 0 , 1"
   , ",2 ]"
   ]
 
+testList5 :: String
 testList5 = unlines
   [ "[ 0,"
   , "  1,"
@@ -583,16 +584,19 @@ testList5 = unlines
   ]
 
 -- TODO: does it matter that one parses succesfuly and the other doesnt?
+parseApplied0 :: String
 parseApplied0 = unlines
   [ "foo (bar baz"
   , "     )"
   ]
+parseApplied1 :: String
 parseApplied1 = unlines
   [ "foo (bar baz"
   , "         )"
   ]
 
 
+testShowBoard0 :: String
 testShowBoard0 = unlines
   [ "main = or (and validPlace"
   , "                    (and (not winner)"
@@ -600,23 +604,27 @@ testShowBoard0 = unlines
   , "          (1)"
   ]
 
+testShowBoard1 :: String
 testShowBoard1 = unlines
   [ "main = or (0)"
   , "               (1)"
   ]
 
+testShowBoard2 :: String
 testShowBoard2 = unlines
   [ "main = or (and 1"
   , "                    0)"
   , "               (1)"
   ]
 
+testShowBoard3 :: String
 testShowBoard3 = unlines
   [ "main = or (and x"
   , "                    0)"
   , "               (1)"
   ]
 
+testShowBoard4 :: String
 testShowBoard4 = unlines
   [ "main = or (and x"
   , "                    (or 0"
@@ -624,6 +632,7 @@ testShowBoard4 = unlines
   , "               (1)"
   ]
 
+testShowBoard5 :: String
 testShowBoard5 = unlines
   [ "main = or (or x"
   , "                   (or 0"
@@ -631,6 +640,7 @@ testShowBoard5 = unlines
   , "               (1)"
   ]
 
+testLetShowBoard0 :: String
 testLetShowBoard0 = unlines
   [ "let showBoard = or (and validPlace"
   , "                        (and (not winner)"
@@ -641,12 +651,14 @@ testLetShowBoard0 = unlines
   , "in 0"
   ]
 
+testLetShowBoard1 :: String
 testLetShowBoard1 = unlines
   [ "let showBoard = or (0)"
   , "                   (1)"
   , "in 0"
   ]
 
+testLetShowBoard2 :: String
 testLetShowBoard2 = unlines
   [ "let showBoard = or (and validPlace"
   , "                        1"
@@ -655,6 +667,7 @@ testLetShowBoard2 = unlines
   , "in 0"
   ]
 
+testLetShowBoard3 :: String
 testLetShowBoard3 = unlines
   [ "or (and 1"
   , "        1"
@@ -662,12 +675,14 @@ testLetShowBoard3 = unlines
   , "   (not boardIn)"
   ]
 
+testLetShowBoard4 :: String
 testLetShowBoard4 = unlines
   [ "main = or (and 0"
   , "                    1)"
   , "               (not boardIn)"
   ]
 
+testLetShowBoard5 :: String
 testLetShowBoard5 = unlines
   [ "let showBoard = or (and validPlace"
   , "                        1)"
@@ -675,6 +690,7 @@ testLetShowBoard5 = unlines
   , "in 0"
   ]
 
+testShowBoard6 :: String
 testShowBoard6 = unlines
   [ "or (or x"
   , "       (or 0"
@@ -682,11 +698,13 @@ testShowBoard6 = unlines
   , "   (1)"
   ]
 
+testLetShowBoard8 :: String
 testLetShowBoard8 = unlines
   [ "or (0"
   , "   )"
   , "   1"
   ]
+testLetShowBoard9 :: String
 testLetShowBoard9 = unlines
   [ "or 0"
   , "   1"

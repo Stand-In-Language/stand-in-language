@@ -10,42 +10,35 @@ module Main where
 
 import Control.Comonad.Cofree (Cofree (..))
 import qualified Control.Exception as Exception
-import Control.Monad.Identity (Identity, runIdentity)
+import Control.Monad.Identity (runIdentity)
 import Control.Monad.IO.Class
-import qualified Control.Monad.State as State
 import Data.Bifunctor (first)
 import Data.Functor ((<&>))
 import Data.Functor.Foldable (Corecursive (embed), cata)
-import Data.List (intercalate, isPrefixOf, singleton, stripPrefix)
-import qualified Data.Map as Map
+import Data.List (intercalate, isPrefixOf, stripPrefix)
 import Data.Set (Set)
 import qualified Data.Set as Set
-import Debug.Trace (trace)
 import Options.Applicative hiding ((<|>))
-import qualified Options.Applicative as O
 import System.Console.Haskeline
 import System.Exit (exitSuccess)
 import qualified System.IO.Strict as Strict
 import Telomare.Desugar (desugarTerm)
 import Telomare.Driver (compileUnitTestNoAbort)
 import Telomare.Error
-import Telomare.Eval.Reference (evalPartial, showPass)
+import Telomare.Eval.Reference (evalPartial)
 import Telomare.Expand (ExpansionError, expandDefs, expandTerm,
                         renderExpansionError)
 import Telomare.IR.Base
-import Telomare.IR.Builder
 import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.IR.Surface
-import Telomare.IR.Types
 import Telomare.Parse (TelomareParser, parseLongExpr, parseSingleDefinition,
                        runParseDefinitions)
 import Telomare.PrettyPrint
 import Telomare.Resolve (process)
-import Telomare.Size.IR (DeferredEvalF (..), PartialExpr, deferredEE)
+import Telomare.Size.IR (PartialExpr)
 import Telomare.TypeCheck (inferType)
 import Text.Megaparsec
-import Text.Megaparsec.Char
 
 -- Parsers for assignments/expressions within REPL
 -- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -86,13 +79,13 @@ parseReplStep = try (parseReplAssignment <&> ReplAssignment)
 runReplParser :: [(String, ExpandedSurfaceTerm)]
               -> String
               -> Either String (ReplStep [(String, ExpandedSurfaceTerm)])
-runReplParser prelude str = fmap (prelude <>) <$> first errorBundlePretty (runParser parseReplStep "" str)
+runReplParser prelude input = fmap (prelude <>) <$> first errorBundlePretty (runParser parseReplStep "" input)
 
 -- |Parse and expand a file of definitions (a prelude or a @:l@-loaded
 -- file) into REPL bindings.
 parseDefinitionsFile :: String -> Either String [(String, ExpandedSurfaceTerm)]
-parseDefinitionsFile str = do
-  defs <- runParseDefinitions "" str
+parseDefinitionsFile input = do
+  defs <- runParseDefinitions "" input
   bindings <- first renderExpansionError $ expandDefs defs
   pure $ first locatedNameText <$> bindings
 
@@ -125,7 +118,7 @@ resolveBinding name bindings = rightToMaybe $ compileUnitTestNoAbort =<< maybeTo
 printLastExpr :: (StuckExpr -> Either RunTimeError StuckExpr) -- ^Telomare backend
               -> [(String, ExpandedSurfaceTerm)]
               -> IO ()
-printLastExpr eval bindings = do
+printLastExpr evalFn bindings = do
   res :: Either Exception.SomeException () <- Exception.try $
     case lookup "_tmp_" bindings of
       Nothing -> putStrLn "Could not find _tmp_ in bindings"
@@ -138,7 +131,7 @@ printLastExpr eval bindings = do
                              _ -> Left . RTE . ResultConversionError $ "conversion error from compiled expr:\n" <> prettyPrint r
         case compile' =<< first RE (process . desugarTerm $ UnknownLoc :< LetUPF (first (locatedName UnknownLoc) <$> bindings) upt) of
           Left err -> print err
-          Right iexpr' -> case eval iexpr' of
+          Right iexpr' -> case evalFn iexpr' of
               Left e      -> putStrLn $ "error: " <> show e
               Right expr' -> print . PrettyStuckExpr $ expr'
   case res of
@@ -160,14 +153,14 @@ replStep :: (StuckExpr -> Either RunTimeError StuckExpr)
          -> [(String, ExpandedSurfaceTerm)]
          -> String
          -> InputT IO [(String, ExpandedSurfaceTerm)]
-replStep eval bindings s = do
+replStep evalFn bindings s = do
   let e_new_bindings = runReplParser bindings s
   case e_new_bindings of
     Left err -> do
       outputStrLn ("Parse error: " <> err)
       pure bindings
     Right (ReplExpr new_bindings) -> do
-      liftIO $ printLastExpr eval new_bindings
+      liftIO $ printLastExpr evalFn new_bindings
       pure bindings
     Right (ReplAssignment new_bindings) -> pure new_bindings
 
@@ -191,21 +184,21 @@ evalPartial' = convertF . evalPartial . convertT where
 
 -- | Main loop for the REPL.
 replLoop :: ReplState -> InputT IO ()
-replLoop (ReplState bs eval sf) = do
+replLoop (ReplState bs evalFn sf) = do
   minput <- getInputLine "telomare> "
   case minput of
     Nothing   -> pure ()
     Just ":q" -> liftIO exitSuccess
     Just ":{" -> do
-      new_bs <- replStep eval bs =<< replMultiline []
-      replLoop $ ReplState new_bs eval sf
+      new_bs <- replStep evalFn bs =<< replMultiline []
+      replLoop $ ReplState new_bs evalFn sf
     Just s | ":d" `isPrefixOf` s -> do
       liftIO $ case runReplParser bs . dropWhile (== ' ') <$> stripPrefix ":d" s of
         Just (Right (ReplExpr new_bindings)) -> case resolveBinding "_tmp_" new_bindings of
           Just iexpr -> putStrLn $ prettyPrint iexpr
           _          -> putStrLn "some sort of error?"
         _ -> putStrLn "parse error"
-      replLoop $ ReplState bs eval sf
+      replLoop $ ReplState bs evalFn sf
     Just s | ":p" `isPrefixOf` s -> do
       liftIO $ case runReplParser bs . dropWhile (== ' ') <$> stripPrefix ":p" s of
         Just (Right (ReplExpr new_bindings)) -> case resolveBinding "_tmp_" new_bindings of
@@ -213,14 +206,14 @@ replLoop (ReplState bs eval sf) = do
           Just iexpr -> print . PrettyCompiledExpr $ evalPartial' iexpr
           _          -> putStrLn "some sort of error?"
         _ -> putStrLn "parse error"
-      replLoop $ ReplState bs eval sf
+      replLoop $ ReplState bs evalFn sf
     Just s | ":t" `isPrefixOf` s -> do
       liftIO $ case runReplParser bs . dropWhile (== ' ') <$> stripPrefix ":t" s of
         Just (Right (ReplExpr new_bindings)) -> case resolveBinding' "_tmp_" new_bindings of
           Just iexpr -> print $ PrettyPartialType <$> inferType iexpr
           _          -> putStrLn "some sort of error?"
         _ -> putStrLn "parse error"
-      replLoop $ ReplState bs eval sf
+      replLoop $ ReplState bs evalFn sf
     Just ":r" -> do
       let loadFile :: FilePath -> InputT IO [(String, ExpandedSurfaceTerm)]
           loadFile fileName = do
@@ -233,20 +226,20 @@ replLoop (ReplState bs eval sf) = do
                 liftIO . putStrLn $ "File " <> fileName <> " successfully loaded."
                 pure fileBindings
       bs' <- concat <$> mapM loadFile (Set.toList sf)
-      replLoop $ ReplState bs' eval sf
+      replLoop $ ReplState bs' evalFn sf
     Just fileName | ":l " `isPrefixOf` fileName -> do
       let fileName' = drop 3 fileName
       fileString <- liftIO $ Strict.readFile fileName'
       case parseDefinitionsFile fileString of
         Left errStr -> do
           liftIO . putStrLn $ "Error from loaded file: " <> errStr
-          replLoop $ ReplState bs eval sf
+          replLoop $ ReplState bs evalFn sf
         Right fileBindings -> do
                 liftIO . putStrLn $ "File " <> fileName' <> " successfully loaded."
-                replLoop $ ReplState (bs <> fileBindings) eval (Set.insert fileName' sf)
+                replLoop $ ReplState (bs <> fileBindings) evalFn (Set.insert fileName' sf)
     Just s -> do
-      new_bs <- replStep eval bs s
-      replLoop $ ReplState new_bs eval sf
+      new_bs <- replStep evalFn bs s
+      replLoop $ ReplState new_bs evalFn sf
 
 -- Command line settings
 -- ~~~~~~~~~~~~~~~~~~~~~
@@ -288,11 +281,12 @@ startExpr :: (StuckExpr -> Either RunTimeError StuckExpr)
           -> [(String, ExpandedSurfaceTerm)]
           -> String
           -> IO ()
-startExpr eval bindings s_expr = case runReplParser bindings s_expr of
+startExpr evalFn bindings s_expr = case runReplParser bindings s_expr of
   Left err                 -> error $ ("Parse error: " <> err)
   Right (ReplAssignment _) -> error "Expression is an assignment"
-  Right (ReplExpr binds)   -> printLastExpr eval binds
+  Right (ReplExpr binds)   -> printLastExpr evalFn binds
 
+main :: IO ()
 main = do
   e_prelude <- parseDefinitionsFile <$> Strict.readFile "Prelude.tel"
   settings  <- execParser opts

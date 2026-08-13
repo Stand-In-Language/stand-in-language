@@ -76,10 +76,6 @@
         type = "app";
         program = self.packages.${system}.telomare + "/bin/telomare-repl";
       };
-      apps.evaluare = {
-        type = "app";
-        program = self.packages.${system}.telomare + "/bin/telomare-evaluare";
-      };
       apps.lsp = {
         type = "app";
         program = "${pkgs.writeShellApplication {
@@ -227,7 +223,7 @@
               | jq -r '.. | objects | .path? // empty' \
               >> "$direct_paths"
 
-            for app_name in default repl evaluare lsp format-lint; do
+            for app_name in default repl lsp format-lint; do
               app_program="$(nix eval --raw ".#apps.${system}.$app_name.program")"
               if [[ "$app_program" =~ ^(/nix/store/[^/]+) ]]; then
                 printf '%s\n' "''${BASH_REMATCH[1]}" >> "$direct_paths"

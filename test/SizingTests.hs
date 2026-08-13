@@ -8,21 +8,14 @@ import Test.Hspec
 
 import Telomare.Driver (SizingOption (DebugSizing), compileModules,
                         compileModulesWith)
-import Telomare.Error
 import Telomare.Eval.Meter (Meter (..), evalMeter)
 import Telomare.IR.Base
-import Telomare.IR.Builder
 import Telomare.IR.Core
 import Telomare.IR.Loc
-import Telomare.IR.Surface
-import Telomare.IR.Types
 import Telomare.Machine (appB)
 import Telomare.Size (SizingReport (..), SizingSettings (SizingSettings),
                       renderSizingCertificate)
 import Telomare.Size.IR (SizedRecursion (..))
-
--- Common datatypes for generating Telomare AST.
-import Common
 
 limitsDir :: FilePath
 limitsDir = "test/programs/limits/"

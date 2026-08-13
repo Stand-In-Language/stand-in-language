@@ -46,8 +46,8 @@ instance GenValid LocTag
 
 locStartLineColumn :: LocTag -> Maybe (Int, Int)
 locStartLineColumn = \case
-  SourceLoc span ->
-    let start = sourceSpanStart span
+  SourceLoc spn ->
+    let start = sourceSpanStart spn
     in Just (sourcePositionLine start, sourcePositionColumn start)
   GeneratedLoc _ parent -> parent >>= locStartLineColumn
   _ -> Nothing

@@ -45,13 +45,9 @@ import Data.Map (Map)
 import qualified Data.Map as Map
 import System.FilePath (takeExtension)
 
-import Telomare.Error
 import Telomare.IR.Base
-import Telomare.IR.Builder
 import Telomare.IR.Core
 import Telomare.IR.Loc
-import Telomare.IR.Surface
-import Telomare.IR.Types
 import Telomare.Size (SizingReport (..))
 import Telomare.Size.IR (SizedRecursion (..))
 

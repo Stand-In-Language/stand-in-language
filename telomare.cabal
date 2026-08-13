@@ -80,12 +80,13 @@ library
   -- uncomment this line to get a cabal repl. Use appropiate complete path (will error with a relative path).
   -- extra-lib-dirs:      /home/hhefesto/src/telomare/lib
   default-language:    Haskell2010
-  -- ghc-options:         -v3
+  ghc-options:         -Wall
 
 executable telomare
   hs-source-dirs:      app
   main-is:             Main.hs
-  ghc-options:         -threaded
+  ghc-options:         -Wall
+                       -threaded
                        -rtsopts
                        -with-rtsopts=-N
   build-depends:       base
@@ -101,7 +102,7 @@ executable telomare
 executable telomare-repl
   hs-source-dirs:      app
   main-is:             Repl.hs
-  ghc-options:         -threaded -rtsopts -with-rtsopts=-N
+  ghc-options:         -Wall -threaded -rtsopts -with-rtsopts=-N
   build-depends:       base
                      , containers
                      , free
@@ -114,55 +115,6 @@ executable telomare-repl
                      , strict
                      , telomare
   default-language:    Haskell2010
-
-executable telomare-evaluare
-  hs-source-dirs: app
-  main-is: Evaluare.hs
-  ghc-options: -threaded -Wall
-  build-depends:
-                base,
-                containers,
-                free,
-                mtl,
-                reflex,
-                reflex-vty,
-                stm,
-                strict,
-                telomare,
-                text,
-                time,
-                transformers,
-                vty
-  default-language: Haskell2010
-  default-extensions:
-    BangPatterns
-    ConstraintKinds
-    CPP
-    DataKinds
-    DefaultSignatures
-    DeriveFunctor
-    DeriveGeneric
-    FlexibleContexts
-    FlexibleInstances
-    FunctionalDependencies
-    GADTs
-    GeneralizedNewtypeDeriving
-    KindSignatures
-    LambdaCase
-    MultiParamTypeClasses
-    MultiWayIf
-    OverloadedStrings
-    PatternGuards
-    PolyKinds
-    QuasiQuotes
-    RankNTypes
-    RecursiveDo
-    ScopedTypeVariables
-    StandaloneDeriving
-    TemplateHaskell
-    TupleSections
-    TypeApplications
-    TypeFamilies
 
 executable telomare-lsp
   main-is:             LSP.hs
@@ -211,7 +163,8 @@ test-suite telomare-test
                      , strict
                      , telomare
                      , unix
-  ghc-options:         -threaded
+  ghc-options:         -Wall
+                       -threaded
                        -rtsopts
                        -- -prof                         -- uncomment this and the following for profiling
                        -- -fprof-auto
@@ -240,7 +193,7 @@ test-suite telomare-parser-test
                      , tasty-quickcheck
                      , telomare
                      , unix
-  ghc-options:         -threaded -rtsopts -with-rtsopts=-N
+  ghc-options:         -Wall -threaded -rtsopts -with-rtsopts=-N
   default-language:    Haskell2010
 
 test-suite telomare-resolver-test
@@ -266,7 +219,7 @@ test-suite telomare-resolver-test
                      , tasty-quickcheck
                      , telomare
                      , unix
-  ghc-options:         -threaded -rtsopts -with-rtsopts=-N
+  ghc-options:         -Wall -threaded -rtsopts -with-rtsopts=-N
   default-language:    Haskell2010
 
 test-suite telomare-sizing-test
@@ -290,7 +243,7 @@ test-suite telomare-sizing-test
                      , QuickCheck
                      , unix
                      , free
-  ghc-options:         -threaded -rtsopts -with-rtsopts=-N
+  ghc-options:         -Wall -threaded -rtsopts -with-rtsopts=-N
   default-language:    Haskell2010
 
 test-suite telomare-udt-test
@@ -313,7 +266,7 @@ test-suite telomare-udt-test
                      , telomare
                      , unix
 
-  ghc-options:         -threaded -rtsopts -with-rtsopts=-N
+  ghc-options:         -Wall -threaded -rtsopts -with-rtsopts=-N
   default-language:    Haskell2010
 
 source-repository head

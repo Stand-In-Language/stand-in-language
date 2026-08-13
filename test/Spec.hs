@@ -1,30 +1,16 @@
 {-# LANGUAGE CApiFFI #-}
 module Main where
 
-import Control.Applicative (liftA2)
-import Control.Monad.IO.Class
-import Control.Monad.Reader (Reader, runReader)
-import qualified Control.Monad.State as State
 import Data.Bifunctor
-import Data.Char
-import qualified Data.DList as DList
 import Data.List (partition)
-import qualified Data.Map as Map
-import Data.Monoid
-import qualified Data.Set as Set
-import Data.Void
-import Debug.Trace
-import System.Exit
 import System.IO
 import qualified System.IO.Strict as Strict
 import Telomare.Driver
 import Telomare.Error
-import Telomare.Eval.Reference
 import Telomare.Expand
 import Telomare.IR.Base
 import Telomare.IR.Builder
 import Telomare.IR.Core
-import Telomare.IR.Loc
 import Telomare.IR.Surface
 import Telomare.IR.Types
 import Telomare.Machine (appB, deferB)
@@ -55,19 +41,25 @@ shrinkComplexCase test a =
       (recurseable, nonRecursable) = partition (not . null . snd) shrinksWithNextLevel
   in (shrinkComplexCase test (concatMap snd recurseable) <> fmap fst nonRecursable)
 
+three_succ :: Term3
 three_succ = buildTerm $ lamS (pure (PairB (varB 0) ZeroB)) >>= \il -> appS (appS (pure (toChurch 3)) (pure il)) (pure ZeroB)
 
+one_succ :: Term3
 one_succ = buildTerm $ lamS (pure (PairB (varB 0) ZeroB)) >>= \il -> appS (appS (pure (toChurch 1)) (pure il)) (pure ZeroB)
 
+two_succ :: Term3
 two_succ = buildTerm $ lamS (pure (PairB (varB 0) ZeroB)) >>= \il -> appS (appS (pure (toChurch 2)) (pure il)) (pure ZeroB)
 
 church_type :: StuckExpr
 church_type = PairB (PairB ZeroB ZeroB) (PairB ZeroB ZeroB)
 
+c2d :: Term3
 c2d = buildTerm . lamS $ lamS (pure (PairB (varB 0) ZeroB)) >>= \il -> appS (appS (pure (varB 0)) (pure il)) (pure ZeroB)
 
+test_toChurch :: Term3
 test_toChurch = buildTerm $ lamS (pure (PairB (varB 0) ZeroB)) >>= \il -> appS (appS (pure (toChurch 2)) (pure il)) (pure ZeroB)
 
+map_ :: Term3
 map_ =
   let layer = (buildTerm . lamS . lamS . lamS $ (do
                 a <- appS (pure (varB 1)) (pure (LeftB $ varB 0))
@@ -76,6 +68,7 @@ map_ =
       base = (buildTerm . lamS . lamS . pure $ LeftB (PairB ZeroB EnvB))
   in buildTerm $ appS (appS (pure (toChurch 255)) (pure layer)) (pure base)
 
+foldr_ :: Term3
 foldr_ =
   let layer = (buildTerm . lamS . lamS . lamS . lamS $ (do
                 a <- appS (appS (pure (varB 2)) (pure (LeftB $ varB 0))) (pure (varB 1))
@@ -84,6 +77,7 @@ foldr_ =
       base = (buildTerm . lamS . lamS . lamS . pure $ ZeroB)
   in buildTerm $ appS (appS (pure (toChurch 255)) (pure layer)) (pure base)
 
+zipWith_ :: Term3
 zipWith_ =
   let layer = (buildTerm . lamS . lamS . lamS . lamS $ (do
                 a <- appS (appS (pure (varB 2)) (pure (LeftB $ varB 1))) (pure (LeftB $ varB 0))
@@ -92,6 +86,7 @@ zipWith_ =
       base = (buildTerm . lamS . lamS . lamS . pure $ ZeroB)
   in buildTerm $ appS (appS (pure (toChurch 255)) (pure layer)) (pure base)
 
+d2c :: Int -> Term3
 d2c recur =
   let layer = (buildTerm . lamS . lamS . lamS . lamS $ (do
                 a <- appS (appS (appS (pure (varB 3)) (pure (LeftB $ varB 2))) (pure (varB 1))) (pure (varB 0))
@@ -102,14 +97,17 @@ d2c recur =
        wrapLam <- lamS $ appS (appS (pure (varB 0)) (pure layer)) (pure base)
        appS (pure wrapLam) (pure (toChurch recur))
 
+d_equals_one :: Term3
 d_equals_one = buildTerm . lamS . pure $ iteB_ (varB 0) (iteB_ (LeftB (varB 0)) ZeroB (i2B 1)) ZeroB
 
+d_to_equality :: Term3
 d_to_equality = buildTerm . lamS . lamS $ (do
   innerLam <- lamS . pure $ LeftB (varB 0)
   a <- appS (appS (appS (pure (d2c 255)) (pure (LeftB $ varB 1))) (pure innerLam)) (pure (varB 0))
   b <- appS (pure d_equals_one) (pure a)
   pure $ iteB_ (varB 1) b (iteB_ (varB 0) ZeroB (i2B 1)))
 
+list_equality :: Term3
 list_equality = buildTerm $ do
   and_ <- lamS . lamS . pure $ iteB_ (varB 1) (varB 0) ZeroB
   pairs_equal <- appS (appS (appS (pure zipWith_) (pure d_to_equality)) (pure (varB 0))) (pure (varB 1))
@@ -119,6 +117,7 @@ list_equality = buildTerm $ do
   folded <- appS (appS (appS (pure foldr_) (pure and_)) (pure (i2B 1))) (pure (PairB length_equal pairs_equal))
   lamS . lamS . pure $ folded
 
+list_length :: Term3
 list_length = buildTerm $ do
   innerLam <- lamS . lamS . pure $ PairB (varB 0) ZeroB
   lamS $ appS (appS (appS (pure foldr_) (pure innerLam)) (pure ZeroB)) (pure (varB 0))
@@ -130,20 +129,24 @@ plus_ x y =
                 appS (appS (pure (varB 3)) (pure (varB 1))) (pure a)))
   in buildTerm $ appS (appS (pure plus) (pure x)) (pure y)
 
+d_plus :: Term3
 d_plus = buildTerm . lamS . lamS $ (do
   a <- appS (pure (d2c 255)) (pure (varB 1))
   b <- appS (pure (d2c 255)) (pure (varB 0))
   appS (pure c2d) (pure (plus_ a b)))
 
+d_plus2 :: Term3
 d_plus2 = buildTerm . lamS . lamS $ (do
   a <- appS (pure (d2c 6)) (pure (varB 1))
   b <- appS (pure (d2c 6)) (pure (varB 0))
   appS (pure c2d) (pure (plus_ a b)))
 
+d_plus3 :: Term3
 d_plus3 = buildTerm . lamS $ (do
   a <- appS (pure (d2c 6)) (pure (varB 0))
   appS (pure c2d) (pure (plus_ (toChurch 2) a)))
 
+d2c_test :: Term3
 d2c_test =
   let layer = (buildTerm . lamS . lamS . lamS . lamS $ (do
                 a <- appS (appS (appS (pure (varB 3)) (pure (LeftB $ varB 2))) (pure (varB 1))) (pure (varB 0))
@@ -158,11 +161,14 @@ d2c_test =
 d2c2_test :: Term3
 d2c2_test = iteB_ ZeroB (LeftB (i2B 1)) (LeftB (i2B 2))
 
+c2d_test :: Term3
 c2d_test = buildTerm $ appS (pure c2d) (pure (toChurch 2))
+c2d_test2 :: Term3
 c2d_test2 = buildTerm $ do
   innerLam <- lamS . pure $ PairB (varB 0) ZeroB
   outerLam <- lamS $ appS (appS (pure (varB 0)) (pure innerLam)) (pure ZeroB)
   appS (pure outerLam) (pure (toChurch 2))
+c2d_test3 :: Term3
 c2d_test3 = buildTerm $ do
   bodyLam <- lamS . pure $ PairB (varB 0) ZeroB
   outerLam <- lamS $ appS (pure (varB 0)) (pure ZeroB)
@@ -173,12 +179,18 @@ double_app = buildTerm $ do
   inner <- lamS . lamS . pure $ PairB (varB 0) (varB 1)
   appS (appS (pure inner) (pure ZeroB)) (pure ZeroB)
 
+test_plus0 :: Term3
 test_plus0 = buildTerm $ do { a <- appS (pure (d2c 255)) (pure ZeroB); appS (pure c2d) (pure (plus_ (toChurch 3) a)) }
+test_plus1 :: Term3
 test_plus1 = buildTerm $ do { a <- appS (pure (d2c 255)) (pure (i2B 1)); appS (pure c2d) (pure (plus_ (toChurch 3) a)) }
+test_plus254 :: Term3
 test_plus254 = buildTerm $ do { a <- appS (pure (d2c 255)) (pure (i2B 254)); appS (pure c2d) (pure (plus_ (toChurch 3) a)) }
+test_plus255 :: Term3
 test_plus255 = buildTerm $ do { a <- appS (pure (d2c 255)) (pure (i2B 255)); appS (pure c2d) (pure (plus_ (toChurch 3) a)) }
+test_plus256 :: Term3
 test_plus256 = buildTerm $ do { a <- appS (pure (d2c 255)) (pure (i2B 256)); appS (pure c2d) (pure (plus_ (toChurch 3) a)) }
 
+one_plus_one :: Term3
 one_plus_one =
   let plus = (buildTerm . lamS . lamS . lamS . lamS $ (do
                 a <- appS (appS (pure (varB 2)) (pure (varB 1))) (pure (varB 0))
@@ -187,6 +199,7 @@ one_plus_one =
        a <- appS (appS (pure plus) (pure (toChurch 1))) (pure (toChurch 1))
        appS (pure c2d) (pure a)
 
+times_two :: Term3
 times_two =
   let times_app = (buildTerm . lamS . lamS $ (do
                     a <- appS (pure (varB 1)) (pure (varB 0))
@@ -195,6 +208,7 @@ times_two =
        a <- appS (pure times_app) (pure (toChurch 3))
        appS (pure c2d) (pure a)
 
+times_three :: Term3
 times_three =
   let times_app = (buildTerm . lamS . lamS $ (do
                     a <- appS (pure (toChurch 3)) (pure (varB 0))
@@ -203,11 +217,8 @@ times_three =
        a <- appS (pure times_app) (pure (toChurch 2))
        appS (pure c2d) (pure a)
 
-times_wip =
-  let times_app = (buildTerm . lamS . lamS $ (do
-                    a <- appS (pure (toChurch 3)) (pure (varB 0))
-                    appS (pure (varB 1)) (pure a)))
-  in buildTerm $ appS (pure c2d) (pure (toChurch 6))
+times_wip :: Term3
+times_wip = buildTerm $ appS (pure c2d) (pure (toChurch 6))
 
 function_argument :: Term3
 function_argument = buildTerm $ do
@@ -217,6 +228,7 @@ function_argument = buildTerm $ do
 
 -- m f (n f x)
 -- app (app m f) (app (app n f) x)
+three_plus_two :: Term3
 three_plus_two =
   let plus = (buildTerm . lamS . lamS . lamS . lamS $ (do
                 a <- appS (appS (pure (varB 2)) (pure (varB 1))) (pure (varB 0))
@@ -227,23 +239,26 @@ three_plus_two =
 
 -- (m (n f)) x
 -- app (app m (app n f)) x
+three_times_two :: Term3
 three_times_two =
-  let succ = (buildTerm . lamS . pure $ PairB (varB 0) ZeroB)
+  let succTerm = (buildTerm . lamS . pure $ PairB (varB 0) ZeroB)
       times = (buildTerm . lamS . lamS . lamS . lamS $ (do
                 a <- appS (pure (varB 2)) (pure (varB 1))
                 appS (appS (pure (varB 3)) (pure a)) (pure (varB 0))))
-  in buildTerm $ appS (appS (appS (appS (pure times) (pure (toChurch 3))) (pure (toChurch 2))) (pure succ)) (pure ZeroB)
+  in buildTerm $ appS (appS (appS (appS (pure times) (pure (toChurch 3))) (pure (toChurch 2))) (pure succTerm)) (pure ZeroB)
 
 -- m n
 -- app (app (app (m n)) f) x
+three_pow_two :: Term3
 three_pow_two =
-  let succ = (buildTerm . lamS . pure $ PairB (varB 0) ZeroB)
+  let succTerm = (buildTerm . lamS . pure $ PairB (varB 0) ZeroB)
       pow = (buildTerm . lamS . lamS . lamS . lamS $ (do
               a <- appS (appS (pure (varB 3)) (pure (varB 2))) (pure (varB 1))
               appS (pure a) (pure (varB 0))))
-  in buildTerm $ appS (appS (appS (appS (pure pow) (pure (toChurch 2))) (pure (toChurch 3))) (pure succ)) (pure ZeroB)
+  in buildTerm $ appS (appS (appS (appS (pure pow) (pure (toChurch 2))) (pure (toChurch 3))) (pure succTerm)) (pure ZeroB)
 
 -- validate termination checking
+inf_pairs :: Term3
 inf_pairs = buildTerm $ do
   let firstArg = LeftB EnvB
   recur <- deferS (PairB ZeroB (SetEnvB (PairB firstArg EnvB)))
@@ -272,18 +287,20 @@ unitTest name expected iexpr = it name $ if allowedTypeCheck (typeCheck (embed Z
   else expectationFailure ( concat [name, " failed typecheck: ", show (typeCheck (embed ZeroTypeP) iexpr)])
 
 unitTestRefinement :: String -> Bool -> BasicExpr -> Spec
-unitTestRefinement name shouldSucceed iexpr = it name $
+unitTestRefinement name _shouldSucceed _iexpr = it name $
   expectationFailure (name <> ": unitTestRefinement not yet updated after refactor")
 
 unitTestQC :: Testable p => String -> Int -> p -> Spec
 unitTestQC name times = modifyMaxSuccess (const times) . it name . property
 
+churchType :: DataType
 churchType = ArrType (ArrType ZeroType ZeroType) (ArrType ZeroType ZeroType)
 
 quickcheckDataTypedCorrectlyTypeChecks :: DataTypedIExpr -> Bool
 quickcheckDataTypedCorrectlyTypeChecks (IExprWrapper x) = not . null $ inferType (fromTelomare x)
 
 
+testRecur :: String
 testRecur = concat
   [ "main = let layer = \\recur x -> recur (x, 0)"
   , "\n"
@@ -297,14 +314,9 @@ testRecur = concat
 --     else expectationFailure $ "testSBV failed, got result " <> show r
 --   -- assertEqual "testing SBV" r 3
 
+unitTests_ :: Show a => (Bool -> String -> Either a Term3) -> SpecWith ()
 unitTests_ parse = do
   let unitTestType = unitTestType' (parse False)
-      unitTest2 = unitTest2' (parse True)
-      unitTestStaticChecks = unitTestStaticChecks' (parse True)
-      buildMainTest s = case fmap (compileMain' (SizingSettings 255 True)) (parse True s) of
-        Right (Right g) -> let eval = funWrap g appB
-                           in pure $ \s i e -> it ("main input " <> i) $ eval (Just (i, s)) `shouldBe` e
-        z -> pure $ \s i e -> runIO . expectationFailure $ "failed to compile main:\n" <> show s <> "\nbecause:\n" <> show z
       -- normalMainType = embed $ PairTypeP (embed $ ArrTypeP (embed ZeroTypeP) (embed ZeroTypeP)) (embed ZeroTypeP)
       -- decompileExample = IExprWrapper (SetEnv (SetEnv (SetEnv (Pair (Defer (Pair (Defer (Pair (Defer Zero) Env)) Env)) Zero))))
   -- describe "unitTest2" $ unitTestType "main = succ 0" (ArrTypeP ZeroTypeP ZeroTypeP) isInconsistentType
@@ -350,11 +362,14 @@ unitTests_ parse = do
       normalMainType (/= Nothing) -- isRecursiveType
 -}
 
+c2dApp :: String
 c2dApp = "main = (c2dG $4 3) $2 succ 0"
 
+isInconsistentType :: Maybe TypeCheckError -> Bool
 isInconsistentType (Just (InconsistentTypes _ _)) = True
 isInconsistentType _                              = False
 
+isRecursiveType :: Maybe TypeCheckError -> Bool
 isRecursiveType (Just (RecursiveType _)) = True
 isRecursiveType _                        = False
 
@@ -367,17 +382,19 @@ unitTestTypeP iexpr expected = if inferType (fromTelomare iexpr) == expected
                     ]
   pure False
 
+debugMark :: String -> IO Bool
 debugMark s = hPutStrLn stderr s >> pure True
 
 --unitTests :: (String -> String -> Spec) -> (String -> PartialType -> (Maybe TypeCheckError -> Bool) -> Spec) -> Spec
+unitTests :: Show a => (Bool -> String -> Either a Term3) -> SpecWith ()
 unitTests parse = do
   let unitTestType = unitTestType' (parse False)
       unitTest2 = unitTest2' (parse True)
       unitTestStaticChecks = unitTestStaticChecks' (parse True)
       buildMainTest s = case fmap (compileMain' (SizingSettings 255 True)) (parse True s) of
-        Right (Right g) -> let eval = funWrap g appB
-                           in pure $ \s i e -> it ("main input " <> i) $ eval (Just (i, s)) `shouldBe` e
-        z -> pure $ \s i e -> runIO . expectationFailure $ "failed to compile main:\n" <> show s <> "\nbecause:\n" <> show z
+        Right (Right g) -> let evalMain = funWrap g appB
+                           in pure $ \st i e -> it ("main input " <> i) $ evalMain (Just (i, st)) `shouldBe` e
+        z -> pure $ \st _i _e -> runIO . expectationFailure $ "failed to compile main:\n" <> show st <> "\nbecause:\n" <> show z
       normalMainType = embed $ PairTypeP (embed $ ArrTypeP (embed ZeroTypeP) (embed ZeroTypeP)) (embed ZeroTypeP)
   describe "type checker" $ do
     unitTestType "main = \\x -> (x,0)" normalMainType (== Nothing)
@@ -497,11 +514,11 @@ unitTests parse = do
     unitTestMain <- buildMainTest testMain
     unitTestMain ZeroB "A" ("ascii value of first char is odd", Right ZeroB)
     unitTestMain ZeroB "B" ("ascii value of first char is even", Right ZeroB)
-    testMain <- runIO $ Strict.readFile "simpleplus.tel"
-    unitTestMain <- buildMainTest testMain
-    unitTestMain ZeroB "0 0" ("0 plus 0 is 0", Right ZeroB)
-    unitTestMain ZeroB "9 9" ("9 plus 9 is 18", Right ZeroB)
-    unitTestMain ZeroB "9 a" ("runtime error:\nAborted, user abort: invalid input", Left (AbortRunTime (AbortUser $ s2b "invalid input")))
+    testMainPlus <- runIO $ Strict.readFile "simpleplus.tel"
+    unitTestMainPlus <- buildMainTest testMainPlus
+    unitTestMainPlus ZeroB "0 0" ("0 plus 0 is 0", Right ZeroB)
+    unitTestMainPlus ZeroB "9 9" ("9 plus 9 is 18", Right ZeroB)
+    unitTestMainPlus ZeroB "9 a" ("runtime error:\nAborted, user abort: invalid input", Left (AbortRunTime (AbortUser $ s2b "invalid input")))
 
 
   {- TODO -- figure out why this broke
@@ -509,14 +526,17 @@ unitTests parse = do
       "(1,(2,(3,(4,(4,(5,(6,(7,(7,(8,10))))))))))"
 -}
 
+testExpr :: String
 testExpr = concat
   [ "main = let a = 0\n"
   , "           b = 1\n"
   , "       in (a,1)\n"
   ]
 
+fiveApp :: String
 fiveApp = "main = let fiveApp = $5\n" <> "       in fiveApp (\\x -> (x,0)) 0"
 
+nestedNamedFunctionsIssue :: String
 nestedNamedFunctionsIssue = concat
   [ "main = let bindTest = \\tlb -> let f1 = \\f -> f tlb\n"
   , "                                  f2 = \\f -> succ (f1 f)\n"
@@ -525,6 +545,7 @@ nestedNamedFunctionsIssue = concat
   ]
 
 
+unitTest2' :: Show a => (String -> Either a Term3) -> String -> String -> SpecWith ()
 unitTest2' parse s r = it s $ case fmap compileUnitTest (parse s) of
   Left e -> expectationFailure $ concat ["failed to parse ", s, " ", show e]
   Right (Right g) -> testEval g >>= (\r2 -> if r2 == r
@@ -533,6 +554,7 @@ unitTest2' parse s r = it s $ case fmap compileUnitTest (parse s) of
     . show . PrettyStuckExpr
   Right (Left e) -> expectationFailure $ "failed to compile: " <> show e
 
+unitTestType' :: Show a => (String -> Either a Term3) -> String -> PartialType -> (Maybe TypeCheckError -> Bool) -> SpecWith ()
 unitTestType' parse s t tef = it s $ case parse s of
   Left e -> expectationFailure $ concat ["failed to parse ", s, " ", show e]
   Right g -> let apt = typeCheck t g
@@ -541,6 +563,7 @@ unitTestType' parse s t tef = it s $ case parse s of
                 else expectationFailure $
                       concat [s, " failed typecheck, result ", show apt]
 
+unitTestStaticChecks' :: Show a => (String -> Either a Term3) -> String -> (Either EvalError CompiledExpr -> Bool) -> SpecWith ()
 unitTestStaticChecks' parse s c = it s $ case parse s of
   Left e -> expectationFailure $ concat ["failed to parse ", s, " ", show e]
   Right g -> let rr = findChurchSizeD UnitTestSizing g >>= runStaticChecks
@@ -550,12 +573,14 @@ unitTestStaticChecks' parse s c = it s $ case parse s of
     --putStrLn $ "grammar is " <> show g
     expectationFailure $ "static check failed with " <> show rr
 
+unitTestType2 :: Term3 -> PartialType -> (Maybe TypeCheckError -> Bool) -> SpecWith ()
 unitTestType2 i t tef = it ("type check " <> show i) $
   let apt = typeCheck t i
   in if tef apt
      then pure ()
      else expectationFailure $ concat [show i, " failed typecheck, result ", show apt]
 
+main :: IO ()
 main = do
   preludeFile <- Strict.readFile "Prelude.tel"
 

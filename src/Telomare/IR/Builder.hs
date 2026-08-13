@@ -2,6 +2,7 @@
 {-# LANGUAGE PatternSynonyms     #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeFamilies        #-}
+{-# LANGUAGE TypeOperators       #-}
 
 -- |A small monadic DSL for constructing lowered terms while threading the
 -- supply of function indexes and unsized-recursion tokens. Used by the
@@ -63,7 +64,7 @@ appS c i = SetEnvB . SetEnvB <$> pairS twiddleS (pairS i c)
 -- rf is the function to pull arguments out of the frame, run f', and construct the next frame
 -- (f',env') is f (since f may contain a saved environment/closure env we want to use for each iteration)
 repeatFunctionS :: LocTag -> Term3Builder Term3
-repeatFunctionS l =
+repeatFunctionS _l =
   let applyF = SetEnvB $ RightB EnvB
       env' = RightB . RightB $ RightB EnvB
       -- takes (rf, (f', (x, env'))), executes f' with (x, env') and creates a new frame
