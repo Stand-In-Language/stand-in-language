@@ -4,10 +4,10 @@
 
 module CaseTests (unitTestsCase, qcPropsCase) where
 
+import Common (modulesWithPrelude)
 import Control.Comonad.Cofree (Cofree ((:<)))
 import qualified Control.Monad.State as State
 import Data.Fix (Fix (..))
-import qualified System.IO.Strict as Strict
 import Telomare.Desugar (patternToTerm)
 import Telomare.Driver (runMainWithInput)
 import Telomare.IR.Base
@@ -92,8 +92,8 @@ unitTestsCase = testGroup "Unit tests on case expressions"
 
 runTelomareStr :: String -> IO String
 runTelomareStr str = do
-  preludeStr <- Strict.readFile "Prelude.tel"
-  runMainWithInput [] [("Prelude", preludeStr), ("dummyModule", str)] "dummyModule"
+  modules <- modulesWithPrelude "dummyModule" str
+  runMainWithInput [] modules "dummyModule"
 
 caseExprIntLeavesStr :: String
 caseExprIntLeavesStr = unlines

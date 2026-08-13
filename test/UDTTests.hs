@@ -5,29 +5,12 @@
 
 module Main where
 
-import Control.Comonad.Cofree (Cofree ((:<)))
-import Control.Monad (unless)
-import Data.Bifunctor (Bifunctor (first))
-import Data.List (isInfixOf)
 import Data.Ratio
-import NatUDTTests (natUDTTests)
-import qualified System.IO.Strict as Strict
-import Telomare.Desugar (desugarTerm)
-import Telomare.Driver (SizingOption (..), compile, runStaticChecks)
-import Telomare.Error
-import Telomare.Expand (expandDefs, expandTerm, renderExpansionError)
-import Telomare.IR.Core
-import Telomare.IR.Loc
-import Telomare.IR.Surface
-import Telomare.Parse (parseLongExpr, runParseDefinitions)
-import Telomare.PrettyPrint
-import Telomare.Resolve (process, pruneBindings)
-import Telomare.Size (SizingSettings (SizingSettings))
+import NatUDTTests (assertExprWith, evalWithBindings, loadBindings, natUDTTests)
 
 import Test.Tasty
 import Test.Tasty.HUnit
 import Test.Tasty.QuickCheck as QC
-import Text.Megaparsec (eof, errorBundlePretty, runParser)
 
 
 main :: IO ()
@@ -41,40 +24,14 @@ tests = testGroup "UDT Tests" [ unitTestsNatArithmetic
                               , natUDTTests
                               ]
 
-loadPreludeBindings :: IO [(String, ExpandedSurfaceTerm)]
-loadPreludeBindings = do
-  preludeResult <- Strict.readFile "Prelude.tel"
-  case runParseDefinitions "" preludeResult
-         >>= first renderExpansionError . expandDefs of
-    Left _   -> pure []
-    Right bs -> pure $ first locatedNameText <$> bs
-
+-- |Evaluate @expr@ in the scope of @Prelude.tel@ alone.
 evalExprString :: String -> IO (Either String String)
 evalExprString input = do
-  preludeBindings <- loadPreludeBindings
-  let parseResult = first errorBundlePretty (runParser (parseLongExpr <* eof) "" input)
-        >>= first renderExpansionError . expandTerm
-  case parseResult of
-    Left err -> pure $ Left err
-    Right aupt -> do
-      let bindings = preludeBindings
-          term = UnknownLoc :< LetUPF (first (locatedName UnknownLoc) <$> pruneBindings aupt bindings) aupt
-          compile' :: Term3 -> Either EvalError CompiledExpr
-          compile' = compile (DebugSizing (SizingSettings 255 False)) runStaticChecks
-      case first RE (process $ desugarTerm term) >>= compile' of
-        Left err -> pure $ Left (show err)
-        Right iexpr -> case eval iexpr of
-                         Left e -> pure . Left . show $ e
-                         Right result -> case toTelomare result of
-                           Just r -> pure . Right . show $ PrettyStuckExpr r
-                           Nothing -> pure . Left $ "conversion error from result:\n" <> prettyPrint result
+  preludeBindings <- loadBindings "Prelude.tel"
+  evalWithBindings preludeBindings input
 
 assertExpr :: String -> String -> Assertion
-assertExpr input expected = do
-  res <- evalExprString input
-  case res of
-    Left err  -> unless (expected `isInfixOf` err) . assertFailure $ "Evaluation failed: " <> err
-    Right val -> val @?= expected
+assertExpr = assertExprWith evalExprString
 
 rationalToString :: Ratio Integer -> String
 rationalToString r = "(" <> show (numerator r) <> "," <> show (denominator r) <> ")"

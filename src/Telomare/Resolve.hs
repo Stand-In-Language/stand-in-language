@@ -54,7 +54,6 @@ import Data.Map.Strict (Map)
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Void (absurd)
-import Debug.Trace (trace)
 import Telomare.Desugar (desugarTerm, rewriteOuterTag)
 import Telomare.Error
 import Telomare.IR.Base
@@ -63,12 +62,7 @@ import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.IR.Surface
 import Telomare.PrettyPrint (prettyPrint)
-
-debug :: Bool
-debug = False
-
-debugTrace :: String -> a -> a
-debugTrace s x = if debug then trace s x else x
+import Telomare.Util (debugTrace)
 
 -- |Int to ParserTerm
 i2t :: a -> Int -> Cofree (ParserTermF l v) a
@@ -219,6 +213,32 @@ openLambda name body@(_anno :< _) = LamP (Open name) body
 
 -- |Transform a case-free surface term to 'Term1', validating and inlining
 -- variables.
+-- |Order let-binding names so that each name comes after everything it
+-- depends on (dependencies first). Fails with 'DefinitionCycle' when the
+-- dependency graph is cyclic.
+topologicalSort :: [String] -> Map String (Set String) -> Either ResolverError [String]
+topologicalSort names deps = go [] names
+  where
+    go result [] = Right (reverse result)
+    go result remaining =
+      case find (canProcess remaining) remaining of
+        Nothing ->
+          -- Must be a cycle - find it for error message
+          let findCycleFrom start = go' start Set.empty
+                where go' curr visited
+                        | curr `Set.member` visited = [curr]
+                        | otherwise =
+                            case find (`elem` remaining) (Set.toList $ Map.findWithDefault Set.empty curr deps) of
+                              Nothing   -> []
+                              Just next -> curr : go' next (Set.insert curr visited)
+          in Left $ DefinitionCycle (findCycleFrom (head remaining))
+        Just name -> go (name : result) (delete name remaining)
+
+    canProcess rn name =
+      all (`notElem` rn) (Set.toList $ Map.findWithDefault Set.empty name deps)
+
+    delete x = filter (/= x)
+
 validateVariables :: DesugaredSurfaceTerm
                   -> Either ResolverError Term1
 validateVariables term =
@@ -263,33 +283,6 @@ validateVariables term =
                     laterNames = Set.fromList $ drop (i + 1) originalOrder
                 in not . Set.null $ deps `Set.intersection` laterNames
                 ) (zip [0..] originalOrder)
-              -- Topological sort with cycle detection
-              topologicalSort :: [String] -> Map String (Set String) -> Either ResolverError [String]
-              topologicalSort names deps = go [] Set.empty names
-                where
-                  go :: [String] -> Set String -> [String] -> Either ResolverError [String]
-                  go result _ [] = Right (reverse result)
-                  go result inProgress remaining =
-                    case find (canProcess remaining inProgress) remaining of
-                      Nothing ->
-                        -- Must be a cycle - find it for error message
-                        let findCycleFrom start = go' start Set.empty
-                              where go' curr visited
-                                      | curr `Set.member` visited = [curr]
-                                      | otherwise =
-                                          case find (`elem` remaining) (Set.toList $ Map.findWithDefault Set.empty curr deps) of
-                                            Nothing -> []
-                                            Just next -> curr : go' next (Set.insert curr visited)
-                        in Left $ DefinitionCycle (findCycleFrom (head remaining))
-                      Just name ->
-                        let inProgress' = inProgress `Set.union`
-                                         Map.findWithDefault Set.empty name deps
-                        in go (name : result) inProgress' (delete name remaining)
-
-                  canProcess rn _inProgress name =
-                    all (`notElem` rn) (Set.toList $ Map.findWithDefault Set.empty name deps)
-
-                  delete x = filter (/= x)
 
           -- Only reorder if necessary
           sortedBindings <- if hasForwardRef
@@ -367,32 +360,7 @@ annotateUnsizedCount = capTop . flip evalStateT (0 :: Integer) . cata f where
 -- convert let bindings to nested lambda/app brackets
 letsToApps :: DesugaredSurfaceTerm -> Either ResolverError Term1
 letsToApps term =
-   -- Topological sort with cycle detection
-  let topologicalSort names deps = go [] Set.empty names
-        where
-          go result _ [] = Right result
-          go result inProgress remaining =
-            case find (canProcess remaining inProgress) remaining of
-              Nothing ->
-                -- Must be a cycle - find it for error message
-                let findCycleFrom start = go' start Set.empty
-                      where go' curr visited
-                              | curr `Set.member` visited = [curr]
-                              | otherwise =
-                                  case find (`elem` remaining) (Set.toList $ Map.findWithDefault Set.empty curr deps) of
-                                    Nothing -> []
-                                    Just next -> curr : go' next (Set.insert curr visited)
-                in Left $ DefinitionCycle (findCycleFrom (head remaining))
-              Just name ->
-                let inProgress' = inProgress `Set.union`
-                                  Map.findWithDefault Set.empty name deps
-                in go (name : result) inProgress' (delete name remaining)
-
-          canProcess rn _inProgress name =
-            all (`notElem` rn) (Set.toList $ Map.findWithDefault Set.empty name deps)
-
-          delete x = filter (/= x)
-      getTransitive deps n = Set.singleton n <> case Map.lookup n deps of
+  let getTransitive deps n = Set.singleton n <> case Map.lookup n deps of
         Just s | not (null s) -> mconcat . fmap (getTransitive deps) $ Set.toList s
         _ -> Set.empty
       getTransitive' deps = mconcat . fmap (getTransitive deps) . Set.toList
@@ -417,7 +385,8 @@ letsToApps term =
             let originalOrder = letBindingName <$> bindings
                 dependencies = Map.fromList $ fmap (second snd) nBindings
                 sortedBindings =
-                  case topologicalSort originalOrder dependencies of
+                  -- reverse-dependency order: 'foldr makeBinding' below re-reverses
+                  case reverse <$> topologicalSort originalOrder dependencies of
                     Left defCycle -> Left defCycle
                     Right sortedNames ->
                       pure [(name, def) | name <- sortedNames, (name', (def, _)) <- nBindings, name == name']
@@ -543,30 +512,9 @@ qualifyTerm names qualifier = go Set.empty
       UnprocessedParsedTermL (VarF name)
         | name `Set.member` names && name `Set.notMember` bound ->
             UnprocessedParsedTermL $ VarF (qualifier <> "." <> name)
-      UnprocessedParsedTermL (LamF name body) ->
-        UnprocessedParsedTermL . LamF name $
-          go (Set.insert (locatedNameText name) bound) body
-      LetUPF bindings body ->
-        let localNames = Set.fromList $ letBindingName <$> bindings
-            bound' = bound <> localNames
-        in LetUPF (fmap (fmap $ go bound') bindings) (go bound' body)
-      CaseUPF scrutinee alternatives ->
-        CaseUPF (go bound scrutinee)
-          [ (qualifyPattern bound pattern', go (bound <> patternNames pattern') body)
-          | (pattern', body) <- alternatives
-          ]
-      other -> fmap (go bound) other
+      other -> mapScoped (\binders -> go (bound <> binderNames binders)) other
 
-    qualifyPattern bound (Fix pattern') = Fix $ case pattern' of
-      PatternAnnotatedF pattern'' (AnnotatedEST annotation) ->
-        PatternAnnotatedF (qualifyPattern bound pattern'')
-          (AnnotatedEST $ go bound annotation)
-      other -> fmap (qualifyPattern bound) other
-
-    patternNames = cata $ \case
-      PatternVarF name      -> Set.singleton $ locatedNameText name
-      PatternAnnotatedF p _ -> p
-      p                     -> F.fold p
+    binderNames = Set.fromList . fmap locatedNameText
 
 resolveMain :: ExpandedModules -- ^Modules and their typed expanded items
             -> String -- ^Module name with main

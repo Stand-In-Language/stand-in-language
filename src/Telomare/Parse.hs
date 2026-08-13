@@ -11,13 +11,15 @@ import Data.Void (Void)
 import Telomare.IR.Base
 import Telomare.IR.Loc
 import Telomare.IR.Surface
+import Telomare.Lexical (blockCommentDelims, identifierContinueChar,
+                         identifierStart, lineCommentStart, reservedWords)
 import Text.Megaparsec (MonadParsec (eof, notFollowedBy, try), ParseErrorBundle,
                         Parsec, Pos,
                         SourcePos (sourceColumn, sourceLine, sourceName),
                         between, choice, errorBundlePretty, getOffset,
                         getSourcePos, many, manyTill, optional, runParser,
-                        sepBy, sepBy1, some, unPos, (<?>), (<|>))
-import Text.Megaparsec.Char (alphaNumChar, char, letterChar, space1, string)
+                        satisfy, sepBy, sepBy1, some, unPos, (<?>), (<|>))
+import Text.Megaparsec.Char (char, space1, string)
 import qualified Text.Megaparsec.Char.Lexer as L
 
 -- |TelomareParser :: * -> *
@@ -31,12 +33,12 @@ parseVariable = do
 
 -- |Line comments start with "--".
 lineComment :: TelomareParser ()
-lineComment = L.skipLineComment "--"
+lineComment = L.skipLineComment lineCommentStart
 
 -- |A block comment starts with "{-" and ends at "-}".
 -- Nested block comments are also supported.
 blockComment :: TelomareParser ()
-blockComment = L.skipBlockCommentNested "{-" "-}"
+blockComment = uncurry L.skipBlockCommentNested blockCommentDelims
 
 -- |Space Consumer: Whitespace and comment parser that does not consume new-lines.
 sc :: TelomareParser ()
@@ -65,10 +67,10 @@ reserved w = (lexeme . try) (string w *> notFollowedBy identifierContinue)
 
 -- |List of reserved words
 rws :: [String]
-rws = ["let", "in", "if", "then", "else", "case", "of", "import", "qualified", "as"]
+rws = reservedWords
 
 identifierContinue :: TelomareParser Char
-identifierContinue = alphaNumChar <|> char '_' <|> char '.'
+identifierContinue = satisfy identifierContinueChar <?> "variable"
 
 -- |Variable identifiers can consist of alphanumeric characters, underscore,
 -- and must start with an English alphabet letter
@@ -78,7 +80,7 @@ identifier = lexeme identifierRaw
 identifierRaw :: TelomareParser String
 identifierRaw = try $ p >>= check
   where
-    p = (:) <$> letterChar <*> many (identifierContinue <?> "variable")
+    p = (:) <$> (satisfy identifierStart <?> "letter") <*> many identifierContinue
     check x = if x `elem` rws
               then fail ("keyword " <> (show x <> " cannot be an identifier"))
               else pure x

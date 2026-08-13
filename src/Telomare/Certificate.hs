@@ -33,6 +33,7 @@ import Telomare.Levels (BindingKey, LevelsInfo (..), SiteKey (..), bangs,
                         renderBinding, renderDef, renderLevels, renderSource)
 import Telomare.Size (SizingReport (..))
 import Telomare.Size.IR (SizedRecursion (..))
+import Telomare.Util (padRight, plural)
 
 -- |The whole static report.
 --
@@ -92,14 +93,13 @@ sizedRows :: SizingReport -> [String]
 sizedRows report = fmap render counts
   where
     counts = Map.toAscList . unSizedRecursion $ sizingReportCounts report
-    render (tok, size) = "  " <> pad (place tok) <> "  <= " <> maybe "?" show size
+    render (tok, size) = "  " <> padRight width (place tok) <> "  <= " <> maybe "?" show size
     place tok =
       let named = "#" <> show (unUnsizedRecursionToken tok)
       in case Map.lookup tok (sizingReportLocs report) >>= renderLocTagCompact of
            Just spot -> spot <> " (" <> named <> ")"
            Nothing   -> named
     width = maximum (0 : fmap (length . place . fst) counts)
-    pad s = s <> replicate (width - length s) ' '
 
 -- |What the structural pass found: one row per written triple.
 structuralRows :: LevelsInfo -> [String]
@@ -114,8 +114,8 @@ structuralRows info
     (w1, w2) = (width fst3, width snd3)
     fst3 (a, _, _) = a
     snd3 (_, b, _) = b
-    render (a, b, c) = padTo w1 a <> padTo w2 b <> c
-    padTo w s = s <> replicate (w - length s + 2) ' '
+    -- the +2 is the column gutter
+    render (a, b, c) = padRight (w1 + 2) a <> padRight (w2 + 2) b <> c
 
 pressureRows :: [(BindingKey, Int)] -> [String]
 pressureRows rows = fmap render rows
@@ -123,7 +123,5 @@ pressureRows rows = fmap render rows
     width = maximum (fmap (length . renderBinding . fst) rows)
     render (binding, k) =
       let name = renderBinding binding
-      in "  " <> name <> replicate (width - length name + 2) ' '
-           <> bangs k <> "  (" <> show k <> " " <> plural k <> " below its binding)"
-    plural 1 = "level"
-    plural _ = "levels"
+      in "  " <> padRight (width + 2) name -- the +2 is the column gutter
+           <> bangs k <> "  (" <> show k <> " " <> plural "level" k <> " below its binding)"

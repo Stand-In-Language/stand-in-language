@@ -1,5 +1,7 @@
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE LambdaCase        #-}
+{-# LANGUAGE FlexibleContexts     #-}
+{-# LANGUAGE FlexibleInstances    #-}
+{-# LANGUAGE LambdaCase           #-}
+{-# LANGUAGE UndecidableInstances #-}
 
 module Telomare.PrettyPrint where
 
@@ -268,22 +270,12 @@ instance (Functor f, PrettyPrintable1 f) => PrettyPrintable (Fix f) where
 instance {-# OVERLAPPING #-} (PrettyPrintable a, PrettyPrintable1 f) => PrettyPrintable (Cofree f a) where
   showP (a :< x) = (<>) <$> showP a <*> showP1 x
 
-newtype PrettyStuckExpr = PrettyStuckExpr StuckExpr
+-- |Renders church-encodable prefixes of any basic-expression IR as
+-- numbers and pairs, falling back to 'show' for anything else.
+newtype PrettyBasic g = PrettyBasic g
 
-instance Show PrettyStuckExpr where
-  show (PrettyStuckExpr x) = f x where
-    f :: StuckExpr -> String
-    f e = case b2i e of
-      Just n -> show n
-      _ -> case e of
-        BasicEE (PairSF a b) -> "(" <> f a <> "," <> f b <> ")"
-        z                    -> show z
-
-newtype PrettyCompiledExpr = PrettyCompiledExpr CompiledExpr
-
-instance Show PrettyCompiledExpr where
-  show (PrettyCompiledExpr x) = f x where
-    f :: CompiledExpr -> String
+instance (BasicBase (Base g), Recursive g, Corecursive g, Show g) => Show (PrettyBasic g) where
+  show (PrettyBasic x) = f x where
     f e = case b2i e of
       Just n -> show n
       _ -> case e of

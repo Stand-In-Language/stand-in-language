@@ -191,7 +191,7 @@ unitTest name expected iexpr = it name $ if allowedTypeCheck (typeCheck (embed Z
   then case compileUnitTest iexpr of
     Left e  -> expectationFailure (concat [name, " failed to compile: ", show e])
     Right compiled -> do
-      result <- show . PrettyStuckExpr <$> testEval compiled
+      result <- show . PrettyBasic <$> testEval compiled
       result `shouldBe` expected
   else expectationFailure ( concat [name, " failed typecheck: ", show (typeCheck (embed ZeroTypeP) iexpr)])
 
@@ -362,7 +362,7 @@ unitTest2' parse s r = it s $ case fmap compileUnitTest (parse s) of
   Right (Right g) -> testEval g >>= (\r2 -> if r2 == r
     then pure ()
     else expectationFailure $ concat [s, " result ", r2])
-    . show . PrettyStuckExpr
+    . show . PrettyBasic
   Right (Left e) -> expectationFailure $ "failed to compile: " <> show e
 
 unitTestType' :: Show a => (String -> Either a Term3) -> String -> PartialType -> (Maybe TypeCheckError -> Bool) -> SpecWith ()

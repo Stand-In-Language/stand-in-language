@@ -20,7 +20,11 @@ module Telomare.IR.Surface where
 
 import Control.Comonad.Cofree (Cofree ((:<)))
 import Data.Fix (Fix (..))
+import Data.Foldable (fold)
 import Data.Functor.Classes (Eq1 (..), Show1 (..))
+import Data.Functor.Const (Const (..))
+import Data.Functor.Foldable (cata)
+import Data.Functor.Identity (Identity (..))
 import Data.List (intersperse)
 import Data.Void (Void)
 import GHC.Generics (Generic1, Generically1 (..))
@@ -281,3 +285,52 @@ instance CarryAnno DesugaredSurfaceTerm where
   type CarryWrap DesugaredSurfaceTerm = DesugaredSurfaceTermF
 
   getEmbed (a :< _) = (a :<)
+
+-- |Variables bound by a pattern, left to right. Annotations bind nothing
+-- of their own.
+patternBinders :: Fix (PatternF t) -> [LocatedName]
+patternBinders = cata $ \case
+  PatternVarF name -> [name]
+  p                -> fold p
+
+-- |One-layer binding-aware traversal of the expanded surface functor:
+-- apply the supplied function to every subterm of the layer, passing the
+-- binders newly in scope at that subterm's position — a 'LamF' argument
+-- for the lambda body, the 'LetUPF' binding names for the bound values and
+-- the body alike, and a case pattern's variables for that alternative's
+-- body. Terms embedded in pattern annotations are visited too, with no
+-- extra binders. Subterms are visited left to right, so folds built on
+-- this ('foldMapScoped') see them in source order.
+traverseScoped :: Applicative m
+               => ([LocatedName] -> ExpandedSurfaceTerm -> m ExpandedSurfaceTerm)
+               -> UnprocessedParsedTermF () PatternA ExpandedSurfaceTerm
+               -> m (UnprocessedParsedTermF () PatternA ExpandedSurfaceTerm)
+traverseScoped f = \case
+  UnprocessedParsedTermL (LamF name body) ->
+    UnprocessedParsedTermL . LamF name <$> f [name] body
+  LetUPF bindings body ->
+    let binders = fst <$> bindings
+    in LetUPF <$> traverse (traverse (f binders)) bindings <*> f binders body
+  CaseUPF scrutinee alternatives ->
+    let goPattern (Fix p) = Fix <$> case p of
+          PatternAnnotatedF inner (AnnotatedEST annotation) ->
+            PatternAnnotatedF <$> goPattern inner
+                              <*> (AnnotatedEST <$> f [] annotation)
+          other -> traverse goPattern other
+        goAlternative (p, body) =
+          (,) <$> goPattern p <*> f (patternBinders p) body
+    in CaseUPF <$> f [] scrutinee <*> traverse goAlternative alternatives
+  other -> traverse (f []) other
+
+-- |'traverseScoped' with a pure rewrite at each subterm.
+mapScoped :: ([LocatedName] -> ExpandedSurfaceTerm -> ExpandedSurfaceTerm)
+          -> UnprocessedParsedTermF () PatternA ExpandedSurfaceTerm
+          -> UnprocessedParsedTermF () PatternA ExpandedSurfaceTerm
+mapScoped f = runIdentity . traverseScoped (\binders -> Identity . f binders)
+
+-- |'traverseScoped' collecting a monoid over the subterms.
+foldMapScoped :: Monoid r
+              => ([LocatedName] -> ExpandedSurfaceTerm -> r)
+              -> UnprocessedParsedTermF () PatternA ExpandedSurfaceTerm
+              -> r
+foldMapScoped f = getConst . traverseScoped (\binders -> Const . f binders)

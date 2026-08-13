@@ -9,7 +9,6 @@ import Control.Comonad.Cofree (Cofree)
 import Control.Monad (void, (>=>))
 import qualified Control.Monad.State as State
 import Data.Bifunctor (first)
-import Debug.Trace
 
 import qualified Control.Comonad.Trans.Cofree as CofreeT
 import Control.Lens (Identity (runIdentity))
@@ -34,13 +33,8 @@ import Telomare.Size (SizingReport (..), SizingSettings (..),
                       buildUnsizedLocMap, evalStaticCheck, locateSizingFailure,
                       sizeTermM, term3ToUnsizedExpr)
 import Telomare.TypeCheck (typeCheck)
+import Telomare.Util (debugTrace)
 import Text.Megaparsec (errorBundlePretty, runParser)
-
-debug :: Bool
-debug = False
-
-debugTrace :: String -> a -> a
-debugTrace s x = if debug then trace s x else x
 
 -- note that function indexes may be changed in this process
 convertPT :: (UnsizedRecursionToken -> Int) -> Term3 -> CompiledExpr
@@ -226,68 +220,61 @@ runMainWithInput :: [String] -- ^Inputs
                  -> IO String
 runMainWithInput inputList modulesStrings s = runMainCore modulesStrings s (evalLoopWithInput inputList)
 
-evalLoopCore :: CompiledExpr
+-- |The one iteration loop every eval entry point goes through. The evaluator
+-- reports a measurement per iteration (the unmetered wrappers use '()'), and
+-- each iteration's display goes through @accumFn@; the loop returns the summed
+-- measurements alongside the final accumulator.
+evalLoopCore :: Monoid m
+             => (CompiledExpr -> (m, Either RunTimeError CompiledExpr))
+             -> CompiledExpr
              -> (String -> String -> IO String)
              -> String
              -> [String]
-             -> IO String
-evalLoopCore expr accumFn initAcc manualInput =
-  let wrappedEval = funWrap expr appB
-      mainLoop acc strInput s = do
-        let (out, nextState) = wrappedEval s
+             -> IO (m, String)
+evalLoopCore evaluator expr accumFn initAcc manualInput =
+  let wrappedEval = funWrapWith evaluator expr appB
+      mainLoop measured acc strInput s = do
+        let (m, (out, nextState)) = wrappedEval s
+            measured' = measured <> m
         newAcc <- accumFn acc out
         case nextState of
-          Left e -> pure $ newAcc <> "\n" <> show e
-          Right ZeroB -> pure $ newAcc <> "\n" <> "done"
+          Left e -> pure (measured', newAcc <> "\n" <> show e)
+          Right ZeroB -> pure (measured', newAcc <> "\n" <> "done")
           Right ns -> do
 
             (inp, rest) <-
               if null strInput
               then (, []) <$> getLine
               else pure (head strInput, tail strInput)
-            mainLoop newAcc rest $ pure (inp, ns)
-  in mainLoop initAcc manualInput Nothing
+            mainLoop measured' newAcc rest $ pure (inp, ns)
+  in mainLoop mempty initAcc manualInput Nothing
+
+-- |The evaluator the unmetered wrappers share: run and measure nothing.
+plainEval :: CompiledExpr -> ((), Either RunTimeError CompiledExpr)
+plainEval = ((),) . eval
+
+-- |Print each iteration's display and keep nothing.
+printAccum :: String -> String -> IO String
+printAccum _ out = putStrLn out >> pure ""
+
+-- |Keep each iteration's display, newline-separated.
+keepAccum :: String -> String -> IO String
+keepAccum acc out = pure $ if acc == "" then out else acc <> "\n" <> out
 
 evalLoop :: CompiledExpr -> IO ()
-evalLoop iexpr = void $ evalLoopCore iexpr printAcc "" []
-  where
-    printAcc _ out = do
-      putStrLn out
-      pure ""
+evalLoop iexpr = void $ evalLoopCore plainEval iexpr printAccum "" []
 
 evalLoopWithInput :: [String] -> CompiledExpr -> IO String
-evalLoopWithInput inputList iexpr = evalLoopCore iexpr printAcc "" inputList
-  where
-    printAcc acc out = if acc == ""
-                       then pure out
-                       else pure (acc <> "\n" <> out)
+evalLoopWithInput inputList iexpr = snd <$> evalLoopCore plainEval iexpr keepAccum "" inputList
 
 -- |`evalLoop`, measuring what the session costs. Prints exactly what
 -- `evalLoop` prints; the caller decides what to do with the measurement.
 evalLoopMetered :: [String] -> CompiledExpr -> IO Meter
-evalLoopMetered manualInput expr = go mempty manualInput Nothing where
-  wrappedEval = funWrapWith evalMeter expr appB
-  go measured strInput s = do
-    let (m, (out, nextState)) = wrappedEval s
-        measured' = measured <> m
-    putStrLn out
-    case nextState of
-      Left _      -> pure measured'
-      Right ZeroB -> pure measured'
-      Right ns    -> do
-        (inp, rest) <-
-          if null strInput
-          then (, []) <$> getLine
-          else pure (head strInput, tail strInput)
-        go measured' rest $ pure (inp, ns)
+evalLoopMetered manualInput expr = fst <$> evalLoopCore evalMeter expr printAccum "" manualInput
 
 -- |Same as `evalLoop`, but keeping what was displayed.
 evalLoop_ :: CompiledExpr -> IO String
-evalLoop_ iexpr = evalLoopCore iexpr printAcc "" []
-  where
-    printAcc acc out = if acc == ""
-                       then pure out
-                       else pure (acc <> "\n" <> out)
+evalLoop_ iexpr = snd <$> evalLoopCore plainEval iexpr keepAccum "" []
 
 eval2IExpr :: ExpandedModules -> String -> Either String CompiledExpr
 eval2IExpr extraModuleBindings str = do

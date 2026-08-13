@@ -16,7 +16,6 @@ import Data.Functor.Foldable
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Validity (Validity (..), trivialValidation)
-import Debug.Trace
 import GHC.Generics (Generic)
 
 import Data.Bifunctor (first)
@@ -25,12 +24,7 @@ import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.PrettyPrint
 import Telomare.PrettyPrint.Indent (indentWithOneChild', indentWithTwoChildren')
-
-debug' :: Bool
-debug' = False
-
-debugTrace' :: String -> a -> a
-debugTrace' s x = if debug' then trace s x else x
+import Telomare.Util (debugTrace)
 
 type TCallStack a = [(FunctionIndex, a)]
 
@@ -100,7 +94,7 @@ instance Semigroup SizedRecursion where
   (<>) (SizedRecursion a) (SizedRecursion b) = SizedRecursion . tr $ Map.unionWith (liftM2 max) a b where
     tr x = if null a || null b
       then x
-      else debugTrace' ("sizedrecursion merge result: " <> show (first fromEnum <$> Map.toAscList x)) x
+      else debugTrace ("sizedrecursion merge result: " <> show (first fromEnum <$> Map.toAscList x)) x
 
 instance Monoid SizedRecursion where
   mempty = SizedRecursion Map.empty

@@ -5,12 +5,19 @@
 module Common where
 
 import Control.Comonad.Cofree (Cofree ((:<)))
+import qualified System.IO.Strict as Strict
 import Telomare.Error
 import Telomare.IR.Base
 import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.Resolve
 import Test.QuickCheck
+
+-- |The prelude plus one other module, as the CLI would load them.
+modulesWithPrelude :: String -> String -> IO [(String, String)]
+modulesWithPrelude name source = do
+  prelude <- Strict.readFile "Prelude.tel"
+  pure [("Prelude", prelude), (name, source)]
 
 instance Arbitrary Term1 where
   arbitrary = sized (genTree []) where

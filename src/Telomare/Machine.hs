@@ -19,30 +19,26 @@ import Control.Applicative
 import Control.Monad
 import Control.Monad.Trans.Class
 import Data.Functor.Foldable
+import Data.Functor.Identity
 import qualified Data.Map.Strict as Map
 -- import Data.SBV ((.<), (.>))
 import Control.Monad.Reader.Class
 import Data.Set (Set)
 import qualified Data.Set as Set
-import Debug.Trace
 import Telomare.IR.Base
 import Telomare.PrettyPrint
 import Telomare.Size.IR
+import Telomare.Util (debugTrace)
 
-debug :: Bool
-debug = False
-
-debugTrace :: String -> a -> a
-debugTrace s x = if debug then trace s x else x
+-- |Recover a pure step function from its monadic twin by running it in
+-- 'Identity', so each unified @*Step@/@*StepM@ pair has a single body.
+purely :: ((a -> Identity b) -> c -> Identity d) -> (a -> b) -> c -> d
+purely stepM handleOther = runIdentity . stepM (Identity . handleOther)
 
 basicStep :: (Base g ~ f, BasicBase f, Corecursive g, Recursive g) => (f g -> g) -> f g -> g
-basicStep handleOther = \case
-  -- stuck values
-  x@(BasicFW ZeroSF)                       -> embed x
-  x@(BasicFW (PairSF _ _))                 -> embed x
-  x                                        -> handleOther x
+basicStep = purely basicStepM
 
-basicStepM :: (Base g ~ f, BasicBase f, Traversable f, Corecursive g, Recursive g, PrettyPrintable g, Monad m) => (f g -> m g) -> f g -> m g
+basicStepM :: (Base g ~ f, BasicBase f, Corecursive g, Recursive g, Monad m) => (f g -> m g) -> f g -> m g
 basicStepM handleOther x = f x where
   f = \case
     -- stuck values
@@ -226,28 +222,18 @@ indexedSuperStepM handleOther = \case
 
   x -> handleOther x
 
-abortStep :: (Base a ~ f, BasicBase f, StuckBase f, AbortBase f, Recursive a, Corecursive a, PrettyPrintable a) => (f a -> a) -> f a -> a
-abortStep handleOther =
-  \case
-    StuckFW (LeftSF a@(AbortEE (AbortedF _))) -> a
-    StuckFW (RightSF a@(AbortEE (AbortedF _))) -> a
-    StuckFW (SetEnvSF a@(AbortEE (AbortedF _))) -> a
-    FillFunction a@(AbortEE (AbortedF _)) _ -> a
-    FillFunction GateB a@(AbortEE (AbortedF _)) -> a
-    FillFunction (AbortEE AbortF) a@(AbortEE (AbortedF _)) -> a
-    FillFunction (AbortEE AbortF) (BasicEE ZeroSF) -> deferB abortInd . StuckEE $ EnvSF
-    FillFunction (AbortEE AbortF) e@(BasicEE (PairSF _ _)) -> (\x -> debugTrace ("aborted with value: " <> prettyPrint x) x) . AbortEE $ AbortedF m where
-      m = cata truncF e
-      truncF = \case
-        BasicFW ZeroSF       -> ZeroB
-        BasicFW (PairSF a b) -> PairB a b
-        _                    -> ZeroB -- consider generating a warning?
-    -- stuck values
-    x@(AbortFW (AbortedF _)) -> embed x
-    x@(AbortFW AbortF) -> embed x
-    x -> handleOther x
+-- |Truncate an expression to its data skeleton for an abort payload:
+-- zeroes and pairs survive, anything else becomes zero.
+truncateToData :: (Base a ~ f, BasicBase f, Recursive a) => a -> BasicExpr
+truncateToData = cata $ \case
+  BasicFW ZeroSF       -> ZeroB
+  BasicFW (PairSF a b) -> PairB a b
+  _                    -> ZeroB -- consider generating a warning?
 
-abortStepM :: (Base a ~ f, Traversable f, BasicBase f, StuckBase f, AbortBase f, Recursive a, Corecursive a, Monad m)
+abortStep :: (Base a ~ f, BasicBase f, StuckBase f, AbortBase f, Recursive a, Corecursive a, PrettyPrintable a) => (f a -> a) -> f a -> a
+abortStep = purely abortStepM
+
+abortStepM :: (Base a ~ f, BasicBase f, StuckBase f, AbortBase f, Recursive a, Corecursive a, Monad m)
   => (f a -> m a) -> f a -> m a
 abortStepM handleOther x = f x where
   f = \case
@@ -258,12 +244,7 @@ abortStepM handleOther x = f x where
     FillFunction GateB a@(AbortEE (AbortedF _)) -> pure a
     FillFunction (AbortEE AbortF) a@(AbortEE (AbortedF _)) -> pure a
     FillFunction (AbortEE AbortF) (BasicEE ZeroSF) -> pure . deferB abortInd . StuckEE $ EnvSF
-    FillFunction (AbortEE AbortF) e@(BasicEE (PairSF _ _)) -> pure . AbortEE $ AbortedF m where
-      m = cata truncF e
-      truncF = \case
-        BasicFW ZeroSF       -> ZeroB
-        BasicFW (PairSF a b) -> PairB a b
-        _                    -> ZeroB -- consider generating a warning?
+    FillFunction (AbortEE AbortF) e@(BasicEE (PairSF _ _)) -> pure . AbortEE . AbortedF $ truncateToData e
     -- stuck values
     x'@(AbortFW (AbortedF _)) -> pure $ embed x'
     x'@(AbortFW AbortF) -> pure $ embed x'

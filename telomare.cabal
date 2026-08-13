@@ -29,6 +29,7 @@ library
                      , Telomare.IR.Surface
                      , Telomare.IR.Types
                      , Telomare.Levels
+                     , Telomare.Lexical
                      , Telomare.Machine
                      , Telomare.Eval.Meter
                      , Telomare.Expand
@@ -39,6 +40,7 @@ library
                      , Telomare.Size
                      , Telomare.Size.IR
                      , Telomare.TypeCheck
+                     , Telomare.Util
   build-depends:       base
                      , binary
                      , bytestring
@@ -52,7 +54,6 @@ library
                      , mtl
                      , recursion-schemes
                      , transformers
-                     , strict
                      , lens
                      , cryptonite
                      , utf8-string
@@ -99,7 +100,6 @@ executable telomare-lsp
 
   build-depends:       base
                       , containers
-                      , data-fix
                       , directory
                       , filepath
                       , free
@@ -140,12 +140,10 @@ test-suite telomare-parser-test
   type:                exitcode-stdio-1.0
   hs-source-dirs:      test
   main-is:             ParserTests.hs
-  build-depends:       QuickCheck
-                     , base
+  build-depends:       base
                      , data-fix
                      , free
                      , megaparsec
-                     , recursion-schemes
                      , strict
                      , tasty
                      , tasty-hunit
@@ -179,18 +177,15 @@ test-suite telomare-sizing-test
   type:                exitcode-stdio-1.0
   hs-source-dirs:      test
   main-is:             SizingTest.hs
-  other-modules:       RunModeTests
+  other-modules:       ConformanceTests
+                     , RunModeTests
                      , SizingTests
   build-depends:       base
                      , bytestring
                      , containers
-                     , data-fix
                      , hspec
-                     , recursion-schemes
                      , telomare
                      , strict
-                     , QuickCheck
-                     , free
   ghc-options:         -Wall -Wunused-packages -threaded -rtsopts -with-rtsopts=-N
   default-language:    Haskell2010
 
@@ -200,11 +195,8 @@ test-suite telomare-udt-test
   main-is:             UDTTests.hs
   other-modules:       NatUDTTests
   build-depends:       base
-                     , data-fix
                      , free
                      , megaparsec
-                     , QuickCheck
-                     , recursion-schemes
                      , strict
                      , tasty
                      , tasty-hunit

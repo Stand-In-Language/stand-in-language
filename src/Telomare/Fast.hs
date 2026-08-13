@@ -65,10 +65,10 @@ module Telomare.Fast
 
 import Control.Comonad.Cofree (Cofree ((:<)))
 import qualified Control.Comonad.Trans.Cofree as CofreeT
+import Control.Monad ((<=<))
 import Control.Monad.Except (ExceptT, runExceptT, throwError)
 import Control.Monad.State.Strict (State, get, gets, modify', put, runState)
 import Data.Bifunctor (first)
-import Data.Char (chr, ord)
 import Data.Functor.Foldable (cata, embed)
 import Data.List (sortOn)
 import Data.Map (Map)
@@ -86,6 +86,7 @@ import Telomare.IR.Types
 import Telomare.Parse (runParseModule)
 import Telomare.Resolve (main2Term3, main2Term3let)
 import Telomare.TypeCheck (typeCheck)
+import Telomare.Util (padRight, plural)
 
 -- |A recursion site: the token the sizing pass would have sized, where it is
 -- in the source, and the top-level definition it belongs to. The token keeps
@@ -217,13 +218,6 @@ commaInt n
     go _ []       = []
     go 3 xs       = ',' : go 0 xs
     go k (x : xs) = x : go (k + 1) xs
-
-padRight :: Int -> String -> String
-padRight w s = s <> replicate (max 0 (w - length s)) ' '
-
-plural :: String -> Int -> String
-plural word 1 = word
-plural word _ = word <> "s"
 
 data FastError
   = FastStuck String
@@ -378,24 +372,24 @@ applyClosure fun arg = case fun of
   VPair (VDefer d) cloEnv -> tickApply >> evalFast d (VPair arg cloEnv)
   _                       -> throwError $ FastStuck "main is not a closure"
 
--- Encodings over machine values, mirroring `s2b`/`b2s`.
+-- Encodings over machine values, bridged through `s2b`/`b2s`.
 
-i2v :: Int -> Value
-i2v 0 = VZero
-i2v n = VPair (i2v (n - 1)) VZero
+b2v :: BasicExpr -> Value
+b2v = cata $ \case
+  ZeroSF     -> VZero
+  PairSF a b -> VPair a b
 
-v2i :: Value -> Maybe Int
-v2i VZero           = Just 0
-v2i (VPair n VZero) = succ <$> v2i n
-v2i _               = Nothing
+v2b :: Value -> Maybe BasicExpr
+v2b = \case
+  VZero     -> Just ZeroB
+  VPair a b -> PairB <$> v2b a <*> v2b b
+  _         -> Nothing
 
 s2v :: String -> Value
-s2v = foldr (VPair . i2v . ord) VZero
+s2v = b2v . s2b
 
 v2s :: Value -> Maybe String
-v2s VZero        = Just ""
-v2s (VPair c cs) = ((:) . chr <$> v2i c) <*> v2s cs
-v2s _            = Nothing
+v2s = b2s <=< v2b
 
 -- |One iteration of the transcript protocol, framed exactly as
 -- `Telomare.Eval.funWrap` frames it so that a fast transcript and a sized one

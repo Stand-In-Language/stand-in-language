@@ -4,7 +4,7 @@
 module Main where
 
 import Control.Monad (unless, when)
-import Data.Maybe (fromMaybe, mapMaybe)
+import Data.Maybe (fromMaybe)
 import qualified Options.Applicative as O
 import System.Directory (doesFileExist)
 import System.Exit (exitFailure)
@@ -19,7 +19,10 @@ import Telomare.Driver (compileModules, evalLoop, evalLoopMetered)
 import Telomare.Eval.Meter (renderMeter)
 import Telomare.Fast (compileFast, defaultFastFuel, renderFastMeter,
                       runFastLoop)
+import Telomare.IR.Loc (locatedNameText)
+import Telomare.IR.Surface (ImportDecl (parsedImportModule), ModuleItem (..))
 import Telomare.Levels (levelsInfo)
+import Telomare.Parse (runParseModule)
 import Telomare.Size (SizingReport)
 
 -- |What to do with the program.
@@ -95,17 +98,17 @@ getModulesFor entryModule = go [entryModule] []
       | otherwise = do
           let filePath = m <> ".tel"
           content <- readFile filePath
-          let imports = extractImports content
+          let imports = extractImports m content
           go (queue <> imports) ((m, content) : loaded)
 
-    extractImports :: String -> [String]
-    extractImports = mapMaybe parseImportLine . lines
-
-    parseImportLine :: String -> Maybe String
-    parseImportLine line = case words line of
-      ("import":"qualified":name:_) -> Just name
-      ("import":name:_)             -> Just name
-      _                             -> Nothing
+    -- The real module parser, so commented-out and multi-line imports are
+    -- read the same way the compile step will read them. A module that does
+    -- not parse has no imports to follow; the compile step reports the error.
+    extractImports :: String -> String -> [String]
+    extractImports moduleName content = case runParseModule moduleName content of
+      Left _ -> []
+      Right items ->
+        [ locatedNameText (parsedImportModule decl) | ModuleImportItem decl <- items ]
 
 main :: IO ()
 main = do
@@ -124,6 +127,13 @@ main = do
 die :: String -> IO a
 die message = hPutStrLn stderr message >> exitFailure
 
+-- |Report a rendered meter on stderr, flushing the program's own output first
+-- so the two never interleave.
+reportMeter :: String -> IO ()
+reportMeter rendered = do
+  hFlush stdout
+  hPutStr stderr rendered
+
 -- |A program already compiled: nothing to parse, typecheck, resolve or size.
 runArtifact :: FilePath -> Action -> Mode -> IO ()
 runArtifact path action mode = do
@@ -139,8 +149,7 @@ runArtifact path action mode = do
         Run         -> evalLoop (artifactExpr artifact)
         Meter       -> do
           measured <- evalLoopMetered [] (artifactExpr artifact)
-          hFlush stdout
-          hPutStr stderr $ renderMeter measured <> "\n"
+          reportMeter $ renderMeter measured <> "\n"
 
 -- |An artifact outlives the checkout it came from, so a hash mismatch is worth
 -- saying and never worth refusing over.
@@ -168,8 +177,7 @@ runSized file action = do
       Certificate -> putStr $ staticReport Nothing (Just report) allModules entryModule
       Meter -> do
         measured <- evalLoopMetered [] sized
-        hFlush stdout
-        hPutStr stderr $ renderMeter measured <> "\n"
+        reportMeter $ renderMeter measured <> "\n"
       Compile output -> do
         let path = fromMaybe (replaceExtension file telcExtension) output
             certificate = staticReport Nothing (Just report) allModules entryModule
@@ -197,9 +205,7 @@ runFast file action fuel = do
       Left err -> die err
       Right prog -> do
         measured <- runFastLoop fuel prog
-        when (action == Meter) $ do
-          hFlush stdout
-          hPutStr stderr $ renderFastMeter measured
+        when (action == Meter) . reportMeter $ renderFastMeter measured
 
 staticReport :: Maybe String -> Maybe SizingReport -> [(String, String)] -> String -> String
 staticReport hash sizing allModules entryModule =

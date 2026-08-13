@@ -28,20 +28,14 @@ import Control.Exception.Base (throw)
 import Data.Functor.Identity (Identity, runIdentity)
 import Data.Set (Set)
 import qualified Data.Set as Set
-import Debug.Trace
 import Telomare.Error
 import Telomare.IR.Base
 import Telomare.IR.Core
 import Telomare.IR.Loc
-import Telomare.Machine hiding (debug, debugTrace)
+import Telomare.Machine
 import Telomare.PrettyPrint
 import Telomare.Size.IR
-
-debug :: Bool
-debug = False
-
-debugTrace :: String -> a -> a
-debugTrace s x = if debug then trace s x else x
+import Telomare.Util (debugTrace)
 
 data SizingSettings = SizingSettings
   { maxSizingSize :: Int

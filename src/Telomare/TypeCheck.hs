@@ -16,19 +16,13 @@ import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Set (Set)
 import qualified Data.Set as Set
-import Debug.Trace
 import Telomare.Error
 import Telomare.IR.Base
 import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.IR.Types
 import Telomare.PrettyPrint
-
-debug :: Bool
-debug = False
-
-debugTrace :: String -> a -> a
-debugTrace s x = if debug then trace s x else x
+import Telomare.Util (debugTrace)
 
 newtype DebugTypeMap = DebugTypeMap (Map Int PartialType)
 
