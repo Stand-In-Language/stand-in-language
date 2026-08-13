@@ -29,7 +29,8 @@
   interactive evaluation functionality lives in the LSP app now.
 * Fixed every GHC `-Wall` warning across the library, executables, and test
   suites (unused imports, name shadowing, incomplete patterns, missing
-  signatures, orphan instances, type defaults). Orphan instances moved to
+  signatures, orphan instances, type defaults), and enabled `-Wall`
+  permanently for every component in `telomare.cabal`. Orphan instances moved to
   their proper homes: `MonadFail (Either ResolverError)` to `Telomare.Error`,
   `TelomareLike CompiledExpr` to `Telomare.IR.Core`, and the
   `PrettyPrintable` `Char`/`FunctionIndex` instances to
