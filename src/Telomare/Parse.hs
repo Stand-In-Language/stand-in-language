@@ -19,7 +19,6 @@ import Text.Megaparsec (MonadParsec (eof, notFollowedBy, try), ParseErrorBundle,
                         sepBy, sepBy1, some, unPos, (<?>), (<|>))
 import Text.Megaparsec.Char (alphaNumChar, char, letterChar, space1, string)
 import qualified Text.Megaparsec.Char.Lexer as L
-import Text.Megaparsec.Debug (dbg)
 
 -- |TelomareParser :: * -> *
 type TelomareParser = Parsec Void String
@@ -433,14 +432,6 @@ parseDefinitions = scn *> many parseDefinition <* scn <* eof
 -- |Parse one complete expression, rejecting any trailing input.
 parseExpression :: TelomareParser ParsedSurfaceTerm
 parseExpression = scn *> parseLongExpr <* scn <* eof
-
--- |Helper function to test parsers without a result.
-runTelomareParser_ :: Show a => TelomareParser a -> String -> IO ()
-runTelomareParser_ parser str = runTelomareParser parser str >>= print
-
--- |Helper function to debug parsers without a result.
-runTelomareParserWDebug :: Show a => TelomareParser a -> String -> IO ()
-runTelomareParserWDebug parser str = runTelomareParser (dbg "debug" parser) str >>= print
 
 -- |Helper function to test Telomare parsers with any result.
 runTelomareParser :: Monad m => TelomareParser a -> String -> m a

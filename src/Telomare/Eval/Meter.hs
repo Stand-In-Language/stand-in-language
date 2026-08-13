@@ -73,9 +73,6 @@ instance Semigroup Meter where
 instance Monoid Meter where
   mempty = Meter 0 0
 
-emptyMeter :: Meter
-emptyMeter = mempty
-
 -- |What to print for a measured run.
 renderMeter :: Meter -> String
 renderMeter m = "steps (measured): " <> show (meterSteps m)

@@ -5,20 +5,19 @@
 
 module Telomare.Driver where
 
-import Control.Comonad.Cofree (Cofree ((:<)))
+import Control.Comonad.Cofree (Cofree)
 import Control.Monad (void, (>=>))
-import Control.Monad.State (State, evalState)
 import qualified Control.Monad.State as State
 import Data.Bifunctor (first)
 import Debug.Trace
 
 import qualified Control.Comonad.Trans.Cofree as CofreeT
 import Control.Lens (Identity (runIdentity))
-import Data.Functor.Foldable (Base, cata, embed, para)
+import Data.Functor.Foldable (cata, embed)
 import Telomare.Desugar (desugarTerm)
 import Telomare.Error
 import Telomare.Eval.Meter (Meter, evalMeter)
-import Telomare.Eval.Reference (basicEval)
+import Telomare.Eval.Reference ()
 import Telomare.Expand (expandDefs, expandModule, expandTerm,
                         renderExpansionError, wrapMain)
 import Telomare.IR.Base
@@ -90,22 +89,6 @@ findChurchSizeReporting so t3 = case so of
       Left failure      -> Left . RecursionLimitError $ locateSizingFailure locs failure
       Right (counts, t) -> pure (report counts, t)
 
--- rather than remove checks, we should extract them so that they can be run separately, if that gives a performance benefit
-{-
-removeChecks :: Term4 -> Term4
-removeChecks (Term4 m) =
-  let f = \case
-        anno :< AbortFragF -> anno :< DeferFragF ind
-        x                  -> x
-      (ind, newM) = State.runState builder m
-      builder = do
-        envDefer <- insertAndGetKey $ GeneratedLoc "removeChecks" Nothing :< EnvFragF
-        insertAndGetKey $ GeneratedLoc "removeChecks" Nothing :< DeferFragF envDefer
-  in Term4 $ Map.map (transform f) newM
--}
-removeChecks :: CompiledExpr -> CompiledExpr
-removeChecks = id
-
 runStaticChecks :: CompiledExpr -> Either EvalError CompiledExpr
 runStaticChecks t =
   let result = evalStaticCheck False scTerm
@@ -155,7 +138,7 @@ compileReporting :: SizingOption
 compileReporting so staticCheck t = debugTrace ("compiling term3:\n" <> prettyPrint t) $ do
   (report, sized) <- findChurchSizeReporting so t
   checked <- staticCheck sized
-  pure (report, removeChecks checked)
+  pure (report, checked)
 
 -- converts between easily understood Haskell types and untyped IExprs around an iteration of a Telomare expression
 funWrap :: forall a. (Show a, AbstractRunTime a) => a -> (a -> a -> a) -> Maybe (String, BasicExpr) -> (String, Either RunTimeError BasicExpr)
@@ -306,9 +289,6 @@ evalLoop_ iexpr = evalLoopCore iexpr printAcc "" []
                        then pure out
                        else pure (acc <> "\n" <> out)
 
-calculateRecursionLimits :: SizingSettings -> Term3 -> Either EvalError CompiledExpr
-calculateRecursionLimits sizingSettings = findChurchSizeD (DebugSizing sizingSettings)
-
 eval2IExpr :: ExpandedModules -> String -> Either String CompiledExpr
 eval2IExpr extraModuleBindings str = do
   resolved <- first show $ resolveAllImports extraModuleBindings aux
@@ -327,48 +307,3 @@ eval2IExpr extraModuleBindings str = do
         in ExpandedModuleImport $ ImportDecl loc
              (locatedName loc name)
              (Just $ locatedName loc name)
-
-tagIExprWithEval :: CompiledExpr -> Cofree CompiledExprF (Int, CompiledExpr)
-tagIExprWithEval iexpr = evalState (para alg iexpr) 0 where
-  statePlus1 :: State Int Int
-  statePlus1 = do
-      i <- State.get
-      State.modify (+ 1)
-      pure i
-  alg :: Base CompiledExpr
-              ( CompiledExpr
-              , State Int (Cofree CompiledExprF (Int, CompiledExpr))
-              )
-      -> State Int (Cofree CompiledExprF (Int, CompiledExpr))
-  alg = \case
-    BasicFW ZeroSF -> do
-      i <- statePlus1
-      pure ((i, basicEval ZeroB) :< embedB ZeroSF)
-    StuckFW EnvSF -> do
-      i <- statePlus1
-      pure ((i, basicEval ZeroB) :< embedS EnvSF)
-    StuckFW (SetEnvSF (iexpr0, x)) -> do
-      i <- statePlus1
-      x' <- x
-      pure $ (i, basicEval $ SetEnvB iexpr0) :< embedS (SetEnvSF x')
-    StuckFW (DeferSF _ind (iexpr0, x)) -> do
-      i <- statePlus1
-      x' <- x
-      pure $ (i, basicEval . StuckEE $ DeferSF (toEnum (-1)) iexpr0) :< embedS (DeferSF (toEnum (-1)) x')
-    StuckFW (LeftSF (iexpr0, x)) -> do
-      i <- statePlus1
-      x' <- x
-      pure $ (i, basicEval $ LeftB iexpr0) :< embedS (LeftSF x')
-    StuckFW (RightSF (iexpr0, x)) -> do
-      i <- statePlus1
-      x' <- x
-      pure $ (i, basicEval $ RightB iexpr0) :< embedS (RightSF x')
-    BasicFW (PairSF (iexpr0, x) (iexpr1, y)) -> do
-      i <- statePlus1
-      x' <- x
-      y' <- y
-      pure $ (i, basicEval $ PairB iexpr0 iexpr1) :< embedB (PairSF x' y')
-    StuckFW GateSF -> do
-      i <- statePlus1
-      pure $ (i, basicEval $ StuckEE GateSF) :< embedS GateSF
-    _ -> error "Telomare.Driver.tagIExprWithEval: unexpected expression"

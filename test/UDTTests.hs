@@ -41,14 +41,6 @@ tests = testGroup "UDT Tests" [ unitTestsNatArithmetic
                               , natUDTTests
                               ]
 
-maybeToRight :: Maybe a -> Either EvalError a
-maybeToRight (Just x) = Right x
-maybeToRight Nothing  = Left CompileConversionError
-
-rightToMaybe :: Either String a -> Maybe a
-rightToMaybe (Right x) = Just x
-rightToMaybe _         = Nothing
-
 loadPreludeBindings :: IO [(String, ExpandedSurfaceTerm)]
 loadPreludeBindings = do
   preludeResult <- Strict.readFile "Prelude.tel"

@@ -11,7 +11,7 @@ import Control.Applicative ((<|>))
 import Control.Comonad.Cofree (Cofree ((:<)))
 import Control.Concurrent.STM
 import Control.Exception (IOException, try)
-import Control.Monad (join, void)
+import Control.Monad (guard, join, void)
 import Control.Monad.IO.Class (MonadIO (liftIO))
 import Data.Bifunctor (first)
 import Data.Char (isAsciiLower, isAsciiUpper, isDigit)
@@ -150,15 +150,13 @@ serverOptions =
                     }
 
 -- Token type indices (matching the server's reported legend)
-tokComment, tokKeyword, tokString, tokNumber, tokOperator, tokVariable, tokFunction, tokType :: UInt
+tokComment, tokKeyword, tokString, tokNumber, tokOperator, tokVariable :: UInt
 tokKeyword  = 1   -- "keyword"
 tokComment  = 0   -- "comment"
 tokString   = 2   -- "string"
 tokNumber   = 3   -- "number"
 tokOperator = 5   -- "operator"
 tokVariable = 19  -- "variable"
-tokFunction = 13  -- "function"
-tokType     = 7    -- "type"
 
 --------------------------------------------------------------------------------
 -- Handlers
@@ -491,9 +489,6 @@ pointRange line column =
 fallbackRange :: Range
 fallbackRange = pointRange 0 0
 
-diagnosticFirstLine :: String -> String
-diagnosticFirstLine = takeWhile (/= '\n')
-
 definitionHandler :: GlobalState
                   -> LSPMsg.TRequestMessage LSPMsg.Method_TextDocumentDefinition
                   -> (Either (LSPMsg.TResponseError LSPMsg.Method_TextDocumentDefinition)
@@ -763,9 +758,6 @@ patternAnnotationTerms (Fix patternF) = case patternF of
   PatternPairF left right ->
     patternAnnotationTerms left <> patternAnnotationTerms right
   _ -> []
-
-lspIdentChar :: Char -> Bool
-lspIdentChar c = isAsciiLower c || isAsciiUpper c || isDigit c || c == '_' || c == '.' || c == '\''
 
 positionInRange :: Position -> Range -> Bool
 positionInRange (Position line char) (Range (Position startLine startChar) (Position endLine endChar)) =
@@ -1047,10 +1039,3 @@ withinRange (Range (Position sl sc) (Position el ec)) tok =
       startOk = (line > fromIntegral sl) || (line == fromIntegral sl && start >= fromIntegral sc)
       endOk   = (line < fromIntegral el) || (line == fromIntegral el && end <= fromIntegral ec)
   in startOk && endOk
-
---------------------------------------------------------------------------------
--- tiny Maybe guard (avoid Control.Monad.guard)
-
-guard :: Bool -> Maybe ()
-guard True  = Just ()
-guard False = Nothing

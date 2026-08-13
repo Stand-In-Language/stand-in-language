@@ -60,11 +60,6 @@ data DefinitionF f
   deriving (Eq, Show, Functor, Foldable, Traversable, Generic1)
   deriving Eq1 via (Generically1 DefinitionF)
 
-definitionNames :: DefinitionF f -> [LocatedName]
-definitionNames = \case
-  SingleDefF name _ _  -> [name]
-  ListDefF _ names _   -> names
-
 -- |An import declaration exactly as written in a module.
 data ImportDecl = ImportDecl
   { parsedImportLoc       :: LocTag

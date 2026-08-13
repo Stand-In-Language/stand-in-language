@@ -84,16 +84,7 @@ ints2t anno = foldr ((\x y -> anno :< ParserTermB (PairSF x y)) . i2t anno) (ann
 s2t :: (Foldable t, Functor t) => a -> t Char -> Cofree (ParserTermF l v) a
 s2t anno = ints2t anno . fmap ord
 
--- |Collect all free variable names in an 'AnnotatedEST' expression.
-varsUPT :: ExpandedSurfaceTerm -> Set String
-varsUPT = cata alg where
-  alg (VarAFP _ n)     = Set.singleton n
-  alg (LamAFP _ str x) = del (locatedNameText str) x
-  alg e                = F.fold e
-  del :: String -> Set String -> Set String
-  del n x = if Set.member n x then Set.delete n x else x
-
--- |Like 'varsUPT' but also descends into 'Pattern' type annotations so that
+-- |Collect all free variable names, also descending into 'Pattern' type annotations so that
 -- names referenced via @: T@ patterns (e.g. UDT validators) are included.
 freeVarsDeep :: ExpandedSurfaceTerm -> Set String
 freeVarsDeep = cata alg where
@@ -127,14 +118,6 @@ pruneBindings root bs = filter ((`Set.member` reachable) . fst) bs
     bmap      = Map.fromList $ fmap (second freeVarsDeep) bs
     expand r  = r <> F.fold (Map.restrictKeys bmap r)
     reachable = until (\s -> expand s == s) expand seed
-
-mkLambda4FreeVarUPs :: ExpandedSurfaceTerm -> ExpandedSurfaceTerm
-mkLambda4FreeVarUPs aupt@(_anno :< _) = go aupt freeVars where
-  freeVars = Set.toList . varsUPT $ aupt
-  go :: ExpandedSurfaceTerm -> [String] -> ExpandedSurfaceTerm
-  go x = \case
-    []     -> x
-    (y:ys) -> LamP (locatedName UnknownLoc y) $ go x ys
 
 type VarList = [String]
 
@@ -233,9 +216,6 @@ splitExpr = flip State.evalState (toEnum 0, toEnum 0) . cata f where
 
 openLambda :: String -> Term1 -> Term1
 openLambda name body@(_anno :< _) = LamP (Open name) body
-
-closedLambda :: String -> Term1 -> Term1
-closedLambda name body@(_anno :< _) = LamP (Closed name) body
 
 -- |Transform a case-free surface term to 'Term1', validating and inlining
 -- variables.

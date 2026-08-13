@@ -200,19 +200,11 @@ genName = suchThat genNameRaw (not . startsWithReservedWord)
     startsWithReservedWord name = any (`isPrefixOf` name)
       [ "case", "else", "if", "import", "in", "let", "of", "then" ]
 
-genInteger :: Gen Int
-genInteger = choose (0, 100)
-
 genAssignment :: Gen (String, String)
 genAssignment = do
   varName <- genName
   value <- genName
   pure (varName, varName <> " = " <> show value)
-
-genImport :: Gen String
-genImport = do
-  modName <- genName
-  pure $ "import " <> modName
 
 genRecursiveImports :: Gen [(String, String)]
 genRecursiveImports = do

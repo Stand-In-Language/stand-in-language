@@ -17,7 +17,6 @@ import qualified Control.Monad.State as State
 import Control.Comonad.Cofree
 import Data.Fix (Fix (..))
 import Data.Functor.Foldable
--- import Data.SBV (sFPHalf)
 
 
 class PrettyPrintable p where
@@ -53,11 +52,6 @@ instance PrettyPrintable1 HighTermF where
       HTraceF x                -> indentWithOneChild' "T" $ showP x
       HashF x                 -> indentWithOneChild' "#" $ showP x
       ChurchF n               -> pure $ "$" <> show n
-  {-
-      TLamF (Open v) x         -> indentWithOneChild' ("\\" <> show v) $ showP x
-      TLamF (Closed v) x       -> indentWithOneChild' ("[\\" <> show v) $ showP x
-      TLamF (LetBinding c v) x -> indentWithOneChild' ("{\\(" <> show c <> ") " <> show v) $ showP x
--}
       RecursionF t r b -> indentWithChildren' "TRB" $ showP <$> [t,r,b]
 
 instance (Show l, Show v) => PrettyPrintable1 (ParserTermF l v) where
@@ -111,12 +105,6 @@ instance PrettyPrintable1 PartialTypeF where
       ZeroTypeP -> pure "Z"
       AnyType -> pure "A"
       TypeVariable _ n -> pure $ "V" <> show (fromEnum n)
-  {-
-      ArrTypeP a b -> case project a of
-        -- ArrTypeP _ _ -> "(" <> showP a <> ") -> " <> showP b
-        ArrTypeP _ _ -> (\a' b' -> "(" <> a' <> ") -> " <> b') <$> showP a <*> showP b
-        _            -> f a <> " -> " <> f b
--}
       ArrTypeP a b -> (\a' b' -> "(" <> a' <> ") -> " <> b') <$> showP a <*> showP b
       PairTypeP a b -> (\a' b' -> "(" <> a' <> "," <> b' <> ")") <$> showP a <*> showP b
 

@@ -96,6 +96,3 @@ letBindingName (name, _) = locatedNameText name
 
 letBindingValue :: (LocatedName, a) -> a
 letBindingValue (_, value) = value
-
-letBindingLoc :: (LocatedName, a) -> LocTag
-letBindingLoc (name, _) = locatedNameLoc name

@@ -106,11 +106,6 @@ fullyResolve resolve = ($ Set.empty) . cata f where
     x' -> fmap embed (mapM ($ alreadySeen) x')
 
 
-traceAssociate :: PartialType -> PartialType -> a -> a
-traceAssociate a b = if debug
-  then trace (concat ["associateVar ", show a, " -- ", show b])
-  else id
-
 associateVar :: PartialType -> PartialType -> AnnotateState ()
 associateVar a b = liftEither (makeAssociations a b) >>= \set -> State.modify (changeState set) where
   changeState set (curVar, oldSet, v) = (curVar, oldSet <> set, v)
