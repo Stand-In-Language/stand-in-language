@@ -60,6 +60,10 @@
 * Fixed the nix build, which had stopped compiling the test suites: it builds
   from `cabal sdist` output, and the Telomare programs the tests read at run
   time were no longer declared in `telomare.cabal`.
+* Fixed `nix run .#push-cachix`, which aborted before pushing anything: it named
+  the shell apps' closures by evaluating `apps.<system>.<name>.program`, which
+  computes a store path without building it, and `nix path-info` rejects a path
+  that does not exist. The apps are now build inputs of the script.
 * Moved to GHC 9.10.3 and `cabal-version` 3.12, and updated every flake input.
 
 ## 0.1.0.0 -- YYYY-mm-dd

@@ -31,6 +31,73 @@
               in "${year}-${month}-${day}T${hour}:${minute}Z"
             else
               "unknown";
+
+          telomareLsp = pkgs.writeShellApplication {
+            name = "telomare-lsp";
+            text = ''
+              export TELOMARE_LSP_VERSION="${lspVersion}"
+              exec "${self.packages.${system}.telomare}/bin/telomare-lsp" "$@"
+            '';
+          };
+
+          # Format and lint the tracked Haskell files. `--check` reports needed
+          # changes without applying them; otherwise formatting is applied in
+          # place. Scoping to `git ls-files` is what keeps this identical to CI:
+          # recursing over `.` locally wanders into untracked trees like
+          # .direnv/ and dist-newstyle/ and aborts on read-only store files.
+          telomareFormat = pkgs.writeShellApplication {
+            name = "telomare-format";
+            runtimeInputs = [
+              pkgs.diffutils
+              pkgs.git
+              hsPkgs.hlint
+              hsPkgs.stylish-haskell
+            ];
+            text = ''
+              mapfile -t hs_files < <(git ls-files '*.hs')
+              if [ "''${#hs_files[@]}" -eq 0 ]; then
+                echo "No tracked Haskell files found"
+                exit 0
+              fi
+
+              format_status=0
+              if [ "''${1:-}" = "--check" ]; then
+                tmp_dir="$(mktemp -d)"
+                trap 'rm -rf "$tmp_dir"' EXIT
+                for hs_file in "''${hs_files[@]}"; do
+                  formatted_file="$tmp_dir/$(basename "$hs_file")"
+                  stylish-haskell "$hs_file" > "$formatted_file"
+                  if ! cmp -s "$hs_file" "$formatted_file"; then
+                    printf '%s needs formatting. Suggested diff:\n' "$hs_file"
+                    diff -u "$hs_file" "$formatted_file" || true
+                    format_status=1
+                  fi
+                done
+              else
+                echo "Formatting ''${#hs_files[@]} tracked Haskell files"
+                stylish-haskell -i "''${hs_files[@]}"
+              fi
+
+              lint_status=0
+              hlint "''${hs_files[@]}" || lint_status=$?
+
+              if [ "$format_status" -ne 0 ]; then
+                printf 'Formatting check failed\n'
+              fi
+              if [ "$lint_status" -ne 0 ]; then
+                printf 'Linting check failed\n'
+              fi
+              if [ "$format_status" -ne 0 ] || [ "$lint_status" -ne 0 ]; then
+                exit 1
+              fi
+
+              printf 'Formatting and linting are OK\n'
+            '';
+          };
+
+          telomareFormatLint = pkgs.writeShellScriptBin "telomare-format-lint-check" ''
+            exec ${telomareFormat}/bin/telomare-format --check
+          '';
         in {
         haskellProjects.default = {
           basePackages = hsPkgs;
@@ -54,76 +121,15 @@
       };
       apps.lsp = {
         type = "app";
-        program = "${pkgs.writeShellApplication {
-          name = "telomare-lsp";
-          text = ''
-            export TELOMARE_LSP_VERSION="${lspVersion}"
-            exec "${self.packages.${system}.telomare}/bin/telomare-lsp" "$@"
-          '';
-        }}/bin/telomare-lsp";
+        program = "${telomareLsp}/bin/telomare-lsp";
       };
-      # Format and lint the tracked Haskell files. `--check` reports needed
-      # changes without applying them; otherwise formatting is applied in
-      # place. Scoping to `git ls-files` is what keeps this identical to CI:
-      # recursing over `.` locally wanders into untracked trees like
-      # .direnv/ and dist-newstyle/ and aborts on read-only store files.
       apps.format = {
         type = "app";
-        program = "${pkgs.writeShellApplication {
-          name = "telomare-format";
-          runtimeInputs = [
-            pkgs.diffutils
-            pkgs.git
-            hsPkgs.hlint
-            hsPkgs.stylish-haskell
-          ];
-          text = ''
-            mapfile -t hs_files < <(git ls-files '*.hs')
-            if [ "''${#hs_files[@]}" -eq 0 ]; then
-              echo "No tracked Haskell files found"
-              exit 0
-            fi
-
-            format_status=0
-            if [ "''${1:-}" = "--check" ]; then
-              tmp_dir="$(mktemp -d)"
-              trap 'rm -rf "$tmp_dir"' EXIT
-              for hs_file in "''${hs_files[@]}"; do
-                formatted_file="$tmp_dir/$(basename "$hs_file")"
-                stylish-haskell "$hs_file" > "$formatted_file"
-                if ! cmp -s "$hs_file" "$formatted_file"; then
-                  printf '%s needs formatting. Suggested diff:\n' "$hs_file"
-                  diff -u "$hs_file" "$formatted_file" || true
-                  format_status=1
-                fi
-              done
-            else
-              echo "Formatting ''${#hs_files[@]} tracked Haskell files"
-              stylish-haskell -i "''${hs_files[@]}"
-            fi
-
-            lint_status=0
-            hlint "''${hs_files[@]}" || lint_status=$?
-
-            if [ "$format_status" -ne 0 ]; then
-              printf 'Formatting check failed\n'
-            fi
-            if [ "$lint_status" -ne 0 ]; then
-              printf 'Linting check failed\n'
-            fi
-            if [ "$format_status" -ne 0 ] || [ "$lint_status" -ne 0 ]; then
-              exit 1
-            fi
-
-            printf 'Formatting and linting are OK\n'
-          '';
-        }}/bin/telomare-format";
+        program = "${telomareFormat}/bin/telomare-format";
       };
       apps.format-lint = {
         type = "app";
-        program = "${pkgs.writeShellScriptBin "telomare-format-lint-check" ''
-          exec ${self'.apps.format.program} --check
-        ''}/bin/telomare-format-lint-check";
+        program = "${telomareFormatLint}/bin/telomare-format-lint-check";
       };
       apps.push-cachix = {
         type = "app";
@@ -182,12 +188,18 @@
               | jq -r '.. | objects | .path? // empty' \
               >> "$direct_paths"
 
-            for app_name in default repl lsp format-lint; do
-              app_program="$(nix eval --raw ".#apps.${system}.$app_name.program")"
-              if [[ "$app_program" =~ ^(/nix/store/[^/]+) ]]; then
-                printf '%s\n' "''${BASH_REMATCH[1]}" >> "$direct_paths"
-              fi
-            done
+            # The shell apps. Naming them by interpolation rather than by
+            # `nix eval` of `apps.<name>.program` makes them build inputs of
+            # this script, so they are realised whenever it runs; an evaluated
+            # path is merely a name, and `nix path-info` rejects it when the
+            # derivation behind it has not been built. The `default` and `repl`
+            # apps need no entry: they live in the package built above.
+            printf 'Including the shell apps\n'
+            printf '%s\n' \
+              "${telomareLsp}" \
+              "${telomareFormat}" \
+              "${telomareFormatLint}" \
+              >> "$direct_paths"
 
             sort -u "$direct_paths" \
               | xargs nix path-info --recursive \
