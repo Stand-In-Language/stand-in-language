@@ -46,7 +46,7 @@ module Telomare.Levels
 import Control.Comonad.Cofree (Cofree ((:<)))
 import Data.Bifunctor (first)
 import Data.Foldable (toList)
-import Data.List (foldl', intercalate, sortOn)
+import Data.List (intercalate, sortOn)
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Set (Set)
@@ -284,7 +284,7 @@ walk gs ls bn owner path d t@(ann :< node) st = case node of
         bn' = foldl' (\m (LocatedName (_, n), _) -> Map.insert n (BindingKey owner n, d) m)
                      bn bs
     in walk gs ls' bn' owner path d body st
-  other -> foldl' (flip (walk gs ls bn owner path d)) st (toList other)
+  other -> foldl' (flip (walk gs ls bn owner path d)) st other
   where
     bang v s = case Map.lookup v bn of
       Nothing -> s

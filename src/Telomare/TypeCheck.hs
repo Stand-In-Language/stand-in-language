@@ -89,7 +89,7 @@ buildTypeMap assocSet =
     Nothing -> debugTrace (show multiMap) $ buildMap mempty assocSet mempty
 
 fullyResolve :: (Int -> Maybe PartialType) -> PartialType -> Either TypeCheckError PartialType
-fullyResolve resolve = ($ Set.empty) . cata f where
+fullyResolve resolve = flip (cata f) Set.empty where
   f :: PartialTypeF (Set Int -> Either TypeCheckError PartialType) -> Set Int -> Either TypeCheckError PartialType
   f x alreadySeen = case x of
     _t@(TypeVariable anno i) -> case resolve i of

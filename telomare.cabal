@@ -1,4 +1,4 @@
-cabal-version:       3.4
+cabal-version:       3.12
 name:                telomare
 version:             0.1.0.0
 synopsis:            A simple but robust virtual machine
@@ -8,7 +8,7 @@ license:             Apache-2.0
 license-file:        LICENSE
 author:              Sam Griffin
 maintainer:          sam.griffin@gmail.com
-copyright:           2020 Sam Griffin
+copyright:           2026 Sam Griffin
 category:            Language
 build-type:          Simple
 -- The nix build compiles from `cabal sdist` output, so anything the test

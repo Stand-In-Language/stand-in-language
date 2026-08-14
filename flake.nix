@@ -15,8 +15,10 @@
       imports = [ inputs.haskell-flake.flakeModule ];
       perSystem = { self', system, pkgs, ... }:
         let
-          # The GHC package set used for the build and all tooling.
-          hsPkgs = pkgs.haskell.packages.ghc96;
+          # The GHC package set used for the build and all tooling. This is
+          # nixpkgs' default (curated) set, so package coverage and HLS
+          # support are the best available.
+          hsPkgs = pkgs.haskell.packages.ghc910;
           lspVersion =
             if self ? lastModifiedDate then
               let

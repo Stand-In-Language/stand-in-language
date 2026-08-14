@@ -197,11 +197,11 @@ executeCommandHandler gState req respond = do
   case command of
     "telomare.partialEval" -> do
       case mArgs of
-        Just args | length args >= 3 -> do
+        Just (uriArg : rangeArg : exprArg : _) -> do
           -- Parse the JSON values
-          let uriResult = JSON.fromJSON (head args) :: JSON.Result LSPTypes.Uri
-              rangeResult = JSON.fromJSON (args !! 1) :: JSON.Result Range
-              exprResult = JSON.fromJSON (args !! 2) :: JSON.Result T.Text
+          let uriResult = JSON.fromJSON uriArg :: JSON.Result LSPTypes.Uri
+              rangeResult = JSON.fromJSON rangeArg :: JSON.Result Range
+              exprResult = JSON.fromJSON exprArg :: JSON.Result T.Text
 
           case (uriResult, rangeResult, exprResult) of
             (JSON.Success uri, JSON.Success range, JSON.Success exprText) -> do
@@ -828,6 +828,10 @@ lexTelomare text = concat $ lexLines 0 (zip [0..] (T.lines text))
   where
     (openComment, closeComment) = blockCommentDelims
 
+    -- |Does @str@ begin with a character satisfying @p@? False when empty.
+    startsWith :: (Char -> Bool) -> String -> Bool
+    startsWith p = any p . listToMaybe
+
     -- Each line's lexer reports the block-comment depth it ended at, so a
     -- comment spanning lines carries into the next one.
     lexLines :: Int -> [(UInt, T.Text)] -> [[Token]]
@@ -863,7 +867,7 @@ lexTelomare text = concat $ lexLines 0 (zip [0..] (T.lines text))
               in emit (Token lineNum col len tokString) $ go (col + len) rest
 
           -- Church numerals ($123)
-          | c == '$' && not (null cs) && isDigit (head cs) =
+          | c == '$' && startsWith isDigit cs =
               let (len, rest) = spanChurch cs 1
               in emit (Token lineNum col len tokNumber) $ go (col + len) rest
 
@@ -873,12 +877,12 @@ lexTelomare text = concat $ lexLines 0 (zip [0..] (T.lines text))
               in emit (Token lineNum col len tokNumber) $ go (col + len) rest
 
           -- Lambda syntax (\x -> ...)
-          | c == '\\' && (null cs || not (isOperatorChar (head cs))) =
+          | c == '\\' && not (startsWith isOperatorChar cs) =
               emit (Token lineNum col 1 tokKeyword) $ go (col + 1) cs
 
           -- Pattern arrow (->) and operators
-          | c == '-' && not (null cs) && head cs == '>' =
-              emit (Token lineNum col 2 tokKeyword) $ go (col + 2) (tail cs)
+          | c == '-' && startsWith (== '>') cs =
+              emit (Token lineNum col 2 tokKeyword) $ go (col + 2) (drop 1 cs)
 
           -- Hash syntax for HashUP
           | c == '#' =

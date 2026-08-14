@@ -116,7 +116,7 @@ pruneBindings root bs = filter ((`Set.member` reachable) . fst) bs
 type VarList = [String]
 
 debruijinize :: forall m. (Monad m, MonadFail m) => Term1 -> m Term2
-debruijinize = ($ []) . runReaderT . cata f where
+debruijinize = flip (runReaderT . cata f) [] where
   f = \case
     LamAFP a lt x -> embed . LamAFP a (convLam lt) <$> local (lt:) x
     VarAFP a n -> ask >>= \vl -> lift $ findElem a n vl
@@ -145,7 +145,7 @@ debruijinize = ($ []) . runReaderT . cata f where
 
 -- | Close all naked open lambdas
 closeLams :: Term2 -> Term2
-closeLams = runIdentity .($ True) . runReaderT . cata f where
+closeLams = runIdentity . flip (runReaderT . cata f) True where
   f = \case
     anno C.:< x -> case x of
       ParserTermL (LamF lt ix) -> ask >>= \naked -> if naked
@@ -154,7 +154,7 @@ closeLams = runIdentity .($ True) . runReaderT . cata f where
       x' -> (anno :<) <$> sequence x'
 
 debruijinizeApp :: forall m. (Monad m, MonadFail m) => Term1 -> m Term2
-debruijinizeApp = fmap closeLams . ($ []) . runReaderT . cata f where
+debruijinizeApp = fmap closeLams . flip (runReaderT . cata f) [] where
   f = \case
     LamAFP a lt x -> embed . LamAFP a (convLam lt) <$> local (lt:) x
     VarAFP a n -> ask >>= \vl -> lift $ findElem a n vl
@@ -220,7 +220,7 @@ topologicalSort :: [String] -> Map String (Set String) -> Either ResolverError [
 topologicalSort names deps = go [] names
   where
     go result [] = Right (reverse result)
-    go result remaining =
+    go result remaining@(firstRemaining : _) =
       case find (canProcess remaining) remaining of
         Nothing ->
           -- Must be a cycle - find it for error message
@@ -231,7 +231,7 @@ topologicalSort names deps = go [] names
                             case find (`elem` remaining) (Set.toList $ Map.findWithDefault Set.empty curr deps) of
                               Nothing   -> []
                               Just next -> curr : go' next (Set.insert curr visited)
-          in Left $ DefinitionCycle (findCycleFrom (head remaining))
+          in Left $ DefinitionCycle (findCycleFrom firstRemaining)
         Just name -> go (name : result) (delete name remaining)
 
     canProcess rn name =

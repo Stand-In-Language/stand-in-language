@@ -154,7 +154,7 @@ initialInput irs = f 0 where
 -- The failure carries no location — `UnsizedExpr` has none. Callers holding
 -- the `Term3` fill it in (see `Telomare.Eval.locateSizingFailure`).
 sizeTermM :: SizingSettings -> UnsizedExpr -> Either SizingFailure (SizedRecursion, CompiledExpr)
-sizeTermM sizingSettings x = tidyUp . ($ []) . runReaderT . transformNoDeferM evalStep $ mx where
+sizeTermM sizingSettings x = tidyUp . flip (runReaderT . transformNoDeferM evalStep) [] $ mx where
   unlocated tok kind = SizingFailure
     { sizingFailureToken = tok
     , sizingFailureKind = kind

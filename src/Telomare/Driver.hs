@@ -241,11 +241,9 @@ evalLoopCore evaluator expr accumFn initAcc manualInput =
           Left e -> pure (measured', newAcc <> "\n" <> show e)
           Right ZeroB -> pure (measured', newAcc <> "\n" <> "done")
           Right ns -> do
-
-            (inp, rest) <-
-              if null strInput
-              then (, []) <$> getLine
-              else pure (head strInput, tail strInput)
+            (inp, rest) <- case strInput of
+              []               -> (, []) <$> getLine
+              next : remaining -> pure (next, remaining)
             mainLoop measured' newAcc rest $ pure (inp, ns)
   in mainLoop mempty initAcc manualInput Nothing
 
