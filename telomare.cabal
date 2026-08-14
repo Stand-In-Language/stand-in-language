@@ -11,7 +11,13 @@ maintainer:          sam.griffin@gmail.com
 copyright:           2020 Sam Griffin
 category:            Language
 build-type:          Simple
-extra-source-files:  CHANGELOG.md, README.md
+-- The nix build compiles from `cabal sdist` output, so anything the test
+-- suites open at run time has to be listed here or it simply will not be
+-- there. That is the whole reason the Telomare programs appear below.
+extra-source-files:  CHANGELOG.md
+                     README.md
+                     *.tel
+                     test/programs/**/*.tel
 
 library
   hs-source-dirs:      src
