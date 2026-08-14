@@ -13,7 +13,7 @@
 
 -- |The reference evaluators: the 'AbstractRunTime' instances for
 -- 'CompiledExpr' (the production path) and 'StuckExpr' (the REPL/test
--- path), the plain 'basicEval'/'regularEval' interpreters, and the
+-- path), the plain 'basicEval' interpreter, and the
 -- barrier-based partial evaluator 'evalPartial'. All are assembled from
 -- 'Telomare.Machine' step algebras.
 --
@@ -22,30 +22,15 @@
 module Telomare.Eval.Reference where
 
 import Control.Applicative
-import Control.Monad.IO.Class (MonadIO (..))
 import Data.Char (chr)
 import Data.Functor.Foldable
-import qualified Data.Set as Set
 import Telomare.IR.Base
 import Telomare.IR.Core
 import Telomare.Machine
 import Telomare.PrettyPrint
 import Telomare.PrettyPrint.Indent (indentWithTwoChildren')
 import Telomare.Size.IR
-
-regularEval :: forall f g. (Base g ~ f, BasicBase f, StuckBase f, AbortBase f, IndexedInputBase f, UnsizedBase f
-               , Recursive g, Corecursive g, PrettyPrintable g) => g -> g
-regularEval = transformNoDefer f . cata ss where
-  f = basicStep (stuckStep (abortStep (indexedInputStep Set.empty unhandledError)))
-  unhandledError z = error ("regularEval unhandled case\n" <> prettyPrint (embed z))
-  ss :: f g -> g
-  ss = \case
-    UnsizedFW (RefinementWrapperF _lt tc c) ->
-      let innerTC = appB (LeftB EnvB) (RightB EnvB)
-          performTC = deferB removeRefinementWrappersTC . SetEnvB $ PairB (SetEnvB $ PairB (AbortEE AbortF) innerTC) (RightB EnvB)
-      in SetEnvB $ PairB performTC (PairB tc c)
-    UnsizedFW (UnsizedStubF _ _) -> iterate SetEnvB EnvB !! 255
-    x -> embed x
+import Telomare.Util (debugTrace)
 
 basicEval :: forall f g. (Base g ~ f, BasicBase f, StuckBase f, Recursive g, Corecursive g, PrettyPrintable g) => g -> g
 basicEval = transformNoDefer f where
@@ -98,9 +83,6 @@ evalPartial = cata removeBarriers . transformNoDefer step where
     x -> seq x $ embed x -- does seq have any performance consequence here?
   wrapUnknownStep = deferredEE . BarrierF . embed
 
-
-showPass :: (Show a, MonadIO m) => m a -> m a
-showPass a = a >>= liftIO . print >> a
 
 instance AbstractRunTime StuckExpr where
   eval = pure . transformNoDefer step where

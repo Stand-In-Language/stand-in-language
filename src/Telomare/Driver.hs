@@ -5,20 +5,18 @@
 
 module Telomare.Driver where
 
-import Control.Comonad.Cofree (Cofree ((:<)))
+import Control.Comonad.Cofree (Cofree)
 import Control.Monad (void, (>=>))
-import Control.Monad.State (State, evalState)
 import qualified Control.Monad.State as State
 import Data.Bifunctor (first)
-import Debug.Trace
 
 import qualified Control.Comonad.Trans.Cofree as CofreeT
 import Control.Lens (Identity (runIdentity))
-import Data.Functor.Foldable (Base, cata, embed, para)
+import Data.Functor.Foldable (cata, embed)
 import Telomare.Desugar (desugarTerm)
 import Telomare.Error
 import Telomare.Eval.Meter (Meter, evalMeter)
-import Telomare.Eval.Reference (basicEval)
+import Telomare.Eval.Reference ()
 import Telomare.Expand (expandDefs, expandModule, expandTerm,
                         renderExpansionError, wrapMain)
 import Telomare.IR.Base
@@ -35,13 +33,8 @@ import Telomare.Size (SizingReport (..), SizingSettings (..),
                       buildUnsizedLocMap, evalStaticCheck, locateSizingFailure,
                       sizeTermM, term3ToUnsizedExpr)
 import Telomare.TypeCheck (typeCheck)
+import Telomare.Util (debugTrace)
 import Text.Megaparsec (errorBundlePretty, runParser)
-
-debug :: Bool
-debug = False
-
-debugTrace :: String -> a -> a
-debugTrace s x = if debug then trace s x else x
 
 -- note that function indexes may be changed in this process
 convertPT :: (UnsizedRecursionToken -> Int) -> Term3 -> CompiledExpr
@@ -89,22 +82,6 @@ findChurchSizeReporting so t3 = case so of
     sized settings = case sizeTermM settings $ term3ToUnsizedExpr t3 of
       Left failure      -> Left . RecursionLimitError $ locateSizingFailure locs failure
       Right (counts, t) -> pure (report counts, t)
-
--- rather than remove checks, we should extract them so that they can be run separately, if that gives a performance benefit
-{-
-removeChecks :: Term4 -> Term4
-removeChecks (Term4 m) =
-  let f = \case
-        anno :< AbortFragF -> anno :< DeferFragF ind
-        x                  -> x
-      (ind, newM) = State.runState builder m
-      builder = do
-        envDefer <- insertAndGetKey $ GeneratedLoc "removeChecks" Nothing :< EnvFragF
-        insertAndGetKey $ GeneratedLoc "removeChecks" Nothing :< DeferFragF envDefer
-  in Term4 $ Map.map (transform f) newM
--}
-removeChecks :: CompiledExpr -> CompiledExpr
-removeChecks = id
 
 runStaticChecks :: CompiledExpr -> Either EvalError CompiledExpr
 runStaticChecks t =
@@ -155,7 +132,7 @@ compileReporting :: SizingOption
 compileReporting so staticCheck t = debugTrace ("compiling term3:\n" <> prettyPrint t) $ do
   (report, sized) <- findChurchSizeReporting so t
   checked <- staticCheck sized
-  pure (report, removeChecks checked)
+  pure (report, checked)
 
 -- converts between easily understood Haskell types and untyped IExprs around an iteration of a Telomare expression
 funWrap :: forall a. (Show a, AbstractRunTime a) => a -> (a -> a -> a) -> Maybe (String, BasicExpr) -> (String, Either RunTimeError BasicExpr)
@@ -243,71 +220,59 @@ runMainWithInput :: [String] -- ^Inputs
                  -> IO String
 runMainWithInput inputList modulesStrings s = runMainCore modulesStrings s (evalLoopWithInput inputList)
 
-evalLoopCore :: CompiledExpr
+-- |The one iteration loop every eval entry point goes through. The evaluator
+-- reports a measurement per iteration (the unmetered wrappers use '()'), and
+-- each iteration's display goes through @accumFn@; the loop returns the summed
+-- measurements alongside the final accumulator.
+evalLoopCore :: Monoid m
+             => (CompiledExpr -> (m, Either RunTimeError CompiledExpr))
+             -> CompiledExpr
              -> (String -> String -> IO String)
              -> String
              -> [String]
-             -> IO String
-evalLoopCore expr accumFn initAcc manualInput =
-  let wrappedEval = funWrap expr appB
-      mainLoop acc strInput s = do
-        let (out, nextState) = wrappedEval s
+             -> IO (m, String)
+evalLoopCore evaluator expr accumFn initAcc manualInput =
+  let wrappedEval = funWrapWith evaluator expr appB
+      mainLoop measured acc strInput s = do
+        let (m, (out, nextState)) = wrappedEval s
+            measured' = measured <> m
         newAcc <- accumFn acc out
         case nextState of
-          Left e -> pure $ newAcc <> "\n" <> show e
-          Right ZeroB -> pure $ newAcc <> "\n" <> "done"
+          Left e -> pure (measured', newAcc <> "\n" <> show e)
+          Right ZeroB -> pure (measured', newAcc <> "\n" <> "done")
           Right ns -> do
+            (inp, rest) <- case strInput of
+              []               -> (, []) <$> getLine
+              next : remaining -> pure (next, remaining)
+            mainLoop measured' newAcc rest $ pure (inp, ns)
+  in mainLoop mempty initAcc manualInput Nothing
 
-            (inp, rest) <-
-              if null strInput
-              then (, []) <$> getLine
-              else pure (head strInput, tail strInput)
-            mainLoop newAcc rest $ pure (inp, ns)
-  in mainLoop initAcc manualInput Nothing
+-- |The evaluator the unmetered wrappers share: run and measure nothing.
+plainEval :: CompiledExpr -> ((), Either RunTimeError CompiledExpr)
+plainEval = ((),) . eval
+
+-- |Print each iteration's display and keep nothing.
+printAccum :: String -> String -> IO String
+printAccum _ out = putStrLn out >> pure ""
+
+-- |Keep each iteration's display, newline-separated.
+keepAccum :: String -> String -> IO String
+keepAccum acc out = pure $ if acc == "" then out else acc <> "\n" <> out
 
 evalLoop :: CompiledExpr -> IO ()
-evalLoop iexpr = void $ evalLoopCore iexpr printAcc "" []
-  where
-    printAcc _ out = do
-      putStrLn out
-      pure ""
+evalLoop iexpr = void $ evalLoopCore plainEval iexpr printAccum "" []
 
 evalLoopWithInput :: [String] -> CompiledExpr -> IO String
-evalLoopWithInput inputList iexpr = evalLoopCore iexpr printAcc "" inputList
-  where
-    printAcc acc out = if acc == ""
-                       then pure out
-                       else pure (acc <> "\n" <> out)
+evalLoopWithInput inputList iexpr = snd <$> evalLoopCore plainEval iexpr keepAccum "" inputList
 
 -- |`evalLoop`, measuring what the session costs. Prints exactly what
 -- `evalLoop` prints; the caller decides what to do with the measurement.
 evalLoopMetered :: [String] -> CompiledExpr -> IO Meter
-evalLoopMetered manualInput expr = go mempty manualInput Nothing where
-  wrappedEval = funWrapWith evalMeter expr appB
-  go measured strInput s = do
-    let (m, (out, nextState)) = wrappedEval s
-        measured' = measured <> m
-    putStrLn out
-    case nextState of
-      Left _      -> pure measured'
-      Right ZeroB -> pure measured'
-      Right ns    -> do
-        (inp, rest) <-
-          if null strInput
-          then (, []) <$> getLine
-          else pure (head strInput, tail strInput)
-        go measured' rest $ pure (inp, ns)
+evalLoopMetered manualInput expr = fst <$> evalLoopCore evalMeter expr printAccum "" manualInput
 
 -- |Same as `evalLoop`, but keeping what was displayed.
 evalLoop_ :: CompiledExpr -> IO String
-evalLoop_ iexpr = evalLoopCore iexpr printAcc "" []
-  where
-    printAcc acc out = if acc == ""
-                       then pure out
-                       else pure (acc <> "\n" <> out)
-
-calculateRecursionLimits :: SizingSettings -> Term3 -> Either EvalError CompiledExpr
-calculateRecursionLimits sizingSettings = findChurchSizeD (DebugSizing sizingSettings)
+evalLoop_ iexpr = snd <$> evalLoopCore plainEval iexpr keepAccum "" []
 
 eval2IExpr :: ExpandedModules -> String -> Either String CompiledExpr
 eval2IExpr extraModuleBindings str = do
@@ -327,48 +292,3 @@ eval2IExpr extraModuleBindings str = do
         in ExpandedModuleImport $ ImportDecl loc
              (locatedName loc name)
              (Just $ locatedName loc name)
-
-tagIExprWithEval :: CompiledExpr -> Cofree CompiledExprF (Int, CompiledExpr)
-tagIExprWithEval iexpr = evalState (para alg iexpr) 0 where
-  statePlus1 :: State Int Int
-  statePlus1 = do
-      i <- State.get
-      State.modify (+ 1)
-      pure i
-  alg :: Base CompiledExpr
-              ( CompiledExpr
-              , State Int (Cofree CompiledExprF (Int, CompiledExpr))
-              )
-      -> State Int (Cofree CompiledExprF (Int, CompiledExpr))
-  alg = \case
-    BasicFW ZeroSF -> do
-      i <- statePlus1
-      pure ((i, basicEval ZeroB) :< embedB ZeroSF)
-    StuckFW EnvSF -> do
-      i <- statePlus1
-      pure ((i, basicEval ZeroB) :< embedS EnvSF)
-    StuckFW (SetEnvSF (iexpr0, x)) -> do
-      i <- statePlus1
-      x' <- x
-      pure $ (i, basicEval $ SetEnvB iexpr0) :< embedS (SetEnvSF x')
-    StuckFW (DeferSF _ind (iexpr0, x)) -> do
-      i <- statePlus1
-      x' <- x
-      pure $ (i, basicEval . StuckEE $ DeferSF (toEnum (-1)) iexpr0) :< embedS (DeferSF (toEnum (-1)) x')
-    StuckFW (LeftSF (iexpr0, x)) -> do
-      i <- statePlus1
-      x' <- x
-      pure $ (i, basicEval $ LeftB iexpr0) :< embedS (LeftSF x')
-    StuckFW (RightSF (iexpr0, x)) -> do
-      i <- statePlus1
-      x' <- x
-      pure $ (i, basicEval $ RightB iexpr0) :< embedS (RightSF x')
-    BasicFW (PairSF (iexpr0, x) (iexpr1, y)) -> do
-      i <- statePlus1
-      x' <- x
-      y' <- y
-      pure $ (i, basicEval $ PairB iexpr0 iexpr1) :< embedB (PairSF x' y')
-    StuckFW GateSF -> do
-      i <- statePlus1
-      pure $ (i, basicEval $ StuckEE GateSF) :< embedS GateSF
-    _ -> error "Telomare.Driver.tagIExprWithEval: unexpected expression"

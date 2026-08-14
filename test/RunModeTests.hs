@@ -9,13 +9,13 @@ module RunModeTests where
 import qualified Data.ByteString.Lazy.Char8 as BL
 import Data.List (isInfixOf)
 import qualified Data.Map as Map
-import qualified System.IO.Strict as Strict
+import SizingTests (limitsDir, loadWith)
 import Test.Hspec
 
 import Telomare.Artifact (Artifact (..), decodeArtifact, encodeArtifact,
                           nodeCount, sourcesHash)
 import Telomare.Certificate (renderStaticReport)
-import Telomare.Driver (compileModules, runMainWithInput)
+import Telomare.Driver (compileModules)
 import Telomare.Fast (FastError (..), FastMeter (..), compileFast,
                       runFastWithInput)
 import Telomare.IR.Base
@@ -24,16 +24,6 @@ import Telomare.Levels (LevelsInfo (..), levelsInfo)
 import Telomare.Machine (appB)
 import Telomare.Size (SizingReport (..))
 import Telomare.Size.IR (SizedRecursion (..))
-
-limitsDir :: FilePath
-limitsDir = "test/programs/limits/"
-
--- |A program plus the prelude, as the CLI would load them.
-loadWith :: FilePath -> String -> IO [(String, String)]
-loadWith path moduleName = do
-  prelude <- Strict.readFile "Prelude.tel"
-  source <- Strict.readFile path
-  pure [("Prelude", prelude), (moduleName, source)]
 
 runModeSpec :: Spec
 runModeSpec = do
@@ -89,25 +79,9 @@ runModeSpec = do
       -- Order must not matter: modules are discovered in import order.
       sourcesHash (reverse modules) `shouldBe` sourcesHash modules
 
+  -- Transcript agreement between the fast and sized runtimes is checked
+  -- corpus-wide in "ConformanceTests".
   describe "running without sizing" $ do
-    it "produces the same transcript as the sized run" $ do
-      modules <- loadWith "simpleplus.tel" "simpleplus"
-      expected <- runMainWithInput ["3 4"] modules "simpleplus"
-      case compileFast modules "simpleplus" of
-        Left err -> expectationFailure $ "failed to compile without sizing:\n" <> err
-        Right prog -> case snd (runFastWithInput Nothing ["3 4"] prog) of
-          Left e       -> expectationFailure $ "fast run failed: " <> show e
-          Right actual -> actual `shouldBe` expected
-
-    it "produces the same transcript on a program with no input" $ do
-      modules <- loadWith "tc_ultra_minimal.tel" "tc_ultra_minimal"
-      expected <- runMainWithInput [] modules "tc_ultra_minimal"
-      case compileFast modules "tc_ultra_minimal" of
-        Left err -> expectationFailure $ "failed to compile without sizing:\n" <> err
-        Right prog -> case snd (runFastWithInput Nothing [] prog) of
-          Left e       -> expectationFailure $ "fast run failed: " <> show e
-          Right actual -> actual `shouldBe` expected
-
     it "counts the unrolls of each recursion site separately" $ do
       modules <- loadWith "simpleplus.tel" "simpleplus"
       case compileFast modules "simpleplus" of

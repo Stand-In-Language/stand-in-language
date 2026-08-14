@@ -9,14 +9,13 @@
 
 module Telomare.Size.IR where
 
-import Control.Monad (liftM2, (<=<))
+import Control.Monad (liftM2)
 import Data.Fix (Fix (..))
 import Data.Functor.Classes (Eq1 (..), Show1 (liftShowsPrec))
 import Data.Functor.Foldable
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Validity (Validity (..), trivialValidation)
-import Debug.Trace
 import GHC.Generics (Generic)
 
 import Data.Bifunctor (first)
@@ -25,12 +24,7 @@ import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.PrettyPrint
 import Telomare.PrettyPrint.Indent (indentWithOneChild', indentWithTwoChildren')
-
-debug' :: Bool
-debug' = False
-
-debugTrace' :: String -> a -> a
-debugTrace' s x = if debug' then trace s x else x
+import Telomare.Util (debugTrace)
 
 type TCallStack a = [(FunctionIndex, a)]
 
@@ -100,7 +94,7 @@ instance Semigroup SizedRecursion where
   (<>) (SizedRecursion a) (SizedRecursion b) = SizedRecursion . tr $ Map.unionWith (liftM2 max) a b where
     tr x = if null a || null b
       then x
-      else debugTrace' ("sizedrecursion merge result: " <> show (first fromEnum <$> Map.toAscList x)) x
+      else debugTrace ("sizedrecursion merge result: " <> show (first fromEnum <$> Map.toAscList x)) x
 
 instance Monoid SizedRecursion where
   mempty = SizedRecursion Map.empty
@@ -481,21 +475,9 @@ instance PrettyPrintable1 InputSizingExprF where
     InputSizingI x -> showP1 x
 type InputSizingExpr = Fix InputSizingExprF
 
-convertSuper :: (SuperBase g, SuperBase h, Base x ~ h, Corecursive x, Monad m) => (g (m x) -> m x) -> g (m x) -> m x
-convertSuper convertOther = \case
-  SuperFW x -> superEE <$> sequence x
-  x -> convertOther x
-convertUnsized :: (UnsizedBase g, UnsizedBase h, Base x ~ h, Corecursive x, Monad m) => (g (m x) -> m x) -> g (m x) -> m x
-convertUnsized convertOther = \case
-  UnsizedFW x -> unsizedEE <$> sequence x
-  x -> convertOther x
 convertIndexed :: (IndexedInputBase g, IndexedInputBase h, Base x ~ h, Corecursive x, Monad m) => (g (m x) -> m x) -> g (m x) -> m x
 convertIndexed convertOther = \case
   IndexedFW x -> indexedEE <$> sequence x
-  x -> convertOther x
-convertDeferred :: (DeferredEvalBase g, DeferredEvalBase h, Base x ~ h, Corecursive x, Monad m) => (g (m x) -> m x) -> g (m x) -> m x
-convertDeferred convertOther = \case
-  DeferredFW x -> deferredEE <$> sequence x
   x -> convertOther x
 
 data SizedResult
@@ -523,9 +505,6 @@ instance Semigroup a => Semigroup (MonoidList a) where
 
 instance Semigroup a => Monoid (MonoidList a) where
   mempty = MonoidList []
-
-anaM' :: (Monad m, Corecursive t, x ~ Base t, Traversable x) => (a -> m (Base t a)) -> a -> m t
-anaM' f = c where c = (fmap embed . mapM c) <=< f
 
 instance TelomareLike UnsizedExpr where
   fromTelomare = verify . cata (convertBasic (convertStuck (\_z -> Left "failed to convert to UnsizedExpr"))) where

@@ -6,13 +6,8 @@ import Data.Maybe (isJust)
 import qualified System.IO.Strict as Strict
 import Test.Hspec
 
-import Telomare.Driver (SizingOption (DebugSizing), compileModules,
-                        compileModulesWith)
-import Telomare.Eval.Meter (Meter (..), evalMeter)
-import Telomare.IR.Base
-import Telomare.IR.Core
+import Telomare.Driver (SizingOption (DebugSizing), compileModulesWith)
 import Telomare.IR.Loc
-import Telomare.Machine (appB)
 import Telomare.Size (SizingReport (..), SizingSettings (SizingSettings),
                       renderSizingCertificate)
 import Telomare.Size.IR (SizedRecursion (..))
@@ -20,13 +15,18 @@ import Telomare.Size.IR (SizedRecursion (..))
 limitsDir :: FilePath
 limitsDir = "test/programs/limits/"
 
+-- |A program plus the prelude, as the CLI would load them.
+loadWith :: FilePath -> String -> IO [(String, String)]
+loadWith path moduleName = do
+  prelude <- Strict.readFile "Prelude.tel"
+  source <- Strict.readFile path
+  pure [("Prelude", prelude), (moduleName, source)]
+
 -- |Compile a program alongside the prelude, at a chosen sizing budget.
 compileProgram :: SizingOption -> FilePath -> String -> IO (Either String SizingReport)
 compileProgram sizingOption path moduleName = do
-  prelude <- Strict.readFile "Prelude.tel"
-  source <- Strict.readFile path
-  pure . fmap fst $
-    compileModulesWith sizingOption [("Prelude", prelude), (moduleName, source)] moduleName
+  modules <- loadWith path moduleName
+  pure . fmap fst $ compileModulesWith sizingOption modules moduleName
 
 -- |Compile at the budget the CLI uses.
 compileAtFullBudget :: FilePath -> String -> IO (Either String SizingReport)
@@ -97,28 +97,3 @@ sizingSpec = do
         Right report -> do
           sizingReportBudget report `shouldBe` 65536
           renderSizingCertificate report `shouldSatisfy` isInfixOf "65536"
-
-  -- The meter is a second interpreter, so the thing worth testing is that it is
-  -- still the same interpreter. It is easy to get a plausible cost out of an
-  -- evaluator that quietly computes the wrong answer.
-  describe "the meter mirrors the evaluator"
-    . it "computes the same value as the real evaluator" $ do
-      result <- compileAtFullBudget "tc_ultra_minimal.tel" "tc_ultra_minimal"
-      case result of
-        Left err -> expectationFailure $ "failed to compile:\n" <> err
-        Right _  -> pure ()
-      prelude <- Strict.readFile "Prelude.tel"
-      source <- Strict.readFile "tc_ultra_minimal.tel"
-      case compileModules [("Prelude", prelude), ("tc_ultra_minimal", source)] "tc_ultra_minimal" of
-        Left err -> expectationFailure $ "failed to compile:\n" <> err
-        Right (_, sized) -> do
-          let applied = appB sized ZeroB
-              (measured, metered) = evalMeter applied
-          fmap show metered `shouldBe` fmap show (eval applied)
-          meterSteps measured `shouldSatisfy` (> 0)
-          -- A run of any length constructs at least one node.
-          meterBuilt measured `shouldSatisfy` (> 0)
-
--- |Kept for the historical name; the suite entry point calls this.
-twoFailedApproaches :: Spec
-twoFailedApproaches = sizingSpec

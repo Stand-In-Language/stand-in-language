@@ -11,15 +11,15 @@ import Control.Applicative ((<|>))
 import Control.Comonad.Cofree (Cofree ((:<)))
 import Control.Concurrent.STM
 import Control.Exception (IOException, try)
-import Control.Monad (join, void)
+import Control.Monad (guard, join, void)
 import Control.Monad.IO.Class (MonadIO (liftIO))
 import Data.Bifunctor (first)
-import Data.Char (isAsciiLower, isAsciiUpper, isDigit)
-import Data.Fix (Fix (..))
-import Data.List (find, sortOn)
+import Data.Char (isDigit)
+import Data.List (find, isPrefixOf, sortOn)
 import qualified Data.List.NonEmpty as NE
 import qualified Data.Map.Strict as Map
-import Data.Maybe (listToMaybe, mapMaybe)
+import Data.Maybe (listToMaybe)
+import Data.Monoid (First (..))
 import qualified Data.Set as Set
 import qualified Data.Text as T
 import Data.Time (defaultTimeLocale, formatTime, parseTimeM, zonedTimeToUTC)
@@ -48,6 +48,8 @@ import Telomare.Expand (ExpansionError, expandModule, expansionErrorLoc,
 import Telomare.IR.Base
 import Telomare.IR.Loc
 import Telomare.IR.Surface
+import Telomare.Lexical (blockCommentDelims, identifierContinueChar,
+                         identifierStart, lineCommentStart, reservedWords)
 import Telomare.Parse (runParseModule, runParseModuleDetailed)
 import Telomare.Resolve (main2Term3)
 import Text.Megaparsec.Error (ParseErrorBundle (..), errorBundlePretty,
@@ -150,15 +152,13 @@ serverOptions =
                     }
 
 -- Token type indices (matching the server's reported legend)
-tokComment, tokKeyword, tokString, tokNumber, tokOperator, tokVariable, tokFunction, tokType :: UInt
+tokComment, tokKeyword, tokString, tokNumber, tokOperator, tokVariable :: UInt
 tokKeyword  = 1   -- "keyword"
 tokComment  = 0   -- "comment"
 tokString   = 2   -- "string"
 tokNumber   = 3   -- "number"
 tokOperator = 5   -- "operator"
 tokVariable = 19  -- "variable"
-tokFunction = 13  -- "function"
-tokType     = 7    -- "type"
 
 --------------------------------------------------------------------------------
 -- Handlers
@@ -197,11 +197,11 @@ executeCommandHandler gState req respond = do
   case command of
     "telomare.partialEval" -> do
       case mArgs of
-        Just args | length args >= 3 -> do
+        Just (uriArg : rangeArg : exprArg : _) -> do
           -- Parse the JSON values
-          let uriResult = JSON.fromJSON (head args) :: JSON.Result LSPTypes.Uri
-              rangeResult = JSON.fromJSON (args !! 1) :: JSON.Result Range
-              exprResult = JSON.fromJSON (args !! 2) :: JSON.Result T.Text
+          let uriResult = JSON.fromJSON uriArg :: JSON.Result LSPTypes.Uri
+              rangeResult = JSON.fromJSON rangeArg :: JSON.Result Range
+              exprResult = JSON.fromJSON exprArg :: JSON.Result T.Text
 
           case (uriResult, rangeResult, exprResult) of
             (JSON.Success uri, JSON.Success range, JSON.Success exprText) -> do
@@ -260,16 +260,17 @@ storeParsedDoc
   -> LspM () ()
 storeParsedDoc gState uri version text = do
   modules <- liftIO $ readTVarIO (moduleBindings gState)
-  let detailedParse = parseTelomareModuleDetailed text
-      expanded = expandModule <$> detailedParse
-      parseRes = case expanded of
-        Left parseErr      -> Left $ errorBundlePretty parseErr
-        Right (Left err)   -> Left $ renderExpansionError err
-        Right (Right tree) -> Right tree
-  diagnostics' <- case expanded of
-    Left err -> pure $ parseDiagnostics text err
-    Right (Left err) -> pure $ expansionDiagnostics text err
-    Right (Right parsed) -> do
+  let expanded = expandModule <$> parseTelomareModuleDetailed text
+      -- One case analysis for the parse-error/expansion-error/success shape.
+      unwrapExpanded onParseErr onExpandErr onOk = case expanded of
+        Left parseErr      -> onParseErr parseErr
+        Right (Left err)   -> onExpandErr err
+        Right (Right tree) -> onOk tree
+      parseRes = unwrapExpanded (Left . errorBundlePretty) (Left . renderExpansionError) Right
+  diagnostics' <- unwrapExpanded
+    (pure . parseDiagnostics text)
+    (pure . expansionDiagnostics text)
+    $ \parsed -> do
       importedModules <- liftIO $ concat <$> mapM (loadImportedModuleBinding gState uri) (moduleImports parsed)
       let modules' = importedModules <> modules
           importDiagnostics' = importDiagnostics text modules' parsed
@@ -396,28 +397,9 @@ unresolvedTerm text globals = go Set.empty
       UnprocessedParsedTermL (VarF name)
         | name `Set.member` bound || name `Set.member` globals -> []
         | otherwise -> [(name, locTagToRangeIn text loc)]
-      LetUPF bindings body ->
-        let localNames = Set.fromList $ letBindingName <$> bindings
-            bound' = localNames <> bound
-        in concatMap (go bound' . letBindingValue) bindings <> go bound' body
-      UnprocessedParsedTermL (LamF name body) -> go (Set.insert (locatedNameText name) bound) body
-      CaseUPF scrutinee cases ->
-        go bound scrutinee <> concatMap (caseRefs bound) cases
-      UnprocessedParsedTermH (ITEF i t e) -> concatMap (go bound) [i, t, e]
-      ListUPF items -> concatMap (go bound) items
-      UnprocessedParsedTermB (PairSF a b) -> concatMap (go bound) [a, b]
-      UnprocessedParsedTermL (AppF f x) -> concatMap (go bound) [f, x]
-      UnprocessedParsedTermH (HLeftF x) -> go bound x
-      UnprocessedParsedTermH (HRightF x) -> go bound x
-      UnprocessedParsedTermH (HTraceF x) -> go bound x
-      UnprocessedParsedTermH (CheckF checkExpr body) -> go bound checkExpr <> go bound body
-      UnprocessedParsedTermH (HashF x) -> go bound x
-      UnprocessedParsedTermH (RecursionF t r b) -> concatMap (go bound) [t, r, b]
-      _ -> []
-
-    caseRefs bound (pat, body) =
-      concatMap (go bound) (patternAnnotationTerms pat)
-        <> go (Set.union (Set.fromList $ patternBoundNames pat) bound) body
+      _ -> foldMapScoped
+             (\binders -> go (Set.fromList (locatedNameText <$> binders) <> bound))
+             term
 
 dedupeDiagnostics :: [LSPTypes.Diagnostic] -> [LSPTypes.Diagnostic]
 dedupeDiagnostics = Map.elems . Map.fromList . fmap (\diagnostic -> (diagnosticKey diagnostic, diagnostic))
@@ -490,9 +472,6 @@ pointRange line column =
 
 fallbackRange :: Range
 fallbackRange = pointRange 0 0
-
-diagnosticFirstLine :: String -> String
-diagnosticFirstLine = takeWhile (/= '\n')
 
 definitionHandler :: GlobalState
                   -> LSPMsg.TRequestMessage LSPMsg.Method_TextDocumentDefinition
@@ -651,32 +630,15 @@ topLevelDefinitions uri text parsed = Map.fromList
   ]
 
 termReferences :: T.Text -> [String] -> ExpandedSurfaceTerm -> [(String, Range)]
-termReferences text bound (loc :< term) =
-  let children = case term of
-        UnprocessedParsedTermL (VarF name)
-          | name `elem` bound -> []
-          | otherwise         -> [(name, locTagToRangeIn text loc)]
-        UnprocessedParsedTermH (ITEF i t e) -> termReferences text bound i <> termReferences text bound t <> termReferences text bound e
-        LetUPF bindings body ->
-          let localNames = letBindingName <$> bindings
-              bound' = localNames <> bound
-          in concatMap (termReferences text bound' . letBindingValue) bindings <> termReferences text bound' body
-        ListUPF items -> concatMap (termReferences text bound) items
-        UnprocessedParsedTermB (PairSF a b) -> termReferences text bound a <> termReferences text bound b
-        UnprocessedParsedTermL (AppF f x) -> termReferences text bound f <> termReferences text bound x
-        UnprocessedParsedTermL (LamF var body) -> termReferences text (locatedNameText var : bound) body
-        UnprocessedParsedTermH (HLeftF x) -> termReferences text bound x
-        UnprocessedParsedTermH (HRightF x) -> termReferences text bound x
-        UnprocessedParsedTermH (HTraceF x) -> termReferences text bound x
-        UnprocessedParsedTermH (CheckF checkExpr body) -> termReferences text bound checkExpr <> termReferences text bound body
-        UnprocessedParsedTermH (HashF x) -> termReferences text bound x
-        CaseUPF scrutinee cases -> termReferences text bound scrutinee <> concatMap caseReferences cases
-        _ -> []
-  in children
-  where
-    caseReferences (pat, body) =
-      concatMap (termReferences text bound) (patternAnnotationTerms pat)
-        <> termReferences text (patternBoundNames pat <> bound) body
+termReferences text bound (loc :< term) = case term of
+  UnprocessedParsedTermL (VarF name)
+    | name `elem` bound -> []
+    | otherwise         -> [(name, locTagToRangeIn text loc)]
+  -- This walk has never descended into recursion nodes; keep that behavior.
+  UnprocessedParsedTermH RecursionF {} -> []
+  _ -> foldMapScoped
+         (\binders -> termReferences text (fmap locatedNameText binders <> bound))
+         term
 
 localDefinitionAt :: LSPTypes.Uri -> T.Text -> Position -> ExpandedModule -> Maybe LSPTypes.Location
 localDefinitionAt uri text position parsed =
@@ -695,77 +657,22 @@ localTermDefinitionAt uri text position env (loc :< term) = case term of
   UnprocessedParsedTermL (VarF name)
     | positionInRange position (locTagToRangeIn text loc) -> join $ Map.lookup name env
     | otherwise -> Nothing
-  LetUPF bindings body ->
-    let bindingLocations = Map.fromList
-          [ (locatedNameText name, Just $ LSPTypes.Location uri (locTagToRangeIn text $ locatedNameLoc name))
-          | (name, _) <- bindings
-          ]
-        env' = bindingLocations <> env
-        bindingDefinition = listToMaybe
-          [ LSPTypes.Location uri (locTagToRangeIn text $ locatedNameLoc name)
-          | (name, _) <- bindings
-          , positionInRange position (locTagToRangeIn text $ locatedNameLoc name)
-          ]
-        bindingRefs = listToMaybe
-          [ location
-          | binding <- bindings
-          , location <- foldMap pure $ localTermDefinitionAt uri text position env' (letBindingValue binding)
-          ]
-    in bindingDefinition <|> bindingRefs <|> localTermDefinitionAt uri text position env' body
-  UnprocessedParsedTermH (ITEF i t e) -> firstJust [i, t, e]
-  ListUPF items -> firstJust items
-  UnprocessedParsedTermB (PairSF a b) -> firstJust [a, b]
-  UnprocessedParsedTermL (AppF f x) -> firstJust [f, x]
-  UnprocessedParsedTermL (LamF name body) ->
-    let nameLoc = locatedNameLoc name
-        location = LSPTypes.Location uri (locTagToRangeIn text nameLoc)
-        env' = Map.insert (locatedNameText name) (Just location) env
-    in if positionInRange position (locTagToRangeIn text nameLoc)
-         then Just location
-         else localTermDefinitionAt uri text position env' body
-  UnprocessedParsedTermH (HLeftF x) -> localTermDefinitionAt uri text position env x
-  UnprocessedParsedTermH (HRightF x) -> localTermDefinitionAt uri text position env x
-  UnprocessedParsedTermH (HTraceF x) -> localTermDefinitionAt uri text position env x
-  UnprocessedParsedTermH (CheckF checkExpr body) -> firstJust [checkExpr, body]
-  UnprocessedParsedTermH (HashF x) -> localTermDefinitionAt uri text position env x
-  CaseUPF scrutinee cases ->
-    localTermDefinitionAt uri text position env scrutinee
-      <|> listToMaybe (mapMaybe caseDefinition cases)
-  _ -> Nothing
+  -- This walk has never descended into recursion nodes; keep that behavior.
+  UnprocessedParsedTermH RecursionF {} -> Nothing
+  _ -> getFirst $ foldMapScoped visit term
   where
-    firstJust = listToMaybe . mapMaybe (localTermDefinitionAt uri text position env)
-    caseDefinition (pat, caseBody) =
-      let bindings = patternBoundNamesLocated pat
-          bindingLocation name = LSPTypes.Location uri (locTagToRangeIn text $ locatedNameLoc name)
-          env' = foldr (\name -> Map.insert (locatedNameText name) (Just $ bindingLocation name)) env bindings
-      in listToMaybe [ bindingLocation name
-                     | name <- bindings
-                      , positionInRange position (locTagToRangeIn text $ locatedNameLoc name)
-                     ]
-         <|> listToMaybe
-           (mapMaybe (localTermDefinitionAt uri text position env) $ patternAnnotationTerms pat)
-         <|> localTermDefinitionAt uri text position env' caseBody
-
-patternBoundNames :: PatternA -> [String]
-patternBoundNames = fmap locatedNameText . patternBoundNamesLocated
-
-patternBoundNamesLocated :: PatternA -> [LocatedName]
-patternBoundNamesLocated (Fix patternF) = case patternF of
-  PatternVarF name        -> [name]
-  PatternAnnotatedF pat _ -> patternBoundNamesLocated pat
-  PatternPairF left right -> patternBoundNamesLocated left <> patternBoundNamesLocated right
-  _                       -> []
-
-patternAnnotationTerms :: PatternA -> [ExpandedSurfaceTerm]
-patternAnnotationTerms (Fix patternF) = case patternF of
-  PatternAnnotatedF pat annotation ->
-    patternAnnotationTerms pat <> [unAnnotatedEST annotation]
-  PatternPairF left right ->
-    patternAnnotationTerms left <> patternAnnotationTerms right
-  _ -> []
-
-lspIdentChar :: Char -> Bool
-lspIdentChar c = isAsciiLower c || isAsciiUpper c || isDigit c || c == '_' || c == '.' || c == '\''
+    visit binders subterm = First $
+      binderDefinition binders
+        <|> localTermDefinitionAt uri text position (extendEnv binders) subterm
+    binderDefinition binders = listToMaybe
+      [ binderLocation name
+      | name <- binders
+      , positionInRange position (locTagToRangeIn text $ locatedNameLoc name)
+      ]
+    extendEnv binders =
+      Map.fromList [ (locatedNameText name, Just $ binderLocation name) | name <- binders ]
+        <> env
+    binderLocation name = LSPTypes.Location uri (locTagToRangeIn text $ locatedNameLoc name)
 
 positionInRange :: Position -> Range -> Bool
 positionInRange (Position line char) (Range (Position startLine startChar) (Position endLine endChar)) =
@@ -914,74 +821,118 @@ evaluateExpression bindings expr =
 -- Simple lexer (still useful for semantic tokens)
 
 keywords :: [T.Text]
-keywords =
-  [ "let", "in", "if", "then", "else", "case", "of"
-  , "import", "qualified", "as", "where"
-  ]
+keywords = T.pack <$> reservedWords
 
 lexTelomare :: T.Text -> [Token]
-lexTelomare text = concat $ zipWith lexLine [0..] (T.lines text)
+lexTelomare text = concat $ lexLines 0 (zip [0..] (T.lines text))
   where
-    lexLine :: UInt -> T.Text -> [Token]
-    lexLine lineNum lineText = go 0 (T.unpack lineText)
+    (openComment, closeComment) = blockCommentDelims
+
+    -- |Does @str@ begin with a character satisfying @p@? False when empty.
+    startsWith :: (Char -> Bool) -> String -> Bool
+    startsWith p = any p . listToMaybe
+
+    -- Each line's lexer reports the block-comment depth it ended at, so a
+    -- comment spanning lines carries into the next one.
+    lexLines :: Int -> [(UInt, T.Text)] -> [[Token]]
+    lexLines _ [] = []
+    lexLines depth ((lineNum, lineText) : rest) =
+      let (tokens, depth') = lexLine depth lineNum lineText
+      in tokens : lexLines depth' rest
+
+    lexLine :: Int -> UInt -> T.Text -> ([Token], Int)
+    lexLine startDepth lineNum lineText
+      | startDepth > 0 = inComment startDepth 0 0 (T.unpack lineText)
+      | otherwise      = go 0 (T.unpack lineText)
       where
-        go _ [] = []
+        emit token (tokens, depth) = (token : tokens, depth)
+
+        go :: UInt -> String -> ([Token], Int)
+        go _ [] = ([], 0)
         go col str@(c:cs)
           | c `elem` (" \t" :: String) = go (col + 1) cs
 
           -- Comments (but not inside strings)
-          | c == '-' && not (null cs) && head cs == '-' =
-              [Token lineNum col (fromIntegral $ length str) tokComment]
+          | lineCommentStart `isPrefixOf` str =
+              ([Token lineNum col (fromIntegral $ length str) tokComment], 0)
+
+          -- Block comments, possibly nested and possibly unterminated
+          | openComment `isPrefixOf` str =
+              inComment 1 col (col + delimLength openComment)
+                (drop (length openComment) str)
 
           -- String literals (must come before comment check)
           | c == '"' =
               let (len, rest) = spanString cs 1
-              in Token lineNum col len tokString : go (col + len) rest
+              in emit (Token lineNum col len tokString) $ go (col + len) rest
 
           -- Church numerals ($123)
-          | c == '$' && not (null cs) && isDigit (head cs) =
+          | c == '$' && startsWith isDigit cs =
               let (len, rest) = spanChurch cs 1
-              in Token lineNum col len tokNumber : go (col + len) rest
+              in emit (Token lineNum col len tokNumber) $ go (col + len) rest
 
           -- Regular numbers
           | isDigit c =
               let (len, rest) = spanDigits (c:cs) 0
-              in Token lineNum col len tokNumber : go (col + len) rest
+              in emit (Token lineNum col len tokNumber) $ go (col + len) rest
 
           -- Lambda syntax (\x -> ...)
-          | c == '\\' && (null cs || not (isOperatorChar (head cs))) =
-              Token lineNum col 1 tokKeyword : go (col + 1) cs
+          | c == '\\' && not (startsWith isOperatorChar cs) =
+              emit (Token lineNum col 1 tokKeyword) $ go (col + 1) cs
 
           -- Pattern arrow (->) and operators
-          | c == '-' && not (null cs) && head cs == '>' =
-              Token lineNum col 2 tokKeyword : go (col + 2) (tail cs)
+          | c == '-' && startsWith (== '>') cs =
+              emit (Token lineNum col 2 tokKeyword) $ go (col + 2) (drop 1 cs)
 
           -- Hash syntax for HashUP
           | c == '#' =
-              Token lineNum col 1 tokOperator : go (col + 1) cs
+              emit (Token lineNum col 1 tokOperator) $ go (col + 1) cs
 
           -- Identifiers and keywords
-          | isIdentStart c =
+          | identifierStart c =
               let (ident, rest) = spanIdent (c:cs)
                   identText = T.pack ident
                   ttype = if identText `elem` keywords then tokKeyword else tokVariable
-              in Token lineNum col (fromIntegral $ length ident) ttype
-                   : go (col + fromIntegral (length ident)) rest
+              in emit (Token lineNum col (fromIntegral $ length ident) ttype)
+                   $ go (col + fromIntegral (length ident)) rest
 
           -- Other operators
           | isOperatorChar c =
               let (len, rest) = spanOperator (c:cs) 0
-              in Token lineNum col len tokOperator : go (col + len) rest
+              in emit (Token lineNum col len tokOperator) $ go (col + len) rest
 
           -- Parentheses, brackets, braces (structure tokens)
           | c `elem` ("()[]{}" :: String) =
-              Token lineNum col 1 tokOperator : go (col + 1) cs
+              emit (Token lineNum col 1 tokOperator) $ go (col + 1) cs
 
           -- Comma (special separator)
           | c == ',' =
-              Token lineNum col 1 tokOperator : go (col + 1) cs
+              emit (Token lineNum col 1 tokOperator) $ go (col + 1) cs
 
           | otherwise = go (col + 1) cs
+
+        -- Inside a block comment opened at column start: scan for the closing
+        -- delimiter, tracking nesting. An unterminated comment tolerantly
+        -- swallows the rest of the line, and its depth carries into the
+        -- following lines.
+        inComment :: Int -> UInt -> UInt -> String -> ([Token], Int)
+        inComment depth start col [] =
+          ([Token lineNum start (col - start) tokComment | col > start], depth)
+        inComment depth start col str@(_:rest)
+          | closeComment `isPrefixOf` str, depth == 1 =
+              let col' = col + delimLength closeComment
+              in emit (Token lineNum start (col' - start) tokComment)
+                   $ go col' (drop (length closeComment) str)
+          | closeComment `isPrefixOf` str =
+              inComment (depth - 1) start (col + delimLength closeComment)
+                (drop (length closeComment) str)
+          | openComment `isPrefixOf` str =
+              inComment (depth + 1) start (col + delimLength openComment)
+                (drop (length openComment) str)
+          | otherwise = inComment depth start (col + 1) rest
+
+        delimLength :: String -> UInt
+        delimLength = fromIntegral . length
 
         -- Span church numeral (after $)
         spanChurch :: String -> UInt -> (UInt, String)
@@ -1003,22 +954,13 @@ lexTelomare text = concat $ zipWith lexLine [0..] (T.lines text)
           | otherwise = (n, s)
 
         spanIdent :: String -> (String, String)
-        spanIdent = span isIdentChar
+        spanIdent = span identifierContinueChar
 
         spanOperator :: String -> UInt -> (UInt, String)
         spanOperator [] n     = (n, [])
         spanOperator s@(c:cs) n
           | isOperatorChar c  = spanOperator cs (n + 1)
           | otherwise         = (n, s)
-
-        isIdentStart c = isAsciiLower c
-                      || isAsciiUpper c
-                      || c == '_'
-
-        isIdentChar c = isIdentStart c
-                      || isDigit c
-                      || c == '\''
-                      || c == '.'  -- Added dot for qualified names
 
         -- Adjusted operator chars (removed some that have special meaning)
         isOperatorChar c = c `elem` ("!@%^&*+=:/|<>?-" :: String)
@@ -1047,10 +989,3 @@ withinRange (Range (Position sl sc) (Position el ec)) tok =
       startOk = (line > fromIntegral sl) || (line == fromIntegral sl && start >= fromIntegral sc)
       endOk   = (line < fromIntegral el) || (line == fromIntegral el && end <= fromIntegral ec)
   in startOk && endOk
-
---------------------------------------------------------------------------------
--- tiny Maybe guard (avoid Control.Monad.guard)
-
-guard :: Bool -> Maybe ()
-guard True  = Just ()
-guard False = Nothing

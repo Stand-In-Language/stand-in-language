@@ -6,7 +6,7 @@
 module Main where
 
 import CaseTests (qcPropsCase, unitTestsCase)
-import Common ()
+import Common (modulesWithPrelude)
 import Control.Comonad.Cofree (Cofree ((:<)))
 import Control.Exception (SomeException, try)
 import Control.Monad.Except (MonadError, catchError, throwError)
@@ -200,19 +200,11 @@ genName = suchThat genNameRaw (not . startsWithReservedWord)
     startsWithReservedWord name = any (`isPrefixOf` name)
       [ "case", "else", "if", "import", "in", "let", "of", "then" ]
 
-genInteger :: Gen Int
-genInteger = choose (0, 100)
-
 genAssignment :: Gen (String, String)
 genAssignment = do
   varName <- genName
   value <- genName
   pure (varName, varName <> " = " <> show value)
-
-genImport :: Gen String
-genImport = do
-  modName <- genName
-  pure $ "import " <> modName
 
 genRecursiveImports :: Gen [(String, String)]
 genRecursiveImports = do
@@ -493,16 +485,15 @@ cycleLet =
 tictactoe :: IO String
 tictactoe = do
   telStr <- Strict.readFile "tictactoe.tel"
-  preludeStr <- Strict.readFile "Prelude.tel"
-  runMainWithInput ["1", "9", "2", "8", "3"] [("Prelude", preludeStr), ("tictactoe", telStr)] "tictactoe"
+  modules <- modulesWithPrelude "tictactoe" telStr
+  runMainWithInput ["1", "9", "2", "8", "3"] modules "tictactoe"
 
 -- |The same game, on the runtime that skips sizing. Cheap, because skipping
 -- sizing is the point of it.
 tictactoeUnsized :: IO String
 tictactoeUnsized = do
   telStr <- Strict.readFile "tictactoe.tel"
-  preludeStr <- Strict.readFile "Prelude.tel"
-  let modules = [("Prelude", preludeStr), ("tictactoe", telStr)]
+  modules <- modulesWithPrelude "tictactoe" telStr
   case Fast.compileFast modules "tictactoe" of
     Left err -> pure $ "failed to compile without sizing:\n" <> err
     Right prog ->
@@ -553,8 +544,8 @@ fullRunTicTacToeString = init . unlines $
 
 testUserDefAdHocTypes :: String -> IO String
 testUserDefAdHocTypes input = do
-  preludeString <- Strict.readFile "Prelude.tel"
-  runMain_ [("Prelude", preludeString), ("DummyModule", input)] "DummyModule"
+  modules <- modulesWithPrelude "DummyModule" input
+  runMain_ modules "DummyModule"
 
 userDefAdHocTypesSuccess :: String
 userDefAdHocTypesSuccess = unlines

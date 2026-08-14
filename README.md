@@ -373,6 +373,10 @@ pipeline. In pipeline order:
 The IR vocabulary shared by all stages lives under `Telomare.IR.*`
 (`Loc`, `Base`, `Types`, `Surface`, `Core`, `Builder`), with the error
 types in `Telomare.Error` and pretty-printing in `Telomare.PrettyPrint`.
+`Telomare.Lexical` holds the lexical facts of the language — the reserved
+words, the identifier character classes, the comment delimiters — so that the
+parser and the language server cannot disagree about them, and
+`Telomare.Util` holds the few helpers that depend on no other Telomare module.
 
 ## Contributing
 If you'd like to contribute, please fork the repository and use a feature branch. Pull requests are warmly welcome.

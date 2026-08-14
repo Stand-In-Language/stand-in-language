@@ -13,7 +13,6 @@ import Control.Comonad.Cofree (Cofree (..))
 import qualified Control.Comonad.Trans.Cofree as C
 import Data.Bifunctor (bimap)
 import Data.Fix (Fix (..))
-import qualified Data.Foldable as F
 import Data.Functor.Foldable (Corecursive (embed), Recursive (..))
 import Data.Map (Map)
 import qualified Data.Map as Map
@@ -220,33 +219,16 @@ optimizeBuiltinFunctions = go builtinNames
         _ -> anno :< UnprocessedParsedTermL (AppF (go scope inner) (go scope y))
       UnprocessedParsedTermL (LamF name body) ->
         anno :< UnprocessedParsedTermL (LamF name (go (Set.delete (locatedNameText name) scope) body))
-      LetUPF bindings body ->
-        let scope' = foldr updateScope scope bindings
-        in anno :< LetUPF (fmap (fmap $ go scope') bindings) (go scope' body)
-      CaseUPF scrutinee alternatives ->
-        anno :< CaseUPF (go scope scrutinee)
-          [ (mapPattern scope pattern', go (scope Set.\\ patternVars pattern') body)
-          | (pattern', body) <- alternatives
-          ]
-      other -> anno :< fmap (go scope) other
+      other -> anno :< mapScoped (go . foldr updateScope scope) other
 
-    updateScope (name, _) =
+    -- A let binder re-exposes a builtin when tagged as its definition;
+    -- every other binder (including case-pattern variables, which the
+    -- parser never tags 'BuiltinLoc') shadows it.
+    updateScope name =
       let text = locatedNameText name
       in if locatedNameLoc name == BuiltinLoc text
            then Set.insert text
            else Set.delete text
-
-    patternVars :: PatternA -> Set String
-    patternVars = cata $ \case
-      PatternVarF name      -> Set.singleton (locatedNameText name)
-      PatternAnnotatedF p _ -> p
-      p                     -> F.fold p
-
-    mapPattern :: Set String -> PatternA -> PatternA
-    mapPattern scope = cata $ \case
-      PatternAnnotatedF p (AnnotatedEST annotation) ->
-        embed $ PatternAnnotatedF p (AnnotatedEST $ go scope annotation)
-      p -> embed p
 
     optimize :: Set String -> ExpandedSurfaceTerm -> ExpandedSurfaceTerm
     optimize scope term = case project term of

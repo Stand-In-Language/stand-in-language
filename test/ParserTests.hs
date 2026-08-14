@@ -583,19 +583,6 @@ testList5 = unlines
   , "  2 ]"
   ]
 
--- TODO: does it matter that one parses succesfuly and the other doesnt?
-parseApplied0 :: String
-parseApplied0 = unlines
-  [ "foo (bar baz"
-  , "     )"
-  ]
-parseApplied1 :: String
-parseApplied1 = unlines
-  [ "foo (bar baz"
-  , "         )"
-  ]
-
-
 testShowBoard0 :: String
 testShowBoard0 = unlines
   [ "main = or (and validPlace"

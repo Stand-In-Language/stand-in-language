@@ -133,7 +133,7 @@ printLastExpr evalFn bindings = do
           Left err -> print err
           Right iexpr' -> case evalFn iexpr' of
               Left e      -> putStrLn $ "error: " <> show e
-              Right expr' -> print . PrettyStuckExpr $ expr'
+              Right expr' -> print . PrettyBasic $ expr'
   case res of
     Left err -> print err
     Right _  -> pure ()
@@ -203,7 +203,7 @@ replLoop (ReplState bs evalFn sf) = do
       liftIO $ case runReplParser bs . dropWhile (== ' ') <$> stripPrefix ":p" s of
         Just (Right (ReplExpr new_bindings)) -> case resolveBinding "_tmp_" new_bindings of
           -- Just iexpr -> putStrLn . showPIE $ evalPartial' iexpr
-          Just iexpr -> print . PrettyCompiledExpr $ evalPartial' iexpr
+          Just iexpr -> print . PrettyBasic $ evalPartial' iexpr
           _          -> putStrLn "some sort of error?"
         _ -> putStrLn "parse error"
       replLoop $ ReplState bs evalFn sf
