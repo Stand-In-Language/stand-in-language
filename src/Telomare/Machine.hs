@@ -19,26 +19,30 @@ import Control.Applicative
 import Control.Monad
 import Control.Monad.Trans.Class
 import Data.Functor.Foldable
-import Data.Functor.Identity
 import qualified Data.Map.Strict as Map
 -- import Data.SBV ((.<), (.>))
 import Control.Monad.Reader.Class
 import Data.Set (Set)
 import qualified Data.Set as Set
+import Debug.Trace
 import Telomare.IR.Base
 import Telomare.PrettyPrint
 import Telomare.Size.IR
-import Telomare.Util (debugTrace)
 
--- |Recover a pure step function from its monadic twin by running it in
--- 'Identity', so each unified @*Step@/@*StepM@ pair has a single body.
-purely :: ((a -> Identity b) -> c -> Identity d) -> (a -> b) -> c -> d
-purely stepM handleOther = runIdentity . stepM (Identity . handleOther)
+debug :: Bool
+debug = False
+
+debugTrace :: String -> a -> a
+debugTrace s x = if debug then trace s x else x
 
 basicStep :: (Base g ~ f, BasicBase f, Corecursive g, Recursive g) => (f g -> g) -> f g -> g
-basicStep = purely basicStepM
+basicStep handleOther = \case
+  -- stuck values
+  x@(BasicFW ZeroSF)                       -> embed x
+  x@(BasicFW (PairSF _ _))                 -> embed x
+  x                                        -> handleOther x
 
-basicStepM :: (Base g ~ f, BasicBase f, Corecursive g, Recursive g, Monad m) => (f g -> m g) -> f g -> m g
+basicStepM :: (Base g ~ f, BasicBase f, Traversable f, Corecursive g, Recursive g, PrettyPrintable g, Monad m) => (f g -> m g) -> f g -> m g
 basicStepM handleOther x = f x where
   f = \case
     -- stuck values
@@ -172,6 +176,32 @@ foldGateResult n (GateResult doL doR o) =
     (_, Just x)        -> x
     _                  -> error "foldGateResult: no results"
 
+superStep :: forall a f. (Base a ~ f, BasicBase f, StuckBase f, SuperBase f, ShallowEq1 f, Recursive a, Corecursive a, PrettyPrintable a)
+  => (a -> GateResult a) -> (f a -> a) -> (f a -> a) -> f a -> a
+superStep gateResult step handleOther =
+  let filterLeft :: Maybe Integer -> f a -> a
+      filterLeft n = \case
+        SuperFW (EitherPF nt a _) | nt == n -> a
+        x -> embed x
+      filterRight :: Maybe Integer -> f a -> a
+      filterRight n = \case
+        SuperFW (EitherPF nt _ b) | nt == n -> b
+        x -> embed x
+  in \case
+    StuckFW (LeftSF (SuperEE (EitherPF n a b))) -> mergeShallow n (step . embedS . LeftSF $ a) (step . embedS . LeftSF $ b)
+    StuckFW (RightSF (SuperEE (EitherPF n a b))) -> mergeShallow n (step . embedS . RightSF $ a) (step . embedS . RightSF $ b)
+    StuckFW (SetEnvSF (SuperEE (EitherPF n a b))) -> mergeShallow n (step . embedS . SetEnvSF $ a) (step . embedS . SetEnvSF $ b)
+    FillFunction GateB x@(SuperEE (EitherPF n _ _)) -> foldGateResult n $ gateResult x
+    FillFunction (SuperEE (EitherPF n sca scb)) e | isGateSelector sca && isGateSelector scb -> mergeShallow n
+      (step . embedS . SetEnvSF . BasicEE $ PairSF sca e)
+      (step . embedS . SetEnvSF . BasicEE $ PairSF scb e)
+    (FillFunction (SuperEE (EitherPF n sca scb)) e) -> mergeShallow n
+      (step . embedS . SetEnvSF . BasicEE . PairSF sca $ if null n then e else cata (filterLeft n) e)
+      (step . embedS . SetEnvSF . BasicEE . PairSF scb $ if null n then e else cata (filterRight n) e)
+    -- stuck values
+    x@(SuperFW (EitherPF _ _ _)) -> embed x
+    x -> handleOther x
+
 superStepM :: forall a f m. (Base a ~ f, Traversable f, BasicBase f, StuckBase f, SuperBase f, ShallowEq1 f, Recursive a, Corecursive a, PrettyPrintable a, Monad m)
   => (a -> GateResult a) -> (f a -> m a) -> (f a -> m a) -> f a -> m a
 superStepM gateResult step handleOther x = f x where
@@ -200,6 +230,15 @@ superStepM gateResult step handleOther x = f x where
 
     _ -> handleOther x
 
+superAbortStep :: (Base g ~ f, Traversable f, BasicBase f, StuckBase f, SuperBase f, AbortBase f, ShallowEq1 f, Recursive g, Corecursive g, PrettyPrintable g)
+  => (f g -> g) -> (f g -> g) -> f g -> g
+superAbortStep step handleOther x = f x where
+  pbStep bf = step . bf
+  f = \case
+    FillFunction (AbortEE AbortF) (SuperEE (EitherPF n a b)) ->
+      mergeShallow n (pbStep (FillFunction (AbortEE AbortF)) a) (pbStep (FillFunction (AbortEE AbortF)) b)
+    _ -> handleOther x
+
 superAbortStepM :: (Base g ~ f, Traversable f, BasicBase f, StuckBase f, SuperBase f, AbortBase f, ShallowEq1 f, Recursive g, Corecursive g, PrettyPrintable g, Monad m)
   => (f g -> m g) -> (f g -> m g) -> f g -> m g
 superAbortStepM step handleOther x = f x where
@@ -209,10 +248,22 @@ superAbortStepM step handleOther x = f x where
       liftM2 (mergeShallow n) (pbStep (FillFunction (AbortEE AbortF)) a) (pbStep (FillFunction (AbortEE AbortF)) b)
     _ -> handleOther x
 
+indexedAbortStep :: (Base a ~ f, Traversable f, BasicBase f, StuckBase f, AbortBase f, IndexedInputBase f, Recursive a, Corecursive a, PrettyPrintable a)
+  => (f a -> a) -> f a -> a
+indexedAbortStep handleOther = \case
+  FillFunction (AbortEE AbortF) (IndexedEE (IVarF _n)) -> AbortEE $ AbortedF AbortAny
+  x -> handleOther x
+
 indexedAbortStepM :: (Base a ~ f, Traversable f, BasicBase f, StuckBase f, AbortBase f, IndexedInputBase f, Recursive a, Corecursive a, PrettyPrintable a, Monad m)
   => (f a -> m a) -> f a -> m a
 indexedAbortStepM handleOther = \case
   FillFunction (AbortEE AbortF) (IndexedEE (IVarF _n)) -> pure . AbortEE $ AbortedF AbortAny
+  x -> handleOther x
+
+indexedSuperStep :: (Base a ~ f, Traversable f, BasicBase f, StuckBase f, SuperBase f, IndexedInputBase f, Recursive a, Corecursive a, PrettyPrintable a)
+  => (f a -> a) -> f a -> a
+indexedSuperStep handleOther = \case
+  FillFunction GateB (IndexedEE (IVarF n)) -> superEE $ EitherPF (pure n) doLeft doRight
   x -> handleOther x
 
 indexedSuperStepM :: (Base a ~ f, Traversable f, BasicBase f, StuckBase f, SuperBase f, IndexedInputBase f, Recursive a, Corecursive a, PrettyPrintable a, Monad m)
@@ -222,18 +273,28 @@ indexedSuperStepM handleOther = \case
 
   x -> handleOther x
 
--- |Truncate an expression to its data skeleton for an abort payload:
--- zeroes and pairs survive, anything else becomes zero.
-truncateToData :: (Base a ~ f, BasicBase f, Recursive a) => a -> BasicExpr
-truncateToData = cata $ \case
-  BasicFW ZeroSF       -> ZeroB
-  BasicFW (PairSF a b) -> PairB a b
-  _                    -> ZeroB -- consider generating a warning?
-
 abortStep :: (Base a ~ f, BasicBase f, StuckBase f, AbortBase f, Recursive a, Corecursive a, PrettyPrintable a) => (f a -> a) -> f a -> a
-abortStep = purely abortStepM
+abortStep handleOther =
+  \case
+    StuckFW (LeftSF a@(AbortEE (AbortedF _))) -> a
+    StuckFW (RightSF a@(AbortEE (AbortedF _))) -> a
+    StuckFW (SetEnvSF a@(AbortEE (AbortedF _))) -> a
+    FillFunction a@(AbortEE (AbortedF _)) _ -> a
+    FillFunction GateB a@(AbortEE (AbortedF _)) -> a
+    FillFunction (AbortEE AbortF) a@(AbortEE (AbortedF _)) -> a
+    FillFunction (AbortEE AbortF) (BasicEE ZeroSF) -> deferB abortInd . StuckEE $ EnvSF
+    FillFunction (AbortEE AbortF) e@(BasicEE (PairSF _ _)) -> (\x -> debugTrace ("aborted with value: " <> prettyPrint x) x) . AbortEE $ AbortedF m where
+      m = cata truncF e
+      truncF = \case
+        BasicFW ZeroSF       -> ZeroB
+        BasicFW (PairSF a b) -> PairB a b
+        _                    -> ZeroB -- consider generating a warning?
+    -- stuck values
+    x@(AbortFW (AbortedF _)) -> embed x
+    x@(AbortFW AbortF) -> embed x
+    x -> handleOther x
 
-abortStepM :: (Base a ~ f, BasicBase f, StuckBase f, AbortBase f, Recursive a, Corecursive a, Monad m)
+abortStepM :: (Base a ~ f, Traversable f, BasicBase f, StuckBase f, AbortBase f, Recursive a, Corecursive a, Monad m)
   => (f a -> m a) -> f a -> m a
 abortStepM handleOther x = f x where
   f = \case
@@ -244,7 +305,12 @@ abortStepM handleOther x = f x where
     FillFunction GateB a@(AbortEE (AbortedF _)) -> pure a
     FillFunction (AbortEE AbortF) a@(AbortEE (AbortedF _)) -> pure a
     FillFunction (AbortEE AbortF) (BasicEE ZeroSF) -> pure . deferB abortInd . StuckEE $ EnvSF
-    FillFunction (AbortEE AbortF) e@(BasicEE (PairSF _ _)) -> pure . AbortEE . AbortedF $ truncateToData e
+    FillFunction (AbortEE AbortF) e@(BasicEE (PairSF _ _)) -> pure . AbortEE $ AbortedF m where
+      m = cata truncF e
+      truncF = \case
+        BasicFW ZeroSF       -> ZeroB
+        BasicFW (PairSF a b) -> PairB a b
+        _                    -> ZeroB -- consider generating a warning?
     -- stuck values
     x'@(AbortFW (AbortedF _)) -> pure $ embed x'
     x'@(AbortFW AbortF) -> pure $ embed x'
@@ -266,6 +332,9 @@ abortInd = -11
 
 deferB :: (Base g ~ f, StuckBase f, Recursive g, Corecursive g) => Int -> g -> g
 deferB n = StuckEE . DeferSF (toEnum n)
+
+lamB :: (Base g ~ f, BasicBase f, StuckBase f, Recursive g, Corecursive g) => Int -> g -> g
+lamB n x = PairB (deferB n x) EnvB
 
 twiddleB :: (Base g ~ f, BasicBase f, StuckBase f, Recursive g, Corecursive g) => g
 twiddleB = deferB twiddleInd $ PairB (LeftB (RightB EnvB)) (PairB (LeftB EnvB) (RightB (RightB EnvB)))
@@ -314,6 +383,12 @@ unsizedTestDeferred :: (Base g ~ f, DeferredEvalBase f, Recursive g, Corecursive
   => (UnsizedRecursionToken -> g -> g) -> UnsizedRecursionToken -> g -> g
 unsizedTestDeferred handleOther ri = \case
   x@(DeferredEE (BarrierF _)) -> x
+  x -> handleOther ri x
+
+unsizedTestUnsized :: (Base g ~ f, UnsizedBase f, Recursive g, Corecursive g)
+  => (g -> g) -> (UnsizedRecursionToken -> g -> g) -> UnsizedRecursionToken -> g -> g
+unsizedTestUnsized reTest handleOther ri = \case
+  UnsizedEE (SizeStageF sm x) -> unsizedEE . SizeStageF sm $ reTest x
   x -> handleOther ri x
 
 unsizedStep :: forall a f. (Base a ~ f, Traversable f, BasicBase f, StuckBase f, AbortBase f, UnsizedBase f
@@ -378,6 +453,13 @@ unsizedStepM''' maxSize _zeros recursionTest handleOther x = f x where
     UnsizedFW (TraceF s x') -> pure $ debugTrace ("Hit TraceF: " <> s <> "\n" <> prettyPrint x') x'
     _ -> handleOther x
 
+zeroedInputStepM :: (Base a ~ g, Traversable f, IndexedInputBase f, BasicBase g, Recursive a, Corecursive a, Monad m)
+  => Set Integer -> (f a -> m a) -> f a -> m a
+zeroedInputStepM zeros handleOther = f where
+  f = \case
+    IndexedFW (IVarF n) | Set.member n zeros -> pure $ BasicEE ZeroSF
+    x -> handleOther x
+
 indexedInputStep :: (Base a ~ f, BasicBase f, StuckBase f, IndexedInputBase f, Recursive a, Corecursive a) => Set Integer -> (f a -> a) -> f a -> a
 indexedInputStep zeroes handleOther =
   let res n = if Set.member n zeroes then ZeroB else indexedEE $ IVarF n
@@ -412,9 +494,60 @@ indexedInputStep zeroes handleOther =
 
 -}
 
+indexedInputStep' :: (Base a ~ f, BasicBase f, StuckBase f, IndexedInputBase f, Recursive a, Corecursive a) => Set Integer -> (f a -> a) -> f a -> a
+indexedInputStep' zeroes handleOther =
+  let res n = if Set.member n zeroes then ZeroB else indexedEE $ IVarF n
+  in \case
+  StuckFW (LeftSF (IndexedEE (IVarF n))) -> res $ n * 2 + 1
+  StuckFW (RightSF (IndexedEE (IVarF n))) -> res $ n * 2 + 2
+  StuckFW (LeftSF (IndexedEE AnyF)) -> indexedEE AnyF
+  StuckFW (RightSF (IndexedEE AnyF)) -> indexedEE AnyF
+  IndexedFW (IVarF n) -> res n
+  -- stuck values
+  i@(IndexedFW _) -> embed i
+
+  x -> handleOther x
+
+indexAbortIfUnboundStep :: (Base a ~ f, BasicBase f, StuckBase f, AbortBase f, IndexedInputBase f, Recursive a, Corecursive a, Show a)
+  => Set Integer -> (f a -> a) -> f a -> a
+indexAbortIfUnboundStep zeroes handleOther =
+  let res _s n = case (Set.member n zeroes, isUnbounded zeroes n) of
+        (True, _) -> ZeroB
+        (_, True) -> AbortEE $ AbortedF AbortAny
+        _ -> PairB (indexedEE . IVarF $ n * 2 + 1) (indexedEE . IVarF $ n * 2 + 2)
+      leftI = \case
+        BasicEE (PairSF l _) -> l
+        x -> x
+      rightI = \case
+        BasicEE (PairSF _ r) -> r
+        x -> x
+  in \case
+  StuckFW (LeftSF (IndexedEE (IVarF n))) -> leftI $ res "left" n
+  StuckFW (RightSF (IndexedEE (IVarF n))) -> rightI $ res "right" n
+  IndexedFW (IVarF n) -> res "bare" n
+  x -> handleOther x
+
 indexedInputStepM :: (Base a ~ f, Traversable f, BasicBase f, StuckBase f, IndexedInputBase f, Recursive a, Corecursive a, PrettyPrintable a, Monad m)
   => Set Integer -> (f a -> m a) -> f a -> m a
 indexedInputStepM zeroes handleOther x = f x where
+  res n = if Set.member n zeroes then ZeroB else indexedEE $ IVarF n
+  f = \case
+    StuckFW (LeftSF (IndexedEE (IVarF n))) -> pure . res $ n * 2 + 1
+    StuckFW (RightSF (IndexedEE (IVarF n))) -> pure . res $ n * 2 + 2
+    StuckFW (LeftSF (IndexedEE AnyF)) -> pure $ indexedEE AnyF
+    StuckFW (RightSF (IndexedEE AnyF)) -> pure $ indexedEE AnyF
+    StuckFW (SetEnvSF (IndexedEE AnyF)) -> pure $ indexedEE AnyF
+    FillFunction (IndexedEE AnyF) _ -> pure $ indexedEE AnyF
+    FillFunction GateB (IndexedEE AnyF) -> pure $ indexedEE AnyF
+    IndexedFW (IVarF n) -> pure $ res n
+    -- stuck values
+    i@(IndexedFW _) -> pure $ embed i
+
+    _ -> handleOther x
+
+indexedInputStepM' :: (Base a ~ f, Traversable f, BasicBase f, StuckBase f, IndexedInputBase f, Recursive a, Corecursive a, PrettyPrintable a, Monad m)
+  => Set Integer -> (f a -> m a) -> f a -> m a
+indexedInputStepM' zeroes handleOther x = f x where
   res n = if Set.member n zeroes then ZeroB else indexedEE $ IVarF n
   f = \case
     StuckFW (LeftSF (IndexedEE (IVarF n))) -> pure . res $ n * 2 + 1
@@ -436,6 +569,12 @@ indexedInputIgnoreSwitchStepM handleOther x = f x where
   f = \case
     FillFunction GateB (IndexedEE (IVarF _)) -> pure $ indexedEE AnyF
     _ -> handleOther x
+
+indexSwitchSuperSplitStep :: (Base a ~ f, BasicBase f, StuckBase f, IndexedInputBase f, SuperBase f, Recursive a, Corecursive a) => (f a -> a) -> f a -> a
+indexSwitchSuperSplitStep handleOther = \case
+  FillFunction GateB (IndexedEE AnyF) -> superEE $ EitherPF Nothing doLeft doRight
+
+  x -> handleOther x
 
 deferredEvalStep :: (Base a ~ f, Traversable f, BasicBase f, StuckBase f, DeferredEvalBase f, Recursive a, Corecursive a, PrettyPrintable a)
   => (f a -> a) -> f a -> a

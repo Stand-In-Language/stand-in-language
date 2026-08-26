@@ -30,7 +30,6 @@ import Telomare.Machine
 import Telomare.PrettyPrint
 import Telomare.PrettyPrint.Indent (indentWithTwoChildren')
 import Telomare.Size.IR
-import Telomare.Util (debugTrace)
 
 basicEval :: forall f g. (Base g ~ f, BasicBase f, StuckBase f, Recursive g, Corecursive g, PrettyPrintable g) => g -> g
 basicEval = transformNoDefer f where

@@ -32,7 +32,7 @@ import Telomare.Error
 import Telomare.IR.Base
 import Telomare.IR.Core
 import Telomare.IR.Loc
-import Telomare.Machine
+import Telomare.Machine hiding (debug, debugTrace)
 import Telomare.PrettyPrint
 import Telomare.Size.IR
 import Telomare.Util (debugTrace)

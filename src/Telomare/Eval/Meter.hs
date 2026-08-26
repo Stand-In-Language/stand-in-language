@@ -55,7 +55,7 @@ import Numeric.Natural (Natural)
 
 import Telomare.IR.Base
 import Telomare.IR.Core
-import Telomare.Machine (abortInd, deferB, doLeft, doRight, truncateToData)
+import Telomare.Machine (abortInd, deferB, doLeft, doRight)
 
 -- |What a run cost.
 data Meter = Meter
@@ -170,7 +170,7 @@ runMeter env whole = case project whole of
       (AbortEE AbortF, _) -> do
         step
         built
-        pure . AbortEE . AbortedF $ truncateToData e
+        pure . AbortEE . AbortedF $ cata truncateToData e
       -- A gate applied to its scrutinee alone yields the branch-selector
       -- function the evaluator would produce; the `GateSwitch` case above is
       -- the one that keeps the usual full shape lazy.
@@ -179,6 +179,11 @@ runMeter env whole = case project whole of
       -- The body's environment is now `e`; nothing is substituted or built.
       (StuckEE (DeferSF _ body), _) -> step >> runMeter (Just e) body
       _ -> unhandled "application of something that is not a function" f
+
+    truncateToData = \case
+      BasicFW ZeroSF       -> BasicEE ZeroSF
+      BasicFW (PairSF a b) -> PairB a b
+      _                    -> BasicEE ZeroSF
 
     unhandled why what = error $ "Telomare.Meter: " <> why <> ":\n" <> show what
 
