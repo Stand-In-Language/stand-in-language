@@ -16,13 +16,19 @@ import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Set (Set)
 import qualified Data.Set as Set
+import Debug.Trace
 import Telomare.Error
 import Telomare.IR.Base
 import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.IR.Types
 import Telomare.PrettyPrint
-import Telomare.Util (debugTrace)
+
+debug :: Bool
+debug = False
+
+debugTrace :: String -> a -> a
+debugTrace s x = if debug then trace s x else x
 
 newtype DebugTypeMap = DebugTypeMap (Map Int PartialType)
 
@@ -98,7 +104,6 @@ fullyResolve resolve = flip (cata f) Set.empty where
         then Left $ RecursiveType i
         else cata f t $ Set.insert i alreadySeen
     x' -> fmap embed (mapM ($ alreadySeen) x')
-
 
 associateVar :: PartialType -> PartialType -> AnnotateState ()
 associateVar a b = liftEither (makeAssociations a b) >>= \set -> State.modify (changeState set) where

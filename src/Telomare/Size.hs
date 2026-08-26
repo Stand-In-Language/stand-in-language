@@ -28,6 +28,7 @@ import Control.Exception.Base (throw)
 import Data.Functor.Identity (Identity, runIdentity)
 import Data.Set (Set)
 import qualified Data.Set as Set
+import Debug.Trace
 import Telomare.Error
 import Telomare.IR.Base
 import Telomare.IR.Core
@@ -35,7 +36,12 @@ import Telomare.IR.Loc
 import Telomare.Machine hiding (debug, debugTrace)
 import Telomare.PrettyPrint
 import Telomare.Size.IR
-import Telomare.Util (debugTrace)
+
+debug :: Bool
+debug = False
+
+debugTrace :: String -> a -> a
+debugTrace s x = if debug then trace s x else x
 
 data SizingSettings = SizingSettings
   { maxSizingSize :: Int
@@ -131,14 +137,12 @@ getInputLimits = getAccum . transformNoDeferM evalStep . convertIS where
 capMain :: (Base g ~ f, BasicBase f, StuckBase f, Recursive g, Corecursive g) => g -> g -> g
 capMain i c = appB c i
 
-
 newtype UnexpectedGrammarException = UGException String
 
 instance Show UnexpectedGrammarException where
   show (UGException e) = "UnexpectedGrammarException: " <> e
 
 instance Exception UnexpectedGrammarException
-
 
 initialInput :: (Base a ~ f, BasicBase f, IndexedInputBase f, Recursive a, Corecursive a) => InputRestrictions -> a
 initialInput irs = f 0 where
@@ -216,7 +220,6 @@ sizeTermM sizingSettings x = tidyUp . flip (runReaderT . transformNoDeferM evalS
   unhandledError err = throw $ UGException ("sizeTermM unhandled case\n" <> prettyPrint err)
   evalStep = basicStepM (stuckStepM (abortStepM (indexedAbortStepM (indexedInputStepM zeros (indexedSuperStepM (superStepM gateResult evalStep (superAbortStepM evalStep (unsizedStepM''' (maxSizingSize sizingSettings) zeros unsizedTest' unhandledError))))))))
 
-
 removeRefinementWrappers :: (Base g ~ f, BasicBase f, StuckBase f, AbortBase f, UnsizedBase f, Recursive g, Corecursive g) => g -> g
 removeRefinementWrappers = cata f where
   f = \case
@@ -242,7 +245,6 @@ evalStaticCheck shouldCap t =
         x                    -> foldr (<|>) Nothing x
   in cata getAborted runResult
 
-
 -- |What the sizing pass learned, kept rather than discarded. These iteration
 -- counts are the numbers the compiler already relies on to claim a program is
 -- total; reporting them asserts nothing new.
@@ -267,7 +269,6 @@ buildUnsizedLocMap = cata f where
 locateSizingFailure :: Map UnsizedRecursionToken LocTag -> SizingFailure -> SizingFailure
 locateSizingFailure locs failure =
   failure { sizingFailureLoc = Map.lookup (sizingFailureToken failure) locs }
-
 
 -- |Every recursion site in the program, where it is, and how many times it can
 -- iterate. The counts hold for every input: the sizing pass finds them by

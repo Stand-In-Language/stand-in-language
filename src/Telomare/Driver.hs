@@ -13,6 +13,7 @@ import Data.Bifunctor (first)
 import qualified Control.Comonad.Trans.Cofree as CofreeT
 import Control.Lens (Identity (runIdentity))
 import Data.Functor.Foldable (cata, embed)
+import Debug.Trace
 import Telomare.Desugar (desugarTerm)
 import Telomare.Error
 import Telomare.Eval.Meter (Meter, evalMeter)
@@ -33,8 +34,13 @@ import Telomare.Size (SizingReport (..), SizingSettings (..),
                       buildUnsizedLocMap, evalStaticCheck, locateSizingFailure,
                       sizeTermM, term3ToUnsizedExpr)
 import Telomare.TypeCheck (typeCheck)
-import Telomare.Util (debugTrace)
 import Text.Megaparsec (errorBundlePretty, runParser)
+
+debug :: Bool
+debug = False
+
+debugTrace :: String -> a -> a
+debugTrace s x = if debug then trace s x else x
 
 -- note that function indexes may be changed in this process
 convertPT :: (UnsizedRecursionToken -> Int) -> Term3 -> CompiledExpr

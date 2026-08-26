@@ -54,6 +54,7 @@ import Data.Map.Strict (Map)
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Void (absurd)
+import Debug.Trace (trace)
 import Telomare.Desugar (desugarTerm, rewriteOuterTag)
 import Telomare.Error
 import Telomare.IR.Base
@@ -62,7 +63,12 @@ import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.IR.Surface
 import Telomare.PrettyPrint (prettyPrint)
-import Telomare.Util (debugTrace)
+
+debug :: Bool
+debug = False
+
+debugTrace :: String -> a -> a
+debugTrace s x = if debug then trace s x else x
 
 -- |Int to ParserTerm
 i2t :: a -> Int -> Cofree (ParserTermF l v) a
@@ -142,7 +148,6 @@ debruijinize = flip (runReaderT . cata f) [] where
     (_, LetBinding _ n') | n' == n -> True
     _ -> False
 
-
 -- | Close all naked open lambdas
 closeLams :: Term2 -> Term2
 closeLams = runIdentity . flip (runReaderT . cata f) True where
@@ -180,7 +185,6 @@ debruijinizeApp = fmap closeLams . flip (runReaderT . cata f) [] where
     (_, Closed n') | n' == n -> True
     (_, LetBinding _ n') | n' == n -> True
     _ -> False
-
 
 splitExpr :: Term2 -> Term3
 splitExpr = flip State.evalState (toEnum 0, toEnum 0) . cata f where
@@ -355,7 +359,6 @@ annotateUnsizedCount = capTop . flip evalStateT (0 :: Integer) . cata f where
   -- HACK vars are just placehorders for next step
   capTop (vs, x@((anno, _) :< _)) =
     foldr (\v b -> embed $ AppAFP (anno, length vs) (embed $ LamAFP (anno, 0) (locatedName anno (':' : show v)) b) (embed $ VarAFP (anno, 0) (':' : show v))) x vs
-
 
 -- convert let bindings to nested lambda/app brackets
 letsToApps :: DesugaredSurfaceTerm -> Either ResolverError Term1
