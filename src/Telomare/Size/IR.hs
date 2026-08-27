@@ -32,12 +32,6 @@ debug' = False
 debugTrace' :: String -> a -> a
 debugTrace' s x = if debug' then trace s x else x
 
-type TCallStack a = [(FunctionIndex, a)]
-
-class HasTCallStack c where
-  type CallStackT c
-  getCallStack :: c -> TCallStack (CallStackT c)
-
 class SuperBase g where
   embedP :: SuperPositionF x -> g x
   extractP :: g x -> Maybe (SuperPositionF x)

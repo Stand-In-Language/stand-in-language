@@ -20,7 +20,6 @@ import Control.Monad
 import Data.Functor.Foldable
 import qualified Data.Map.Strict as Map
 -- import Data.SBV ((.<), (.>))
-import Control.Monad.Reader.Class
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Debug.Trace
@@ -125,13 +124,6 @@ stuckStepM handleOther x = f x where
     _ -> handleOther x
 
 
-
-failAndPrintStack :: (Base a ~ f, MonadReader s m, s ~ TCallStack a, Corecursive a, PrettyPrintable a)
-  => f a -> m b
-failAndPrintStack x = do
-  s <- ask
-  error ("could not evaluate\n" <> prettyPrint (embed x) <> concatMap printCall s) where
-    printCall (fi, i) = "\n--> from " <> show fi <> " with argument\n" <> prettyPrint i
 
 {-# INLINABLE gateBasicResult #-}
 gateBasicResult :: (Base g ~ f, BasicBase f, Recursive g, Corecursive g) => (g -> GateResult g) -> g -> GateResult g
