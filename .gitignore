@@ -10,7 +10,6 @@ cabal.project.local
 .dir-locals.el
 .#*
 libgc.so
-notes.md
 result
 result-*
 dev-profile*

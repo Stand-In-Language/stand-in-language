@@ -84,16 +84,7 @@ ints2t anno = foldr ((\x y -> anno :< ParserTermB (PairSF x y)) . i2t anno) (ann
 s2t :: (Foldable t, Functor t) => a -> t Char -> Cofree (ParserTermF l v) a
 s2t anno = ints2t anno . fmap ord
 
--- |Collect all free variable names in an 'AnnotatedEST' expression.
-varsUPT :: ExpandedSurfaceTerm -> Set String
-varsUPT = cata alg where
-  alg (VarAFP _ n)     = Set.singleton n
-  alg (LamAFP _ str x) = del (locatedNameText str) x
-  alg e                = F.fold e
-  del :: String -> Set String -> Set String
-  del n x = if Set.member n x then Set.delete n x else x
-
--- |Like 'varsUPT' but also descends into 'Pattern' type annotations so that
+-- |Collect all free variable names, also descending into 'Pattern' type annotations so that
 -- names referenced via @: T@ patterns (e.g. UDT validators) are included.
 freeVarsDeep :: ExpandedSurfaceTerm -> Set String
 freeVarsDeep = cata alg where
@@ -128,18 +119,10 @@ pruneBindings root bs = filter ((`Set.member` reachable) . fst) bs
     expand r  = r <> F.fold (Map.restrictKeys bmap r)
     reachable = until (\s -> expand s == s) expand seed
 
-mkLambda4FreeVarUPs :: ExpandedSurfaceTerm -> ExpandedSurfaceTerm
-mkLambda4FreeVarUPs aupt@(_anno :< _) = go aupt freeVars where
-  freeVars = Set.toList . varsUPT $ aupt
-  go :: ExpandedSurfaceTerm -> [String] -> ExpandedSurfaceTerm
-  go x = \case
-    []     -> x
-    (y:ys) -> LamP (locatedName UnknownLoc y) $ go x ys
-
 type VarList = [String]
 
 debruijinize :: forall m. (Monad m, MonadFail m) => Term1 -> m Term2
-debruijinize = ($ []) . runReaderT . cata f where
+debruijinize = flip (runReaderT . cata f) [] where
   f = \case
     LamAFP a lt x -> embed . LamAFP a (convLam lt) <$> local (lt:) x
     VarAFP a n -> ask >>= \vl -> lift $ findElem a n vl
@@ -165,10 +148,9 @@ debruijinize = ($ []) . runReaderT . cata f where
     (_, LetBinding _ n') | n' == n -> True
     _ -> False
 
-
 -- | Close all naked open lambdas
 closeLams :: Term2 -> Term2
-closeLams = runIdentity .($ True) . runReaderT . cata f where
+closeLams = runIdentity . flip (runReaderT . cata f) True where
   f = \case
     anno C.:< x -> case x of
       ParserTermL (LamF lt ix) -> ask >>= \naked -> if naked
@@ -177,7 +159,7 @@ closeLams = runIdentity .($ True) . runReaderT . cata f where
       x' -> (anno :<) <$> sequence x'
 
 debruijinizeApp :: forall m. (Monad m, MonadFail m) => Term1 -> m Term2
-debruijinizeApp = fmap closeLams . ($ []) . runReaderT . cata f where
+debruijinizeApp = fmap closeLams . flip (runReaderT . cata f) [] where
   f = \case
     LamAFP a lt x -> embed . LamAFP a (convLam lt) <$> local (lt:) x
     VarAFP a n -> ask >>= \vl -> lift $ findElem a n vl
@@ -203,7 +185,6 @@ debruijinizeApp = fmap closeLams . ($ []) . runReaderT . cata f where
     (_, Closed n') | n' == n -> True
     (_, LetBinding _ n') | n' == n -> True
     _ -> False
-
 
 splitExpr :: Term2 -> Term3
 splitExpr = flip State.evalState (toEnum 0, toEnum 0) . cata f where
@@ -234,11 +215,34 @@ splitExpr = flip State.evalState (toEnum 0, toEnum 0) . cata f where
 openLambda :: String -> Term1 -> Term1
 openLambda name body@(_anno :< _) = LamP (Open name) body
 
-closedLambda :: String -> Term1 -> Term1
-closedLambda name body@(_anno :< _) = LamP (Closed name) body
-
 -- |Transform a case-free surface term to 'Term1', validating and inlining
 -- variables.
+-- |Order let-binding names so that each name comes after everything it
+-- depends on (dependencies first). Fails with 'DefinitionCycle' when the
+-- dependency graph is cyclic.
+topologicalSort :: [String] -> Map String (Set String) -> Either ResolverError [String]
+topologicalSort names deps = go [] names
+  where
+    go result [] = Right (reverse result)
+    go result remaining@(firstRemaining : _) =
+      case find (canProcess remaining) remaining of
+        Nothing ->
+          -- Must be a cycle - find it for error message
+          let findCycleFrom start = go' start Set.empty
+                where go' curr visited
+                        | curr `Set.member` visited = [curr]
+                        | otherwise =
+                            case find (`elem` remaining) (Set.toList $ Map.findWithDefault Set.empty curr deps) of
+                              Nothing   -> []
+                              Just next -> curr : go' next (Set.insert curr visited)
+          in Left $ DefinitionCycle (findCycleFrom firstRemaining)
+        Just name -> go (name : result) (delete name remaining)
+
+    canProcess rn name =
+      all (`notElem` rn) (Set.toList $ Map.findWithDefault Set.empty name deps)
+
+    delete x = filter (/= x)
+
 validateVariables :: DesugaredSurfaceTerm
                   -> Either ResolverError Term1
 validateVariables term =
@@ -283,33 +287,6 @@ validateVariables term =
                     laterNames = Set.fromList $ drop (i + 1) originalOrder
                 in not . Set.null $ deps `Set.intersection` laterNames
                 ) (zip [0..] originalOrder)
-              -- Topological sort with cycle detection
-              topologicalSort :: [String] -> Map String (Set String) -> Either ResolverError [String]
-              topologicalSort names deps = go [] Set.empty names
-                where
-                  go :: [String] -> Set String -> [String] -> Either ResolverError [String]
-                  go result _ [] = Right (reverse result)
-                  go result inProgress remaining =
-                    case find (canProcess remaining inProgress) remaining of
-                      Nothing ->
-                        -- Must be a cycle - find it for error message
-                        let findCycleFrom start = go' start Set.empty
-                              where go' curr visited
-                                      | curr `Set.member` visited = [curr]
-                                      | otherwise =
-                                          case find (`elem` remaining) (Set.toList $ Map.findWithDefault Set.empty curr deps) of
-                                            Nothing -> []
-                                            Just next -> curr : go' next (Set.insert curr visited)
-                        in Left $ DefinitionCycle (findCycleFrom (head remaining))
-                      Just name ->
-                        let inProgress' = inProgress `Set.union`
-                                         Map.findWithDefault Set.empty name deps
-                        in go (name : result) inProgress' (delete name remaining)
-
-                  canProcess rn _inProgress name =
-                    all (`notElem` rn) (Set.toList $ Map.findWithDefault Set.empty name deps)
-
-                  delete x = filter (/= x)
 
           -- Only reorder if necessary
           sortedBindings <- if hasForwardRef
@@ -383,36 +360,10 @@ annotateUnsizedCount = capTop . flip evalStateT (0 :: Integer) . cata f where
   capTop (vs, x@((anno, _) :< _)) =
     foldr (\v b -> embed $ AppAFP (anno, length vs) (embed $ LamAFP (anno, 0) (locatedName anno (':' : show v)) b) (embed $ VarAFP (anno, 0) (':' : show v))) x vs
 
-
 -- convert let bindings to nested lambda/app brackets
 letsToApps :: DesugaredSurfaceTerm -> Either ResolverError Term1
 letsToApps term =
-   -- Topological sort with cycle detection
-  let topologicalSort names deps = go [] Set.empty names
-        where
-          go result _ [] = Right result
-          go result inProgress remaining =
-            case find (canProcess remaining inProgress) remaining of
-              Nothing ->
-                -- Must be a cycle - find it for error message
-                let findCycleFrom start = go' start Set.empty
-                      where go' curr visited
-                              | curr `Set.member` visited = [curr]
-                              | otherwise =
-                                  case find (`elem` remaining) (Set.toList $ Map.findWithDefault Set.empty curr deps) of
-                                    Nothing -> []
-                                    Just next -> curr : go' next (Set.insert curr visited)
-                in Left $ DefinitionCycle (findCycleFrom (head remaining))
-              Just name ->
-                let inProgress' = inProgress `Set.union`
-                                  Map.findWithDefault Set.empty name deps
-                in go (name : result) inProgress' (delete name remaining)
-
-          canProcess rn _inProgress name =
-            all (`notElem` rn) (Set.toList $ Map.findWithDefault Set.empty name deps)
-
-          delete x = filter (/= x)
-      getTransitive deps n = Set.singleton n <> case Map.lookup n deps of
+  let getTransitive deps n = Set.singleton n <> case Map.lookup n deps of
         Just s | not (null s) -> mconcat . fmap (getTransitive deps) $ Set.toList s
         _ -> Set.empty
       getTransitive' deps = mconcat . fmap (getTransitive deps) . Set.toList
@@ -437,7 +388,8 @@ letsToApps term =
             let originalOrder = letBindingName <$> bindings
                 dependencies = Map.fromList $ fmap (second snd) nBindings
                 sortedBindings =
-                  case topologicalSort originalOrder dependencies of
+                  -- reverse-dependency order: 'foldr makeBinding' below re-reverses
+                  case reverse <$> topologicalSort originalOrder dependencies of
                     Left defCycle -> Left defCycle
                     Right sortedNames ->
                       pure [(name, def) | name <- sortedNames, (name', (def, _)) <- nBindings, name == name']
@@ -563,30 +515,9 @@ qualifyTerm names qualifier = go Set.empty
       UnprocessedParsedTermL (VarF name)
         | name `Set.member` names && name `Set.notMember` bound ->
             UnprocessedParsedTermL $ VarF (qualifier <> "." <> name)
-      UnprocessedParsedTermL (LamF name body) ->
-        UnprocessedParsedTermL . LamF name $
-          go (Set.insert (locatedNameText name) bound) body
-      LetUPF bindings body ->
-        let localNames = Set.fromList $ letBindingName <$> bindings
-            bound' = bound <> localNames
-        in LetUPF (fmap (fmap $ go bound') bindings) (go bound' body)
-      CaseUPF scrutinee alternatives ->
-        CaseUPF (go bound scrutinee)
-          [ (qualifyPattern bound pattern', go (bound <> patternNames pattern') body)
-          | (pattern', body) <- alternatives
-          ]
-      other -> fmap (go bound) other
+      other -> mapScoped (\binders -> go (bound <> binderNames binders)) other
 
-    qualifyPattern bound (Fix pattern') = Fix $ case pattern' of
-      PatternAnnotatedF pattern'' (AnnotatedEST annotation) ->
-        PatternAnnotatedF (qualifyPattern bound pattern'')
-          (AnnotatedEST $ go bound annotation)
-      other -> fmap (qualifyPattern bound) other
-
-    patternNames = cata $ \case
-      PatternVarF name      -> Set.singleton $ locatedNameText name
-      PatternAnnotatedF p _ -> p
-      p                     -> F.fold p
+    binderNames = Set.fromList . fmap locatedNameText
 
 resolveMain :: ExpandedModules -- ^Modules and their typed expanded items
             -> String -- ^Module name with main

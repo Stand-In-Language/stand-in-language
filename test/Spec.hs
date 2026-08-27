@@ -2,8 +2,6 @@
 module Main where
 
 import Data.Bifunctor
-import Data.List (partition)
-import System.IO
 import qualified System.IO.Strict as Strict
 import Telomare.Driver
 import Telomare.Error
@@ -20,11 +18,7 @@ import Telomare.Resolve
 import Telomare.Size (SizingSettings (SizingSettings))
 import Telomare.TypeCheck
 import Test.Hspec
-import Test.Hspec.Core.QuickCheck (modifyMaxSuccess)
-import Test.QuickCheck
 
--- Common datatypes for generating Telomare AST.
-import Common
 import Data.Functor.Foldable (Corecursive (..))
 
 toChurch :: Int -> Term3
@@ -34,24 +28,8 @@ toChurch x =
       inner a = appS (pure (LeftB $ RightB EnvB)) (inner (a - 1))
   in buildTerm $ fmap (`PairB` ZeroB) (lamS (inner x) >>= deferS)
 
--- recursively finds shrink matching invariant, ordered simplest to most complex
-shrinkComplexCase :: Arbitrary a => (a -> Bool) -> [a] -> [a]
-shrinkComplexCase test a =
-  let shrinksWithNextLevel = fmap (\x -> (x, filter test $ shrink x)) a
-      (recurseable, nonRecursable) = partition (not . null . snd) shrinksWithNextLevel
-  in (shrinkComplexCase test (concatMap snd recurseable) <> fmap fst nonRecursable)
-
 three_succ :: Term3
 three_succ = buildTerm $ lamS (pure (PairB (varB 0) ZeroB)) >>= \il -> appS (appS (pure (toChurch 3)) (pure il)) (pure ZeroB)
-
-one_succ :: Term3
-one_succ = buildTerm $ lamS (pure (PairB (varB 0) ZeroB)) >>= \il -> appS (appS (pure (toChurch 1)) (pure il)) (pure ZeroB)
-
-two_succ :: Term3
-two_succ = buildTerm $ lamS (pure (PairB (varB 0) ZeroB)) >>= \il -> appS (appS (pure (toChurch 2)) (pure il)) (pure ZeroB)
-
-church_type :: StuckExpr
-church_type = PairB (PairB ZeroB ZeroB) (PairB ZeroB ZeroB)
 
 c2d :: Term3
 c2d = buildTerm . lamS $ lamS (pure (PairB (varB 0) ZeroB)) >>= \il -> appS (appS (pure (varB 0)) (pure il)) (pure ZeroB)
@@ -135,32 +113,6 @@ d_plus = buildTerm . lamS . lamS $ (do
   b <- appS (pure (d2c 255)) (pure (varB 0))
   appS (pure c2d) (pure (plus_ a b)))
 
-d_plus2 :: Term3
-d_plus2 = buildTerm . lamS . lamS $ (do
-  a <- appS (pure (d2c 6)) (pure (varB 1))
-  b <- appS (pure (d2c 6)) (pure (varB 0))
-  appS (pure c2d) (pure (plus_ a b)))
-
-d_plus3 :: Term3
-d_plus3 = buildTerm . lamS $ (do
-  a <- appS (pure (d2c 6)) (pure (varB 0))
-  appS (pure c2d) (pure (plus_ (toChurch 2) a)))
-
-d2c_test :: Term3
-d2c_test =
-  let layer = (buildTerm . lamS . lamS . lamS . lamS $ (do
-                a <- appS (appS (appS (pure (varB 3)) (pure (LeftB $ varB 2))) (pure (varB 1))) (pure (varB 0))
-                b <- appS (pure (varB 1)) (pure a)
-                pure $ iteB_ (varB 2) b (varB 0)))
-      base = (buildTerm . lamS . lamS . lamS . pure $ varB 0)
-  in buildTerm $ do
-       s_d2c <- appS (appS (pure (toChurch 3)) (pure layer)) (pure base)
-       succLam <- lamS . pure $ PairB (varB 0) ZeroB
-       appS (appS (appS (pure s_d2c) (pure (i2B 2))) (pure succLam)) (pure ZeroB)
-
-d2c2_test :: Term3
-d2c2_test = iteB_ ZeroB (LeftB (i2B 1)) (LeftB (i2B 2))
-
 c2d_test :: Term3
 c2d_test = buildTerm $ appS (pure c2d) (pure (toChurch 2))
 c2d_test2 :: Term3
@@ -174,22 +126,6 @@ c2d_test3 = buildTerm $ do
   outerLam <- lamS $ appS (pure (varB 0)) (pure ZeroB)
   appS (pure outerLam) (pure bodyLam)
 
-double_app :: Term3
-double_app = buildTerm $ do
-  inner <- lamS . lamS . pure $ PairB (varB 0) (varB 1)
-  appS (appS (pure inner) (pure ZeroB)) (pure ZeroB)
-
-test_plus0 :: Term3
-test_plus0 = buildTerm $ do { a <- appS (pure (d2c 255)) (pure ZeroB); appS (pure c2d) (pure (plus_ (toChurch 3) a)) }
-test_plus1 :: Term3
-test_plus1 = buildTerm $ do { a <- appS (pure (d2c 255)) (pure (i2B 1)); appS (pure c2d) (pure (plus_ (toChurch 3) a)) }
-test_plus254 :: Term3
-test_plus254 = buildTerm $ do { a <- appS (pure (d2c 255)) (pure (i2B 254)); appS (pure c2d) (pure (plus_ (toChurch 3) a)) }
-test_plus255 :: Term3
-test_plus255 = buildTerm $ do { a <- appS (pure (d2c 255)) (pure (i2B 255)); appS (pure c2d) (pure (plus_ (toChurch 3) a)) }
-test_plus256 :: Term3
-test_plus256 = buildTerm $ do { a <- appS (pure (d2c 255)) (pure (i2B 256)); appS (pure c2d) (pure (plus_ (toChurch 3) a)) }
-
 one_plus_one :: Term3
 one_plus_one =
   let plus = (buildTerm . lamS . lamS . lamS . lamS $ (do
@@ -198,33 +134,6 @@ one_plus_one =
   in buildTerm $ do
        a <- appS (appS (pure plus) (pure (toChurch 1))) (pure (toChurch 1))
        appS (pure c2d) (pure a)
-
-times_two :: Term3
-times_two =
-  let times_app = (buildTerm . lamS . lamS $ (do
-                    a <- appS (pure (varB 1)) (pure (varB 0))
-                    appS (pure (toChurch 2)) (pure a)))
-  in buildTerm $ do
-       a <- appS (pure times_app) (pure (toChurch 3))
-       appS (pure c2d) (pure a)
-
-times_three :: Term3
-times_three =
-  let times_app = (buildTerm . lamS . lamS $ (do
-                    a <- appS (pure (toChurch 3)) (pure (varB 0))
-                    appS (pure (varB 1)) (pure a)))
-  in buildTerm $ do
-       a <- appS (pure times_app) (pure (toChurch 2))
-       appS (pure c2d) (pure a)
-
-times_wip :: Term3
-times_wip = buildTerm $ appS (pure c2d) (pure (toChurch 6))
-
-function_argument :: Term3
-function_argument = buildTerm $ do
-  bodyLam <- lamS . pure $ PairB ZeroB (varB 0)
-  outerLam <- lamS $ appS (pure (varB 0)) (pure ZeroB)
-  appS (pure outerLam) (pure bodyLam)
 
 -- m f (n f x)
 -- app (app m f) (app (app n f) x)
@@ -282,88 +191,9 @@ unitTest name expected iexpr = it name $ if allowedTypeCheck (typeCheck (embed Z
   then case compileUnitTest iexpr of
     Left e  -> expectationFailure (concat [name, " failed to compile: ", show e])
     Right compiled -> do
-      result <- show . PrettyStuckExpr <$> testEval compiled
+      result <- show . PrettyBasic <$> testEval compiled
       result `shouldBe` expected
   else expectationFailure ( concat [name, " failed typecheck: ", show (typeCheck (embed ZeroTypeP) iexpr)])
-
-unitTestRefinement :: String -> Bool -> BasicExpr -> Spec
-unitTestRefinement name _shouldSucceed _iexpr = it name $
-  expectationFailure (name <> ": unitTestRefinement not yet updated after refactor")
-
-unitTestQC :: Testable p => String -> Int -> p -> Spec
-unitTestQC name times = modifyMaxSuccess (const times) . it name . property
-
-churchType :: DataType
-churchType = ArrType (ArrType ZeroType ZeroType) (ArrType ZeroType ZeroType)
-
-quickcheckDataTypedCorrectlyTypeChecks :: DataTypedIExpr -> Bool
-quickcheckDataTypedCorrectlyTypeChecks (IExprWrapper x) = not . null $ inferType (fromTelomare x)
-
-
-testRecur :: String
-testRecur = concat
-  [ "main = let layer = \\recur x -> recur (x, 0)"
-  , "\n"
-  , "       in $3 layer (\\x -> x) 0"
-  ]
-
--- testSBV'' = do
---   r <- runIO testSBV'
---   runIO $ if r == 4
---     then pure ()
---     else expectationFailure $ "testSBV failed, got result " <> show r
---   -- assertEqual "testing SBV" r 3
-
-unitTests_ :: Show a => (Bool -> String -> Either a Term3) -> SpecWith ()
-unitTests_ parse = do
-  let unitTestType = unitTestType' (parse False)
-      -- normalMainType = embed $ PairTypeP (embed $ ArrTypeP (embed ZeroTypeP) (embed ZeroTypeP)) (embed ZeroTypeP)
-      -- decompileExample = IExprWrapper (SetEnv (SetEnv (SetEnv (Pair (Defer (Pair (Defer (Pair (Defer Zero) Env)) Env)) Zero))))
-  -- describe "unitTest2" $ unitTestType "main = succ 0" (ArrTypeP ZeroTypeP ZeroTypeP) isInconsistentType
-  describe "type checker" $ do
-    {-
-    unitTestType "main = \\x -> (x,0)" normalMainType (== Nothing)
-    unitTestType "main = \\x -> (x,0)" (embed ZeroTypeP) isInconsistentType
-    unitTestType "main = succ 0" (embed ZeroTypeP) (== Nothing)
--}
-    unitTestType "main = succ 0" (embed $ ArrTypeP (embed ZeroTypeP) (embed ZeroTypeP)) isInconsistentType
-  {-
-    unitTestType "main = or 0" normalMainType (== Nothing)
-    unitTestType "main = or 0" (embed ZeroTypeP) isInconsistentType
-    unitTestType "main = or succ" (embed $ ArrTypeP (embed ZeroTypeP) (embed ZeroTypeP)) isInconsistentType
-    unitTestType "main = 0 succ" (embed ZeroTypeP) isInconsistentType
-    unitTestType "main = 0 0" (embed ZeroTypeP) isInconsistentType
-    unitTestType "main = (if 0 then (\\x -> (x,0)) else (\\x -> (x,1))) 0" (embed ZeroTypeP) isRecursiveType
-    unitTestType "main = (\\x y -> x y x) (\\y x -> y (x y x))"
-      normalMainType (/= Nothing) -- isRecursiveType
-    unitTestType "main = (\\x y -> y (x x y)) (\\x y -> y ( x x y))"
-      normalMainType (/= Nothing) -- isRecursiveType
-    unitTestType "main = (\\x y -> y (\\z -> x x y z)) (\\x y -> y (\\z -> x x y z))"
-      normalMainType (/= Nothing) -- isRecursiveType
-    unitTestType "main = (\\f x -> f (\\v -> x x v) (\\x -> f (\\v -> x x v)))"
-      normalMainType (/= Nothing) -- isRecursiveType
-    unitTestType "main = (\\f -> f 0) (\\g -> (g,0))" (embed ZeroTypeP) (== Nothing)
-    unitTestType "main : (\\x -> if x then \"fail\" else 0) = 0" (embed ZeroTypeP) (== Nothing)
-    -- unitTestType "main = ? (\\r l -> if l then r (left l) else 0) (\\l -> 0) 2" ZeroTypeP (== Nothing)
-    unitTestType "main = {id,\\r l -> r (left l),id} 2" (embed ZeroTypeP) (== Nothing)
-    unitTestType2
-      (buildTerm $ do
-        d1 <- deferS (SetEnvB (PairB EnvB EnvB))
-        d2 <- deferS EnvB
-        pure $ SetEnvB (PairB (SetEnvB (PairB d1 d2)) ZeroB)
-      )
-      (embed ZeroTypeP) isRecursiveType
-    unitTestType2 inf_pairs (embed ZeroTypeP) isRecursiveType
--}
-  {- TODO uncomment when type checker is fixed
-    unitTestType "main = \\f -> (\\x -> f (x x)) (\\x -> f (x x))"
-      normalMainType (/= Nothing) -- isRecursiveType
-    unitTestType "main = (\\f -> (\\x -> x x) (\\x -> f (x x)))"
-      normalMainType (/= Nothing) -- isRecursiveType
--}
-
-c2dApp :: String
-c2dApp = "main = (c2dG $4 3) $2 succ 0"
 
 isInconsistentType :: Maybe TypeCheckError -> Bool
 isInconsistentType (Just (InconsistentTypes _ _)) = True
@@ -372,18 +202,6 @@ isInconsistentType _                              = False
 isRecursiveType :: Maybe TypeCheckError -> Bool
 isRecursiveType (Just (RecursiveType _)) = True
 isRecursiveType _                        = False
-
-unitTestTypeP :: StuckExpr -> Either TypeCheckError PartialType -> IO Bool
-unitTestTypeP iexpr expected = if inferType (fromTelomare iexpr) == expected
-  then pure True
-  else do
-  putStrLn $ concat ["type inference error ", show iexpr, " expected ", show expected
-                    , " result ", show (inferType $ fromTelomare iexpr)
-                    ]
-  pure False
-
-debugMark :: String -> IO Bool
-debugMark s = hPutStrLn stderr s >> pure True
 
 --unitTests :: (String -> String -> Spec) -> (String -> PartialType -> (Maybe TypeCheckError -> Bool) -> Spec) -> Spec
 unitTests :: Show a => (Bool -> String -> Either a Term3) -> SpecWith ()
@@ -526,13 +344,6 @@ unitTests parse = do
       "(1,(2,(3,(4,(4,(5,(6,(7,(7,(8,10))))))))))"
 -}
 
-testExpr :: String
-testExpr = concat
-  [ "main = let a = 0\n"
-  , "           b = 1\n"
-  , "       in (a,1)\n"
-  ]
-
 fiveApp :: String
 fiveApp = "main = let fiveApp = $5\n" <> "       in fiveApp (\\x -> (x,0)) 0"
 
@@ -551,7 +362,7 @@ unitTest2' parse s r = it s $ case fmap compileUnitTest (parse s) of
   Right (Right g) -> testEval g >>= (\r2 -> if r2 == r
     then pure ()
     else expectationFailure $ concat [s, " result ", r2])
-    . show . PrettyStuckExpr
+    . show . PrettyBasic
   Right (Left e) -> expectationFailure $ "failed to compile: " <> show e
 
 unitTestType' :: Show a => (String -> Either a Term3) -> String -> PartialType -> (Maybe TypeCheckError -> Bool) -> SpecWith ()

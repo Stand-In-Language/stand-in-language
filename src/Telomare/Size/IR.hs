@@ -9,17 +9,17 @@
 
 module Telomare.Size.IR where
 
-import Control.Monad (liftM2, (<=<))
+import Control.Monad (liftM2)
 import Data.Fix (Fix (..))
 import Data.Functor.Classes (Eq1 (..), Show1 (liftShowsPrec))
 import Data.Functor.Foldable
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Validity (Validity (..), trivialValidation)
-import Debug.Trace
 import GHC.Generics (Generic)
 
 import Data.Bifunctor (first)
+import Debug.Trace
 import Telomare.IR.Base
 import Telomare.IR.Core
 import Telomare.IR.Loc
@@ -31,12 +31,6 @@ debug' = False
 
 debugTrace' :: String -> a -> a
 debugTrace' s x = if debug' then trace s x else x
-
-type TCallStack a = [(FunctionIndex, a)]
-
-class HasTCallStack c where
-  type CallStackT c
-  getCallStack :: c -> TCallStack (CallStackT c)
 
 class SuperBase g where
   embedP :: SuperPositionF x -> g x
@@ -97,10 +91,11 @@ newtype SizedRecursion = SizedRecursion { unSizedRecursion :: Map UnsizedRecursi
   deriving (Eq, Ord, Show, Generic)
 
 instance Semigroup SizedRecursion where
-  (<>) (SizedRecursion a) (SizedRecursion b) = SizedRecursion . tr $ Map.unionWith (liftM2 max) a b where
-    tr x = if null a || null b
-      then x
-      else debugTrace' ("sizedrecursion merge result: " <> show (first fromEnum <$> Map.toAscList x)) x
+  (<>) sa@(SizedRecursion a) sb@(SizedRecursion b)
+    | Map.null a = sb
+    | Map.null b = sa
+    | otherwise = SizedRecursion . tr $ Map.unionWith (liftM2 max) a b where
+        tr x = debugTrace' ("sizedrecursion merge result: " <> show (first fromEnum <$> Map.toAscList x)) x
 
 instance Monoid SizedRecursion where
   mempty = SizedRecursion Map.empty
@@ -119,11 +114,15 @@ data StrictAccum a x = StrictAccum
 
 instance Monoid a => Applicative (StrictAccum a) where
   pure = StrictAccum mempty
+  {-# INLINE pure #-}
   StrictAccum u f <*> StrictAccum v x = StrictAccum (u <> v) $ f x
+  {-# INLINE (<*>) #-}
   liftA2 f (StrictAccum u x) (StrictAccum v y) = StrictAccum (u <> v) $ f x y
+  {-# INLINE liftA2 #-}
 
 instance Monoid a => Monad (StrictAccum a) where
   StrictAccum u x >>= f = case f x of StrictAccum v y -> StrictAccum (u <> v) y
+  {-# INLINE (>>=) #-}
 
 instance PrettyPrintable1 (StrictAccum SizedRecursion) where
   showP1 (StrictAccum _ x) = showP x
@@ -139,7 +138,14 @@ instance Eq (VoidF a) where
 
 data SuperPositionF f
   = EitherPF (Maybe Integer) !f !f
-  deriving (Eq, Ord, Show, Functor, Foldable, Traversable, Generic)
+  deriving (Eq, Ord, Show, Functor, Foldable, Generic)
+
+-- The hand-written Traversable instances here mirror Telomare.IR.Base:
+-- INLINE lets hot monadic traversals specialise instead of paying for
+-- dictionaries and boxed applicative chains at every node.
+instance Traversable SuperPositionF where
+  {-# INLINE traverse #-}
+  traverse f (EitherPF n a b) = liftA2 (EitherPF n) (f a) (f b)
 
 instance Eq1 SuperPositionF where
   liftEq test a b = case (a,b) of
@@ -174,7 +180,17 @@ data UnsizedRecursionF f
   | RefinementWrapperF LocTag f f
   | SizeStepStubF UnsizedRecursionToken Int f
   | TraceF String f
-  deriving (Eq, Ord, Show, Functor, Foldable, Traversable, Generic)
+  deriving (Eq, Ord, Show, Functor, Foldable, Generic)
+
+instance Traversable UnsizedRecursionF where
+  {-# INLINE traverse #-}
+  traverse f = \case
+    RecursionTestF t x        -> RecursionTestF t <$> f x
+    UnsizedStubF t x          -> UnsizedStubF t <$> f x
+    SizeStageF sr x           -> SizeStageF sr <$> f x
+    RefinementWrapperF l tc x -> liftA2 (RefinementWrapperF l) (f tc) (f x)
+    SizeStepStubF t n x       -> SizeStepStubF t n <$> f x
+    TraceF s x                -> TraceF s <$> f x
 
 instance Eq1 UnsizedRecursionF where
   liftEq test a b = case (a, b) of
@@ -208,7 +224,13 @@ instance PrettyPrintable1 VoidF where
 data IndexedInputF f
   = IVarF Integer
   | AnyF
-  deriving (Eq, Ord, Show, Functor, Foldable, Traversable, Generic)
+  deriving (Eq, Ord, Show, Functor, Foldable, Generic)
+
+instance Traversable IndexedInputF where
+  {-# INLINE traverse #-}
+  traverse _ = \case
+    IVarF n -> pure $ IVarF n
+    AnyF    -> pure AnyF
 
 instance Eq1 IndexedInputF where
   liftEq _test a b = case (a, b) of
@@ -356,7 +378,18 @@ data UnsizedExprF f
   | UnsizedExprA (AbortableF f)
   | UnsizedExprU (UnsizedRecursionF f)
   | UnsizedExprI (IndexedInputF f)
-  deriving (Eq, Show, Functor, Foldable, Traversable, Generic)
+  deriving (Eq, Show, Functor, Foldable, Generic)
+
+instance Traversable UnsizedExprF where
+  {-# INLINE traverse #-}
+  traverse f = \case
+    UnsizedExprB x -> UnsizedExprB <$> traverse f x
+    UnsizedExprS x -> UnsizedExprS <$> traverse f x
+    UnsizedExprP x -> UnsizedExprP <$> traverse f x
+    UnsizedExprA x -> UnsizedExprA <$> traverse f x
+    UnsizedExprU x -> UnsizedExprU <$> traverse f x
+    UnsizedExprI x -> UnsizedExprI <$> traverse f x
+
 instance BasicBase UnsizedExprF where
   embedB = UnsizedExprB
   extractB = \case
@@ -481,21 +514,9 @@ instance PrettyPrintable1 InputSizingExprF where
     InputSizingI x -> showP1 x
 type InputSizingExpr = Fix InputSizingExprF
 
-convertSuper :: (SuperBase g, SuperBase h, Base x ~ h, Corecursive x, Monad m) => (g (m x) -> m x) -> g (m x) -> m x
-convertSuper convertOther = \case
-  SuperFW x -> superEE <$> sequence x
-  x -> convertOther x
-convertUnsized :: (UnsizedBase g, UnsizedBase h, Base x ~ h, Corecursive x, Monad m) => (g (m x) -> m x) -> g (m x) -> m x
-convertUnsized convertOther = \case
-  UnsizedFW x -> unsizedEE <$> sequence x
-  x -> convertOther x
 convertIndexed :: (IndexedInputBase g, IndexedInputBase h, Base x ~ h, Corecursive x, Monad m) => (g (m x) -> m x) -> g (m x) -> m x
 convertIndexed convertOther = \case
   IndexedFW x -> indexedEE <$> sequence x
-  x -> convertOther x
-convertDeferred :: (DeferredEvalBase g, DeferredEvalBase h, Base x ~ h, Corecursive x, Monad m) => (g (m x) -> m x) -> g (m x) -> m x
-convertDeferred convertOther = \case
-  DeferredFW x -> deferredEE <$> sequence x
   x -> convertOther x
 
 data SizedResult
@@ -523,9 +544,6 @@ instance Semigroup a => Semigroup (MonoidList a) where
 
 instance Semigroup a => Monoid (MonoidList a) where
   mempty = MonoidList []
-
-anaM' :: (Monad m, Corecursive t, x ~ Base t, Traversable x) => (a -> m (Base t a)) -> a -> m t
-anaM' f = c where c = (fmap embed . mapM c) <=< f
 
 instance TelomareLike UnsizedExpr where
   fromTelomare = verify . cata (convertBasic (convertStuck (\_z -> Left "failed to convert to UnsizedExpr"))) where

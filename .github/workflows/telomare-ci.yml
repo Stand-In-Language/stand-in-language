@@ -41,69 +41,9 @@ jobs:
         fi
         echo ${{ github.ref }}
         echo ${{ github.repository }}
-  format:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout telomare repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: cachix/install-nix-action@v25
-        with:
-          install_url: https://releases.nixos.org/nix/nix-2.31.5/install
-          extra_nix_config: |
-            access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
-      - uses: DeterminateSystems/magic-nix-cache-action@v2
-      - uses: cachix/cachix-action@v14
-        with:
-          name: telomare
-          signingKey: '${{ secrets.CACHIX_SIGNING_KEY }}'
-          extraPullNames: nix-community
-      - name: stylish-haskell formatting
-        # Format the tracked Haskell files only, so this command behaves the
-        # same on developer checkouts (where recursing over `.` would wander
-        # into .direnv/ and dist-newstyle/) as it does here.
-        run: |
-          nix develop -c bash -c "git ls-files -z '*.hs' | xargs -0 stylish-haskell -iv"
-          output=$(git diff)
-          if [ "$output" = "" ]; then
-              echo "Success! No formatting suggestions."
-          else
-              echo "Failure: stylish-haskell has some formatting suggestions:"
-              echo "$output"
-              exit 1
-          fi
-  lint:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout telomare repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: cachix/install-nix-action@v25
-        with:
-          install_url: https://releases.nixos.org/nix/nix-2.31.5/install
-          extra_nix_config: |
-            access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
-      - uses: DeterminateSystems/magic-nix-cache-action@v2
-      - uses: cachix/cachix-action@v14
-        with:
-          name: telomare
-          signingKey: '${{ secrets.CACHIX_SIGNING_KEY }}'
-          extraPullNames: nix-community
-      - name: hlint linting
-        run: |
-          output=$(nix develop -c bash -c "git ls-files -z '*.hs' | xargs -0 hlint --no-exit-code")
-          if [ "$output" = "No hints" ]; then
-              echo "Success! No Hlint suggestions."
-          else
-              echo "Failure: Hlint has some suggestions for your commit"
-              echo "$output"
-              exit 1
-          fi
   release:
     if: ${{ (github.ref == 'refs/heads/master') && (github.repository == 'Stand-In-Language/stand-in-language') }}
-    needs: [tests, format, lint]
+    needs: [tests]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout telomare repository

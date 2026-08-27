@@ -1,5 +1,7 @@
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE LambdaCase        #-}
+{-# LANGUAGE FlexibleContexts     #-}
+{-# LANGUAGE FlexibleInstances    #-}
+{-# LANGUAGE LambdaCase           #-}
+{-# LANGUAGE UndecidableInstances #-}
 
 module Telomare.PrettyPrint where
 
@@ -17,7 +19,6 @@ import qualified Control.Monad.State as State
 import Control.Comonad.Cofree
 import Data.Fix (Fix (..))
 import Data.Functor.Foldable
--- import Data.SBV (sFPHalf)
 
 
 class PrettyPrintable p where
@@ -53,11 +54,6 @@ instance PrettyPrintable1 HighTermF where
       HTraceF x                -> indentWithOneChild' "T" $ showP x
       HashF x                 -> indentWithOneChild' "#" $ showP x
       ChurchF n               -> pure $ "$" <> show n
-  {-
-      TLamF (Open v) x         -> indentWithOneChild' ("\\" <> show v) $ showP x
-      TLamF (Closed v) x       -> indentWithOneChild' ("[\\" <> show v) $ showP x
-      TLamF (LetBinding c v) x -> indentWithOneChild' ("{\\(" <> show c <> ") " <> show v) $ showP x
--}
       RecursionF t r b -> indentWithChildren' "TRB" $ showP <$> [t,r,b]
 
 instance (Show l, Show v) => PrettyPrintable1 (ParserTermF l v) where
@@ -111,12 +107,6 @@ instance PrettyPrintable1 PartialTypeF where
       ZeroTypeP -> pure "Z"
       AnyType -> pure "A"
       TypeVariable _ n -> pure $ "V" <> show (fromEnum n)
-  {-
-      ArrTypeP a b -> case project a of
-        -- ArrTypeP _ _ -> "(" <> showP a <> ") -> " <> showP b
-        ArrTypeP _ _ -> (\a' b' -> "(" <> a' <> ") -> " <> b') <$> showP a <*> showP b
-        _            -> f a <> " -> " <> f b
--}
       ArrTypeP a b -> (\a' b' -> "(" <> a' <> ") -> " <> b') <$> showP a <*> showP b
       PairTypeP a b -> (\a' b' -> "(" <> a' <> "," <> b' <> ")") <$> showP a <*> showP b
 
@@ -280,22 +270,12 @@ instance (Functor f, PrettyPrintable1 f) => PrettyPrintable (Fix f) where
 instance {-# OVERLAPPING #-} (PrettyPrintable a, PrettyPrintable1 f) => PrettyPrintable (Cofree f a) where
   showP (a :< x) = (<>) <$> showP a <*> showP1 x
 
-newtype PrettyStuckExpr = PrettyStuckExpr StuckExpr
+-- |Renders church-encodable prefixes of any basic-expression IR as
+-- numbers and pairs, falling back to 'show' for anything else.
+newtype PrettyBasic g = PrettyBasic g
 
-instance Show PrettyStuckExpr where
-  show (PrettyStuckExpr x) = f x where
-    f :: StuckExpr -> String
-    f e = case b2i e of
-      Just n -> show n
-      _ -> case e of
-        BasicEE (PairSF a b) -> "(" <> f a <> "," <> f b <> ")"
-        z                    -> show z
-
-newtype PrettyCompiledExpr = PrettyCompiledExpr CompiledExpr
-
-instance Show PrettyCompiledExpr where
-  show (PrettyCompiledExpr x) = f x where
-    f :: CompiledExpr -> String
+instance (BasicBase (Base g), Recursive g, Corecursive g, Show g) => Show (PrettyBasic g) where
+  show (PrettyBasic x) = f x where
     f e = case b2i e of
       Just n -> show n
       _ -> case e of

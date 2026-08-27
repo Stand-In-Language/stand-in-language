@@ -10,7 +10,7 @@ module Telomare.IR.Types where
 import Control.Lens.Combinators (Plated (..), transform)
 import Data.Fix (Fix (..))
 import Data.Functor.Classes (Eq1 (..), Ord1, Show1 (..))
-import Data.Functor.Foldable (Corecursive (embed), Recursive (cata))
+import Data.Functor.Foldable (Corecursive (embed))
 import Data.GenValidity (GenValid)
 import Data.Validity (Validity)
 import GHC.Generics (Generic, Generic1, Generically1 (..))
@@ -61,21 +61,3 @@ mergePairType = transform f where
   f (PairType ZeroType ZeroType) = ZeroType
   f x                            = x
 
-mergePairTypeP :: PartialType -> PartialType
-mergePairTypeP = cata f where
-  f = \case
-    (PairTypeP (Fix ZeroTypeP) (Fix ZeroTypeP)) -> embed ZeroTypeP
-    x -> embed x
-
-containsFunction :: PartialType -> Bool
-containsFunction = cata f where
-  f = \case
-    ArrTypeP _ _ -> True
-    x -> or x
-
-cleanType :: PartialType -> Bool
-cleanType = cata f where
-  f = \case
-    ZeroTypeP -> True
-    PairTypeP a b -> a && b
-    _ -> False

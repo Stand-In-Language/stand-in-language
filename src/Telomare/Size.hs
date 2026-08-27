@@ -17,7 +17,6 @@ module Telomare.Size where
 
 import Control.Applicative
 import qualified Control.Comonad.Trans.Cofree as CofreeT (CofreeF (..))
-import Control.Monad.Reader (runReaderT)
 import Data.Foldable
 import Data.Functor.Foldable
 import Data.Map.Strict (Map)
@@ -103,20 +102,13 @@ findInputLimitStepM handleOther x = f x where
           wrapDefer = \case
             FillFunction GateB i@(IndexedEE _) -> deferredEE . BarrierF . embed $ FillFunction GateB i
             other -> error $ "findInputLimitStepM eval unexpected:\n" <> prettyPrint other
-          evalStep = basicStep (stuckStep (abortStep (deferredEvalStep (abortDeferredStep (indexedInputStep' Set.empty wrapDefer)))))
+          evalStep = basicStep (stuckStep (abortStep (deferredEvalStep (abortDeferredStep (indexedInputStep Set.empty wrapDefer)))))
           stripBarrier = \case
             DeferredFW (BarrierF inner) -> inner
             other -> embed other
           s = extractInputRestrictions . cata stripBarrier . transformNoDefer evalStep $ performTC
       in StrictAccum s c
     _ -> handleOther x
-
-unsized2abortExpr :: UnsizedExpr -> CompiledExpr
-unsized2abortExpr = validate . cata (convertBasic (convertStuck (convertAbort unexpected))) where
-  unexpected x = Left $ "unsized2abortExpr unexpected unsized bit: " <> prettyPrint (fmap (const ' ') x)
-  validate = \case
-    Left e -> error e
-    Right x -> x
 
 term3ToUnsizedExpr :: Term3 -> UnsizedExpr
 term3ToUnsizedExpr = runIdentity . cata conv where
@@ -144,19 +136,12 @@ getInputLimits = getAccum . transformNoDeferM evalStep . convertIS where
 capMain :: (Base g ~ f, BasicBase f, StuckBase f, Recursive g, Corecursive g) => g -> g -> g
 capMain i c = appB c i
 
-
-isClosure :: (Base g ~ f, BasicBase f, StuckBase f, Recursive g, Corecursive g) => g -> Bool
-isClosure = \case
-  BasicEE (PairSF (StuckEE (DeferSF _ _)) _) -> True
-  _                                          -> False
-
 newtype UnexpectedGrammarException = UGException String
 
 instance Show UnexpectedGrammarException where
   show (UGException e) = "UnexpectedGrammarException: " <> e
 
 instance Exception UnexpectedGrammarException
-
 
 initialInput :: (Base a ~ f, BasicBase f, IndexedInputBase f, Recursive a, Corecursive a) => InputRestrictions -> a
 initialInput irs = f 0 where
@@ -172,7 +157,7 @@ initialInput irs = f 0 where
 -- The failure carries no location — `UnsizedExpr` has none. Callers holding
 -- the `Term3` fill it in (see `Telomare.Eval.locateSizingFailure`).
 sizeTermM :: SizingSettings -> UnsizedExpr -> Either SizingFailure (SizedRecursion, CompiledExpr)
-sizeTermM sizingSettings x = tidyUp . ($ []) . runReaderT . transformNoDeferM evalStep $ mx where
+sizeTermM sizingSettings x = tidyUp . transformNoDeferM evalStep $ mx where
   unlocated tok kind = SizingFailure
     { sizingFailureToken = tok
     , sizingFailureKind = kind
@@ -234,38 +219,6 @@ sizeTermM sizingSettings x = tidyUp . ($ []) . runReaderT . transformNoDeferM ev
   unhandledError err = throw $ UGException ("sizeTermM unhandled case\n" <> prettyPrint err)
   evalStep = basicStepM (stuckStepM (abortStepM (indexedAbortStepM (indexedInputStepM zeros (indexedSuperStepM (superStepM gateResult evalStep (superAbortStepM evalStep (unsizedStepM''' (maxSizingSize sizingSettings) zeros unsizedTest' unhandledError))))))))
 
-
-getSizesM :: Int -> UnsizedExpr -> Either SizingFailure SizedRecursion
-getSizesM maxSize x = tidyUp . ($ []) . runReaderT . transformNoDeferM evalStep $ cm where
-  unlocated tok kind = SizingFailure
-    { sizingFailureToken = tok
-    , sizingFailureKind = kind
-    , sizingFailureLoc = Nothing
-    }
-  inputRestrictions = getInputLimits x
-  zeros = zeroes inputRestrictions
-  cm = removeRefinementWrappers $ capMain (initialInput inputRestrictions) x
-  tidyUp (StrictAccum sr@(SizedRecursion sm) r) = debugTrace ("sizes are: " <> show sm <> "\nand result is:\n" <> prettyPrint r) $ case foldAborted r of
-    Just (UnsizableSR i)  -> Left $ unlocated i UnboundedInput
-    Just (OverfueledSR i) -> Left . unlocated i . FuelExhausted $ succ maxSize
-    _                     -> pure sr
-  foldAborted = cata f where
-    f = \case
-      AbortFW (AbortedF (AbortRecursion t)) -> case b2i t of
-        Just i' -> Just . OverfueledSR $ toEnum i'
-        _ -> error $ "getSizesM foldAborted AbortRecursion unexpected value:\n" <> prettyPrint t
-      AbortFW (AbortedF AbortAny) -> error "getSizesM AbortAny hit"
-      AbortFW (AbortedF (AbortUnsizeable t)) -> case b2i t of
-        Just i' -> Just . UnsizableSR $ toEnum i'
-        _ -> error $ "getSizesM foldAborted AbortUnsizeable unexpected value:\n" <> prettyPrint t
-      other                             -> Data.Foldable.fold other
-  unhandledGate g = error ("getSizesM unhandled gate input: " <> show g)
-  gateResult = gateBasicResult (gateAbortResult (gateIndexedResult (gateSuperResult gateResult unhandledGate)))
-  unsizedTest :: UnsizedRecursionToken -> UnsizedExpr -> UnsizedExpr
-  unsizedTest ri = unsizedTestIndexed zeros (unsizedTestSuper (unsizedTest ri) (const id)) ri
-  unsizedTest' ri = unsizedTest ri . (\v -> debugTrace ("getSizesM value of\n" <> prettyPrint v) v)
-  evalStep = basicStepM (stuckStepM (abortStepM (indexedAbortStepM (indexedInputStepM zeros (indexedSuperStepM (superStepM gateResult evalStep (superAbortStepM evalStep (unsizedStepM''' maxSize zeros unsizedTest' failAndPrintStack))))))))
-
 removeRefinementWrappers :: (Base g ~ f, BasicBase f, StuckBase f, AbortBase f, UnsizedBase f, Recursive g, Corecursive g) => g -> g
 removeRefinementWrappers = cata f where
   f = \case
@@ -291,27 +244,6 @@ evalStaticCheck shouldCap t =
         x                    -> foldr (<|>) Nothing x
   in cata getAborted runResult
 
-evalPartialUnsized :: Set Integer -> InputSizingExpr -> SizedRecursion
-evalPartialUnsized zeroSet = cata gatherLimits . transformNoDefer step where
-  unsizedTest = unsizedTestIndexed zeroSet (unsizedTestDeferred (\_ x -> error ("evalPartialUnsized unsizedTest unhandled:\n" <> prettyPrint x)))
-  step = deferStep (basicStep (stuckStep (deferredEvalStep' (indexedInputStep zeroSet (abortStep (abortDeferredStep (unsizedStep 255 unsizedTest step wrapUnknownStep)))))))
-  dof _ =  id
-  deferStep handleOther = \case
-    StuckFW (DeferSF fid x) -> dof fid deferB (fromEnum fid) . cata removeBarriers $ transformNoDefer (step . addBarrier) x
-    x -> handleOther x
-  addBarrier = \case
-    StuckFW EnvSF -> embedD $ BarrierF EnvB
-    x -> x
-  removeBarriers = \case
-    DeferredFW (BarrierF x) -> x
-    x -> embed x
-  wrapUnknownStep = deferredEE . BarrierF . embed
-  gatherLimits = \case
-    UnsizedFW (RecursionTestF ri _x) -> SizedRecursion $ Map.singleton ri Nothing
-    UnsizedFW (SizeStageF sm x) -> sm <> x
-    x -> Data.Foldable.fold x
-
-
 -- |What the sizing pass learned, kept rather than discarded. These iteration
 -- counts are the numbers the compiler already relies on to claim a program is
 -- total; reporting them asserts nothing new.
@@ -336,7 +268,6 @@ buildUnsizedLocMap = cata f where
 locateSizingFailure :: Map UnsizedRecursionToken LocTag -> SizingFailure -> SizingFailure
 locateSizingFailure locs failure =
   failure { sizingFailureLoc = Map.lookup (sizingFailureToken failure) locs }
-
 
 -- |Every recursion site in the program, where it is, and how many times it can
 -- iterate. The counts hold for every input: the sizing pass finds them by

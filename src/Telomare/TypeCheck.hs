@@ -95,7 +95,7 @@ buildTypeMap assocSet =
     Nothing -> debugTrace (show multiMap) $ buildMap mempty assocSet mempty
 
 fullyResolve :: (Int -> Maybe PartialType) -> PartialType -> Either TypeCheckError PartialType
-fullyResolve resolve = ($ Set.empty) . cata f where
+fullyResolve resolve = flip (cata f) Set.empty where
   f :: PartialTypeF (Set Int -> Either TypeCheckError PartialType) -> Set Int -> Either TypeCheckError PartialType
   f x alreadySeen = case x of
     _t@(TypeVariable anno i) -> case resolve i of
@@ -104,12 +104,6 @@ fullyResolve resolve = ($ Set.empty) . cata f where
         then Left $ RecursiveType i
         else cata f t $ Set.insert i alreadySeen
     x' -> fmap embed (mapM ($ alreadySeen) x')
-
-
-traceAssociate :: PartialType -> PartialType -> a -> a
-traceAssociate a b = if debug
-  then trace (concat ["associateVar ", show a, " -- ", show b])
-  else id
 
 associateVar :: PartialType -> PartialType -> AnnotateState ()
 associateVar a b = liftEither (makeAssociations a b) >>= \set -> State.modify (changeState set) where

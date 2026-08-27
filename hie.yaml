@@ -9,21 +9,35 @@ cradle:
     - path: "app/Repl.hs"
       component: "telomare:exe:telomare-repl"
 
-
     - path: "app/LSP.hs"
       component: "telomare:exe:telomare-lsp"
 
-    - path: "test"
+    - path: "test/Spec.hs"
       component: "telomare:test:telomare-test"
 
-    - path: "test"
+    - path: "test/Common.hs"
+      component: "telomare:test:telomare-test"
+
+    - path: "test/ParserTests.hs"
       component: "telomare:test:telomare-parser-test"
 
-    - path: "test"
+    - path: "test/ResolverTests.hs"
       component: "telomare:test:telomare-resolver-test"
 
-    - path: "test"
+    - path: "test/CaseTests.hs"
+      component: "telomare:test:telomare-resolver-test"
+
+    - path: "test/SizingTest.hs"
       component: "telomare:test:telomare-sizing-test"
 
-    - path: "test"
+    - path: "test/SizingTests.hs"
+      component: "telomare:test:telomare-sizing-test"
+
+    - path: "test/RunModeTests.hs"
+      component: "telomare:test:telomare-sizing-test"
+
+    - path: "test/UDTTests.hs"
+      component: "telomare:test:telomare-udt-test"
+
+    - path: "test/NatUDTTests.hs"
       component: "telomare:test:telomare-udt-test"

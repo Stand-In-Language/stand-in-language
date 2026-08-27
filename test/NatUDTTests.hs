@@ -5,8 +5,14 @@
 
 -- | Dedicated tests for the user-defined-type sugar
 -- @[T, op1, op2, ...] = \\h -> [ ... ]@ exercised through an embedded
--- @Nat@ UDT fixture.
-module NatUDTTests (natUDTTests) where
+-- @Nat@ UDT fixture. Also home of the eval harness shared with the main
+-- UDT suite.
+module NatUDTTests
+  ( natUDTTests
+  , loadBindings
+  , evalWithBindings
+  , assertExprWith
+  ) where
 
 import Control.Comonad.Cofree (Cofree ((:<)))
 import Control.Monad (unless)
@@ -54,18 +60,14 @@ loadBindings path = do
   raw <- Strict.readFile path
   parseBindings path raw
 
--- |Evaluate @expr@ in the scope of @Prelude.tel@ + the embedded Nat UDT.
-evalUDTExpr :: String -> IO (Either String String)
-evalUDTExpr input = do
-  preludeBindings <- loadBindings "Prelude.tel"
-  udtBindings     <- parseBindings "Nat UDT fixture" natUDTSource
-  let allBindings = preludeBindings <> udtBindings
+-- |Evaluate @expr@ in the scope of the given bindings.
+evalWithBindings :: [(String, ExpandedSurfaceTerm)] -> String -> IO (Either String String)
+evalWithBindings bindings input =
   case first errorBundlePretty (runParser (parseLongExpr <* eof) "" input)
          >>= first renderExpansionError . expandTerm of
     Left err -> pure $ Left err
     Right aupt -> do
-      let bindings = allBindings
-          term = UnknownLoc :< LetUPF (first (locatedName UnknownLoc) <$> pruneBindings aupt bindings) aupt
+      let term = UnknownLoc :< LetUPF (first (locatedName UnknownLoc) <$> pruneBindings aupt bindings) aupt
           compile' :: Term3 -> Either EvalError CompiledExpr
           compile' = compile (DebugSizing (SizingSettings 255 False)) runStaticChecks
       case first RE (process $ desugarTerm term) >>= compile' of
@@ -73,16 +75,27 @@ evalUDTExpr input = do
         Right iexpr -> case eval iexpr of
           Left e       -> pure . Left . show $ e
           Right result -> case toTelomare result of
-            Just r  -> pure . Right . show $ PrettyStuckExpr r
+            Just r  -> pure . Right . show $ PrettyBasic r
             Nothing -> pure . Left $ "conversion error from result:\n" <> prettyPrint result
 
-assertEvalEquals :: String -> String -> Assertion
-assertEvalEquals input expected = do
-  res <- evalUDTExpr input
+-- |Evaluate @expr@ in the scope of @Prelude.tel@ + the embedded Nat UDT.
+evalUDTExpr :: String -> IO (Either String String)
+evalUDTExpr input = do
+  preludeBindings <- loadBindings "Prelude.tel"
+  udtBindings     <- parseBindings "Nat UDT fixture" natUDTSource
+  evalWithBindings (preludeBindings <> udtBindings) input
+
+-- |Assert that @input@ evaluates to @expected@ under the given evaluator.
+assertExprWith :: (String -> IO (Either String String)) -> String -> String -> Assertion
+assertExprWith evalStr input expected = do
+  res <- evalStr input
   case res of
     Left err  -> unless (expected `isInfixOf` err) . assertFailure
                   $ "Evaluation failed: " <> err
     Right val -> val @?= expected
+
+assertEvalEquals :: String -> String -> Assertion
+assertEvalEquals = assertExprWith evalUDTExpr
 
 assertAborts :: String -> String -> Assertion
 assertAborts input msgFragment = do
