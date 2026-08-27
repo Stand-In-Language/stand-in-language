@@ -97,10 +97,11 @@ newtype SizedRecursion = SizedRecursion { unSizedRecursion :: Map UnsizedRecursi
   deriving (Eq, Ord, Show, Generic)
 
 instance Semigroup SizedRecursion where
-  (<>) (SizedRecursion a) (SizedRecursion b) = SizedRecursion . tr $ Map.unionWith (liftM2 max) a b where
-    tr x = if null a || null b
-      then x
-      else debugTrace' ("sizedrecursion merge result: " <> show (first fromEnum <$> Map.toAscList x)) x
+  (<>) sa@(SizedRecursion a) sb@(SizedRecursion b)
+    | Map.null a = sb
+    | Map.null b = sa
+    | otherwise = SizedRecursion . tr $ Map.unionWith (liftM2 max) a b where
+        tr x = debugTrace' ("sizedrecursion merge result: " <> show (first fromEnum <$> Map.toAscList x)) x
 
 instance Monoid SizedRecursion where
   mempty = SizedRecursion Map.empty
@@ -119,11 +120,15 @@ data StrictAccum a x = StrictAccum
 
 instance Monoid a => Applicative (StrictAccum a) where
   pure = StrictAccum mempty
+  {-# INLINE pure #-}
   StrictAccum u f <*> StrictAccum v x = StrictAccum (u <> v) $ f x
+  {-# INLINE (<*>) #-}
   liftA2 f (StrictAccum u x) (StrictAccum v y) = StrictAccum (u <> v) $ f x y
+  {-# INLINE liftA2 #-}
 
 instance Monoid a => Monad (StrictAccum a) where
   StrictAccum u x >>= f = case f x of StrictAccum v y -> StrictAccum (u <> v) y
+  {-# INLINE (>>=) #-}
 
 instance PrettyPrintable1 (StrictAccum SizedRecursion) where
   showP1 (StrictAccum _ x) = showP x
