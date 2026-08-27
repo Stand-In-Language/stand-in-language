@@ -17,7 +17,6 @@ module Telomare.Machine where
 
 import Control.Applicative
 import Control.Monad
-import Control.Monad.Trans.Class
 import Data.Functor.Foldable
 import qualified Data.Map.Strict as Map
 -- import Data.SBV ((.<), (.>))
@@ -416,9 +415,9 @@ unsizedStep _maxSize recursionTest fullStep handleOther =
     t@(UnsizedFW (RecursionTestF _ _)) -> embed t
     x -> handleOther x
 
-unsizedStepM''' :: forall a f t m. (Base a ~ f, Traversable f, BasicBase f, StuckBase f, AbortBase f, UnsizedBase f, Recursive a, Corecursive a
-                                   , Eq a, PrettyPrintable a, m ~ StrictAccum SizedRecursion, MonadTrans t, Applicative (t m))
-  => Int -> Set Integer -> (UnsizedRecursionToken -> a -> a) -> (f a -> t m a) -> f a -> t m a
+unsizedStepM''' :: forall a f m. (Base a ~ f, Traversable f, BasicBase f, StuckBase f, AbortBase f, UnsizedBase f, Recursive a, Corecursive a
+                                   , Eq a, PrettyPrintable a, m ~ StrictAccum SizedRecursion)
+  => Int -> Set Integer -> (UnsizedRecursionToken -> a -> a) -> (f a -> m a) -> f a -> m a
 unsizedStepM''' maxSize _zeros recursionTest handleOther x = f x where
   argOne = LeftB EnvB
   argTwo = LeftB (RightB EnvB)
@@ -449,7 +448,7 @@ unsizedStepM''' maxSize _zeros recursionTest handleOther x = f x where
                                                 (appB (appB argThree (unsizedEE $ SizeStepStubF tok (n + 1) e)) argOne)
                                                 (unsizedEE . SizeStageF (SizedRecursion . Map.singleton tok $ pure (n + 1)) $ appB argTwo argOne))) es
     UnsizedFW (RecursionTestF ri x') -> pure . recursionTest ri $ x'
-    UnsizedFW (SizeStageF sr x') -> lift . debugTrace ("Hit SizeStage: " <> show sr) $ StrictAccum sr x'
+    UnsizedFW (SizeStageF sr x') -> debugTrace ("Hit SizeStage: " <> show sr) $ StrictAccum sr x'
     UnsizedFW (TraceF s x') -> pure $ debugTrace ("Hit TraceF: " <> s <> "\n" <> prettyPrint x') x'
     _ -> handleOther x
 

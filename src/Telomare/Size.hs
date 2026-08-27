@@ -17,7 +17,6 @@ module Telomare.Size where
 
 import Control.Applicative
 import qualified Control.Comonad.Trans.Cofree as CofreeT (CofreeF (..))
-import Control.Monad.Reader (runReaderT)
 import Data.Foldable
 import Data.Functor.Foldable
 import Data.Map.Strict (Map)
@@ -158,7 +157,7 @@ initialInput irs = f 0 where
 -- The failure carries no location — `UnsizedExpr` has none. Callers holding
 -- the `Term3` fill it in (see `Telomare.Eval.locateSizingFailure`).
 sizeTermM :: SizingSettings -> UnsizedExpr -> Either SizingFailure (SizedRecursion, CompiledExpr)
-sizeTermM sizingSettings x = tidyUp . flip (runReaderT . transformNoDeferM evalStep) [] $ mx where
+sizeTermM sizingSettings x = tidyUp . transformNoDeferM evalStep $ mx where
   unlocated tok kind = SizingFailure
     { sizingFailureToken = tok
     , sizingFailureKind = kind
