@@ -130,7 +130,16 @@ iteB_ i t e = SetEnvB $ PairP (SetEnvB $ PairP GateB i) (PairP e t)
 data BasicExprF f
   = ZeroSF
   | PairSF f f
-  deriving (Eq, Ord, Show, Functor, Foldable, Traversable, Generic)
+  deriving (Eq, Ord, Show, Functor, Foldable, Generic)
+
+-- Hand-written so the traversal inlines and specialises at call sites;
+-- the derived method carries no unfolding, leaving hot monadic traversals
+-- (e.g. the sizing pass) stuck on dictionary passing.
+instance Traversable BasicExprF where
+  {-# INLINE traverse #-}
+  traverse f = \case
+    ZeroSF     -> pure ZeroSF
+    PairSF a b -> liftA2 PairSF (f a) (f b)
 
 instance Eq1 BasicExprF where
   liftEq test a b = case (a,b) of
@@ -156,7 +165,17 @@ data StuckF f
   | GateSF
   | LeftSF f
   | RightSF f
-  deriving (Eq, Ord, Show, Functor, Foldable, Traversable, Generic)
+  deriving (Eq, Ord, Show, Functor, Foldable, Generic)
+
+instance Traversable StuckF where
+  {-# INLINE traverse #-}
+  traverse f = \case
+    DeferSF fi x -> DeferSF fi <$> f x
+    EnvSF        -> pure EnvSF
+    SetEnvSF x   -> SetEnvSF <$> f x
+    GateSF       -> pure GateSF
+    LeftSF x     -> LeftSF <$> f x
+    RightSF x    -> RightSF <$> f x
 
 instance Show1 StuckF where
   liftShowsPrec showsPrec' _showList _prec = \case
@@ -184,7 +203,13 @@ instance Validity FunctionIndex
 data AbortableF f
   = AbortF
   | AbortedF BasicExpr
-  deriving (Eq, Show, Functor, Foldable, Traversable, Generic)
+  deriving (Eq, Show, Functor, Foldable, Generic)
+
+instance Traversable AbortableF where
+  {-# INLINE traverse #-}
+  traverse _ = \case
+    AbortF     -> pure AbortF
+    AbortedF x -> pure $ AbortedF x
 
 instance Eq1 AbortableF  where
   liftEq _test a b = case (a,b) of

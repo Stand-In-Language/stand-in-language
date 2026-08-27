@@ -144,7 +144,14 @@ instance Eq (VoidF a) where
 
 data SuperPositionF f
   = EitherPF (Maybe Integer) !f !f
-  deriving (Eq, Ord, Show, Functor, Foldable, Traversable, Generic)
+  deriving (Eq, Ord, Show, Functor, Foldable, Generic)
+
+-- The hand-written Traversable instances here mirror Telomare.IR.Base:
+-- INLINE lets hot monadic traversals specialise instead of paying for
+-- dictionaries and boxed applicative chains at every node.
+instance Traversable SuperPositionF where
+  {-# INLINE traverse #-}
+  traverse f (EitherPF n a b) = liftA2 (EitherPF n) (f a) (f b)
 
 instance Eq1 SuperPositionF where
   liftEq test a b = case (a,b) of
@@ -179,7 +186,17 @@ data UnsizedRecursionF f
   | RefinementWrapperF LocTag f f
   | SizeStepStubF UnsizedRecursionToken Int f
   | TraceF String f
-  deriving (Eq, Ord, Show, Functor, Foldable, Traversable, Generic)
+  deriving (Eq, Ord, Show, Functor, Foldable, Generic)
+
+instance Traversable UnsizedRecursionF where
+  {-# INLINE traverse #-}
+  traverse f = \case
+    RecursionTestF t x        -> RecursionTestF t <$> f x
+    UnsizedStubF t x          -> UnsizedStubF t <$> f x
+    SizeStageF sr x           -> SizeStageF sr <$> f x
+    RefinementWrapperF l tc x -> liftA2 (RefinementWrapperF l) (f tc) (f x)
+    SizeStepStubF t n x       -> SizeStepStubF t n <$> f x
+    TraceF s x                -> TraceF s <$> f x
 
 instance Eq1 UnsizedRecursionF where
   liftEq test a b = case (a, b) of
@@ -213,7 +230,13 @@ instance PrettyPrintable1 VoidF where
 data IndexedInputF f
   = IVarF Integer
   | AnyF
-  deriving (Eq, Ord, Show, Functor, Foldable, Traversable, Generic)
+  deriving (Eq, Ord, Show, Functor, Foldable, Generic)
+
+instance Traversable IndexedInputF where
+  {-# INLINE traverse #-}
+  traverse _ = \case
+    IVarF n -> pure $ IVarF n
+    AnyF    -> pure AnyF
 
 instance Eq1 IndexedInputF where
   liftEq _test a b = case (a, b) of
@@ -361,7 +384,18 @@ data UnsizedExprF f
   | UnsizedExprA (AbortableF f)
   | UnsizedExprU (UnsizedRecursionF f)
   | UnsizedExprI (IndexedInputF f)
-  deriving (Eq, Show, Functor, Foldable, Traversable, Generic)
+  deriving (Eq, Show, Functor, Foldable, Generic)
+
+instance Traversable UnsizedExprF where
+  {-# INLINE traverse #-}
+  traverse f = \case
+    UnsizedExprB x -> UnsizedExprB <$> traverse f x
+    UnsizedExprS x -> UnsizedExprS <$> traverse f x
+    UnsizedExprP x -> UnsizedExprP <$> traverse f x
+    UnsizedExprA x -> UnsizedExprA <$> traverse f x
+    UnsizedExprU x -> UnsizedExprU <$> traverse f x
+    UnsizedExprI x -> UnsizedExprI <$> traverse f x
+
 instance BasicBase UnsizedExprF where
   embedB = UnsizedExprB
   extractB = \case
