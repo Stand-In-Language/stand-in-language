@@ -41,6 +41,7 @@ basicStep handleOther = \case
   x@(BasicFW (PairSF _ _))                 -> embed x
   x                                        -> handleOther x
 
+{-# INLINABLE basicStepM #-}
 basicStepM :: (Base g ~ f, BasicBase f, Traversable f, Corecursive g, Recursive g, PrettyPrintable g, Monad m) => (f g -> m g) -> f g -> m g
 basicStepM handleOther x = f x where
   f = \case
@@ -57,6 +58,7 @@ transformNoDefer f = c where
     s@(StuckFW (DeferSF _ _)) -> s
     x                         -> fmap c x
 
+{-# INLINABLE transformNoDeferM #-}
 transformNoDeferM :: (Base g ~ f, StuckBase f, Traversable f, Monad m, Recursive g) => (f g -> m g) -> g -> m g
 transformNoDeferM f = c where
   c = f <=< (c' . project)
@@ -100,6 +102,7 @@ stuckStep handleOther = \case
   x -> handleOther x
 
 
+{-# INLINABLE stuckStepM #-}
 stuckStepM :: (Base a ~ f, Traversable f, StuckBase f, BasicBase f, Recursive a, Corecursive a, PrettyPrintable a, Monad m)
   => (f a -> m a) -> f a -> m a
 stuckStepM handleOther x = f x where
@@ -130,12 +133,14 @@ failAndPrintStack x = do
   error ("could not evaluate\n" <> prettyPrint (embed x) <> concatMap printCall s) where
     printCall (fi, i) = "\n--> from " <> show fi <> " with argument\n" <> prettyPrint i
 
+{-# INLINABLE gateBasicResult #-}
 gateBasicResult :: (Base g ~ f, BasicBase f, Recursive g, Corecursive g) => (g -> GateResult g) -> g -> GateResult g
 gateBasicResult handleOther = \case
   BasicEE ZeroSF -> GateResult True False Nothing
   BasicEE (PairSF _ _) -> GateResult False True Nothing
   x -> handleOther x
 
+{-# INLINABLE gateSuperResult #-}
 gateSuperResult :: (Base g ~ f, SuperBase f, Recursive g, Corecursive g) => (g -> GateResult g) -> (g -> GateResult g) -> g -> GateResult g
 gateSuperResult step handleOther = \case
   SuperEE (EitherPF n a b) -> let GateResult la ra ba = step a
@@ -146,22 +151,26 @@ gateSuperResult step handleOther = \case
                               in GateResult (la || lb) (ra || rb) co
   x -> handleOther x
 
+{-# INLINABLE gateAbortResult #-}
 gateAbortResult :: (Base g ~ f, AbortBase f, Recursive g, Corecursive g) => (g -> GateResult g) -> g -> GateResult g
 gateAbortResult handleOther = \case
   a@(AbortEE (AbortedF _)) -> GateResult False False $ Just a
   x -> handleOther x
 
+{-# INLINABLE gateIndexedResult #-}
 gateIndexedResult :: (Base g ~ f, IndexedInputBase f, Recursive g, Corecursive g) => (g -> GateResult g) -> g -> GateResult g
 gateIndexedResult handleOther = \case
   -- IndexedEE (IVarF n) -> GateResult True False Nothing -- wait, why lb but no rb?
   IndexedEE (IVarF _n) -> GateResult True True Nothing
   x -> handleOther x
 
+{-# INLINABLE mergeShallow #-}
 mergeShallow :: (Base g ~ f, SuperBase f, ShallowEq1 f, Recursive g, Corecursive g, PrettyPrintable g) => Maybe Integer -> g -> g -> g
 mergeShallow n a b = if shallowEq1 (project a) (project b)
   then debugTrace ("mergeShallow found same pair\n" <> prettyPrint a <> "\nand\n" <> prettyPrint b) a
   else superEE $ EitherPF n a b
 
+{-# INLINABLE foldGateResult #-}
 foldGateResult :: forall g f. (Base g ~ f, SuperBase f, BasicBase f, StuckBase f, Recursive g, Corecursive g) => Maybe Integer -> GateResult g -> g
 foldGateResult n (GateResult doL doR o) =
   let branchPart = case (doL, doR) of
@@ -201,6 +210,7 @@ superStep gateResult step handleOther =
     x@(SuperFW (EitherPF _ _ _)) -> embed x
     x -> handleOther x
 
+{-# INLINABLE superStepM #-}
 superStepM :: forall a f m. (Base a ~ f, Traversable f, BasicBase f, StuckBase f, SuperBase f, ShallowEq1 f, Recursive a, Corecursive a, PrettyPrintable a, Monad m)
   => (a -> GateResult a) -> (f a -> m a) -> (f a -> m a) -> f a -> m a
 superStepM gateResult step handleOther x = f x where
@@ -238,6 +248,7 @@ superAbortStep step handleOther x = f x where
       mergeShallow n (pbStep (FillFunction (AbortEE AbortF)) a) (pbStep (FillFunction (AbortEE AbortF)) b)
     _ -> handleOther x
 
+{-# INLINABLE superAbortStepM #-}
 superAbortStepM :: (Base g ~ f, Traversable f, BasicBase f, StuckBase f, SuperBase f, AbortBase f, ShallowEq1 f, Recursive g, Corecursive g, PrettyPrintable g, Monad m)
   => (f g -> m g) -> (f g -> m g) -> f g -> m g
 superAbortStepM step handleOther x = f x where
@@ -253,6 +264,7 @@ indexedAbortStep handleOther = \case
   FillFunction (AbortEE AbortF) (IndexedEE (IVarF _n)) -> AbortEE $ AbortedF AbortAny
   x -> handleOther x
 
+{-# INLINABLE indexedAbortStepM #-}
 indexedAbortStepM :: (Base a ~ f, Traversable f, BasicBase f, StuckBase f, AbortBase f, IndexedInputBase f, Recursive a, Corecursive a, PrettyPrintable a, Monad m)
   => (f a -> m a) -> f a -> m a
 indexedAbortStepM handleOther = \case
@@ -265,6 +277,7 @@ indexedSuperStep handleOther = \case
   FillFunction GateB (IndexedEE (IVarF n)) -> superEE $ EitherPF (pure n) doLeft doRight
   x -> handleOther x
 
+{-# INLINABLE indexedSuperStepM #-}
 indexedSuperStepM :: (Base a ~ f, Traversable f, BasicBase f, StuckBase f, SuperBase f, IndexedInputBase f, Recursive a, Corecursive a, PrettyPrintable a, Monad m)
   => (f a -> m a) -> f a -> m a
 indexedSuperStepM handleOther = \case
@@ -293,6 +306,7 @@ abortStep handleOther =
     x@(AbortFW AbortF) -> embed x
     x -> handleOther x
 
+{-# INLINABLE abortStepM #-}
 abortStepM :: (Base a ~ f, Traversable f, BasicBase f, StuckBase f, AbortBase f, Recursive a, Corecursive a, Monad m)
   => (f a -> m a) -> f a -> m a
 abortStepM handleOther x = f x where
@@ -415,6 +429,7 @@ unsizedStep _maxSize recursionTest fullStep handleOther =
     t@(UnsizedFW (RecursionTestF _ _)) -> embed t
     x -> handleOther x
 
+{-# INLINABLE unsizedStepM''' #-}
 unsizedStepM''' :: forall a f m. (Base a ~ f, Traversable f, BasicBase f, StuckBase f, AbortBase f, UnsizedBase f, Recursive a, Corecursive a
                                    , Eq a, PrettyPrintable a, m ~ StrictAccum SizedRecursion)
   => Int -> Set Integer -> (UnsizedRecursionToken -> a -> a) -> (f a -> m a) -> f a -> m a
@@ -526,6 +541,7 @@ indexAbortIfUnboundStep zeroes handleOther =
   IndexedFW (IVarF n) -> res "bare" n
   x -> handleOther x
 
+{-# INLINABLE indexedInputStepM #-}
 indexedInputStepM :: (Base a ~ f, Traversable f, BasicBase f, StuckBase f, IndexedInputBase f, Recursive a, Corecursive a, PrettyPrintable a, Monad m)
   => Set Integer -> (f a -> m a) -> f a -> m a
 indexedInputStepM zeroes handleOther x = f x where
@@ -562,6 +578,7 @@ indexedInputStepM' zeroes handleOther x = f x where
 
     _ -> handleOther x
 
+{-# INLINABLE indexedInputIgnoreSwitchStepM #-}
 indexedInputIgnoreSwitchStepM :: (Base a ~ f, Traversable f, BasicBase f, StuckBase f, IndexedInputBase f, Recursive a, Corecursive a, Monad m)
   => (f a -> m a) -> f a -> m a
 indexedInputIgnoreSwitchStepM handleOther x = f x where
