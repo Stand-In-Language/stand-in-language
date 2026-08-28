@@ -99,6 +99,12 @@ data SpaceMeter = SpaceMeter
   , spPeakUpper :: !Natural
   -- ^A figure the run never exceeded. Equal to `spPeakLower` under
   -- `SweepEveryAlloc`.
+  , spAborts    :: !Natural
+  -- ^How many aborted values the run constructed. Nonzero means some check
+  -- failed along the way — even when the result is fine, because an aborted
+  -- value bound eagerly and never used is simply retained and dropped. The
+  -- static bound covers refinement-valid runs, so this is what tells a
+  -- harness which runs it may compare.
   }
   deriving (Eq, Show)
 
@@ -110,10 +116,11 @@ instance Semigroup SpaceMeter where
     , spBuilt = spBuilt a + spBuilt b
     , spPeakLower = max (spPeakLower a) (spPeakLower b)
     , spPeakUpper = max (spPeakUpper a) (spPeakUpper b)
+    , spAborts = spAborts a + spAborts b
     }
 
 instance Monoid SpaceMeter where
-  mempty = SpaceMeter 0 0 0 0
+  mempty = SpaceMeter 0 0 0 0 0
 
 -- |What to print for a measured run.
 renderSpaceMeter :: SpaceMeter -> String
@@ -156,6 +163,7 @@ data MachSt = MachSt
   , mBuilt    :: !Natural
   , mPeakLow  :: !Natural
   , mPeakHigh :: !Natural
+  , mAborts   :: !Natural
   , mLastLive :: !Natural
   -- ^Live cells at the last sweep; the store holds exactly the live nodes
   -- then, since sweeps drop the unreachable ones.
@@ -164,13 +172,16 @@ data MachSt = MachSt
   }
 
 emptySt :: MachSt
-emptySt = MachSt IntMap.empty 0 Nothing [] 0 0 0 0 0 0
+emptySt = MachSt IntMap.empty 0 Nothing [] 0 0 0 0 0 0 0
 
 step :: MachSt -> MachSt
 step st = st { mSteps = mSteps st + 1 }
 
 builtTick :: MachSt -> MachSt
 builtTick st = st { mBuilt = mBuilt st + 1 }
+
+abortTick :: MachSt -> MachSt
+abortTick st = st { mAborts = mAborts st + 1 }
 
 -- |Mark from the roots and take the measure; drop what was not reached.
 sweep :: Bool -- ^Exact: the store is measured at every allocation, so the
@@ -223,6 +234,7 @@ evalSpace policy expr =
         , spBuilt = mBuilt settledSt
         , spPeakLower = mPeakLow settledSt
         , spPeakUpper = mPeakHigh settledSt
+        , spAborts = mAborts settledSt
         }
   in (measured, case findAborted result of
        Just e  -> Left $ AbortRunTime e
@@ -252,7 +264,7 @@ evalSpace policy expr =
         Just i  -> retC (step st) i
         Nothing -> unhandled "unapplied environment reference"
       AbortFW AbortF       -> settle st AbortN
-      AbortFW (AbortedF e) -> settle st (AbortedN e)
+      AbortFW (AbortedF e) -> settle (abortTick st) (AbortedN e)
       _ -> error "Telomare.Eval.Space.evalSpace: unexpected expression"
 
     retC !st v = case mFrames st of
@@ -297,7 +309,7 @@ evalSpace policy expr =
       -- `assert` on a passing value yields the identity function.
       (AbortN, ZeroN) -> allocRet (step st) (deferNode identityFunction)
       (AbortN, _)     ->
-        allocRet (builtTick (step st)) (AbortedN (truncateData (mStore st) e))
+        allocRet (abortTick (builtTick (step st))) (AbortedN (truncateData (mStore st) e))
       (GateN, ZeroN)     -> allocRet (step st) (deferNode doLeft)
       (GateN, PairN _ _) -> allocRet (step st) (deferNode doRight)
       -- The body's environment is now `e`; nothing is copied, so every

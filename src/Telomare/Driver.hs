@@ -34,6 +34,8 @@ import Telomare.Resolve (main2Term3, main2Term3let, process, resolveAllImports)
 import Telomare.Size (SizingReport (..), SizingSettings (..),
                       buildUnsizedLocMap, evalStaticCheck, locateSizingFailure,
                       sizeTermM, term3ToUnsizedExpr)
+import Telomare.Space.Static (defaultStaticSpaceFuel, evalSpaceStatic,
+                              renderStaticSpaceFailure)
 import Telomare.TypeCheck (typeCheck)
 import Text.Megaparsec (errorBundlePretty, runParser)
 
@@ -79,7 +81,7 @@ findChurchSizeD so = fmap snd . findChurchSizeReporting so
 
 findChurchSizeReporting :: SizingOption -> Term3 -> Either EvalError (SizingReport, CompiledExpr)
 findChurchSizeReporting so t3 = case so of
-  NoSizing       -> pure (report mempty, convertPT (const reallyBigNum) t3)
+  NoSizing       -> pure (report mempty (Left "the program was not sized"), convertPT (const reallyBigNum) t3)
   UnitTestSizing -> sized (SizingSettings reallyBigNum False)
   MainSizing     -> sized (SizingSettings reallyBigNum True)
   DebugSizing ss -> sized ss
@@ -88,7 +90,11 @@ findChurchSizeReporting so t3 = case so of
     report counts = SizingReport counts locs (sizingBudget so)
     sized settings = case sizeTermM settings $ term3ToUnsizedExpr t3 of
       Left failure      -> Left . RecursionLimitError $ locateSizingFailure locs failure
-      Right (counts, t) -> pure (report counts, t)
+      Right (counts, restrictions, t) ->
+        -- The space walk stays a thunk in the report until something reads it.
+        let space = first renderStaticSpaceFailure
+              $ evalSpaceStatic defaultStaticSpaceFuel restrictions t
+        in pure (report counts space, t)
 
 runStaticChecks :: CompiledExpr -> Either EvalError CompiledExpr
 runStaticChecks t =

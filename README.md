@@ -371,6 +371,7 @@ pipeline. In pipeline order:
 | Type check | `Telomare.TypeCheck` | unification-based check of `Term3` against the main type. |
 | Size (totality) | `Telomare.Size`, `Telomare.Size.IR`, `Telomare.Machine` | telomare's distinguishing stage: `sizeTermM` abstractly interprets the program over symbolic input and infers a finite iteration count for every recursion site, then bakes the counts in (`Term3 -> CompiledExpr`). A program that cannot be sized does not compile. `Machine` is the shared step-algebra the sizing pass and the evaluators are assembled from. |
 | Evaluate | `Telomare.Eval.Reference`, `Telomare.Eval.Meter`, `Telomare.Eval.Space`, `Telomare.Fast` | the reference interpreter, the step-counting meter, the space machine that also measures the live-heap peak, and the fuel-based fast path (which skips sizing). |
+| Bound | `Telomare.SpaceBound`, `Telomare.Space.Static` | the space-bound language (maxima of affines in input sizes) and the compile-time abstract walk that produces one. |
 | Drive | `Telomare.Driver`, `Telomare.Artifact`, `Telomare.Certificate`, `Telomare.Levels` | orchestration (`compileModules`, `evalLoop`), `.telc` artifacts, and the static report. |
 
 The IR vocabulary shared by all stages lives under `Telomare.IR.*`

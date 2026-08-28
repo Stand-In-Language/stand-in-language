@@ -35,6 +35,7 @@ import Telomare.IR.Loc
 import Telomare.Machine hiding (debug, debugTrace)
 import Telomare.PrettyPrint
 import Telomare.Size.IR
+import Telomare.SpaceBound (SpaceBound)
 
 debug :: Bool
 debug = False
@@ -156,7 +157,8 @@ initialInput irs = f 0 where
 --
 -- The failure carries no location — `UnsizedExpr` has none. Callers holding
 -- the `Term3` fill it in (see `Telomare.Eval.locateSizingFailure`).
-sizeTermM :: SizingSettings -> UnsizedExpr -> Either SizingFailure (SizedRecursion, CompiledExpr)
+sizeTermM :: SizingSettings -> UnsizedExpr
+          -> Either SizingFailure (SizedRecursion, InputRestrictions, CompiledExpr)
 sizeTermM sizingSettings x = tidyUp . transformNoDeferM evalStep $ mx where
   unlocated tok kind = SizingFailure
     { sizingFailureToken = tok
@@ -183,7 +185,7 @@ sizeTermM sizingSettings x = tidyUp . transformNoDeferM evalStep $ mx where
     Just (OverfueledSR i) -> debugTrace "sizeTermM ran out of budget" Left
       . unlocated i . FuelExhausted . succ $ maxSizingSize sizingSettings
     _ -> let sized = setSizes sm cm
-         in debugTrace "sizeTermM found all sizes" pure . (,) sr . clean $ if doCap sizingSettings
+         in debugTrace "sizeTermM found all sizes" pure . (,,) sr inputRestrictions . clean $ if doCap sizingSettings
             then uncap sized
             else sized
       where uncap = \case
@@ -254,6 +256,10 @@ data SizingReport = SizingReport
   -- ^Where each site is in the source.
   , sizingReportBudget :: Int
   -- ^The unrolling budget the search was allowed.
+  , sizingReportSpace  :: Either String SpaceBound
+  -- ^A bound on the live-heap peak, in cells over input sizes, or why none
+  -- was found. Deliberately lazy: computing it walks the sized program, and
+  -- a plain run never asks.
   }
 
 -- |Every recursion site's source location, recovered from the `Term3`

@@ -54,6 +54,9 @@ runModeSpec = do
                 `shouldBe` unSizedRecursion (sizingReportCounts report)
               sizingReportLocs (artifactReport back) `shouldBe` sizingReportLocs report
               sizingReportBudget (artifactReport back) `shouldBe` sizingReportBudget report
+              -- The space bound too: reporting it from an artifact must not
+              -- need the abstract walk again.
+              sizingReportSpace (artifactReport back) `shouldBe` sizingReportSpace report
 
     it "evaluates to what the program it came from evaluates to" $ do
       modules <- loadWith "tc_ultra_minimal.tel" "tc_ultra_minimal"

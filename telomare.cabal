@@ -45,6 +45,8 @@ library
                      , Telomare.PrettyPrint.Indent
                      , Telomare.Resolve
                      , Telomare.Size
+                     , Telomare.SpaceBound
+                     , Telomare.Space.Static
                      , Telomare.Size.IR
                      , Telomare.TypeCheck
                      , Telomare.Util
@@ -192,6 +194,7 @@ test-suite telomare-sizing-test
                      , bytestring
                      , containers
                      , hspec
+                     , recursion-schemes
                      , telomare
                      , strict
   ghc-options:         -Wall -Wunused-packages -threaded -rtsopts -with-rtsopts=-N
