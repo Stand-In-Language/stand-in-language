@@ -33,6 +33,7 @@ import Telomare.Levels (BindingKey, LevelsInfo (..), SiteKey (..), bangs,
                         renderBinding, renderDef, renderLevels, renderSource)
 import Telomare.Size (SizingReport (..))
 import Telomare.Size.IR (SizedRecursion (..))
+import Telomare.SpaceBound (renderSpaceBoundBrief)
 import Telomare.Util (padRight, plural)
 
 -- |The whole static report.
@@ -44,7 +45,7 @@ renderStaticReport :: Maybe String -- ^Source hash, when read from an artifact.
                    -> Either String LevelsInfo -- ^Levels, or why there are none.
                    -> String
 renderStaticReport sourceHash sizing levels = unlines $
-  header <> [""] <> sizingSection <> [""] <> structuralSection <> closing
+  header <> [""] <> sizingSection <> spaceSection <> [""] <> structuralSection <> closing
   where
     header =
       "static report: what the compiler knows without running the program"
@@ -58,6 +59,20 @@ renderStaticReport sourceHash sizing levels = unlines $
         ("recursion sites (iterations, over every input):" : sizedRows report)
           <> ["", "sizing budget in force: " <> show (sizingReportBudget report)
                 <> " unrollings"]
+
+    -- The space bound rides with sizing: both come from the same abstract
+    -- walk machinery, and neither exists for an unsized program.
+    spaceSection = case sizing of
+      Nothing -> []
+      Just report -> case sizingReportSpace report of
+        Left why ->
+          ["", "space (static bound): unknown -- " <> why]
+        Right bound ->
+          [ ""
+          , "space (static bound, refinement-valid inputs): "
+              <> renderSpaceBoundBrief bound
+          , "  |input.path| stands for the size in cells of that input part;"
+          , "  a run whose input fails a refinement is outside this bound." ]
 
     structuralSection = case levels of
       Left err -> ["recursion nesting: unavailable (" <> err <> ")"]

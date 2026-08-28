@@ -50,6 +50,7 @@ import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.Size (SizingReport (..))
 import Telomare.Size.IR (SizedRecursion (..))
+import Telomare.SpaceBound (Affine (..), SpaceBound (..))
 
 -- |A program with its sizing already done.
 data Artifact = Artifact
@@ -71,7 +72,7 @@ artifactMagic = BL.pack [0x54, 0x45, 0x4C, 0x43] -- "TELC"
 -- |Bumped whenever the encoding changes, which invalidates older files rather
 -- than misreading them.
 artifactVersion :: Int
-artifactVersion = 2
+artifactVersion = 3
 
 telcExtension :: String
 telcExtension = ".telc"
@@ -227,12 +228,38 @@ putReport r = do
   putMap putToken (putMaybe putInt') (unSizedRecursion (sizingReportCounts r))
   putMap putToken putLocTag (sizingReportLocs r)
   putInt' (sizingReportBudget r)
+  putSpace (sizingReportSpace r)
 
 getReport :: Get SizingReport
 getReport = SizingReport . SizedRecursion
   <$> getMap getToken (getMaybe getInt')
   <*> getMap getToken getLocTag
   <*> getInt'
+  <*> getSpace
+
+-- The space bound. Paths and coefficients fit an Int for any input a machine
+-- could hold.
+
+putSpace :: Either String SpaceBound -> Put
+putSpace = \case
+  Left why -> putWord8 0 >> putString why
+  Right (SpaceBound affines) -> putWord8 1 >> putMaybe (putList putAffine) affines
+
+getSpace :: Get (Either String SpaceBound)
+getSpace = getWord8 >>= \case
+  0 -> Left <$> getString
+  1 -> Right . SpaceBound <$> getMaybe (getList getAffine)
+  n -> fail $ "unknown space bound tag " <> show n
+
+putAffine :: Affine -> Put
+putAffine a = do
+  putMap (putInt' . fromIntegral) (putInt' . fromIntegral) (affCoeffs a)
+  putInt' (fromIntegral (affConst a))
+
+getAffine :: Get Affine
+getAffine = Affine
+  <$> getMap (fromIntegral <$> getInt') (fromIntegral <$> getInt')
+  <*> (fromIntegral <$> getInt')
 
 -- Terms.
 

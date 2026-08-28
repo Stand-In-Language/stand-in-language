@@ -16,3 +16,6 @@ dev-profile*
 .direnv/
 # compiled programs written next to their sources by `telomare --compile`
 *.telc
+# GHC profiling output (+RTS -p / -h)
+*.prof
+*.hp

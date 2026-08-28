@@ -15,15 +15,16 @@ import Telomare.Artifact (Artifact (..), isArtifactPath, nodeCount,
                           readArtifact, sourcesHash, telcExtension,
                           writeArtifact)
 import Telomare.Certificate (renderStaticReport)
-import Telomare.Driver (compileModules, evalLoop, evalLoopMetered)
-import Telomare.Eval.Meter (renderMeter)
+import Telomare.Driver (compileModules, evalLoop, evalLoopSpaceMetered)
+import Telomare.Eval.Space (renderSpaceMeter)
 import Telomare.Fast (compileFast, defaultFastFuel, renderFastMeter,
                       runFastLoop)
 import Telomare.IR.Loc (locatedNameText)
 import Telomare.IR.Surface (ImportDecl (parsedImportModule), ModuleItem (..))
 import Telomare.Levels (levelsInfo)
 import Telomare.Parse (runParseModule)
-import Telomare.Size (SizingReport)
+import Telomare.Size (SizingReport (sizingReportSpace))
+import Telomare.SpaceBound (renderSpaceBoundBrief)
 
 -- |What to do with the program.
 data Action
@@ -148,8 +149,8 @@ runArtifact path action mode = do
         Certificate -> putStr $ artifactCertificate artifact
         Run         -> evalLoop (artifactExpr artifact)
         Meter       -> do
-          measured <- evalLoopMetered [] (artifactExpr artifact)
-          reportMeter $ renderMeter measured <> "\n"
+          measured <- evalLoopSpaceMetered [] (artifactExpr artifact)
+          reportMeter $ renderSpaceMeter measured <> "\n"
 
 -- |An artifact outlives the checkout it came from, so a hash mismatch is worth
 -- saying and never worth refusing over.
@@ -176,8 +177,8 @@ runSized file action = do
       Run -> evalLoop sized
       Certificate -> putStr $ staticReport Nothing (Just report) allModules entryModule
       Meter -> do
-        measured <- evalLoopMetered [] sized
-        reportMeter $ renderMeter measured <> "\n"
+        measured <- evalLoopSpaceMetered [] sized
+        reportMeter $ renderSpaceMeter measured <> "\n"
       Compile output -> do
         let path = fromMaybe (replaceExtension file telcExtension) output
             certificate = staticReport Nothing (Just report) allModules entryModule
@@ -189,8 +190,12 @@ runSized file action = do
               , artifactExpr = sized
               }
         writeArtifact path artifact
+        let spaceNote = case sizingReportSpace report of
+              Left _  -> ""
+              Right b -> ", space <= " <> renderSpaceBoundBrief b
         hPutStrLn stderr $ "wrote " <> path <> " (" <> show (nodeCount sized)
-          <> " nodes, sources " <> take 12 (sourcesHash allModules) <> ")"
+          <> " nodes" <> spaceNote
+          <> ", sources " <> take 12 (sourcesHash allModules) <> ")"
 
 -- |Without sizing. The program runs on demand under a fuel cap; no iteration
 -- count exists, so the certificate reports structure only.

@@ -67,10 +67,14 @@ recursion sites (iterations, over every input):
 
 sizing budget in force: 65536 unrollings
 
+space (static bound, refinement-valid inputs): sizes of 116 input parts (116 weighted) + 4337 cells
+  |input.path| stands for the size in cells of that input part;
+  a run whose input fails a refinement is outside this bound.
+
 recursion nesting (structural, approximate):
   triple         function             levels
-  Prelude:11:19  Prelude.d2c          0, 1
-  Prelude:44:34  Prelude.foldr.fixed  0, 1
+  Prelude:11:17  Prelude.d2c          0, 1
+  Prelude:44:32  Prelude.foldr.fixed  0, 1
 ```
 
 The counts assert nothing new: they are the numbers already baked into the
@@ -83,22 +87,36 @@ index differently — a count is per instantiation, a nesting row is per `{test,
 recursion, last}` as written — so they do not line up row by row, and the
 report says so.
 
-`--meter` runs the program and reports what the run cost — steps taken, and
-term nodes built. Those are measurements of one run, not predictions about the
-next:
+`--meter` runs the program and reports what the run cost — steps taken, term
+nodes built, and the live-heap peak. Those are measurements of one run, not
+predictions about the next:
 
 ```sh
 $ printf '3 4\n' | cabal run telomare -- --meter simpleplus.tel
-steps (measured): 46652
-nodes built (measured): 13660
+steps (measured): 46566
+nodes built (measured): 13577
+live heap peak (measured): 9430..9887 cells
 ```
 
-Neither is a memory figure, deliberately. Telomare's evaluator shares
-environments rather than copying them, so counting the term it holds as a tree
-counts shared structure once per reference — for `tictactoe.tel` that reads
-about 1.2TB for a run that fits in a few GB. An honest memory figure needs
-reachability over distinct nodes, which is not implemented; use `+RTS -s` for
-the real thing.
+The peak is a real memory figure, and the reason it took until now is worth a
+sentence: telomare's evaluator shares environments rather than copying them,
+so counting the term it holds as a tree counts shared structure once per
+reference — for `tictactoe.tel` that reads about 1.2TB for a run that fits in
+a few GB. The peak is instead measured on an explicit store, as reachability
+over *distinct* nodes from what the machine still holds, and it is printed as
+a bracket — a figure the run reached and one it never exceeded — because the
+measuring sweep is amortized rather than run at every allocation.
+
+The certificate's `space` line is the static side of the same figure: the
+identical machine walked at compile time over a symbolic input, reporting the
+peak as an expression over input sizes. The two are tested against each other:
+on every corpus program, the bound with the actual input sizes substituted
+must stand at or above the exactly measured peak of every refinement-valid
+iteration. On `tictactoe.tel` the walk converges in about eight seconds after
+sizing: the bound is a maximum of thirteen affines whose constants top out
+around ninety thousand cells — about four times the measured peak of a
+completed game, loose where a deep superposition is widened to its bound
+alone, but finite and sound.
 
 When sizing fails, the error names the recursion, where it is, and which of the
 two failures it is — a budget that was too small, or an input that nothing
@@ -107,12 +125,13 @@ bounds. Only the first is fixable by raising the budget. See
 
 ## Compiling once
 
-Sizing is the slow part — about 70 seconds for `tictactoe.tel` — and it gives
-the same answer every time, because it runs the program over a *symbolic*
-input. So it need only happen once:
+Sizing is the slow part — about 13 seconds for `tictactoe.tel`, with the space
+walk above adding some eight more — and it gives the same answer every time,
+because it runs the program over a *symbolic* input. So it need only happen
+once:
 
 ```sh
-$ cabal run telomare -- tictactoe.tel --compile      # ~70s, writes tictactoe.telc
+$ cabal run telomare -- tictactoe.tel --compile      # ~23s, writes tictactoe.telc
 $ cabal run telomare -- tictactoe.telc               # starts immediately
 ```
 
@@ -367,7 +386,8 @@ pipeline. In pipeline order:
 | Resolve | `Telomare.Resolve` | resolves typed module imports, scope-checks only `DesugaredSurfaceTerm`, performs de Bruijn conversion and hash folding, and lowers core terms (`splitExpr`: `Term2 -> Term3`). Documents the dual `process`/`processWlet` pipeline. |
 | Type check | `Telomare.TypeCheck` | unification-based check of `Term3` against the main type. |
 | Size (totality) | `Telomare.Size`, `Telomare.Size.IR`, `Telomare.Machine` | telomare's distinguishing stage: `sizeTermM` abstractly interprets the program over symbolic input and infers a finite iteration count for every recursion site, then bakes the counts in (`Term3 -> CompiledExpr`). A program that cannot be sized does not compile. `Machine` is the shared step-algebra the sizing pass and the evaluators are assembled from. |
-| Evaluate | `Telomare.Eval.Reference`, `Telomare.Eval.Meter`, `Telomare.Fast` | the reference interpreter, the step-counting meter, and the fuel-based fast path (which skips sizing). |
+| Evaluate | `Telomare.Eval.Reference`, `Telomare.Eval.Meter`, `Telomare.Eval.Space`, `Telomare.Fast` | the reference interpreter, the step-counting meter, the space machine that also measures the live-heap peak, and the fuel-based fast path (which skips sizing). |
+| Bound | `Telomare.SpaceBound`, `Telomare.Space.Static` | the space-bound language (maxima of affines in input sizes) and the compile-time abstract walk that produces one. |
 | Drive | `Telomare.Driver`, `Telomare.Artifact`, `Telomare.Certificate`, `Telomare.Levels` | orchestration (`compileModules`, `evalLoop`), `.telc` artifacts, and the static report. |
 
 The IR vocabulary shared by all stages lives under `Telomare.IR.*`

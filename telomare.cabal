@@ -38,12 +38,15 @@ library
                      , Telomare.Lexical
                      , Telomare.Machine
                      , Telomare.Eval.Meter
+                     , Telomare.Eval.Space
                      , Telomare.Expand
                      , Telomare.Parse
                      , Telomare.PrettyPrint
                      , Telomare.PrettyPrint.Indent
                      , Telomare.Resolve
                      , Telomare.Size
+                     , Telomare.SpaceBound
+                     , Telomare.Space.Static
                      , Telomare.Size.IR
                      , Telomare.TypeCheck
                      , Telomare.Util
@@ -186,10 +189,12 @@ test-suite telomare-sizing-test
   other-modules:       ConformanceTests
                      , RunModeTests
                      , SizingTests
+                     , SpaceTests
   build-depends:       base
                      , bytestring
                      , containers
                      , hspec
+                     , recursion-schemes
                      , telomare
                      , strict
   ghc-options:         -Wall -Wunused-packages -threaded -rtsopts -with-rtsopts=-N
