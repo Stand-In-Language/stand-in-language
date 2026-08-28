@@ -23,7 +23,8 @@ import Telomare.IR.Loc (locatedNameText)
 import Telomare.IR.Surface (ImportDecl (parsedImportModule), ModuleItem (..))
 import Telomare.Levels (levelsInfo)
 import Telomare.Parse (runParseModule)
-import Telomare.Size (SizingReport)
+import Telomare.Size (SizingReport (sizingReportSpace))
+import Telomare.SpaceBound (renderSpaceBoundBrief)
 
 -- |What to do with the program.
 data Action
@@ -189,8 +190,12 @@ runSized file action = do
               , artifactExpr = sized
               }
         writeArtifact path artifact
+        let spaceNote = case sizingReportSpace report of
+              Left _  -> ""
+              Right b -> ", space <= " <> renderSpaceBoundBrief b
         hPutStrLn stderr $ "wrote " <> path <> " (" <> show (nodeCount sized)
-          <> " nodes, sources " <> take 12 (sourcesHash allModules) <> ")"
+          <> " nodes" <> spaceNote
+          <> ", sources " <> take 12 (sourcesHash allModules) <> ")"
 
 -- |Without sizing. The program runs on demand under a fuel cap; no iteration
 -- count exists, so the certificate reports structure only.
