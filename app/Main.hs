@@ -15,8 +15,8 @@ import Telomare.Artifact (Artifact (..), isArtifactPath, nodeCount,
                           readArtifact, sourcesHash, telcExtension,
                           writeArtifact)
 import Telomare.Certificate (renderStaticReport)
-import Telomare.Driver (compileModules, evalLoop, evalLoopMetered)
-import Telomare.Eval.Meter (renderMeter)
+import Telomare.Driver (compileModules, evalLoop, evalLoopSpaceMetered)
+import Telomare.Eval.Space (renderSpaceMeter)
 import Telomare.Fast (compileFast, defaultFastFuel, renderFastMeter,
                       runFastLoop)
 import Telomare.IR.Loc (locatedNameText)
@@ -148,8 +148,8 @@ runArtifact path action mode = do
         Certificate -> putStr $ artifactCertificate artifact
         Run         -> evalLoop (artifactExpr artifact)
         Meter       -> do
-          measured <- evalLoopMetered [] (artifactExpr artifact)
-          reportMeter $ renderMeter measured <> "\n"
+          measured <- evalLoopSpaceMetered [] (artifactExpr artifact)
+          reportMeter $ renderSpaceMeter measured <> "\n"
 
 -- |An artifact outlives the checkout it came from, so a hash mismatch is worth
 -- saying and never worth refusing over.
@@ -176,8 +176,8 @@ runSized file action = do
       Run -> evalLoop sized
       Certificate -> putStr $ staticReport Nothing (Just report) allModules entryModule
       Meter -> do
-        measured <- evalLoopMetered [] sized
-        reportMeter $ renderMeter measured <> "\n"
+        measured <- evalLoopSpaceMetered [] sized
+        reportMeter $ renderSpaceMeter measured <> "\n"
       Compile output -> do
         let path = fromMaybe (replaceExtension file telcExtension) output
             certificate = staticReport Nothing (Just report) allModules entryModule

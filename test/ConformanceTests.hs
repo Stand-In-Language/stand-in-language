@@ -11,6 +11,7 @@ import Test.Hspec
 
 import Telomare.Driver (compileModules, runMainWithInput)
 import Telomare.Eval.Meter (Meter (..), evalMeter)
+import Telomare.Eval.Space (SpaceMeter (..), SweepPolicy (..), evalSpace)
 import Telomare.Fast (compileFast, runFastWithInput)
 import Telomare.IR.Base
 import Telomare.IR.Core
@@ -48,3 +49,22 @@ agreeOn (path, name, input) = describe name $ do
         meterSteps measured `shouldSatisfy` (> 0)
         -- A run of any length constructs at least one node.
         meterBuilt measured `shouldSatisfy` (> 0)
+
+  -- The space meter is the meter defunctionalized over an explicit store, so
+  -- it must agree not just on the value but tick for tick on both counters —
+  -- that parity is what keeps the machine rewrite honest.
+  it "the space meter matches the meter tick for tick" $ do
+    modules <- loadWith path name
+    case compileModules modules name of
+      Left err -> expectationFailure $ "failed to compile:\n" <> err
+      Right (_, sized) -> do
+        let applied = appB sized ZeroB
+            (measured, metered) = evalMeter applied
+            (spaced, result) = evalSpace SweepEveryAlloc applied
+        fmap show result `shouldBe` fmap show metered
+        spSteps spaced `shouldBe` meterSteps measured
+        spBuilt spaced `shouldBe` meterBuilt measured
+        -- A run of any length holds at least one live cell, and the exact
+        -- policy pins the peak rather than bracketing it.
+        spPeakLower spaced `shouldSatisfy` (> 0)
+        spPeakUpper spaced `shouldBe` spPeakLower spaced

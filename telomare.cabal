@@ -38,6 +38,7 @@ library
                      , Telomare.Lexical
                      , Telomare.Machine
                      , Telomare.Eval.Meter
+                     , Telomare.Eval.Space
                      , Telomare.Expand
                      , Telomare.Parse
                      , Telomare.PrettyPrint
@@ -186,6 +187,7 @@ test-suite telomare-sizing-test
   other-modules:       ConformanceTests
                      , RunModeTests
                      , SizingTests
+                     , SpaceTests
   build-depends:       base
                      , bytestring
                      , containers

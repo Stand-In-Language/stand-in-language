@@ -83,22 +83,25 @@ index differently — a count is per instantiation, a nesting row is per `{test,
 recursion, last}` as written — so they do not line up row by row, and the
 report says so.
 
-`--meter` runs the program and reports what the run cost — steps taken, and
-term nodes built. Those are measurements of one run, not predictions about the
-next:
+`--meter` runs the program and reports what the run cost — steps taken, term
+nodes built, and the live-heap peak. Those are measurements of one run, not
+predictions about the next:
 
 ```sh
 $ printf '3 4\n' | cabal run telomare -- --meter simpleplus.tel
-steps (measured): 46652
-nodes built (measured): 13660
+steps (measured): 46566
+nodes built (measured): 13577
+live heap peak (measured): 9430..9887 cells
 ```
 
-Neither is a memory figure, deliberately. Telomare's evaluator shares
-environments rather than copying them, so counting the term it holds as a tree
-counts shared structure once per reference — for `tictactoe.tel` that reads
-about 1.2TB for a run that fits in a few GB. An honest memory figure needs
-reachability over distinct nodes, which is not implemented; use `+RTS -s` for
-the real thing.
+The peak is a real memory figure, and the reason it took until now is worth a
+sentence: telomare's evaluator shares environments rather than copying them,
+so counting the term it holds as a tree counts shared structure once per
+reference — for `tictactoe.tel` that reads about 1.2TB for a run that fits in
+a few GB. The peak is instead measured on an explicit store, as reachability
+over *distinct* nodes from what the machine still holds, and it is printed as
+a bracket — a figure the run reached and one it never exceeded — because the
+measuring sweep is amortized rather than run at every allocation.
 
 When sizing fails, the error names the recursion, where it is, and which of the
 two failures it is — a budget that was too small, or an input that nothing
@@ -367,7 +370,7 @@ pipeline. In pipeline order:
 | Resolve | `Telomare.Resolve` | resolves typed module imports, scope-checks only `DesugaredSurfaceTerm`, performs de Bruijn conversion and hash folding, and lowers core terms (`splitExpr`: `Term2 -> Term3`). Documents the dual `process`/`processWlet` pipeline. |
 | Type check | `Telomare.TypeCheck` | unification-based check of `Term3` against the main type. |
 | Size (totality) | `Telomare.Size`, `Telomare.Size.IR`, `Telomare.Machine` | telomare's distinguishing stage: `sizeTermM` abstractly interprets the program over symbolic input and infers a finite iteration count for every recursion site, then bakes the counts in (`Term3 -> CompiledExpr`). A program that cannot be sized does not compile. `Machine` is the shared step-algebra the sizing pass and the evaluators are assembled from. |
-| Evaluate | `Telomare.Eval.Reference`, `Telomare.Eval.Meter`, `Telomare.Fast` | the reference interpreter, the step-counting meter, and the fuel-based fast path (which skips sizing). |
+| Evaluate | `Telomare.Eval.Reference`, `Telomare.Eval.Meter`, `Telomare.Eval.Space`, `Telomare.Fast` | the reference interpreter, the step-counting meter, the space machine that also measures the live-heap peak, and the fuel-based fast path (which skips sizing). |
 | Drive | `Telomare.Driver`, `Telomare.Artifact`, `Telomare.Certificate`, `Telomare.Levels` | orchestration (`compileModules`, `evalLoop`), `.telc` artifacts, and the static report. |
 
 The IR vocabulary shared by all stages lives under `Telomare.IR.*`

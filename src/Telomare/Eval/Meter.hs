@@ -8,7 +8,7 @@
 -- iteration counts that the sizing pass already infers
 -- (`Telomare.Eval.renderSizingCertificate`).
 --
--- == Why there is no memory figure
+-- == Why there is no memory figure here
 --
 -- There was one, and it was wrong, in a way worth recording so it is not
 -- reintroduced. Telomare evaluates by rewriting a term, so it is tempting to
@@ -22,13 +22,16 @@
 -- This is the same shape as the dead end recorded in the sibling project's
 -- @design/SPACE.md@, one level further down. There, a cost algebra could not
 -- see /retention/; here, a tree metric cannot see /sharing/. A real figure
--- needs reachability over distinct nodes — hash-consing, not arithmetic — and
--- is deliberately left undone rather than approximated. For actual memory, run
--- the binary under @+RTS -s@.
+-- needs reachability over distinct nodes, and that is what
+-- `Telomare.Eval.Space` now measures: this same interpreter defunctionalized
+-- over an explicit store, where sharing is id-sharing and the live heap is
+-- what the machine's roots reach. @--meter@ reports its peak. This module
+-- stays as it is — the fast mirror whose step and build counts the space
+-- machine must match tick for tick, which is what keeps both honest.
 --
--- `meterBuilt` is what survives of the idea: a count of the nodes the run
--- constructs. It is well defined without any sharing analysis, and it still
--- shows how much term-building a program does.
+-- `meterBuilt` is a count of the nodes the run constructs. It is well defined
+-- without any sharing analysis, and it still shows how much term-building a
+-- program does.
 --
 -- == Substitution
 --

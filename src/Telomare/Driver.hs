@@ -18,6 +18,7 @@ import Telomare.Desugar (desugarTerm)
 import Telomare.Error
 import Telomare.Eval.Meter (Meter, evalMeter)
 import Telomare.Eval.Reference ()
+import Telomare.Eval.Space (SpaceMeter, SweepPolicy (SweepAdaptive), evalSpace)
 import Telomare.Expand (expandDefs, expandModule, expandTerm,
                         renderExpansionError, wrapMain)
 import Telomare.IR.Base
@@ -275,6 +276,14 @@ evalLoopWithInput inputList iexpr = snd <$> evalLoopCore plainEval iexpr keepAcc
 -- `evalLoop` prints; the caller decides what to do with the measurement.
 evalLoopMetered :: [String] -> CompiledExpr -> IO Meter
 evalLoopMetered manualInput expr = fst <$> evalLoopCore evalMeter expr printAccum "" manualInput
+
+-- |`evalLoopMetered` with the space meter: same session, and the measurement
+-- carries the live-heap peak alongside the step and build counts. The
+-- adaptive sweep keeps the measuring overhead amortized-constant; what it
+-- costs in return is a bracketed peak rather than a pinned one.
+evalLoopSpaceMetered :: [String] -> CompiledExpr -> IO SpaceMeter
+evalLoopSpaceMetered manualInput expr =
+  fst <$> evalLoopCore (evalSpace SweepAdaptive) expr printAccum "" manualInput
 
 -- |Same as `evalLoop`, but keeping what was displayed.
 evalLoop_ :: CompiledExpr -> IO String
