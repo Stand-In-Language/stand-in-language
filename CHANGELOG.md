@@ -65,6 +65,40 @@
   computes a store path without building it, and `nix path-info` rejects a path
   that does not exist. The apps are now build inputs of the script.
 * Moved to GHC 9.10.3 and `cabal-version` 3.12, and updated every flake input.
+* Moved the Nix build from nixpkgs + flake-parts + haskell-flake to the
+  ekala package ecosystem (ekapkgs): `corepkgs` for the base system and the
+  GHC 9.10.3 bindist (added upstream for this, corepkgs#178 and #180), plus
+  the `haskell-pkgs` snapshot (Stackage LTS 24), consumed with
+  `corepkgs.lib.mkFlake`. The Nix code lives in `nix/`; the package
+  expression is a checked-in cabal2nix file (`nix/telomare-cabal2nix.nix`,
+  regenerate when `build-depends` change); `default.nix` and `shell.nix`
+  read the pins from `flake.lock` instead of going through flake-compat,
+  and are no longer built or cached by `push-cachix`.
+  `apps.telomare-lsp` now carries the version stamp like `apps.lsp`. The
+  default dev shell is the minimum that builds the project (GHC and
+  cabal-install); `nix develop .#full` adds haskell-language-server, hlint,
+  stylish-haskell and ghcid; both export `name`, which corepkgs' structured
+  attributes leave unexported, so direnv hands it to prompts that show the
+  environment's name (haskell-language-server needs its closure in
+  one Cabal-syntax 3.14 scope; `nix/haskell.nix` carries that override until
+  ekala-project/haskell-pkgs#4 or its corepkgs equivalent lands), and hoogle
+  is no longer built for either. `nix run .#push-cachix` publishes every
+  declared development shell with its environment closure, every check and
+  every app, and uses the cachix and nix on PATH (the snapshot's cachix does
+  not build, its amazonka 2.0 predates GHC 9.8, and corepkgs' Nix is a
+  from-source build); it keeps what it builds rooted until the push is over,
+  since Determinate Nix collects garbage on its own when the disk runs low;
+  `nix flake check` builds and shellchecks it. No check
+  depends on the LSP version stamp any more, so CI, which builds a pull
+  request's merge commit rather than the pushed one, finds every check in
+  the cache instead of rebuilding the LSP wrapper, the helper and
+  ShellCheck. `systems` is `x86_64-linux` until corepkgs marks
+  aarch64-linux supported.
+* CI installs Determinate Nix 3.22.5, the Nix `push-cachix` is run with,
+  instead of Nix 2.31.5: `nix develop` builds its environment from the
+  running Nix's own get-env.sh, so only the same version finds it in the
+  cache. Bump the pin with the maintainer's Nix. magic-nix-cache is gone:
+  every upload was failing, and Cachix holds everything CI needs.
 
 ## 0.1.0.0 -- YYYY-mm-dd
 

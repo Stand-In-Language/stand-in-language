@@ -30,11 +30,25 @@ This project is in active development. Do expect bugs and general trouble, and p
    ```sh
    # Install cachix with nix-env or adding `cachix` to your `/etc/nixos/configuration.nix`'s' `environment.systemPackages` if in NixOS.
    $ cachix use telomare
+   $ cachix use ekala-corepkgs
    ```
+   The build comes from [ekapkgs](https://github.com/ekala-project/ekapkgs-roadmap)
+   rather than nixpkgs: `corepkgs` for the base system and the GHC 9.10.3
+   bindist, `haskell-pkgs` for the Hackage snapshot. `telomare` caches
+   everything the flake builds, the compiler included; `ekala-corepkgs` holds
+   the base system. The flake names both caches in its `nixConfig`, so
+   accepting that when Nix asks does the same job. (Maintainers fill the
+   `telomare` cache with `nix run .#push-cachix`, which publishes the package,
+   its checks and apps, and both development shells, and uses the `cachix`
+   and `nix` already on your PATH.)
 4. Enter a Nix shell. This will setup an environment where all external dependencies will be available (such as `cabal` for building):
    ```sh
    $ nix develop # or nix develop -c zsh
+   $ nix develop .#full # the same plus haskell-language-server, hlint, stylish-haskell and ghcid
    ```
+   (`nix develop` takes its interactive bash from whatever your flake registry
+   calls `nixpkgs`; that is Nix's doing, not this flake's, which has no nixpkgs
+   input.)
 5. Build the project:
    ```sh
    $ cabal build # or nix build
