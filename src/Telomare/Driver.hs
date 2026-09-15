@@ -30,10 +30,10 @@ import Telomare.Machine (appB, deferB)
 import Telomare.Parse (parseOneExprOrDefinitions, runParseModule)
 import Telomare.PrettyPrint
 import Telomare.Resolve (main2Term3, main2Term3let, process, resolveAllImports)
+import Telomare.EAL (certifyMain)
 import Telomare.Size (SizingReport (..), SizingSettings (..),
                       buildUnsizedLocMap, evalStaticCheck, locateSizingFailure,
                       sizeTermM, term3ToUnsizedExpr)
-import Telomare.TypeCheck (typeCheck)
 import Text.Megaparsec (errorBundlePretty, runParser)
 
 debug :: Bool
@@ -108,11 +108,9 @@ compileMainReporting :: SizingOption
                      -> String
                      -> Either EvalError (SizingReport, CompiledExpr)
 compileMainReporting so modules term = do
-  let mainType = embed $ PairTypeP (embed $ ArrTypeP (embed ZeroTypeP) (embed ZeroTypeP)) (embed AnyType)
-  tcTerm <- first RE $ main2Term3 modules term
-  case typeCheck mainType tcTerm of
-    Just e -> Left $ TCE e
-    _      -> first RE (main2Term3let modules term) >>= compileReporting so pure
+  certTerm <- first RE $ main2Term3 modules term
+  _ <- first CertificationError $ certifyMain certTerm
+  first RE (main2Term3let modules term) >>= compileReporting so pure
 
 -- for testing
 compileMain' :: SizingSettings -> Term3 -> Either EvalError CompiledExpr

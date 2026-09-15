@@ -7,6 +7,7 @@ import qualified Data.Map as Map
 import qualified System.IO.Strict as Strict
 import Telomare.Driver (compileUnitTest)
 import Telomare.EAL
+import Telomare.Error (EALError (..))
 import Telomare.Expand (expandModule, renderExpansionError)
 import Telomare.IR.Base (BasicExprF (..), FunctionIndex (FunctionIndex),
                          StuckF (..))
@@ -348,4 +349,26 @@ main = do
                 Right r -> assertBool "bounded level" (ealMaxLevel r <= 3)
                 other -> assertFailure $
                   "expected acceptance, got " <> show other
+    , testCase "PINNED (2026-09-14): gate join of capturing closure vs literal" $
+        -- Incidental find from the TypeChecker-removal audit, kept here
+        -- so a behavior change is noticed. The dead `if 0` branch
+        -- misapplies (`times $2 succ` hands `times` a non-numeral), and
+        -- today certification rejects the whole program with
+        -- EALTypeMismatch "data vs code" blamed deep inside Prelude's
+        -- `times`. Two open questions to address later: (1) is rejecting
+        -- on a dead branch the intended strictness (the old type checker
+        -- and the sizing pass both also choke on this program — sizing
+        -- with an internal getInputLimits error — so the verdict at
+        -- least agrees with the pipeline), or is it a capture-fallback
+        -- unification artifact (a CapT met outside its own tag's
+        -- dispatch unifies against EVERY capture the package holds)?
+        -- (2) either way, the blame should name the user's branch, not a
+        -- Prelude internal. If this test starts failing because the
+        -- program certifies, decide deliberately which verdict is right.
+        case parse False "main = (if 0 then (\\x -> times $2 x) else $1) succ 0" of
+          Left e -> assertFailure ("parse failed: " <> e)
+          Right g -> case ealLiftedMain (inferEALWithLifting g) of
+            Left (EALTypeMismatch _ _) -> pure ()
+            other -> assertFailure $
+              "pinned verdict changed - decide the right one: " <> show other
     ]

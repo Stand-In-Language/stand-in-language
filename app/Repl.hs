@@ -36,8 +36,8 @@ import Telomare.Parse (TelomareParser, parseLongExpr, parseSingleDefinition,
                        runParseDefinitions)
 import Telomare.PrettyPrint
 import Telomare.Resolve (process)
+import Telomare.EAL (inferEALWithLifting, renderEALVerdict)
 import Telomare.Size.IR (PartialExpr)
-import Telomare.TypeCheck (inferType)
 import Text.Megaparsec
 
 -- Parsers for assignments/expressions within REPL
@@ -210,7 +210,7 @@ replLoop (ReplState bs evalFn sf) = do
     Just s | ":t" `isPrefixOf` s -> do
       liftIO $ case runReplParser bs . dropWhile (== ' ') <$> stripPrefix ":t" s of
         Just (Right (ReplExpr new_bindings)) -> case resolveBinding' "_tmp_" new_bindings of
-          Just iexpr -> print $ PrettyPartialType <$> inferType iexpr
+          Just iexpr -> putStrLn . renderEALVerdict $ inferEALWithLifting iexpr
           _          -> putStrLn "some sort of error?"
         _ -> putStrLn "parse error"
       replLoop $ ReplState bs evalFn sf

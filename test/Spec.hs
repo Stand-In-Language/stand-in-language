@@ -15,8 +15,8 @@ import Telomare.Machine (appB, deferB, iteB)
 import Telomare.Parse
 import Telomare.PrettyPrint
 import Telomare.Resolve
+import Telomare.EAL (certifyMain, ealLiftedMain, inferEALWithLifting)
 import Telomare.Size (SizingSettings (SizingSettings))
-import Telomare.TypeCheck
 import Test.Hspec
 
 import Data.Functor.Foldable (Corecursive (..))
@@ -173,12 +173,6 @@ inf_pairs = buildTerm $ do
   recur <- deferS (PairB ZeroB (SetEnvB (PairB firstArg EnvB)))
   pure $ SetEnvB (PairB recur (PairB recur ZeroB))
 
--- unbound type errors should be allowed for purposes of testing runtime
-allowedTypeCheck :: Maybe TypeCheckError -> Bool
-allowedTypeCheck Nothing                = True
-allowedTypeCheck (Just (UnboundType _)) = True
-allowedTypeCheck _                      = False
-
 testEval :: CompiledExpr -> IO StuckExpr
 testEval expr = case eval (SetEnvB (PairB (deferB (toEnum 0) expr) ZeroB)) of
   Right x -> case toTelomare x of
@@ -186,75 +180,67 @@ testEval expr = case eval (SetEnvB (PairB (deferB (toEnum 0) expr) ZeroB)) of
     _       -> error $ "testEval failed to convert:\n" <> prettyPrint x
   Left z -> error $ "testEval unexpected: " <> show z
 
+-- |No certification gate here: these hand-built terms use church-255
+-- encodings whose EAL analysis costs seconds to minutes (or exceeds the
+-- analyzer's variable budget), and the production gate never sees them —
+-- `compileMain` certifies parsed programs, which the EAL certification
+-- block above covers.
 unitTest :: String -> String -> Term3 -> Spec
-unitTest name expected iexpr = it name $ if allowedTypeCheck (typeCheck (embed ZeroTypeP) iexpr)
-  then case compileUnitTest iexpr of
+unitTest name expected iexpr = it name $
+  case compileUnitTest iexpr of
     Left e  -> expectationFailure (concat [name, " failed to compile: ", show e])
     Right compiled -> do
       result <- show . PrettyBasic <$> testEval compiled
       result `shouldBe` expected
-  else expectationFailure ( concat [name, " failed typecheck: ", show (typeCheck (embed ZeroTypeP) iexpr)])
 
-isInconsistentType :: Maybe TypeCheckError -> Bool
-isInconsistentType (Just (InconsistentTypes _ _)) = True
-isInconsistentType _                              = False
-
-isRecursiveType :: Maybe TypeCheckError -> Bool
-isRecursiveType (Just (RecursiveType _)) = True
-isRecursiveType _                        = False
-
---unitTests :: (String -> String -> Spec) -> (String -> PartialType -> (Maybe TypeCheckError -> Bool) -> Spec) -> Spec
 unitTests :: Show a => (Bool -> String -> Either a Term3) -> SpecWith ()
 unitTests parse = do
-  let unitTestType = unitTestType' (parse False)
+  let unitTestCertifies = unitTestCertifies' (parse False)
+      unitTestRejected = unitTestRejected' (parse False)
       unitTest2 = unitTest2' (parse True)
       unitTestStaticChecks = unitTestStaticChecks' (parse True)
       buildMainTest s = case fmap (compileMain' (SizingSettings 255 True)) (parse True s) of
         Right (Right g) -> let evalMain = funWrap g appB
                            in pure $ \st i e -> it ("main input " <> i) $ evalMain (Just (i, st)) `shouldBe` e
         z -> pure $ \st _i _e -> runIO . expectationFailure $ "failed to compile main:\n" <> show st <> "\nbecause:\n" <> show z
-      normalMainType = embed $ PairTypeP (embed $ ArrTypeP (embed ZeroTypeP) (embed ZeroTypeP)) (embed ZeroTypeP)
-  describe "type checker" $ do
-    unitTestType "main = \\x -> (x,0)" normalMainType (== Nothing)
-    unitTestType "main = \\x -> (x,0)" (embed ZeroTypeP) isInconsistentType
-    unitTestType "main = succ 0" (embed ZeroTypeP) (== Nothing)
-    unitTestType "main = succ 0" (embed $ ArrTypeP (embed ZeroTypeP) (embed ZeroTypeP)) isInconsistentType
-    unitTestType "main = or 0" normalMainType (== Nothing)
-    unitTestType "main = or 0" (embed ZeroTypeP) isInconsistentType
-    unitTestType "main = or succ" (embed $ ArrTypeP (embed ZeroTypeP) (embed ZeroTypeP)) isInconsistentType
-    unitTestType "main = 0 succ" (embed ZeroTypeP) isInconsistentType
-    unitTestType "main = 0 0" (embed ZeroTypeP) isInconsistentType
-  {- TODO uncomment when type checker is fixed
-    unitTestType "main = (if 0 then (\\x -> (x,0)) else (\\x -> (x,1))) 0" (embed ZeroTypeP) isRecursiveType
-    unitTestType "main = \\f -> (\\x -> f (x x)) (\\x -> f (x x))"
-      normalMainType (/= Nothing) -- isRecursiveType
-    unitTestType "main = (\\f -> (\\x -> x x) (\\x -> f (x x)))"
-      normalMainType (/= Nothing) -- isRecursiveType
--}
-    unitTestType "main = (\\x y -> x y x) (\\y x -> y (x y x))"
-      normalMainType (/= Nothing) -- isRecursiveType
-    unitTestType "main = (\\x y -> y (x x y)) (\\x y -> y ( x x y))"
-      normalMainType (/= Nothing) -- isRecursiveType
-    -- with trimmed lambda captures the env types stay finite, so the
-    -- occurs check no longer fires: this theta-shaped term is a value
-    -- (the self-application sits unapplied under a lambda) and now
-    -- typechecks; EAL agrees, accepting it as a value
-    unitTestType "main = (\\x y -> y (\\z -> x x y z)) (\\x y -> y (\\z -> x x y z))"
-      normalMainType (== Nothing)
-    unitTestType "main = (\\f x -> f (\\v -> x x v) (\\x -> f (\\v -> x x v)))"
-      normalMainType (/= Nothing) -- isRecursiveType
-    unitTestType "main = (\\f -> f 0) (\\g -> (g,0))" (embed ZeroTypeP) (== Nothing)
-    unitTestType "main : (\\x -> if x then \"fail\" else 0) = 0" (embed ZeroTypeP) (== Nothing)
-    -- unitTestType "main = ? (\\r l -> if l then r (left l) else 0) (\\l -> 0) 2" ZeroTypeP (== Nothing)
-    unitTestType "main = {id,\\r l -> r (left l),id} 2" (embed ZeroTypeP) (== Nothing)
-    unitTestType2
+  describe "EAL certification" $ do
+    -- programs the compile gate must accept
+    unitTestCertifies "main = \\x -> (x,0)"
+    unitTestCertifies "main = succ 0"
+    unitTestCertifies "main = or 0"
+    -- the theta-shaped term is a value (the self-application sits
+    -- unapplied under a lambda), so certification accepts it
+    unitTestCertifies "main = (\\x y -> y (\\z -> x x y z)) (\\x y -> y (\\z -> x x y z))"
+    unitTestCertifies "main = (\\f -> f 0) (\\g -> (g,0))"
+    unitTestCertifies "main : (\\x -> if x then \"fail\" else 0) = 0"
+    unitTestCertifies "main = {id,\\r l -> r (left l),id} 2"
+    -- this one the old checker rejected as a recursive type, but run
+    -- against data input it terminates (f is data, so `f x y` sticks):
+    -- certification's acceptance is the honest verdict
+    unitTestCertifies "main = (\\f x -> f (\\v -> x x v) (\\x -> f (\\v -> x x v)))"
+    -- likewise: applying the identity-shaped defer to itself terminates
+    unitTestCertifiesTerm "identity self-application through SetEnv"
       (buildTerm $ do
         d1 <- deferS (SetEnvB (PairB EnvB EnvB))
         d2 <- deferS EnvB
         pure $ SetEnvB (PairB (SetEnvB (PairB d1 d2)) ZeroB)
       )
-      (embed ZeroTypeP) isRecursiveType
-    unitTestType2 inf_pairs (embed ZeroTypeP) isRecursiveType
+    -- these two diverge at runtime on data input (verified against the
+    -- evaluator); the virtual application of main to its input lets the
+    -- dispatch depth cap catch the divergence hiding under main's lambda
+    unitTestRejected "main = (\\x y -> x y x) (\\y x -> y (x y x))"
+    unitTestRejected "main = (\\x y -> y (x x y)) (\\x y -> y ( x x y))"
+    -- the Y combinator family, applied and unapplied
+    unitTestRejected "main = \\f -> (\\x -> f (x x)) (\\x -> f (x x))"
+    unitTestRejected "main = (\\f -> (\\x -> x x) (\\x -> f (x x)))"
+    unitTestRejectedTerm "infinite pair recursion" inf_pairs
+    -- certification tolerates a hereditarily-data program (applying data
+    -- sticks, boundedly), so the gate's extra main-shape check catches it
+    it "the compile gate rejects a data main" $ case parse False "main = 0" of
+      Left e -> expectationFailure $ "failed to parse: " <> show e
+      Right g -> case certifyMain g of
+        Left _  -> pure ()
+        Right r -> expectationFailure $ "expected main-shape rejection, got " <> show r
   describe "unitTest" $ do
     unitTest "ite" "2" (iteB (i2B 1) (i2B 2) (i2B 3))
     unitTest "c2d" "2" c2d_test
@@ -369,14 +355,25 @@ unitTest2' parse s r = it s $ case fmap compileUnitTest (parse s) of
     . show . PrettyBasic
   Right (Left e) -> expectationFailure $ "failed to compile: " <> show e
 
-unitTestType' :: Show a => (String -> Either a Term3) -> String -> PartialType -> (Maybe TypeCheckError -> Bool) -> SpecWith ()
-unitTestType' parse s t tef = it s $ case parse s of
+-- |Expect the whole program to EAL-certify: the claim `compileMain`'s gate
+-- makes, minus the main-shape check (many of these programs are data).
+unitTestCertifies' :: Show a => (String -> Either a Term3) -> String -> SpecWith ()
+unitTestCertifies' parse s = it s $ case parse s of
   Left e -> expectationFailure $ concat ["failed to parse ", s, " ", show e]
-  Right g -> let apt = typeCheck t g
-             in if tef apt
-                then pure ()
-                else expectationFailure $
-                      concat [s, " failed typecheck, result ", show apt]
+  Right g -> case ealLiftedMain (inferEALWithLifting g) of
+    Right _ -> pure ()
+    Left err -> expectationFailure $
+      concat [s, " failed EAL certification: ", show err]
+
+-- |Expect EAL certification to reject the program (unbounded
+-- self-application in every case below).
+unitTestRejected' :: Show a => (String -> Either a Term3) -> String -> SpecWith ()
+unitTestRejected' parse s = it s $ case parse s of
+  Left e -> expectationFailure $ concat ["failed to parse ", s, " ", show e]
+  Right g -> case ealLiftedMain (inferEALWithLifting g) of
+    Left _ -> pure ()
+    Right r -> expectationFailure $
+      concat [s, " unexpectedly certified: ", show r]
 
 unitTestStaticChecks' :: Show a => (String -> Either a Term3) -> String -> (Either EvalError CompiledExpr -> Bool) -> SpecWith ()
 unitTestStaticChecks' parse s c = it s $ case parse s of
@@ -388,12 +385,19 @@ unitTestStaticChecks' parse s c = it s $ case parse s of
     --putStrLn $ "grammar is " <> show g
     expectationFailure $ "static check failed with " <> show rr
 
-unitTestType2 :: Term3 -> PartialType -> (Maybe TypeCheckError -> Bool) -> SpecWith ()
-unitTestType2 i t tef = it ("type check " <> show i) $
-  let apt = typeCheck t i
-  in if tef apt
-     then pure ()
-     else expectationFailure $ concat [show i, " failed typecheck, result ", show apt]
+unitTestRejectedTerm :: String -> Term3 -> SpecWith ()
+unitTestRejectedTerm name i = it ("EAL rejects " <> name) $
+  case ealLiftedMain (inferEALWithLifting i) of
+    Left _ -> pure ()
+    Right r -> expectationFailure $
+      concat [name, " unexpectedly certified: ", show r]
+
+unitTestCertifiesTerm :: String -> Term3 -> SpecWith ()
+unitTestCertifiesTerm name i = it ("EAL certifies " <> name) $
+  case ealLiftedMain (inferEALWithLifting i) of
+    Right _ -> pure ()
+    Left e -> expectationFailure $
+      concat [name, " failed EAL certification: ", show e]
 
 main :: IO ()
 main = do

@@ -81,6 +81,7 @@ import Data.Maybe (fromMaybe)
 import Data.Ord (comparing)
 import Data.Set (Set)
 import qualified Data.Set as Set
+import Telomare.Error (Blame (..), EALError (..), renderEALError)
 import Telomare.IR.Base (AbortableF (..), BasicExprF (..), FunctionIndex,
                          StuckF (..), pattern AbortFW, pattern BasicFW,
                          pattern StuckFW)
@@ -127,25 +128,6 @@ data Tau
                        --   dispatch resolves it per tag, so captures of
                        --   different tags never unify structurally
   deriving Show
-
--- | Where and why a constraint arose, for error reporting.
-data Blame = Blame LocTag String deriving (Eq, Show)
-
-data EALError
-  = EALTypeMismatch LocTag String
-  -- | A bang class is required to be boxed (first blame) and forced to be
-  -- unboxed (second blame). This is the interesting error for affine-repair
-  -- transformations: it names the duplication and the site that forbids
-  -- boxing it.
-  | EALBoxConflict Blame Blame
-  | EALSolverGaveUp String
-  -- | Lifted inference only: this body references a lifted body that itself
-  -- failed inference, so it was not analyzed.
-  | EALDependencyFailed (Digest SHA256)
-  -- | An analyzer invariant was violated: a bug in this module (or a term
-  -- that skipped 'deferLift'), never a fact about the analyzed program.
-  | EALInternal String
-  deriving (Eq, Show)
 
 -- | One step into the env pair structure.
 data Step = SL | SR deriving (Eq, Ord, Show)
@@ -198,6 +180,8 @@ data EALState = EALState
     -- that rides with that tag's code (Just for closure packages,
     -- Nothing for bare code and built-ins)
   , esSumEqs     :: [SumEq]
+  , esSumEqCount :: !Int              -- ^ length of 'esSumEqs', so template
+                                      -- capture can take a delta in O(delta)
   , esApplies    :: Map Int ApplySite
   , esNextApply  :: Int
   , esDefers     :: Map FunctionIndex [BVar]
@@ -205,13 +189,63 @@ data EALState = EALState
     -- (reported as their max)
   , esLeafPaths  :: [[BVar]]          -- ^ root-to-leaf box paths, for max
                                       -- depth
+  , esLeafCount  :: !Int              -- ^ length of 'esLeafPaths'
   , esBodies     :: Map (Digest SHA256) (FunctionIndex, Term3Lifting)
     -- ^ the DeferMap: dispatching a code tag derives its body from here
+  , esTemplates  :: Map (Digest SHA256) BodyTemplate
+    -- ^ per body: the reusable constraint delta of its walk
+  , esInstCounts :: Map (Digest SHA256) Int
+    -- ^ per body: how many derivations (capture + instantiations) exist
   }
 
 initEALState :: EALState
-initEALState = EALState 0 mempty mempty mempty mempty mempty mempty mempty 0
-  mempty mempty mempty
+initEALState = EALState
+  { esNextVar = 0
+  , esTVarBinds = mempty
+  , esParents = mempty
+  , esClasses = mempty
+  , esTagParents = mempty
+  , esTagSets = mempty
+  , esSumEqs = mempty
+  , esSumEqCount = 0
+  , esApplies = mempty
+  , esNextApply = 0
+  , esDefers = mempty
+  , esLeafPaths = mempty
+  , esLeafCount = 0
+  , esBodies = mempty
+  , esTemplates = mempty
+  , esInstCounts = mempty
+  }
+
+-- | One body's walk, captured as a reusable constraint template. The walk
+-- of a lifted body is operand-independent — the operand meets the frame
+-- only through the interface unification after the walk — and every
+-- variable it mints is drawn from one contiguous block starting at
+-- 'btBase', so a later dispatch of the same body can be served by an
+-- offset copy of this delta instead of a monadic re-walk. The dispatch
+-- site's contribution is factored out as parameters: its global box path
+-- (stored stripped from leaf paths and nested sites, re-appended at
+-- instantiation) and its dispatch depth (re-stamped on nested sites).
+data BodyTemplate = BodyTemplate
+  { btIndex      :: FunctionIndex     -- ^ for error reporting
+  , btBase       :: Int               -- ^ first variable of the block
+  , btSize       :: Int               -- ^ variables the walk minted
+  , btParents    :: [(Int, Int)]      -- ^ union-find edges inside the block
+  , btClasses    :: [(Int, ClassInfo)]
+  , btTVarBinds  :: [(Int, Tau)]
+  , btTagParents :: [(Int, Int)]
+  , btTagSets    :: [(Int, Map Tag (Maybe Sigma))]
+  , btSumEqs     :: [SumEq]
+  , btLeafPrefixes :: [[BVar]]        -- ^ block-local leaf paths, site path
+                                      -- appended at instantiation
+  , btApplies    :: [ApplySite]       -- ^ nested sites; 'apGlobal' holds the
+                                      -- block-local prefix only, 'apDepth'
+                                      -- is re-stamped at instantiation
+  , btEnvBang    :: BVar              -- ^ interface: frame env domain bang
+  , btEnvTau     :: Tau               -- ^ interface: frame env type
+  , btResult     :: Sigma             -- ^ interface: body result
+  }
 
 type EALM = ExceptT EALError (State EALState)
 
@@ -219,6 +253,12 @@ data EALResult = EALResult
   { ealTopLevelBang :: Int                  -- ^ bang on the program input
   , ealDeferBangs   :: Map FunctionIndex Int -- ^ env domain bang per Defer
   , ealMaxLevel     :: Int                  -- ^ max box nesting depth
+  , ealMainShape    :: CapShape
+    -- ^ the resolved shape of the whole program's value. Certification
+    -- tolerates applied data (it sticks at runtime), so a driver that
+    -- needs main to be an appliable function must ask this shape:
+    -- 'allDataShape' here means the program is hereditarily data and can
+    -- never consume input.
   } deriving (Eq, Show)
 
 -- | Per-hash guidance from one lifted Defer body's standalone inference:
@@ -300,9 +340,20 @@ ealCaptureLayouts lr = Map.fromList
 
 -- * Variable supply
 
+-- | Maximum constraint variables minted in one derivation before the
+-- analyzer assumes the dispatch structure is exploding rather than
+-- converging — the memory-side companion of 'dispatchDepthCap', turning
+-- a runaway derivation into a clean rejection instead of heap
+-- exhaustion.
+varBudget :: Int
+varBudget = 2000000
+
 freshInt :: EALM Int
 freshInt = do
   st <- State.get
+  when (esNextVar st >= varBudget) . throwError . EALSolverGaveUp $
+    "constraint variable budget (" <> show varBudget
+      <> ") exceeded; the dispatch structure is likely exploding"
   State.put st { esNextVar = esNextVar st + 1 }
   pure (esNextVar st)
 
@@ -426,7 +477,8 @@ getLowerBound = \case
 
 addSumEq :: Blame -> [BVar] -> BVar -> EALM ()
 addSumEq blame lhs rhs = State.modify $ \st ->
-  st { esSumEqs = SumEq lhs rhs blame : esSumEqs st }
+  st { esSumEqs = SumEq lhs rhs blame : esSumEqs st
+     , esSumEqCount = esSumEqCount st + 1 }
 
 -- * Union-find over tag-set classes
 
@@ -630,7 +682,8 @@ data Paths = Paths
 
 recordLeaf :: Paths -> EALM ()
 recordLeaf paths = State.modify $ \st ->
-  st { esLeafPaths = pGlobal paths : esLeafPaths st }
+  st { esLeafPaths = pGlobal paths : esLeafPaths st
+     , esLeafCount = esLeafCount st + 1 }
 
 -- | Allocate this node's edge box variable and wrap its intrinsic type into
 -- the type seen by the parent (view bang = edge boxes + intrinsic bang).
@@ -802,6 +855,128 @@ fnTagsOfCaptures vis i = do
         _       -> pure mempty
       Nothing -> pure mempty
 
+-- | How many derivations (one template capture plus instantiations) a
+-- single body may receive before the analyzer concludes its dispatch
+-- structure is exploding rather than converging. The per-body companion
+-- of 'varBudget': it names the culprit and fires long before memory
+-- pressure would.
+polyvarianceCap :: Int
+polyvarianceCap = 16384
+
+-- | First dispatch of a body: walk it exactly as every dispatch used to,
+-- and capture the walk's state delta as a 'BodyTemplate' for later
+-- dispatches. The capture relies on the walk's writes staying inside the
+-- fresh variable block — the operand is untouched until after the walk,
+-- so unions, class constraints, type bindings and tag classes all live
+-- on block variables — plus the append-only channels (sum equations,
+-- leaf paths, apply sites, the per-Defer bang list) whose deltas are
+-- taken by count.
+captureTemplate :: ApplySite -> Digest SHA256 -> FunctionIndex
+                -> Term3Lifting -> EALM (BVar, Tau, Sigma)
+captureTemplate site h fi body = do
+  st0 <- State.get
+  let v0 = esNextVar st0
+      a0 = esNextApply st0
+      eq0 = esSumEqCount st0
+      leaf0 = esLeafCount st0
+      siteGLen = length (apGlobal site)
+  bEnv <- freshB
+  tEnv <- freshTau
+  forM_ (contractionSite (envUsageL body)) $ \(path, uloc) ->
+    void . constrainB bEnv . ForcedLevel 1 $
+      Blame uloc ("env path " <> showSteps path <> " duplicated in "
+        <> show fi)
+  State.modify $ \st ->
+    st { esDefers = Map.insertWith (<>) fi [bEnv] (esDefers st) }
+  sBody <- viewNode (DeferCtx bEnv tEnv (apDepth site + 1))
+    (Paths [] (apGlobal site)) body
+  st1 <- State.get
+  let blockOf :: Map Int a -> [(Int, a)]
+      blockOf = Map.toAscList . snd . Map.split (v0 - 1)
+      stripSite xs = take (length xs - siteGLen) xs
+      template = BodyTemplate
+        { btIndex = fi
+        , btBase = v0
+        , btSize = esNextVar st1 - v0
+        , btParents = blockOf (esParents st1)
+        , btClasses = blockOf (esClasses st1)
+        , btTVarBinds = blockOf (esTVarBinds st1)
+        , btTagParents = blockOf (esTagParents st1)
+        , btTagSets = blockOf (esTagSets st1)
+        , btSumEqs = take (esSumEqCount st1 - eq0) (esSumEqs st1)
+        , btLeafPrefixes = fmap stripSite
+            (take (esLeafCount st1 - leaf0) (esLeafPaths st1))
+        , btApplies =
+            [ s { apGlobal = stripSite (apGlobal s) }
+            | s <- Map.elems (snd (Map.split (a0 - 1) (esApplies st1))) ]
+        , btEnvBang = bEnv
+        , btEnvTau = tEnv
+        , btResult = sBody
+        }
+  State.modify $ \st ->
+    st { esTemplates = Map.insert h template (esTemplates st) }
+  pure (bEnv, tEnv, sBody)
+
+-- | Serve a dispatch from the body's captured template: allocate a fresh
+-- contiguous variable block, offset-copy every constraint of the walk
+-- into it, splice this site's global path where the capture site's was
+-- stripped, and re-stamp nested sites with this site's depth. Emits
+-- exactly the constraints a fresh walk would, at the cost of copying the
+-- delta instead of re-running the walk.
+instantiateTemplate :: ApplySite -> BodyTemplate -> EALM (BVar, Tau, Sigma)
+instantiateTemplate site t = do
+  base <- State.gets esNextVar
+  when (base + btSize t >= varBudget) . throwError . EALSolverGaveUp $
+    "constraint variable budget (" <> show varBudget
+      <> ") exceeded; the dispatch structure is likely exploding"
+  let shift = base - btBase t
+      sh i = if i >= btBase t then i + shift else i
+      shB (BVar i) = BVar (sh i)
+      shTau = \case
+        VarT i -> VarT (sh i)
+        CodeT i -> CodeT (sh i)
+        CapT i -> CapT (sh i)
+        PairT a b -> PairT (shSig a) (shSig b)
+        DataT -> DataT
+      shSig (Sigma b tau) = Sigma (shB b) (shTau tau)
+      shEq (SumEq lhs rhs blame) = SumEq (fmap shB lhs) (shB rhs) blame
+      shKV f (k, v) = (sh k, f v)
+      splice p = fmap shB p <> apGlobal site
+      instApply s = s
+        { apFn = shTau (apFn s)
+        , apEnv = shSig (apEnv s)
+        , apRes = shSig (apRes s)
+        , apGlobal = splice (apGlobal s)
+        , apDepth = apDepth site + 1
+        , apDispatched = mempty
+        }
+  State.modify $ \st -> st
+    { esNextVar = base + btSize t
+    , esParents = Map.union
+        (Map.fromAscList (fmap (shKV sh) (btParents t))) (esParents st)
+    , esClasses = Map.union
+        (Map.fromAscList (fmap (shKV id) (btClasses t))) (esClasses st)
+    , esTVarBinds = Map.union
+        (Map.fromAscList (fmap (shKV shTau) (btTVarBinds t))) (esTVarBinds st)
+    , esTagParents = Map.union
+        (Map.fromAscList (fmap (shKV sh) (btTagParents t))) (esTagParents st)
+    , esTagSets = Map.union
+        (Map.fromAscList (fmap (shKV (fmap (fmap shSig))) (btTagSets t)))
+        (esTagSets st)
+    , esSumEqs = fmap shEq (btSumEqs t) <> esSumEqs st
+    , esSumEqCount = esSumEqCount st + length (btSumEqs t)
+    , esLeafPaths = fmap splice (btLeafPrefixes t) <> esLeafPaths st
+    , esLeafCount = esLeafCount st + length (btLeafPrefixes t)
+    , esApplies = Map.union
+        (Map.fromAscList
+          (zip [esNextApply st ..] (fmap instApply (btApplies t))))
+        (esApplies st)
+    , esNextApply = esNextApply st + length (btApplies t)
+    , esDefers = Map.insertWith (<>) (btIndex t) [shB (btEnvBang t)]
+        (esDefers st)
+    }
+  pure (shB (btEnvBang t), shTau (btEnvTau t), shSig (btResult t))
+
 -- | Emit the constraints of applying one tag at one site.
 dispatchTag :: ApplySite -> Tag -> EALM ()
 dispatchTag site tag = case tag of
@@ -813,16 +988,16 @@ dispatchTag site tag = case tag of
       Just fb -> pure fb
       Nothing -> throwError . EALInternal $
         "dispatched code not in the DeferMap " <> show h
-    bEnv <- freshB
-    tEnv <- freshTau
-    forM_ (contractionSite (envUsageL body)) $ \(path, uloc) ->
-      void . constrainB bEnv . ForcedLevel 1 $
-        Blame uloc ("env path " <> showSteps path <> " duplicated in "
-          <> show fi)
+    count <- State.gets (Map.findWithDefault 0 h . esInstCounts)
+    when (count >= polyvarianceCap) . throwError . EALSolverGaveUp $
+      "polyvariance budget: body " <> show fi <> " needed more than "
+        <> show polyvarianceCap
+        <> " derivations (dispatch structure likely exploding)"
     State.modify $ \st ->
-      st { esDefers = Map.insertWith (<>) fi [bEnv] (esDefers st) }
-    sBody <- viewNode (DeferCtx bEnv tEnv (apDepth site + 1))
-      (Paths [] (apGlobal site)) body
+      st { esInstCounts = Map.insert h (count + 1) (esInstCounts st) }
+    (bEnv, tEnv, sBody) <- State.gets (Map.lookup h . esTemplates) >>= \case
+      Just t  -> instantiateTemplate site t
+      Nothing -> captureTemplate site h fi body
     -- the operand meets the domain under this tag's mode: capture
     -- selections inside it resolve to THIS tag's capture
     unifySigmaAt mempty (Just tag) (apLoc site) (apEnv site)
@@ -954,7 +1129,13 @@ assignValues = do
 -- lifted body treated as a program over its own env), dispatch its
 -- applications, solve, and verify.
 analyzeTop :: String -> Term3Lifting -> EALM (BVar, Tau, Sigma, Map Int Int)
-analyzeTop what term = do
+analyzeTop = analyzeTopWith False
+
+-- | 'analyzeTop', optionally also certifying one application of the
+-- program's value to its (data) input — the main pass runs with this on.
+analyzeTopWith :: Bool -> String -> Term3Lifting
+               -> EALM (BVar, Tau, Sigma, Map Int Int)
+analyzeTopWith applyToInput what term = do
   bEnv <- freshB
   tEnv <- freshTau
   case contractionSite (envUsageL term) of
@@ -963,9 +1144,51 @@ analyzeTop what term = do
     Nothing -> pure ()
   sRes <- viewNode (DeferCtx bEnv tEnv 0) (Paths [] []) term
   resolveApplies
+  when applyToInput $ virtualMainApply sRes >> resolveApplies
   propagate
   vals <- assignValues
   pure (bEnv, tEnv, sRes, vals)
+
+-- | The runtime applies the whole program to its input every iteration,
+-- so the certificate must cover main's body running against data — a
+-- divergence sitting under main's outermost lambda is invisible in the
+-- program-as-value alone (its body is derived nowhere, and the
+-- standalone body pass cannot see the captures that feed it). This is
+-- the moral successor of the old checker's main-against-@Zero -> Zero@
+-- comparison. One application level matches the run loop's contract
+-- exactly: an iteration's result must be a data pair, never a closure
+-- that gets applied further.
+--
+-- Registered against the RESOLVED shape of the program's value, after
+-- the first dispatch fixpoint: a closure package applies its code to
+-- @(input, captures)@ (the compiled convention: a body's argument is
+-- @Left Env@, its captures @Right Env@), bare code applies to the input
+-- alone, and anything else — data, or a shape nothing constrains — has
+-- no derivable body to cover (applying data sticks, boundedly).
+virtualMainApply :: Sigma -> EALM ()
+virtualMainApply (Sigma _ tRes) = walkTau tRes >>= \case
+  PairT (Sigma _ tCode) sCap -> walkTau tCode >>= \case
+    tc | appliable tc -> do
+      inputS <- inputSigma
+      envB <- freshB
+      register tc (Sigma envB (PairT inputS sCap))
+    _notCode -> pure ()
+  tc | appliable tc -> register tc =<< inputSigma
+  _notAppliable -> pure ()
+  where
+    vAnno = GeneratedLoc "virtual application of main to input" Nothing
+    appliable = \case
+      CodeT _ -> True
+      CapT _  -> True
+      _other  -> False
+    inputSigma = flip Sigma DataT <$> freshB
+    register fnT env = do
+      so <- freshSigma
+      State.modify $ \st -> st
+        { esApplies = Map.insert (esNextApply st)
+            (ApplySite fnT env so [] 0 vAnno mempty)
+            (esApplies st)
+        , esNextApply = esNextApply st + 1 }
 
 leafDepths :: Map Int Int -> EALM [Int]
 leafDepths vals = State.gets esLeafPaths >>= mapM depth where
@@ -1023,15 +1246,18 @@ groundCaptureShapes = do
     forM classes $ \m ->
       forM (Map.toList m) $ \case
         (TCode h, Just sig) -> do
-          s <- shapeOf sig
+          s <- shapeOfSigma sig
           pure [(h, s)]
         _bare -> pure []
-  where
-    shapeOf (Sigma _ t) = walkTau t >>= \case
-      DataT -> pure CapData
-      PairT a b -> CapPair <$> shapeOf a <*> shapeOf b
-      CodeT _ -> pure CapCode
-      _other -> pure CapOther
+
+-- | The resolved shape of a value, as 'CapShape' grades it: data, bare
+-- code, known pair structure, or unknown.
+shapeOfSigma :: Sigma -> EALM CapShape
+shapeOfSigma (Sigma _ t) = walkTau t >>= \case
+  DataT     -> pure CapData
+  PairT a b -> CapPair <$> shapeOfSigma a <*> shapeOfSigma b
+  CodeT _   -> pure CapCode
+  _other    -> pure CapOther
 
 -- | Infer EAL annotations over a lifted program: each unique Defer body
 -- first gets a standalone verdict (which bodies tag, which fail, and why),
@@ -1074,17 +1300,19 @@ inferEALLifted (DeferMap dm) mainTerm =
     runMain = State.evalState (runExceptT goMain)
       (initEALState { esBodies = dm })
     goMain = do
-      (bMain, _, _, vals) <- analyzeTop "program input" mainTerm
+      (bMain, _, sRes, vals) <- analyzeTopWith True "program input" mainTerm
       let value r = fromMaybe 0 $ Map.lookup r vals
       topBang <- value <$> findB bMain
       defers <- State.gets esDefers >>=
         traverse (fmap (maximum . (0 :)) . traverse (fmap value . findB))
       depths <- leafDepths vals
       shapes <- groundCaptureShapes
+      mainShape <- shapeOfSigma sRes
       pure ( EALResult
                { ealTopLevelBang = topBang
                , ealDeferBangs = defers
                , ealMaxLevel = maximum (0 : depths)
+               , ealMainShape = mainShape
                }
            , shapes )
 
@@ -1099,3 +1327,26 @@ inferEALWithLifting = uncurry inferEALLifted . deferLift
 -- as well.
 inferEALCompiled :: CompiledExpr -> EALLiftedResult
 inferEALCompiled = inferEALWithLifting . compiled2Term3
+
+-- | The compile gate: certify a whole program, additionally requiring
+-- that main is an appliable function. Certification itself tolerates a
+-- hereditarily-data program (applying data sticks at runtime, which is
+-- bounded work), but a main that can never consume input is a mistake
+-- worth naming at compile time, as the type checker used to.
+certifyMain :: Term3 -> Either EALError EALResult
+certifyMain t = do
+  r <- ealLiftedMain (inferEALWithLifting t)
+  if allDataShape (ealMainShape r)
+    then Left $ EALTypeMismatch
+           (GeneratedLoc "EAL certification" Nothing)
+           "main is data through and through; a program must be a function of its input"
+    else pure r
+
+-- | One-line human rendering of a whole-program verdict, for the REPL
+-- and diagnostics.
+renderEALVerdict :: EALLiftedResult -> String
+renderEALVerdict lr = case ealLiftedMain lr of
+  Left e -> "does not certify: " <> renderEALError e
+  Right r ->
+    "certifies: max box level " <> show (ealMaxLevel r)
+      <> ", input bang " <> show (ealTopLevelBang r)

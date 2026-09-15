@@ -4,24 +4,63 @@
 {-# LANGUAGE LambdaCase        #-}
 
 -- |Every error the pipeline can produce, in one place. 'EvalError' unions
--- the per-stage errors ('ResolverError' from resolution, 'TypeCheckError'
--- from type checking, 'SizingFailure' from the sizing/totality pass,
+-- the per-stage errors ('ResolverError' from resolution, 'EALError' from
+-- EAL certification, 'SizingFailure' from the sizing/totality pass,
 -- 'RunTimeError' from evaluation) so drivers report one type.
 module Telomare.Error where
 
 import Control.DeepSeq (NFData (..))
+import Crypto.Hash (Digest, SHA256)
 import Data.Validity (Validity)
 import GHC.Generics (Generic)
 import Telomare.IR.Base (UnsizedRecursionToken (..))
 import Telomare.IR.Core (RunTimeError)
 import Telomare.IR.Loc (LocTag, renderLocTagCompact, renderLocTagVerbose)
-import Telomare.IR.Types (PartialType)
 
-data TypeCheckError
-  = UnboundType Int
-  | InconsistentTypes PartialType PartialType
-  | RecursiveType Int
-  deriving (Eq, Ord, Show)
+-- | Where and why an EAL constraint arose, for error reporting.
+data Blame = Blame LocTag String deriving (Eq, Show)
+
+renderBlame :: Blame -> String
+renderBlame (Blame loc why) = why <> case renderLocTagCompact loc of
+  Just place -> " (at " <> place <> ")"
+  Nothing    -> ""
+
+-- | Why EAL certification rejected a program. Certification's only claim
+-- is termination within an elementary bound, so every rejection reads as
+-- "this program's work could not be bounded", never as a shape complaint
+-- about ordinary data.
+data EALError
+  = EALTypeMismatch LocTag String
+  -- | A bang class is required to be boxed (first blame) and forced to be
+  -- unboxed (second blame). This is the interesting error for affine-repair
+  -- transformations: it names the duplication and the site that forbids
+  -- boxing it.
+  | EALBoxConflict Blame Blame
+  | EALSolverGaveUp String
+  -- | Lifted inference only: this body references a lifted body that itself
+  -- failed inference, so it was not analyzed.
+  | EALDependencyFailed (Digest SHA256)
+  -- | An analyzer invariant was violated: a bug in the analyzer (or a term
+  -- that skipped defer lifting), never a fact about the analyzed program.
+  | EALInternal String
+  deriving (Eq, Show)
+
+renderEALError :: EALError -> String
+renderEALError = \case
+  EALTypeMismatch loc msg ->
+    "certification failed: " <> msg <> case renderLocTagCompact loc of
+      Just place -> " (at " <> place <> ")"
+      Nothing    -> ""
+  EALBoxConflict need forbid ->
+    "certification failed: a duplicated value cannot be boxed:\n"
+      <> "  boxing required: " <> renderBlame need <> "\n"
+      <> "  boxing forbidden: " <> renderBlame forbid
+  EALSolverGaveUp msg ->
+    "certification gave up; this usually means unbounded self-application:\n  "
+      <> msg
+  EALDependencyFailed h ->
+    "a function body this program depends on failed certification: " <> show h
+  EALInternal msg -> "certification internal error (analyzer bug): " <> msg
 
 data ResolverError
   = NoMainFunction String
@@ -96,7 +135,7 @@ renderSizingFailure failure = case sizingFailureKind failure of
       <> "  (`x : someValidator`) or an `assert` before recursing on it."
 
 data EvalError = RTE RunTimeError
-    | TCE TypeCheckError
+    | CertificationError EALError
     | RE ResolverError
     | StaticCheckError String
     | CompileConversionError
@@ -108,7 +147,8 @@ data EvalError = RTE RunTimeError
 instance Show EvalError where
   showsPrec d = \case
     RTE err -> showParen (d > 10) $ showString "RTE " . showsPrec 11 err
-    TCE err -> showParen (d > 10) $ showString "TCE " . showsPrec 11 err
+    CertificationError err ->
+      showParen (d > 10) $ showString "CertificationError " . showsPrec 11 err
     RE err -> showParen (d > 10) $ showString "RE " . showsPrec 11 err
     StaticCheckError s -> showParen (d > 10) $ showString "StaticCheckError " . showsPrec 11 s
     CompileConversionError -> showString "CompileConversionError"
@@ -118,5 +158,6 @@ instance Show EvalError where
 -- it has advice worth giving unadorned.
 renderEvalError :: EvalError -> String
 renderEvalError = \case
-  RecursionLimitError f -> renderSizingFailure f
-  err                   -> show err
+  RecursionLimitError f  -> renderSizingFailure f
+  CertificationError err -> renderEALError err
+  err                    -> show err

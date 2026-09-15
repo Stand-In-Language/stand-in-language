@@ -47,7 +47,6 @@ library
                      , Telomare.Resolve
                      , Telomare.Size
                      , Telomare.Size.IR
-                     , Telomare.TypeCheck
                      , Telomare.Util
   build-depends:       base
                      , binary

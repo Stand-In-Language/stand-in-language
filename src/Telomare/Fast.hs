@@ -84,8 +84,8 @@ import Telomare.IR.Loc
 import Telomare.IR.Surface
 import Telomare.IR.Types
 import Telomare.Parse (runParseModule)
+import Telomare.EAL (certifyMain)
 import Telomare.Resolve (main2Term3, main2Term3let)
-import Telomare.TypeCheck (typeCheck)
 import Telomare.Util (padRight, plural)
 
 -- |A recursion site: the token the sizing pass would have sized, where it is
@@ -492,13 +492,8 @@ compileFast modulesStrings entry =
     errs@(_ : _) -> Left $ unlines errs
     [] -> do
       let modules = [(n, m) | (n, Right m) <- parsed]
-          mainType = embed $ PairTypeP
-            (embed $ ArrTypeP (embed ZeroTypeP) (embed ZeroTypeP))
-            (embed AnyType)
-      tcTerm <- resolved $ main2Term3 modules entry
-      case typeCheck mainType tcTerm of
-        Just e  -> Left . renderEvalError $ TCE e
-        Nothing -> pure ()
+      certTerm <- resolved $ main2Term3 modules entry
+      _ <- first (renderEvalError . CertificationError) $ certifyMain certTerm
       runtimeTerm <- resolved $ main2Term3let modules entry
       term3ToFast (ownerMap modules) runtimeTerm
   where
