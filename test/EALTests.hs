@@ -349,26 +349,43 @@ main = do
                 Right r -> assertBool "bounded level" (ealMaxLevel r <= 3)
                 other -> assertFailure $
                   "expected acceptance, got " <> show other
-    , testCase "PINNED (2026-09-14): gate join of capturing closure vs literal" $
-        -- Incidental find from the TypeChecker-removal audit, kept here
-        -- so a behavior change is noticed. The dead `if 0` branch
-        -- misapplies (`times $2 succ` hands `times` a non-numeral), and
-        -- today certification rejects the whole program with
-        -- EALTypeMismatch "data vs code" blamed deep inside Prelude's
-        -- `times`. Two open questions to address later: (1) is rejecting
-        -- on a dead branch the intended strictness (the old type checker
-        -- and the sizing pass both also choke on this program — sizing
-        -- with an internal getInputLimits error — so the verdict at
-        -- least agrees with the pipeline), or is it a capture-fallback
-        -- unification artifact (a CapT met outside its own tag's
-        -- dispatch unifies against EVERY capture the package holds)?
-        -- (2) either way, the blame should name the user's branch, not a
-        -- Prelude internal. If this test starts failing because the
-        -- program certifies, decide deliberately which verdict is right.
+    , testCase "PINNED (2026-09-14): gate branches of disagreeing arity" $
+        -- DIAGNOSED 2026-09-15: each tag dispatched at an apply site
+        -- unifies its result into the site's one apRes, so a gate whose
+        -- arms disagree in arity — after two applications the `times`
+        -- arm still yields a code-headed partial while the `$1` arm has
+        -- reduced to data — joins DataT against CodeT there and rejects.
+        -- Neither the literal nor the capture machinery is involved
+        -- (`times`-arm vs a plain lambda fails identically; each arm
+        -- certifies alone). This is behavior-parity with the old
+        -- TypeChecker, which also rejected function-vs-data branch
+        -- joins, so the verdict stands for now. Two follow-ups remain
+        -- open: (1) a real lattice join at result positions (data joined
+        -- with code keeps the code side's tags) would accept these,
+        -- since the runtime is fine with arms of different shapes —
+        -- adopt deliberately if wanted; (2) the blame names the deep
+        -- Prelude site where the code-headed result is built, not the
+        -- gate where the arms disagree.
         case parse False "main = (if 0 then (\\x -> times $2 x) else $1) succ 0" of
           Left e -> assertFailure ("parse failed: " <> e)
           Right g -> case ealLiftedMain (inferEALWithLifting g) of
             Left (EALTypeMismatch _ _) -> pure ()
+            other -> assertFailure $
+              "pinned verdict changed - decide the right one: " <> show other
+    , testCase "PINNED (2026-09-15): same-arity gate join blows dispatch depth" $
+        -- Found while diagnosing the pin above, and unlike it this one
+        -- is a genuine FALSE rejection: both arms take two arguments,
+        -- both terminate on either path (`id succ 0` and `$1 succ 0`
+        -- are both 1), yet certification climbs the dispatch depth cap.
+        -- Suspected mechanism: at a multi-tag apply site every
+        -- dispatched frame's env skeleton unifies with the one shared
+        -- operand, so the arms' flows mix and the `$1` oracle machinery
+        -- sees spurious self-application. To be fixed; if this starts
+        -- certifying, flip the expectation.
+        case parse False "main = (if 0 then (\\x -> x) else $1) succ 0" of
+          Left e -> assertFailure ("parse failed: " <> e)
+          Right g -> case ealLiftedMain (inferEALWithLifting g) of
+            Left (EALSolverGaveUp _) -> pure ()
             other -> assertFailure $
               "pinned verdict changed - decide the right one: " <> show other
     ]

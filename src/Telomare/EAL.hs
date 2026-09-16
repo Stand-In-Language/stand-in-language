@@ -513,7 +513,7 @@ unionTags loc a b = do
   unless (ra == rb) $ do
     ma <- capturesOf ra
     mb <- capturesOf rb
-    let pending = [ (ca, cb) | (t, Just ca) <- Map.toList ma
+    let pending = [ (t, ca, cb) | (t, Just ca) <- Map.toList ma
                   , Just (Just cb) <- [Map.lookup t mb] ]
         keep x y = case x of
           Just _  -> x
@@ -523,7 +523,7 @@ unionTags loc a b = do
       , esTagSets = Map.insert rb (Map.unionWith keep ma mb)
           (Map.delete ra (esTagSets st))
       }
-    mapM_ (uncurry (unifySigma loc)) pending
+    mapM_ (\(_t, ca, cb) -> unifySigma loc ca cb) pending
 
 -- * Type unification
 
@@ -607,8 +607,31 @@ unifyTauAt vis mode loc a b = do
       unifySigmaAt vis mode loc a1 b1 >> unifySigmaAt vis mode loc a2 b2
     (PairT p1 p2, DataT) -> collapse p1 >> collapse p2
     (DataT, PairT p1 p2) -> collapse p1 >> collapse p2
-    _ -> throwError . EALTypeMismatch loc $
-      describeTau a' <> " vs " <> describeTau b'
+    _ -> do
+      da <- deepShowTau 5 a'
+      db <- deepShowTau 5 b'
+      throwError . EALTypeMismatch loc $
+        describeTau a' <> " vs " <> describeTau b'
+          <> " [mode " <> show mode <> "; " <> da <> " ||| " <> db <> "]"
+
+-- | Resolved rendering of a type to bounded depth, for mismatch reports.
+deepShowTau :: Int -> Tau -> EALM String
+deepShowTau n t
+  | n <= 0 = pure "..."
+  | otherwise = walkTau t >>= \case
+      DataT -> pure "D"
+      VarT i -> pure ("t" <> show i)
+      CodeT i -> do
+        r <- findTag i
+        tags <- tagSetOf i
+        pure ("Code#" <> show r <> show (Set.toList tags))
+      CapT i -> do
+        r <- findTag i
+        pure ("Cap#" <> show r)
+      PairT (Sigma _ a) (Sigma _ b) -> do
+        sa <- deepShowTau (n - 1) a
+        sb <- deepShowTau (n - 1) b
+        pure ("(" <> sa <> ", " <> sb <> ")")
 
 -- | A capture selection meeting a concrete type: under a dispatch mode
 -- whose tag the package holds, exactly that tag's capture is meant;
