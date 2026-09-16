@@ -15,6 +15,7 @@ import Control.Lens (Identity (runIdentity))
 import Data.Functor.Foldable (cata, embed)
 import Debug.Trace
 import Telomare.Desugar (desugarTerm)
+import Telomare.EAL (certifyMain)
 import Telomare.Error
 import Telomare.Eval.Meter (Meter, evalMeter)
 import Telomare.Eval.Reference ()
@@ -30,7 +31,6 @@ import Telomare.Machine (appB, deferB)
 import Telomare.Parse (parseOneExprOrDefinitions, runParseModule)
 import Telomare.PrettyPrint
 import Telomare.Resolve (main2Term3, main2Term3let, process, resolveAllImports)
-import Telomare.EAL (certifyMain)
 import Telomare.Size (SizingReport (..), SizingSettings (..),
                       buildUnsizedLocMap, evalStaticCheck, locateSizingFailure,
                       sizeTermM, term3ToUnsizedExpr)

@@ -79,14 +79,14 @@ import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
 import Data.Map (Map)
 import qualified Data.Map as Map
+import Debug.Trace (trace)
+import Telomare.EAL (CapShape (..), Step (..), showSteps)
 import Telomare.IR.Base (AbortableF (..), BasicExpr, BasicExprF (..),
                          FunctionIndex, StuckF (..), pattern AbortB,
                          pattern AbortEE, pattern AbortFW, pattern BasicFW,
                          pattern EnvB, pattern GateB, pattern PairB,
                          pattern StuckEE, pattern StuckFW, pattern ZeroB)
 import Telomare.IR.Core (CompiledExpr, RunTimeError (..), compiled2Term3)
-import Debug.Trace (trace)
-import Telomare.EAL (CapShape (..), Step (..), showSteps)
 import Telomare.Machine (abortInd, deferB, doLeft, doRight, leftGateInd,
                          rightGateInd)
 import Telomare.Resolve (Term3LiftingF (..), deferLift)
@@ -298,7 +298,7 @@ envUsage = go [] where
     StuckFW (LeftSF x)    -> go (SL : proj) x
     StuckFW (RightSF x)   -> go (SR : proj) x
     StuckFW (DeferSF _ _) -> Map.empty
-    x -> foldr (Map.unionWith (+) . go []) Map.empty x
+    x                     -> foldr (Map.unionWith (+) . go []) Map.empty x
 
 -- | The projection path this term applies directly to Env, when it is
 -- nothing but a projection chain over Env; Nothing as soon as anything
@@ -454,11 +454,11 @@ compileTerm t = case project t of
   StuckFW EnvSF -> takeEnvWire []
   StuckFW (SetEnvSF x) -> consumer ICSetEnv x
   StuckFW (LeftSF x) -> case envPathOf t of
-    Just path    -> takeEnvWire path
-    Nothing      -> consumer ICLeft x
+    Just path -> takeEnvWire path
+    Nothing   -> consumer ICLeft x
   StuckFW (RightSF x) -> case envPathOf t of
-    Just path    -> takeEnvWire path
-    Nothing      -> consumer ICRight x
+    Just path -> takeEnvWire path
+    Nothing   -> consumer ICRight x
   StuckFW GateSF -> value ICGate
   d@(StuckFW (DeferSF _ _)) -> do
     (tid, fi) <- compileDefer (embed d)
@@ -1073,8 +1073,8 @@ icEval :: CompiledExpr -> Either RunTimeError CompiledExpr
 icEval term = case icEvalIC term of
   Left e -> Left $ GenericRunTimeError ("IC runtime: " <> show e) ZeroB
   Right x -> case cata findError x of
-    Just msg  -> Left $ AbortRunTime msg
-    Nothing   -> Right x
+    Just msg -> Left $ AbortRunTime msg
+    Nothing  -> Right x
   where
     findError = \case
       AbortFW (AbortedF e) -> Just e

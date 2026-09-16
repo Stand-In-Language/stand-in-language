@@ -199,7 +199,7 @@ main = do
                          , cgIndex g == FunctionIndex i ]
         case ealLiftedMain lr of
           Right _ -> pure ()
-          Left e -> assertFailure ("expected acceptance, got " <> show e)
+          Left e  -> assertFailure ("expected acceptance, got " <> show e)
         -- the inner closure carries data
         layoutOf 5 @?= [Just (CapPair CapData CapData)]
         -- the outer body is constructed against the closure itself:

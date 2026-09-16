@@ -228,23 +228,23 @@ initEALState = EALState
 -- (stored stripped from leaf paths and nested sites, re-appended at
 -- instantiation) and its dispatch depth (re-stamped on nested sites).
 data BodyTemplate = BodyTemplate
-  { btIndex      :: FunctionIndex     -- ^ for error reporting
-  , btBase       :: Int               -- ^ first variable of the block
-  , btSize       :: Int               -- ^ variables the walk minted
-  , btParents    :: [(Int, Int)]      -- ^ union-find edges inside the block
-  , btClasses    :: [(Int, ClassInfo)]
-  , btTVarBinds  :: [(Int, Tau)]
-  , btTagParents :: [(Int, Int)]
-  , btTagSets    :: [(Int, Map Tag (Maybe Sigma))]
-  , btSumEqs     :: [SumEq]
+  { btIndex        :: FunctionIndex     -- ^ for error reporting
+  , btBase         :: Int               -- ^ first variable of the block
+  , btSize         :: Int               -- ^ variables the walk minted
+  , btParents      :: [(Int, Int)]      -- ^ union-find edges inside the block
+  , btClasses      :: [(Int, ClassInfo)]
+  , btTVarBinds    :: [(Int, Tau)]
+  , btTagParents   :: [(Int, Int)]
+  , btTagSets      :: [(Int, Map Tag (Maybe Sigma))]
+  , btSumEqs       :: [SumEq]
   , btLeafPrefixes :: [[BVar]]        -- ^ block-local leaf paths, site path
                                       -- appended at instantiation
-  , btApplies    :: [ApplySite]       -- ^ nested sites; 'apGlobal' holds the
+  , btApplies      :: [ApplySite]       -- ^ nested sites; 'apGlobal' holds the
                                       -- block-local prefix only, 'apDepth'
                                       -- is re-stamped at instantiation
-  , btEnvBang    :: BVar              -- ^ interface: frame env domain bang
-  , btEnvTau     :: Tau               -- ^ interface: frame env type
-  , btResult     :: Sigma             -- ^ interface: body result
+  , btEnvBang      :: BVar              -- ^ interface: frame env domain bang
+  , btEnvTau       :: Tau               -- ^ interface: frame env type
+  , btResult       :: Sigma             -- ^ interface: body result
   }
 
 type EALM = ExceptT EALError (State EALState)
@@ -271,18 +271,18 @@ data EALResult = EALResult
 -- treat absence as "keep to the semantics-preserving default"); the
 -- fields grade and localize that promise.
 data CodeGuidance = CodeGuidance
-  { cgIndex        :: FunctionIndex -- ^ first-seen index, for reporting
-  , cgUsage        :: Map [Step] Int
+  { cgIndex         :: FunctionIndex -- ^ first-seen index, for reporting
+  , cgUsage         :: Map [Step] Int
     -- ^ env occurrences per projection path: disjoint single-use paths
     -- are linear destructuring (routable as wiring, no sharing needed);
     -- a path counted twice, or overlapping a used sub-path, is where
     -- duplication actually happens
-  , cgEnvBang      :: Int       -- ^ solved bang on the body's env domain
+  , cgEnvBang       :: Int       -- ^ solved bang on the body's env domain
                                 --   (this body's standalone derivation; a
                                 --   dispatch site's derivation may differ)
-  , cgMaxLevel     :: Int       -- ^ max box depth inside the body (including
+  , cgMaxLevel      :: Int       -- ^ max box depth inside the body (including
                                 --   depths of bodies it applies)
-  , cgSpeculatable :: Bool
+  , cgSpeculatable  :: Bool
     -- ^ False when the body, or a body it references, still carries an
     -- unsized recursion oracle: its work is unbounded until sizing, so a
     -- speculating consumer must not evaluate it ahead of demand
@@ -442,12 +442,12 @@ constrainB b nc = case nc of
 -- 'propagate' would see phantom changes and never converge.
 mergeClasses :: ClassInfo -> ClassInfo -> EALM ClassInfo
 mergeClasses a b = case (a,b) of
-  (Unrestricted, _) -> pure b
-  (_, Unrestricted) -> pure a
-  (ForcedLevel _ l, ForcedZero z) -> throwError $ EALBoxConflict l z
-  (ForcedZero z, ForcedLevel _ l) -> throwError $ EALBoxConflict l z
+  (Unrestricted, _)                    -> pure b
+  (_, Unrestricted)                    -> pure a
+  (ForcedLevel _ l, ForcedZero z)      -> throwError $ EALBoxConflict l z
+  (ForcedZero z, ForcedLevel _ l)      -> throwError $ EALBoxConflict l z
   (ForcedLevel la _, ForcedLevel lb _) -> pure $ if la >= lb then a else b
-  _forcedZero -> pure a
+  _forcedZero                          -> pure a
 
 -- | Merge two bang classes (used during type unification).
 unionB :: BVar -> BVar -> EALM ()
@@ -659,24 +659,24 @@ envUsageL :: Term3Lifting -> Map [Step] (Int, LocTag)
 envUsageL = go [] where
   merge = Map.unionWith (\(c1, l1) (c2, _) -> (c1 + c2, l1))
   go proj (anno :< t) = case t of
-    StuckFW (LeftSF x) -> go (SL : proj) x
-    StuckFW (RightSF x) -> go (SR : proj) x
+    StuckFW (LeftSF x)          -> go (SL : proj) x
+    StuckFW (RightSF x)         -> go (SR : proj) x
     -- the accumulated list is innermost projection first, which is the order
     -- the projections apply to the env value, so it is used unreversed
-    StuckFW EnvSF -> Map.singleton proj (1, anno)
-    Term3LUnsized _ -> Map.singleton proj (1, anno)
-    Term3LDeferRef _ -> mempty
+    StuckFW EnvSF               -> Map.singleton proj (1, anno)
+    Term3LUnsized _             -> Map.singleton proj (1, anno)
+    Term3LDeferRef _            -> mempty
     -- unreachable in a lifted term; 'intrinsic' rejects it
-    StuckFW (DeferSF _ _) -> mempty
+    StuckFW (DeferSF _ _)       -> mempty
     Term3LCheckingWrapper _ _ c -> go proj c
-    BasicFW (PairSF a b) -> merge (go [] a) (go [] b)
-    StuckFW (SetEnvSF x) -> go [] x
+    BasicFW (PairSF a b)        -> merge (go [] a) (go [] b)
+    StuckFW (SetEnvSF x)        -> go [] x
     -- gate is a value; branch and scrutinee usage flows through the
     -- SetEnv/Pair nodes of the GateSwitch encoding
-    StuckFW GateSF -> mempty
-    BasicFW ZeroSF -> mempty
-    AbortFW _ -> mempty
-    _ -> mempty
+    StuckFW GateSF              -> mempty
+    BasicFW ZeroSF              -> mempty
+    AbortFW _                   -> mempty
+    _                           -> mempty
 
 -- | Is some env path consumed more than once? A path is duplicated if it has
 -- two direct uses, or a direct use plus a use of one of its sub-paths.
@@ -1224,7 +1224,7 @@ leafDepths vals = State.gets esLeafPaths >>= mapM depth where
 refsOf :: Term3Lifting -> Set (Digest SHA256)
 refsOf (_ :< t) = case t of
   Term3LDeferRef h -> Set.singleton h
-  x -> foldMap refsOf x
+  x                -> foldMap refsOf x
 
 -- | Does this term, or any body it references, still contain an unsized
 -- recursion oracle? (The map is a DAG, so the walk terminates.)

@@ -76,6 +76,7 @@ import qualified Data.Map as Map
 import Data.Maybe (fromMaybe)
 import System.IO (hFlush, isEOF, stdout)
 
+import Telomare.EAL (certifyMain)
 import Telomare.Error
 import Telomare.Expand (expandModule, renderExpansionError)
 import Telomare.IR.Base
@@ -84,7 +85,6 @@ import Telomare.IR.Loc
 import Telomare.IR.Surface
 import Telomare.IR.Types
 import Telomare.Parse (runParseModule)
-import Telomare.EAL (certifyMain)
 import Telomare.Resolve (main2Term3, main2Term3let)
 import Telomare.Util (padRight, plural)
 

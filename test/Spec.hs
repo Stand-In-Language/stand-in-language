@@ -4,6 +4,7 @@ module Main where
 import Data.Bifunctor
 import qualified System.IO.Strict as Strict
 import Telomare.Driver
+import Telomare.EAL (certifyMain, ealLiftedMain, inferEALWithLifting)
 import Telomare.Error
 import Telomare.Expand
 import Telomare.IR.Base
@@ -15,7 +16,6 @@ import Telomare.Machine (appB, deferB, iteB)
 import Telomare.Parse
 import Telomare.PrettyPrint
 import Telomare.Resolve
-import Telomare.EAL (certifyMain, ealLiftedMain, inferEALWithLifting)
 import Telomare.Size (SizingSettings (SizingSettings))
 import Test.Hspec
 

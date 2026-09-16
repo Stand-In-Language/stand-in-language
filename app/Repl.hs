@@ -24,6 +24,7 @@ import System.Exit (exitSuccess)
 import qualified System.IO.Strict as Strict
 import Telomare.Desugar (desugarTerm)
 import Telomare.Driver (compileUnitTestNoAbort)
+import Telomare.EAL (inferEALWithLifting, renderEALVerdict)
 import Telomare.Error
 import Telomare.Eval.Reference (evalPartial)
 import Telomare.Expand (ExpansionError, expandDefs, expandTerm,
@@ -36,7 +37,6 @@ import Telomare.Parse (TelomareParser, parseLongExpr, parseSingleDefinition,
                        runParseDefinitions)
 import Telomare.PrettyPrint
 import Telomare.Resolve (process)
-import Telomare.EAL (inferEALWithLifting, renderEALVerdict)
 import Telomare.Size.IR (PartialExpr)
 import Text.Megaparsec
 

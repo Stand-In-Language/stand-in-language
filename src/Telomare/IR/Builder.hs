@@ -19,8 +19,7 @@ import Telomare.IR.Base (BasicBase (..), BasicExprF (..), CarryAnno (..),
                          UnsizedRecursionToken, pattern EnvB,
                          pattern FillFunctionEE, pattern GateB, pattern LeftB,
                          pattern PairB, pattern PairP, pattern RightB,
-                         pattern SetEnvB, pattern StuckEE, pattern ZeroB,
-                         varB)
+                         pattern SetEnvB, pattern StuckEE, pattern ZeroB, varB)
 import Telomare.IR.Core (Term3, Term3F (..))
 import Telomare.IR.Loc (LocTag)
 

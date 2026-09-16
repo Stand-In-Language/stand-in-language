@@ -6,18 +6,16 @@ import Data.List (isInfixOf)
 import qualified Data.Map as Map
 import qualified System.IO.Strict as Strict
 import Telomare.Driver (compileUnitTest)
-import Telomare.EAL (CodeGuidance (..), EALLiftedResult (..),
-                     ealCaptureLayouts, inferEALCompiled,
-                     inferEALWithLifting)
+import Telomare.EAL (CodeGuidance (..), EALLiftedResult (..), ealCaptureLayouts,
+                     inferEALCompiled, inferEALWithLifting)
 import Telomare.Expand (expandModule, renderExpansionError)
 import Telomare.IC
 import Telomare.IR.Base (AbortableF (..), BasicExpr, pattern AbortB,
                          pattern AbortEE, pattern EnvB, pattern GateB,
                          pattern GateSwitchEE, pattern LeftB, pattern PairB,
-                         pattern RightB, pattern SetEnvB, pattern ZeroB,
-                         varB)
-import Telomare.IR.Core (AbstractRunTime (..), CompiledExpr,
-                         RunTimeError (..), Term3, compiled2Term3)
+                         pattern RightB, pattern SetEnvB, pattern ZeroB, varB)
+import Telomare.IR.Core (AbstractRunTime (..), CompiledExpr, RunTimeError (..),
+                         Term3, compiled2Term3)
 import Telomare.Machine (abortInd, appB, deferB, iteB)
 import Telomare.Parse (runParseModule)
 import Telomare.Resolve (DeferMap (..), deferLift, main2Term3let)
