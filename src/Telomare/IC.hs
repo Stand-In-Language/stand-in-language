@@ -72,6 +72,7 @@ import Control.Monad.Except
 import Control.Monad.State.Strict (State)
 import qualified Control.Monad.State.Strict as State
 import Crypto.Hash (Digest, SHA256)
+import Data.Fix (Fix (..))
 import Data.Foldable (asum, toList)
 import Data.Functor.Foldable (cata, embed, project)
 import Data.IntMap.Strict (IntMap)
@@ -86,10 +87,10 @@ import Telomare.IR.Base (AbortableF (..), BasicExpr, BasicExprF (..),
                          pattern AbortEE, pattern AbortFW, pattern BasicFW,
                          pattern EnvB, pattern GateB, pattern PairB,
                          pattern StuckEE, pattern StuckFW, pattern ZeroB)
-import Telomare.IR.Core (CompiledExpr, RunTimeError (..), compiled2Term3)
+import Telomare.IR.Core (CompiledExpr, CompiledExprF (..), RunTimeError (..))
 import Telomare.Machine (abortInd, deferB, doLeft, doRight, leftGateInd,
                          rightGateInd)
-import Telomare.Resolve (Term3LiftingF (..), deferLift)
+import Telomare.Resolve (Term3LiftingF (..), hashLiftedBody)
 
 -- | Temporary debugging switch: trace every interaction and instantiation.
 debugIC :: Bool
@@ -326,16 +327,33 @@ isolatedNet act = do
     , icActive = icActive saved, icEnvQueue = icEnvQueue saved }
   pure (r, icNodes built, icNextLabel built)
 
--- | The content hash of a defer value, computed by the code path that
--- keys the DeferMap ('Telomare.Resolve.deferLift') — lifting a bare
--- defer value leaves a lone reference carrying its hash — so templates
--- and per-hash 'Telomare.EAL.CodeGuidance' share one namespace by
--- construction. The hash names the lifted body (nested defers appear as
--- refs), so it is blind to FunctionIndexes.
+-- | Keep original bodies for equality/readback and a hash at each defer.
+-- The lifted view exists only while preparing the tree: nested defers are
+-- replaced by references before hashing their parent. Each defer's hash is
+-- computed once, without repeatedly converting and lifting whole subtrees.
+type PreparedExpr = Cofree CompiledExprF (CompiledExpr, Maybe (Digest SHA256))
+
+preparedBody :: PreparedExpr -> CompiledExpr
+preparedBody ((body, _) :< _) = body
+
+prepareTerm :: CompiledExpr -> PreparedExpr
+prepareTerm = snd . cata prepare where
+  prepare children =
+    let original = embed (fmap (preparedBody . snd) children)
+        (lifted, digest) = case children of
+          CompiledExprS (DeferSF _ (body, _)) ->
+            let h = hashLiftedBody body
+            in (Fix (Term3LDeferRef h), Just h)
+          CompiledExprB b -> (Fix (Term3LB (fmap fst b)), Nothing)
+          CompiledExprS s -> (Fix (Term3LS (fmap fst s)), Nothing)
+          CompiledExprA a -> (Fix (Term3LA (fmap fst a)), Nothing)
+    in (lifted, (original, digest) :< fmap snd children)
+
+-- | Same index-blind content hash as 'Telomare.Resolve.deferLift'.
 deferHash :: CompiledExpr -> Either String (Digest SHA256)
-deferHash d = case deferLift (compiled2Term3 d) of
-  (_, _ :< Term3LDeferRef h) -> Right h
-  _notDefer                  -> Left "deferHash: not a defer value"
+deferHash d = case prepareTerm d of
+  (_, Just h) :< _ -> Right h
+  _notDefer        -> Left "deferHash: not a defer value"
 
 -- | Compile one Defer value into a template, or reuse the template of an
 -- exactly-equal body already compiled (the hash narrows candidates; 'Eq'
@@ -343,9 +361,12 @@ deferHash d = case deferLift (compiled2Term3 d) of
 -- sharing would be visible to readback). The site's own FunctionIndex is
 -- returned for the caller to keep on its ref node.
 compileDefer :: CompiledExpr -> ICM (TemplateId, FunctionIndex)
-compileDefer d = case d of
-  StuckEE (DeferSF fi body) -> do
-    h <- either (throwError . ICInternal) pure (deferHash d)
+compileDefer = compilePreparedDefer . prepareTerm
+
+compilePreparedDefer :: PreparedExpr -> ICM (TemplateId, FunctionIndex)
+compilePreparedDefer d = case d of
+  (_, Just h) :< CompiledExprS (DeferSF fi prepared) -> do
+    let body = preparedBody prepared
     candidates <- State.gets (Map.findWithDefault [] h . icTplByHash)
     tpls <- State.gets icTemplates
     case [ tid | tid <- candidates
@@ -355,7 +376,7 @@ compileDefer d = case d of
         note "template-reused"
         pure (tid, fi)
       [] -> do
-        (ext, nodes, labels) <- isolatedNet (compileBody body)
+        (ext, nodes, labels) <- isolatedNet (compilePreparedBody prepared)
         tid <- State.gets icNextTpl
         State.modify' $ \st -> st
           { icNextTpl = tid + 1
@@ -369,11 +390,14 @@ compileDefer d = case d of
 -- | Build a body's net: allocate its env splitter tree, walk the term,
 -- and wire the result to the boundary node.
 compileBody :: CompiledExpr -> ICM Int
-compileBody body = do
+compileBody = compilePreparedBody . prepareTerm
+
+compilePreparedBody :: PreparedExpr -> ICM Int
+compilePreparedBody body = do
   ext <- newNode ICExt
-  wires <- envWiring (Port ext 0) (envUsage body)
+  wires <- envWiring (Port ext 0) (envUsage (preparedBody body))
   State.modify' $ \st -> st { icEnvQueue = wires }
-  root <- compileTerm body
+  root <- compilePreparedTerm body
   State.gets icEnvQueue >>= \q ->
     unless (all null (Map.elems q)) . throwError $
       ICInternal "compileBody: env wires left over"
@@ -441,24 +465,27 @@ takeEnvWire path = State.gets (Map.lookup path . icEnvQueue) >>= \case
 -- Projection chains applied directly to Env compile to nothing: their
 -- component arrives pre-split on its path's wire.
 compileTerm :: CompiledExpr -> ICM Port
-compileTerm t = case project t of
+compileTerm = compilePreparedTerm . prepareTerm
+
+compilePreparedTerm :: PreparedExpr -> ICM Port
+compilePreparedTerm t@(_ :< node) = case node of
   BasicFW ZeroSF -> value ICZero
   BasicFW (PairSF a b) -> do
     p <- newNode ICPair
-    connect (Port p 1) =<< compileTerm a
-    connect (Port p 2) =<< compileTerm b
+    connect (Port p 1) =<< compilePreparedTerm a
+    connect (Port p 2) =<< compilePreparedTerm b
     pure (Port p 0)
   StuckFW EnvSF -> takeEnvWire []
   StuckFW (SetEnvSF x) -> consumer ICSetEnv x
-  StuckFW (LeftSF x) -> case envPathOf t of
+  StuckFW (LeftSF x) -> case envPathOf (preparedBody t) of
     Just path -> takeEnvWire path
     Nothing   -> consumer ICLeft x
-  StuckFW (RightSF x) -> case envPathOf t of
+  StuckFW (RightSF x) -> case envPathOf (preparedBody t) of
     Just path -> takeEnvWire path
     Nothing   -> consumer ICRight x
   StuckFW GateSF -> value ICGate
-  d@(StuckFW (DeferSF _ _)) -> do
-    (tid, fi) <- compileDefer (embed d)
+  StuckFW (DeferSF _ _) -> do
+    (tid, fi) <- compilePreparedDefer t
     value (ICRef tid fi)
   AbortFW AbortF -> value ICAbort
   AbortFW (AbortedF m) -> do
@@ -469,7 +496,7 @@ compileTerm t = case project t of
     value k = (`Port` 0) <$> newNode k
     consumer k x = do
       n <- newNode k
-      connect (Port n 0) =<< compileTerm x
+      connect (Port n 0) =<< compilePreparedTerm x
       pure (Port n 1)
 
 compileData :: BasicExpr -> ICM Port

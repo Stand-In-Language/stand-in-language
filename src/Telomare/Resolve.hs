@@ -646,6 +646,12 @@ instance Monoid DeferMap where
 makeDM :: Digest SHA256 -> FunctionIndex -> Term3Lifting -> DeferMap
 makeDM k fi e = DeferMap $ Map.singleton k (fi, e)
 
+-- | The existing content-address encoding, shared with IC preparation.
+-- Nested defers must already be references; annotations and function
+-- indexes do not participate in this namespace.
+hashLiftedBody :: Fix Term3LiftingF -> Digest SHA256
+hashLiftedBody = hash . BS.pack . encode . show
+
 -- | Like lambda lifting: replace every Defer body with a hash reference and
 -- collect the bodies in a DeferMap. Sound without free-variable abstraction
 -- because Defer bodies are closed (their only free variable is their own
@@ -658,11 +664,9 @@ deferLift = cata hF where
   hF :: C.CofreeF Term3F LocTag (DeferMap, Term3Lifting) -> (DeferMap, Term3Lifting)
   hF (anno C.:< x) = case x of
     StuckFW (DeferSF ind (dm, body)) ->
-      let hash' :: ByteString -> Digest SHA256
-          hash' = hash
-          forgetL :: Term3Lifting -> Fix Term3LiftingF
+      let forgetL :: Term3Lifting -> Fix Term3LiftingF
           forgetL = forget
-          h = hash' . BS.pack . encode . show $ forgetL body
+          h = hashLiftedBody (forgetL body)
       in (dm <> makeDM h ind body, anno :< Term3LDeferRef h)
     Term3B b -> (anno :<) . Term3LB <$> sequence b
     Term3S s -> (anno :<) . Term3LS <$> sequence s

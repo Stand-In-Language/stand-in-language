@@ -135,6 +135,18 @@ main = do
             r @?= Right (p z z)
             Map.lookup "template-compiled" stats @?= Just 3
             Map.lookup "template-reused" stats @?= Just 2
+        , testCase "nested hashes retain the deferLift encoding" $ do
+            let bodies = [z, EnvB, p EnvB z, AbortB,
+                          AbortEE (AbortedF msgPair),
+                          d 81 (LeftB EnvB),
+                          p (d 82 (d 83 EnvB)) (d 84 (p EnvB EnvB))]
+            forM_ bodies $ \body -> do
+              let dv = d 80 body
+                  (DeferMap dm, _) = deferLift (compiled2Term3 dv)
+                  keys = [h | (h, (fi, _)) <- Map.toList dm, fi == toEnum 80]
+              case keys of
+                [h] -> deferHash dv @?= Right h
+                _   -> assertFailure "outer body's hash missing"
         , testCase "deduped defers read back with their own index" $ do
             -- the result contains both defer values; sharing a template
             -- must not collapse their indexes (defer equality is by index)

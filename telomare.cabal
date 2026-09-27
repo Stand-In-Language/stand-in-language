@@ -16,6 +16,8 @@ build-type:          Simple
 -- there. That is the whole reason the Telomare programs appear below.
 extra-source-files:  CHANGELOG.md
                      README.md
+                     bench/DeferCompile.hs
+                     bench/README.md
                      *.tel
                      test/programs/**/*.tel
 
