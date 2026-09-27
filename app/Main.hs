@@ -23,6 +23,7 @@ import Telomare.Eval.Meter (renderMeter)
 import Telomare.Fast (compileFast, defaultFastFuel, renderFastMeter,
                       runFastLoop)
 import Telomare.IC
+import Telomare.IC.Space (analyzeIC, defaultAnalysisBudget, renderICSpace)
 import Telomare.IR.Base (pattern EnvB)
 import Telomare.IR.Core (CompiledExpr)
 import Telomare.IR.Loc (locatedNameText)
@@ -161,7 +162,8 @@ runArtifact path action mode = do
       let artifactEAL = inferEALCompiled (artifactExpr artifact)
       if mode == IC then case action of
         Compile _ -> die $ path <> " is already compiled"
-        Certificate -> putStr $ artifactCertificate artifact
+        Certificate -> putStr . renderICSpace . analyzeIC defaultAnalysisBudget
+          =<< prepareEntry artifactEAL (artifactExpr artifact)
         _ -> runIC action =<< prepareEntry artifactEAL (artifactExpr artifact)
       else case action of
         Compile _   -> die $ path <> " is already compiled"
@@ -195,6 +197,9 @@ runSized file action useIC = do
     Right (CompileOutput report sized eal) -> case action of
       Run | useIC -> runIC action =<< prepareEntry eal sized
       Run -> evalLoop sized
+      Certificate | useIC -> do
+        prog <- prepareEntry eal sized
+        putStr . renderICSpace $ analyzeIC defaultAnalysisBudget prog
       Certificate -> putStr $ staticReport Nothing (Just report) allModules entryModule
       Meter | useIC -> runIC action =<< prepareEntry eal sized
       Meter -> do

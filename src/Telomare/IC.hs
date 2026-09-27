@@ -144,6 +144,9 @@ data ICKind
                        --   the net fires it eagerly, so stuckness must be a
                        --   value that erasure discards and only demanded
                        --   output reports.
+  | ICInput Integer    -- ^ 1 port: an unknown finite data tree, the part of
+                       --   the input at this path. Only 'Telomare.IC.Space'
+                       --   makes these; no rule here consumes one.
   deriving (Eq, Show)
 
 data Port = Port

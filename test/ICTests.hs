@@ -14,6 +14,7 @@ import Telomare.EAL (CapShape (..), CodeGuidance (..), EALLiftedResult (..),
                      inferEALWithLifting)
 import Telomare.Expand (expandModule, renderExpansionError)
 import Telomare.IC
+import Telomare.IC.Space
 import Telomare.IR.Base (AbortableF (..), BasicExpr, pattern AbortB,
                          pattern AbortEE, pattern EnvB, pattern GateB,
                          pattern GateSwitchEE, pattern LeftB, pattern PairB,
@@ -117,7 +118,15 @@ main = do
     corpus :: String -> TestTree
     corpus src = testCase src $ case compiled src of
       Left e  -> assertFailure $ "compilation failed: " <> e
-      Right t -> icEval t @?= eval t
+      Right t -> do
+        icEval t @?= eval t
+        prog <- either (\e -> assertFailure (show e) >> error "unreachable") pure
+          (prepareIC mempty t)
+        let outcome = analyzeIC defaultAnalysisBudget prog
+            (_, measured) = runICProgram defaultFuel prog ZeroB
+        case outcome of
+          Unknown reason -> assertFailure ("closed corpus analysis: " <> reason)
+          Established _ -> assertBool "whole-run resource bound" (certificateCovers ZeroB measured outcome)
   defaultMain $ testGroup "IC runtime"
     [ testGroup "logical storage accounting"
         [ testCase "half wires, replacement, deletion and stale entries" $ do
@@ -173,6 +182,8 @@ main = do
             spacePeak measured @?= spacePeak (snd (runICProgram defaultFuel prog ZeroB))
             assertBool "peak reset at run start"
               (resourceAgents (spacePeak measured) < 999999)
+            analyzeIC defaultAnalysisBudget poisoned
+              @?= analyzeIC defaultAnalysisBudget prog
         ]
     , testGroup "template namespace"
         [ testCase "prepared entry and templates are reusable across inputs" $ do

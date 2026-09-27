@@ -17,6 +17,7 @@ build-type:          Simple
 extra-source-files:  CHANGELOG.md
                      README.md
                      bench/DeferCompile.hs
+                     bench/ICSpace.hs
                      bench/README.md
                      *.tel
                      test/programs/**/*.tel
@@ -31,6 +32,8 @@ library
                      , Telomare.Error
                      , Telomare.Driver
                      , Telomare.IC
+                     , Telomare.IC.Space
+                     , Telomare.SpaceBound
                      , Telomare.Eval.Reference
                      , Telomare.Fast
                      , Telomare.IR.Base
@@ -225,6 +228,19 @@ test-suite telomare-ic-test
                      , tasty-hunit
                      , telomare
   ghc-options:         -Wall -Wunused-packages -threaded -rtsopts -with-rtsopts=-N
+  default-language:    Haskell2010
+
+test-suite telomare-ic-space-test
+  type:                exitcode-stdio-1.0
+  hs-source-dirs:      test
+  main-is:             ICSpaceTests.hs
+  build-depends:       base
+                     , containers
+                     , mtl
+                     , tasty
+                     , tasty-hunit
+                     , telomare
+  ghc-options:         -Wall -Wunused-packages
   default-language:    Haskell2010
 
 test-suite telomare-udt-test
