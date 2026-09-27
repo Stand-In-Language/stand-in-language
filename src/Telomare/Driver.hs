@@ -15,7 +15,7 @@ import Control.Lens (Identity (runIdentity))
 import Data.Functor.Foldable (cata, embed)
 import Debug.Trace
 import Telomare.Desugar (desugarTerm)
-import Telomare.EAL (certifyMain)
+import Telomare.EAL (EALLiftedResult, certifyMain, inferEALCompiled)
 import Telomare.Error
 import Telomare.Eval.Meter (Meter, evalMeter)
 import Telomare.Eval.Reference ()
@@ -166,6 +166,17 @@ funWrapWith evaluator fun app inp =
       Just _ -> error "Telomare.Driver.funWrapWith: unexpected iteration value"
     Left e -> ("runtime error:\n" <> show e, Left e)
 
+-- |A compiled program with everything the actions downstream may want: the
+-- sizing report and the EAL analysis of the sized term. 'compileEAL' is a
+-- thunk, so a plain run never pays for the inference; only the IC route
+-- forces it (its hashes match the IC template table, unlike 'certifyMain''s,
+-- which runs on the pre-sizing term).
+data CompileOutput = CompileOutput
+  { compileReport :: SizingReport
+  , compileExpr   :: CompiledExpr
+  , compileEAL    :: EALLiftedResult
+  }
+
 -- |Parse and compile a module set, keeping the sizing results. Every problem
 -- comes back as text a user can act on rather than as an exception, so callers
 -- decide how to report it.
@@ -174,7 +185,7 @@ funWrapWith evaluator fun app inp =
 -- can say which file a term came from.
 compileModules :: [(String, String)] -- ^All modules as (Module_Name, Module_Content)
                -> String -- ^Module's name with `main` function
-               -> Either String (SizingReport, CompiledExpr)
+               -> Either String CompileOutput
 compileModules = compileModulesWith MainSizing
 
 -- |`compileModules` at a chosen sizing budget. Tests use a deliberately tiny
@@ -183,13 +194,15 @@ compileModules = compileModulesWith MainSizing
 compileModulesWith :: SizingOption
                    -> [(String, String)]
                    -> String
-                   -> Either String (SizingReport, CompiledExpr)
+                   -> Either String CompileOutput
 compileModulesWith so modulesStrings s =
   case [ "Error in module " <> moduleName <> ":\n" <> err
        | (moduleName, Left err) <- parsed ] of
-    [] -> first renderEvalError $ compileMainReporting so [ (n, m) | (n, Right m) <- parsed ] s
+    [] -> wrap <$> first renderEvalError
+            (compileMainReporting so [ (n, m) | (n, Right m) <- parsed ] s)
     errs -> Left $ unlines errs
   where
+    wrap (report, sized) = CompileOutput report sized (inferEALCompiled sized)
     parsed :: [(String, Either String ExpandedModule)]
     parsed = fmap parseAndExpand modulesStrings
     parseAndExpand (moduleName, content) =
@@ -204,8 +217,8 @@ runMainCore :: [(String, String)] -- ^All modules as (Module_Name, Module_Conten
 runMainCore modulesStrings s e = case compileModules modulesStrings s of
   -- Still an exception, since callers depend on that; the CLI takes the
   -- `compileModules` route instead so a user never sees this framing.
-  Left err         -> error $ "runMainCore failed: " <> err
-  Right (_, sized) -> e sized
+  Left err  -> error $ "runMainCore failed: " <> err
+  Right out -> e (compileExpr out)
 
 runMain_ :: [(String, String)] -- ^All modules as (Module_Name, Module_Content)
          -> String -- ^Module's name with `main` function

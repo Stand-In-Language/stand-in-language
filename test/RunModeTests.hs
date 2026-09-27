@@ -15,7 +15,7 @@ import Test.Hspec
 import Telomare.Artifact (Artifact (..), decodeArtifact, encodeArtifact,
                           nodeCount, sourcesHash)
 import Telomare.Certificate (renderStaticReport)
-import Telomare.Driver (compileModules)
+import Telomare.Driver (CompileOutput (..), compileModules)
 import qualified Telomare.Fast as Fast
 import Telomare.Fast (FastError (..), FastMeter (..), compileFast,
                       runFastWithInput)
@@ -34,7 +34,7 @@ runModeSpec = do
       modules <- loadWith "simpleplus.tel" "simpleplus"
       case compileModules modules "simpleplus" of
         Left err -> expectationFailure $ "failed to compile simpleplus.tel:\n" <> err
-        Right (report, sized) -> do
+        Right (CompileOutput report sized _) -> do
           let artifact = Artifact
                 { artifactEntry = "simpleplus"
                 , artifactSourceHash = sourcesHash modules
@@ -61,7 +61,7 @@ runModeSpec = do
       modules <- loadWith "tc_ultra_minimal.tel" "tc_ultra_minimal"
       case compileModules modules "tc_ultra_minimal" of
         Left err -> expectationFailure $ "failed to compile:\n" <> err
-        Right (report, sized) -> do
+        Right (CompileOutput report sized _) -> do
           let artifact = Artifact "tc_ultra_minimal" (sourcesHash modules) report "" sized
           case decodeArtifact (encodeArtifact artifact) of
             Left err -> expectationFailure $ "failed to decode:\n" <> err
@@ -160,8 +160,8 @@ runModeSpec = do
       modules <- loadWith "simpleplus.tel" "simpleplus"
       case compileModules modules "simpleplus" of
         Left err -> expectationFailure $ "failed to compile simpleplus.tel:\n" <> err
-        Right (sizing, _) -> do
-          let report = renderStaticReport (Just "somehash") (Just sizing)
+        Right out -> do
+          let report = renderStaticReport (Just "somehash") (Just (compileReport out))
                 (levelsInfo modules "simpleplus")
           report `shouldSatisfy` isInfixOf "somehash"
           report `shouldSatisfy` isInfixOf "recursion sites (iterations, over every input)"
@@ -177,7 +177,7 @@ runModeSpec = do
         Left err -> expectationFailure $ "failed to compile simpleplus.tel:\n" <> err
         -- Sizing bakes iteration counts in as towers, so the compiled program
         -- is far bigger than its source.
-        Right (_, sized) -> nodeCount sized `shouldSatisfy` (> 1000)
+        Right out -> nodeCount (compileExpr out) `shouldSatisfy` (> 1000)
 
 isLeft :: Either a b -> Bool
 isLeft = either (const True) (const False)

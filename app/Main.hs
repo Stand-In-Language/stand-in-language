@@ -15,7 +15,8 @@ import Telomare.Artifact (Artifact (..), isArtifactPath, nodeCount,
                           readArtifact, sourcesHash, telcExtension,
                           writeArtifact)
 import Telomare.Certificate (renderStaticReport)
-import Telomare.Driver (compileModules, evalLoop, evalLoopMetered)
+import Telomare.Driver (CompileOutput (..), compileModules, evalLoop,
+                        evalLoopMetered)
 import Telomare.Eval.Meter (renderMeter)
 import Telomare.Fast (compileFast, defaultFastFuel, renderFastMeter,
                       runFastLoop)
@@ -172,7 +173,7 @@ runSized file action = do
   allModules <- getModulesFor entryModule
   case compileModules allModules entryModule of
     Left err -> die err
-    Right (report, sized) -> case action of
+    Right (CompileOutput report sized _) -> case action of
       Run -> evalLoop sized
       Certificate -> putStr $ staticReport Nothing (Just report) allModules entryModule
       Meter -> do
