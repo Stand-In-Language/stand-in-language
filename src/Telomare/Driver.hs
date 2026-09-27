@@ -26,7 +26,6 @@ import Telomare.IR.Builder
 import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.IR.Surface
-import Telomare.IR.Types
 import Telomare.Machine (appB, deferB)
 import Telomare.Parse (parseOneExprOrDefinitions, runParseModule)
 import Telomare.PrettyPrint

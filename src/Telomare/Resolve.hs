@@ -17,14 +17,14 @@
 -- 'Telomare.Driver.compileMainReporting' runs BOTH on every compile:
 --
 -- * 'process' (via 'validateVariables' + 'debruijinize'): scope-checks
---   and inlines let bindings. Its 'Term3' is what the type checker sees -
+--   and inlines let bindings. Its 'Term3' is what EAL certification sees -
 --   and is then discarded.
 -- * 'processWlet' (via 'letsToApps' + 'debruijinizeApp'): converts let
 --   bindings to lambda applications and threads @TUnsizedRepeaterF@
 --   applications for recursive references. Its 'Term3' is what the sizing
 --   pass consumes and what actually runs.
 --
--- The typechecked term is therefore NOT the executed term. Do not unify
+-- The certified term and executed term come from different lowerings. Do not unify
 -- the two paths casually: sizing depends on the shape 'letsToApps'
 -- produces, and the regression constants in the sizing tests depend on
 -- it too.

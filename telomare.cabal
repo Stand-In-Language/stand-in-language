@@ -25,6 +25,7 @@ library
                      , Telomare.Certificate
                      , Telomare.Desugar
                      , Telomare.EAL
+                     , Telomare.EnvUsage
                      , Telomare.Error
                      , Telomare.Driver
                      , Telomare.IC
@@ -34,6 +35,7 @@ library
                      , Telomare.IR.Builder
                      , Telomare.IR.Core
                      , Telomare.IR.Loc
+                     , Telomare.IR.Recursion
                      , Telomare.IR.Surface
                      , Telomare.IR.Types
                      , Telomare.Levels
@@ -54,7 +56,6 @@ library
                      , containers
                      , data-fix
                      , deepseq
-                     , dlist
                      , filepath
                      , megaparsec
                      , memory

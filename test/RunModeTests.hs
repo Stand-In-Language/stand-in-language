@@ -16,10 +16,12 @@ import Telomare.Artifact (Artifact (..), decodeArtifact, encodeArtifact,
                           nodeCount, sourcesHash)
 import Telomare.Certificate (renderStaticReport)
 import Telomare.Driver (compileModules)
+import qualified Telomare.Fast as Fast
 import Telomare.Fast (FastError (..), FastMeter (..), compileFast,
                       runFastWithInput)
 import Telomare.IR.Base
 import Telomare.IR.Core
+import Telomare.IR.Loc (LocTag (..))
 import Telomare.Levels (LevelsInfo (..), levelsInfo)
 import Telomare.Machine (appB)
 import Telomare.Size (SizingReport (..))
@@ -82,6 +84,29 @@ runModeSpec = do
   -- Transcript agreement between the fast and sized runtimes is checked
   -- corpus-wide in "ConformanceTests".
   describe "running without sizing" $ do
+    it "the approximant base case does not demand its recursive branch" $ do
+      let site = Fast.RecursionSite (toEnum 0) UnknownLoc (Just "base-case")
+          closure code = Fast.VPair (Fast.VDefer code) Fast.VZero
+          test = closure Fast.FZero
+          -- This branch cannot be applied; demanding it would fail.
+          recursive = Fast.VZero
+          base = closure (Fast.FLeft Fast.FEnv)
+          trb = Fast.VPair test (Fast.VPair recursive (Fast.VPair base Fast.VZero))
+          input = Fast.VPair Fast.VZero Fast.VZero
+          -- Apply the ladder using SetEnv, so forceValue and the actual
+          -- five-slot step frame are exercised through the evaluator.
+          run = do
+            step <- Fast.forceValue (Fast.VRec site trb)
+            Fast.evalFast (Fast.FSetEnv (Fast.FPair
+              (Fast.FLeft (Fast.FLeft Fast.FEnv))
+              (Fast.FPair (Fast.FRight Fast.FEnv)
+                (Fast.FRight (Fast.FLeft Fast.FEnv))))) (Fast.VPair step input)
+          (meter, result) = Fast.runEval (Just 100) run
+      case result of
+        Right (Fast.VPair Fast.VZero Fast.VZero) -> pure ()
+        other -> expectationFailure ("base-case evaluation failed: " <> show other)
+      Map.lookup site (Fast.fmUnrolls meter) `shouldBe` Just 1
+
     it "counts the unrolls of each recursion site separately" $ do
       modules <- loadWith "simpleplus.tel" "simpleplus"
       case compileFast modules "simpleplus" of
