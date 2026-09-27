@@ -41,6 +41,8 @@ runModeSpec = do
                 , artifactReport = report
                 , artifactCertificate = "the certificate text"
                 , artifactExpr = sized
+                , artifactICCertificate = Nothing
+                , artifactCaptureLayouts = mempty
                 }
           case decodeArtifact (encodeArtifact artifact) of
             Left err -> expectationFailure $ "failed to decode:\n" <> err
@@ -62,7 +64,8 @@ runModeSpec = do
       case compileModules modules "tc_ultra_minimal" of
         Left err -> expectationFailure $ "failed to compile:\n" <> err
         Right (CompileOutput report sized _) -> do
-          let artifact = Artifact "tc_ultra_minimal" (sourcesHash modules) report "" sized
+          let artifact =
+                Artifact "tc_ultra_minimal" (sourcesHash modules) report "" sized Nothing mempty
           case decodeArtifact (encodeArtifact artifact) of
             Left err -> expectationFailure $ "failed to decode:\n" <> err
             Right back ->

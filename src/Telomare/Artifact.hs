@@ -33,10 +33,12 @@ module Telomare.Artifact
   , isArtifactPath
   ) where
 
-import Crypto.Hash (Digest, SHA256, hash)
+import Crypto.Hash (Digest, SHA256, digestFromByteString, hash)
+import qualified Data.Binary as Binary
 import Data.Binary.Get (Get, getInt64le, getLazyByteString, getWord8,
                         runGetOrFail)
 import Data.Binary.Put (Put, putInt64le, putLazyByteString, putWord8, runPut)
+import Data.ByteArray.Encoding (Base (Base16), convertFromBase)
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.UTF8 as UTF8
 import Data.Functor.Foldable (cata, embed, project)
@@ -45,24 +47,35 @@ import Data.Map (Map)
 import qualified Data.Map as Map
 import System.FilePath (takeExtension)
 
+import Telomare.EAL (CapShape (..))
+import Telomare.IC (Resources (..))
+import Telomare.IC.Static (ICCertificate (..), ICMethod (..))
 import Telomare.IR.Base
 import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.Size (SizingReport (..))
 import Telomare.Size.IR (SizedRecursion (..))
+import Telomare.SpaceBound (Affine (..), SpaceBound (..), norm)
 
 -- |A program with its sizing already done.
 data Artifact = Artifact
-  { artifactEntry       :: String
+  { artifactEntry          :: String
   -- ^The module that holds `main`.
-  , artifactSourceHash  :: String
+  , artifactSourceHash     :: String
   -- ^Hash of the sources this was compiled from.
-  , artifactReport      :: SizingReport
+  , artifactReport         :: SizingReport
   -- ^What sizing found, so `--certificate` needs no sources.
-  , artifactCertificate :: String
+  , artifactCertificate    :: String
   -- ^The static report as it was rendered at compile time.
-  , artifactExpr        :: CompiledExpr
+  , artifactExpr           :: CompiledExpr
   -- ^The sized program.
+  , artifactICCertificate  :: Maybe ICCertificate
+  -- ^The IC logical storage bound (or compositional estimate) and its
+  -- provenance, when `--ic --compile` stored one.
+  , artifactCaptureLayouts :: Map (Digest SHA256) CapShape
+  -- ^The capture layouts the program was certified under, which is also
+  -- what an `--ic` run of this artifact prepares with — the bound and the
+  -- run must share one duplication strategy. Empty means generic.
   }
 
 artifactMagic :: BL.ByteString
@@ -71,7 +84,7 @@ artifactMagic = BL.pack [0x54, 0x45, 0x4C, 0x43] -- "TELC"
 -- |Bumped whenever the encoding changes, which invalidates older files rather
 -- than misreading them.
 artifactVersion :: Int
-artifactVersion = 2
+artifactVersion = 4
 
 telcExtension :: String
 telcExtension = ".telc"
@@ -105,6 +118,8 @@ encodeArtifact a = runPut $ do
   putString (artifactCertificate a)
   putReport (artifactReport a)
   putCompiled (artifactExpr a)
+  putMaybe putICCertificate (artifactICCertificate a)
+  putMap putDigest putCapShape (artifactCaptureLayouts a)
 
 decodeArtifact :: BL.ByteString -> Either String Artifact
 decodeArtifact bytes = case runGetOrFail getArtifact bytes of
@@ -128,7 +143,59 @@ getArtifact = do
           certificate <- getString
           report <- getReport
           expr <- getCompiled
-          pure . Right $ Artifact entry sourceHash report certificate expr
+          icCertificate <- getMaybe getICCertificate
+          layouts <- getMap getDigest getCapShape
+          pure . Right $
+            Artifact entry sourceHash report certificate expr icCertificate layouts
+
+putBound :: SpaceBound -> Put
+putBound (SpaceBound xs) = putList putAffine xs
+  where putAffine (Affine cs k) = putMap Binary.put Binary.put cs >> Binary.put k
+
+getBound :: Get SpaceBound
+getBound = norm <$> getList (Affine <$> getMap Binary.get Binary.get <*> Binary.get)
+
+putICCertificate :: ICCertificate -> Put
+putICCertificate (ICCertificate method bounds) = do
+  putWord8 $ case method of
+    ICAnalyzer      -> 0
+    ICCompositional -> 1
+  mapM_ putBound bounds
+
+getICCertificate :: Get ICCertificate
+getICCertificate = do
+  method <- getWord8 >>= \case
+    0 -> pure ICAnalyzer
+    1 -> pure ICCompositional
+    n -> fail $ "unknown certificate method " <> show n
+  ICCertificate method <$> (Resources <$> getBound <*> getBound <*> getBound)
+
+putDigest :: Digest SHA256 -> Put
+putDigest = putString . show
+
+getDigest :: Get (Digest SHA256)
+getDigest = do
+  hex <- getString
+  case convertFromBase Base16 (UTF8.fromString hex) of
+    Left err -> fail $ "unreadable digest: " <> err
+    Right bytes -> case digestFromByteString (bytes :: UTF8.ByteString) of
+      Nothing -> fail "digest of the wrong length"
+      Just d  -> pure d
+
+putCapShape :: CapShape -> Put
+putCapShape = \case
+  CapData     -> putWord8 0
+  CapCode     -> putWord8 1
+  CapOther    -> putWord8 2
+  CapPair a b -> putWord8 3 >> putCapShape a >> putCapShape b
+
+getCapShape :: Get CapShape
+getCapShape = getWord8 >>= \case
+  0 -> pure CapData
+  1 -> pure CapCode
+  2 -> pure CapOther
+  3 -> CapPair <$> getCapShape <*> getCapShape
+  n -> fail $ "unknown capture shape tag " <> show n
 
 writeArtifact :: FilePath -> Artifact -> IO ()
 writeArtifact path = BL.writeFile path . encodeArtifact

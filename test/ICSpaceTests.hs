@@ -8,6 +8,7 @@ import qualified Control.Monad.State.Strict as State
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
 import Numeric.Natural (Natural)
+import Telomare.Artifact
 import Telomare.EAL (CapShape (..), inferEALCompiled)
 import Telomare.IC
 import Telomare.IC.Space
@@ -15,6 +16,8 @@ import Telomare.IC.Static
 import Telomare.IR.Base
 import Telomare.IR.Core (CompiledExpr)
 import Telomare.Machine (appB, deferB)
+import Telomare.Size (SizingReport (..))
+import Telomare.Size.IR (SizedRecursion (..))
 import Telomare.SpaceBound
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -110,6 +113,23 @@ main = defaultMain $ testGroup "IC space"
       case outcome of
         Unknown reason -> assertFailure reason
         Established _  -> statForks stats @?= 0
+  , testCase "artifacts round-trip an IC certificate" $ do
+      let sized = PairB (deferB 7 (PairB ZeroB ZeroB)) ZeroB
+      prog <- prepared (appB sized EnvB)
+      case analyzeIC defaultAnalysisBudget prog of
+        Unknown reason -> assertFailure reason
+        Established c -> do
+          h <- either (\e -> assertFailure (show e) >> error "unreachable") pure
+            (deferHash (deferB 7 (PairB ZeroB ZeroB)))
+          let cert = ICCertificate ICAnalyzer c
+              layouts = Map.singleton h (CapPair CapCode CapData)
+              artifact = Artifact "fixture" "source" (SizingReport (SizedRecursion mempty) mempty 10)
+                "sizing report" sized (Just cert) layouts
+          case decodeArtifact (encodeArtifact artifact) of
+            Left err   -> assertFailure err
+            Right back -> do
+              artifactICCertificate back @?= Just cert
+              artifactCaptureLayouts back @?= layouts
   , testCase "guided copying of concrete regions, including inaccurate guidance, has finite bounds" $ do
       let code = deferB 20 (LeftB EnvB)
           closure = PairB code (PairB ZeroB (PairB ZeroB ZeroB))

@@ -23,7 +23,7 @@ import Telomare.Eval.Meter (renderMeter)
 import Telomare.Fast (compileFast, defaultFastFuel, renderFastMeter,
                       runFastLoop)
 import Telomare.IC
-import Telomare.IC.Static (icCertify)
+import Telomare.IC.Static (icCertify, renderICCertificate)
 import Telomare.IR.Base (pattern EnvB)
 import Telomare.IR.Core (CompiledExpr)
 import Telomare.IR.Loc (locatedNameText)
@@ -156,15 +156,20 @@ runArtifact path action mode = do
     Left err -> die $ path <> ": " <> err
     Right artifact -> do
       warnIfStale artifact
-      -- The artifact stores no EAL result, so an `--ic` run re-infers the
-      -- capture layouts from the sized expression; lazy, so only the IC
-      -- route pays.
-      let artifactEAL = inferEALCompiled (artifactExpr artifact)
+      -- An `--ic` run prepares under the artifact's stored capture layouts,
+      -- so a stored bound covers exactly the runs this artifact performs.
+      -- Only a certificate the compile did not store needs an EAL result,
+      -- re-inferred from the sized expression; lazy, so nothing else pays.
+      let prepared = either (die . show) pure $
+            prepareIC (artifactCaptureLayouts artifact)
+                      (artifactExpr artifact `appB` EnvB)
+          artifactEAL = inferEALCompiled (artifactExpr artifact)
       if mode == IC then case action of
         Compile _ -> die $ path <> " is already compiled"
-        Certificate -> putStr . snd . icCertify artifactEAL
-          =<< prepareEntry artifactEAL (artifactExpr artifact)
-        _ -> runIC action =<< prepareEntry artifactEAL (artifactExpr artifact)
+        Certificate -> case artifactICCertificate artifact of
+          Just cert -> putStr (renderICCertificate cert)
+          Nothing   -> putStr . snd . icCertify artifactEAL =<< prepared
+        _ -> runIC action =<< prepared
       else case action of
         Compile _   -> die $ path <> " is already compiled"
         Certificate -> putStr $ artifactCertificate artifact
@@ -206,6 +211,11 @@ runSized file action useIC = do
         measured <- evalLoopMetered [] sized
         reportMeter $ renderMeter measured <> "\n"
       Compile output -> do
+        icCertificate <- if not useIC then pure Nothing else do
+          prog <- prepareEntry eal sized
+          let (cert, rendered) = icCertify eal prog
+          hPutStr stderr rendered
+          pure (Just cert)
         let path = fromMaybe (replaceExtension file telcExtension) output
             certificate = staticReport Nothing (Just report) allModules entryModule
             artifact = Artifact
@@ -214,6 +224,9 @@ runSized file action useIC = do
               , artifactReport = report
               , artifactCertificate = certificate
               , artifactExpr = sized
+              , artifactICCertificate = icCertificate
+              , artifactCaptureLayouts =
+                  if useIC then ealCaptureLayouts eal else mempty
               }
         writeArtifact path artifact
         hPutStrLn stderr $ "wrote " <> path <> " (" <> show (nodeCount sized)
