@@ -1,4 +1,5 @@
 {-# LANGUAGE LambdaCase          #-}
+{-# LANGUAGE PatternSynonyms     #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Main where
@@ -16,13 +17,18 @@ import Telomare.Artifact (Artifact (..), isArtifactPath, nodeCount,
                           writeArtifact)
 import Telomare.Certificate (renderStaticReport)
 import Telomare.Driver (CompileOutput (..), compileModules, evalLoop,
-                        evalLoopMetered)
+                        evalLoopIC, evalLoopMetered, printAccum)
+import Telomare.EAL (EALLiftedResult, ealCaptureLayouts, inferEALCompiled)
 import Telomare.Eval.Meter (renderMeter)
 import Telomare.Fast (compileFast, defaultFastFuel, renderFastMeter,
                       runFastLoop)
+import Telomare.IC
+import Telomare.IR.Base (pattern EnvB)
+import Telomare.IR.Core (CompiledExpr)
 import Telomare.IR.Loc (locatedNameText)
 import Telomare.IR.Surface (ImportDecl (parsedImportModule), ModuleItem (..))
 import Telomare.Levels (levelsInfo)
+import Telomare.Machine (appB)
 import Telomare.Parse (runParseModule)
 import Telomare.Size (SizingReport)
 
@@ -42,6 +48,9 @@ data Mode
   = Sized
   -- ^The usual route: infer every recursion's iteration count, which is what
   -- makes the program total.
+  | IC
+  -- ^Run the sized program on the interaction-net runtime, prepared under
+  -- the EAL capture layouts.
   | Fast (Maybe Int)
   -- ^Skip sizing and run the recursion on demand, under a fuel cap. Faster to
   -- start, and proves nothing.
@@ -79,6 +88,7 @@ telomareOpts = TelomareOpts
                         <> O.help "Run without sizing: starts immediately, but nothing \
                                   \proves the program terminates" )
              *> (Fast <$> fuel)
+       O.<|> O.flag' IC (O.long "ic" <> O.help "Run the sized program on the IC net runtime")
        O.<|> pure Sized
     fuel = fmap toCap . O.optional $ O.option O.auto
       ( O.long "fuel" <> O.metavar "N"
@@ -123,7 +133,8 @@ main = do
     then runArtifact file action (telomareMode topts)
     else case telomareMode topts of
       Fast fuel -> runFast file action fuel
-      Sized     -> runSized file action
+      Sized     -> runSized file action False
+      IC        -> runSized file action True
 
 die :: String -> IO a
 die message = hPutStrLn stderr message >> exitFailure
@@ -138,13 +149,21 @@ reportMeter rendered = do
 -- |A program already compiled: nothing to parse, typecheck, resolve or size.
 runArtifact :: FilePath -> Action -> Mode -> IO ()
 runArtifact path action mode = do
-  when (mode /= Sized) $
+  when (mode /= Sized && mode /= IC) $
     hPutStrLn stderr "note: --fast does not apply to an already-compiled program"
   readArtifact path >>= \case
     Left err -> die $ path <> ": " <> err
     Right artifact -> do
       warnIfStale artifact
-      case action of
+      -- The artifact stores no EAL result, so an `--ic` run re-infers the
+      -- capture layouts from the sized expression; lazy, so only the IC
+      -- route pays.
+      let artifactEAL = inferEALCompiled (artifactExpr artifact)
+      if mode == IC then case action of
+        Compile _ -> die $ path <> " is already compiled"
+        Certificate -> putStr $ artifactCertificate artifact
+        _ -> runIC action =<< prepareEntry artifactEAL (artifactExpr artifact)
+      else case action of
         Compile _   -> die $ path <> " is already compiled"
         Certificate -> putStr $ artifactCertificate artifact
         Run         -> evalLoop (artifactExpr artifact)
@@ -167,15 +186,17 @@ warnIfStale artifact = do
 
 -- |The usual route. Sizing costs minutes on Prelude-heavy programs, so every
 -- action here works from one compile.
-runSized :: FilePath -> Action -> IO ()
-runSized file action = do
+runSized :: FilePath -> Action -> Bool -> IO ()
+runSized file action useIC = do
   let entryModule = takeBaseName file
   allModules <- getModulesFor entryModule
   case compileModules allModules entryModule of
     Left err -> die err
-    Right (CompileOutput report sized _) -> case action of
+    Right (CompileOutput report sized eal) -> case action of
+      Run | useIC -> runIC action =<< prepareEntry eal sized
       Run -> evalLoop sized
       Certificate -> putStr $ staticReport Nothing (Just report) allModules entryModule
+      Meter | useIC -> runIC action =<< prepareEntry eal sized
       Meter -> do
         measured <- evalLoopMetered [] sized
         reportMeter $ renderMeter measured <> "\n"
@@ -192,6 +213,24 @@ runSized file action = do
         writeArtifact path artifact
         hPutStrLn stderr $ "wrote " <> path <> " (" <> show (nodeCount sized)
           <> " nodes, sources " <> take 12 (sourcesHash allModules) <> ")"
+
+-- |Prepared under the EAL capture layouts of the sized term, so `--ic` runs
+-- guided, as the runtime was designed. When the EAL pass has no layout for a
+-- body (or gave up on the program), the map is simply missing entries and
+-- preparation degrades to the generic strategy for those bodies.
+prepareEntry :: EALLiftedResult -> CompiledExpr -> IO ICProgram
+prepareEntry eal =
+  either (die . show) pure . prepareIC (ealCaptureLayouts eal) . (`appB` EnvB)
+
+runIC :: Action -> ICProgram -> IO ()
+runIC action prog = do
+  (measured, _) <- evalLoopIC prog [] printAccum
+  when (action == Meter) . reportMeter $ unlines
+    [ "IC interactions: " <> show (spaceInteractions measured)
+    , "IC logical storage peak: " <> show (spacePeak measured)
+    , "IC static templates: " <> show (staticStorage prog)
+    , "Excludes preparation workspace, readback, Haskell overhead, GC and RSS."
+    ]
 
 -- |Without sizing. The program runs on demand under a fuel cap; no iteration
 -- count exists, so the certificate reports structure only.

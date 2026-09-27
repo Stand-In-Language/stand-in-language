@@ -1,6 +1,7 @@
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE LambdaCase       #-}
-{-# LANGUAGE PatternSynonyms  #-}
+{-# LANGUAGE DeriveTraversable #-}
+{-# LANGUAGE FlexibleContexts  #-}
+{-# LANGUAGE LambdaCase        #-}
+{-# LANGUAGE PatternSynonyms   #-}
 
 -- | An interaction-combinator runtime for 'CompiledExpr'.
 --
@@ -78,8 +79,9 @@ import Data.Functor.Foldable (cata, embed, project)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
 import Data.Map (Map)
-import qualified Data.Map as Map
+import qualified Data.Map.Strict as Map
 import Debug.Trace (trace)
+import Numeric.Natural (Natural)
 import Telomare.EAL (CapShape (..), Step (..), showSteps)
 import qualified Telomare.EnvUsage as Usage
 import Telomare.IR.Base (AbortableF (..), BasicExpr, BasicExprF (..),
@@ -181,10 +183,10 @@ data ICError
   deriving (Eq, Show)
 
 data ICState = ICState
-  { icNodes     :: IntMap Node
+  { icNodes     :: !(IntMap Node)
   , icNextNode  :: !Int
   , icNextLabel :: !Int
-  , icActive    :: [(Int, Int)] -- ^ candidate active pairs (may go stale)
+  , icActive    :: ![(Int, Int)] -- ^ candidate active pairs (may go stale)
   , icEnvQueue  :: Map [Step] [Port]
                                 -- ^ compile-time: env component wires per
                                 -- projection path, to be consumed by the
@@ -197,18 +199,115 @@ data ICState = ICState
                                 -- decides, since the hash is index-blind)
   , icFuel      :: !Int
   , icSpent     :: !Int         -- ^ interactions performed
-  , icStats     :: Map String Int
+  , icStats     :: !(Map String Int)
   , icGuidance  :: Map (Digest SHA256) CapShape
     -- ^ per-hash capture layouts from the EAL pass ('ealCaptureLayouts'),
     -- consumed by the guided closure-duplication rule; empty means every
     -- strategy keeps to its generic default
+  , icResident  :: !(Resources Natural)
+  , icPeak      :: !(Resources Natural)
   }
+
+-- | Logical storage, componentwise: resident agents, stored port entries
+-- (dangling halves included) and pending pairs (stale entries included).
+data Resources a = Resources
+  { resourceAgents :: !a
+  , resourcePorts  :: !a
+  , resourceWork   :: !a
+  } deriving (Eq, Show, Functor, Foldable, Traversable)
+
+instance Applicative Resources where
+  pure x = Resources x x x
+  Resources f g h <*> Resources a p w = Resources (f a) (g p) (h w)
+
+-- | Independent recount, for validating the incremental counters.
+residentResources :: ICState -> Resources Natural
+residentResources st = Resources (fromIntegral (IntMap.size (icNodes st)))
+  (sum (fmap (fromIntegral . IntMap.size . nodePorts) (icNodes st)))
+  (fromIntegral (length (icActive st)))
+
+-- | Change a counter at exactly the primitive mutation boundary.
+account :: (Resources Natural -> Resources Natural) -> ICM ()
+account f = State.modify' $ \st ->
+  let current = f (icResident st)
+  in st { icResident = current, icPeak = liftA2 max current (icPeak st) }
+
+-- | What one evaluation, or a session of them, cost: peaks combine by
+-- maximum, counts by addition.
+data ICSpaceStats = ICSpaceStats
+  { spacePeak         :: !(Resources Natural)
+  , spaceInteractions :: !Int
+  , spaceRules        :: Map String Int
+  } deriving (Eq, Show)
+
+instance Semigroup ICSpaceStats where
+  a <> b = ICSpaceStats (liftA2 max (spacePeak a) (spacePeak b))
+    (spaceInteractions a + spaceInteractions b) (Map.unionWith (+) (spaceRules a) (spaceRules b))
+
+instance Monoid ICSpaceStats where
+  mempty = ICSpaceStats (pure 0) 0 mempty
+
+spaceStats :: ICState -> ICSpaceStats
+spaceStats st = ICSpaceStats (icPeak st) (icSpent st) (icStats st)
+
+-- | A compiled entry body ready to run on any input: its templates and the
+-- entry net, with the boundary node whose slot 0 receives the input and
+-- whose slot 1 delivers the result.
+data ICProgram = ICProgram
+  { programInitial  :: ICState
+  , programBoundary :: Int
+  }
+
+-- | Template agents and ports, resident for the whole session.
+staticStorage :: ICProgram -> Resources Natural
+staticStorage prog = Resources
+  (sum [fromIntegral (IntMap.size (tplNodes t)) | t <- ts])
+  (sum [fromIntegral (IntMap.size (nodePorts n)) | t <- ts, n <- IntMap.elems (tplNodes t)])
+  0
+  where ts = IntMap.elems (icTemplates (programInitial prog))
+
+-- | Compile an open entry body whose Env is the input, under per-hash
+-- capture layouts from the EAL pass ('Telomare.EAL.ealCaptureLayouts';
+-- empty for the generic strategy). Nothing is reduced.
+prepareIC :: Map (Digest SHA256) CapShape -> CompiledExpr -> Either ICError ICProgram
+prepareIC guidance body =
+  case State.runState (runExceptT (setupSelectors >> compileBody body))
+       (emptyState guidance defaultFuel) of
+    (Left e, _)     -> Left e
+    (Right ext, st) -> Right (ICProgram st ext)
+
+-- | Replace the boundary by the input and a root node. The construction
+-- peak is part of the run.
+initializeIC :: ICProgram -> ICM Port -> ICM Int
+initializeIC prog input = do
+  let ext = programBoundary prog
+  env <- peer (Port ext 0)
+  result <- peer (Port ext 1)
+  root <- newNode ICRoot
+  value <- input
+  deleteNode ext
+  -- An identity body has a boundary-to-boundary wire.
+  if portNode env == ext then connect (Port root 0) value
+  else connect env value >> connect result (Port root 0)
+  pure root
+
+runICProgram :: Int -> ICProgram -> BasicExpr
+             -> (Either ICError CompiledExpr, ICSpaceStats)
+runICProgram fuel prog input =
+  let action = do
+        root <- initializeIC prog (compileData input)
+        reduce
+        readback =<< peer (Port root 0)
+      initial = programInitial prog
+      (result, st) = State.runState (runExceptT action)
+        (initial { icFuel = fuel, icStats = mempty, icPeak = icResident initial })
+  in (result, spaceStats st)
 
 type ICM = ExceptT ICError (State ICState)
 
 emptyState :: Map (Digest SHA256) CapShape -> Int -> ICState
 emptyState guidance fuel = ICState IntMap.empty 0 0 [] Map.empty IntMap.empty 0
-  Map.empty fuel 0 Map.empty guidance
+  Map.empty fuel 0 Map.empty guidance (pure 0) (pure 0)
 
 -- * Primitive net operations
 
@@ -218,6 +317,7 @@ newNode k = do
   State.modify' $ \st -> st
     { icNextNode = n + 1
     , icNodes = IntMap.insert n (Node k IntMap.empty) (icNodes st) }
+  account $ \r -> r { resourceAgents = resourceAgents r + 1 }
   pure n
 
 nodeAt :: Int -> ICM Node
@@ -237,10 +337,13 @@ peer (Port n s) = do
       "unwired port " <> show n <> "/" <> show s
 
 setHalf :: Port -> Port -> ICM ()
-setHalf (Port n s) q = State.modify' $ \st -> st
-  { icNodes = IntMap.adjust
+setHalf (Port n s) q = do
+  added <- State.gets $ maybe False (not . IntMap.member s . nodePorts)
+    . IntMap.lookup n . icNodes
+  State.modify' $ \st -> st { icNodes = IntMap.adjust
       (\nd -> nd { nodePorts = IntMap.insert s q (nodePorts nd) })
       n (icNodes st) }
+  when added . account $ \r -> r { resourcePorts = resourcePorts r + 1 }
 
 -- | Wire two ports together. A principal-principal wiring between
 -- interacting kinds is enqueued as an active pair.
@@ -252,8 +355,9 @@ connect p q = do
     (Port a 0, Port b 0) -> do
       ka <- kindOf a
       kb <- kindOf b
-      when (interactive ka && interactive kb) . State.modify' $ \st ->
-        st { icActive = (a, b) : icActive st }
+      when (interactive ka && interactive kb) $ do
+        State.modify' $ \st -> st { icActive = (a, b) : icActive st }
+        account $ \r -> r { resourceWork = resourceWork r + 1 }
     _notPrincipals -> pure ()
   where interactive = \case
           ICRoot -> False
@@ -261,8 +365,12 @@ connect p q = do
           _      -> True
 
 deleteNode :: Int -> ICM ()
-deleteNode n = State.modify' $ \st ->
-  st { icNodes = IntMap.delete n (icNodes st) }
+deleteNode n = do
+  old <- State.gets (IntMap.lookup n . icNodes)
+  State.modify' $ \st -> st { icNodes = IntMap.delete n (icNodes st) }
+  forM_ old $ \nd -> account $ \r -> r
+    { resourceAgents = resourceAgents r - 1
+    , resourcePorts = resourcePorts r - fromIntegral (IntMap.size (nodePorts nd)) }
 
 freshLabel :: ICM Label
 freshLabel = do
@@ -318,13 +426,16 @@ isolatedNet act = do
   saved <- State.get
   State.modify' $ \st -> st
     { icNodes = IntMap.empty, icNextNode = 0, icNextLabel = 0
-    , icActive = [], icEnvQueue = Map.empty }
-  r <- act
+    , icActive = [], icEnvQueue = Map.empty
+    , icResident = pure 0, icPeak = pure 0 }
+  result <- (Right <$> act) `catchError` (pure . Left)
   built <- State.get
   State.modify' $ \st -> st
     { icNodes = icNodes saved, icNextNode = icNextNode saved
     , icNextLabel = icNextLabel saved
-    , icActive = icActive saved, icEnvQueue = icEnvQueue saved }
+    , icActive = icActive saved, icEnvQueue = icEnvQueue saved
+    , icResident = icResident saved, icPeak = icPeak saved }
+  r <- either throwError pure result
   pure (r, icNodes built, icNextLabel built)
 
 -- | Keep original bodies for equality/readback and a hash at each defer.
@@ -543,20 +654,24 @@ instantiate tid envSrc resultDst = do
 
 -- * Reduction
 
--- | Fire active pairs until quiescence. Entries whose nodes were consumed
--- by earlier interactions are skipped.
-reduce :: ICM ()
-reduce = State.gets icActive >>= \case
-  [] -> pure ()
+-- | Pop pending pairs until a live one: both agents still present and still
+-- facing each other with their principal ports.
+pop :: ICM (Maybe (Int, Int))
+pop = State.gets icActive >>= \case
+  [] -> pure Nothing
   ((a, b) : rest) -> do
     State.modify' $ \st -> st { icActive = rest }
-    live <- State.gets $ \st ->
-      IntMap.member a (icNodes st) && IntMap.member b (icNodes st)
-    when live $ do
-      pa <- peer (Port a 0)
-      pb <- peer (Port b 0)
-      when (pa == Port b 0 && pb == Port a 0) $ fire a b
-    reduce
+    account $ \r -> r { resourceWork = resourceWork r - 1 }
+    facing <- State.gets $ \st ->
+      case (IntMap.lookup a (icNodes st), IntMap.lookup b (icNodes st)) of
+        (Just na, Just nb) -> IntMap.lookup 0 (nodePorts na) == Just (Port b 0)
+                           && IntMap.lookup 0 (nodePorts nb) == Just (Port a 0)
+        _ -> False
+    if facing then pure (Just (a, b)) else pop
+
+-- | Fire active pairs until quiescence.
+reduce :: ICM ()
+reduce = pop >>= maybe (pure ()) (\(a, b) -> fire a b >> reduce)
 
 fire :: Int -> Int -> ICM ()
 fire a b = do
@@ -1070,9 +1185,15 @@ icEvalDetailed = icEvalDetailedWith mempty
 -- ('Telomare.EAL.ealCaptureLayouts') guiding closure duplication.
 icEvalDetailedWith :: Map (Digest SHA256) CapShape -> Int -> CompiledExpr
                    -> (Either ICError CompiledExpr, Map String Int)
-icEvalDetailedWith guidance fuel term =
+icEvalDetailedWith guidance fuel term = spaceRules <$> icEvalSpaceWith guidance fuel term
+
+-- | Includes initialization and primitive-operation intermediates, even when
+-- reduction or readback fails. Isolated template scratch nets are excluded.
+icEvalSpaceWith :: Map (Digest SHA256) CapShape -> Int -> CompiledExpr
+                -> (Either ICError CompiledExpr, ICSpaceStats)
+icEvalSpaceWith guidance fuel term =
   let (r, st) = State.runState (runExceptT go) (emptyState guidance fuel)
-  in (r, icStats st)
+  in (r, spaceStats st)
   where
     go = do
       unless (Map.null (envUsage term)) . throwError $
@@ -1092,7 +1213,10 @@ icEvalIC = fst . icEvalDetailed defaultFuel
 -- surviving anywhere in the result is an 'AbortRunTime' (mirroring the
 -- reference checkError); runtime trouble maps onto 'GenericRunTimeError'.
 icEval :: CompiledExpr -> Either RunTimeError CompiledExpr
-icEval term = case icEvalIC term of
+icEval = icRuntimeResult . icEvalIC
+
+icRuntimeResult :: Either ICError CompiledExpr -> Either RunTimeError CompiledExpr
+icRuntimeResult result = case result of
   Left e -> Left $ GenericRunTimeError ("IC runtime: " <> show e) ZeroB
   Right x -> case cata findError x of
     Just msg -> Left $ AbortRunTime msg

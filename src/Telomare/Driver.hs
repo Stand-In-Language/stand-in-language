@@ -21,6 +21,8 @@ import Telomare.Eval.Meter (Meter, evalMeter)
 import Telomare.Eval.Reference ()
 import Telomare.Expand (expandDefs, expandModule, expandTerm,
                         renderExpansionError, wrapMain)
+import Telomare.IC (ICProgram, ICSpaceStats, defaultFuel, icRuntimeResult,
+                    runICProgram)
 import Telomare.IR.Base
 import Telomare.IR.Builder
 import Telomare.IR.Core
@@ -247,9 +249,14 @@ evalLoopCore :: Monoid m
              -> String
              -> [String]
              -> IO (m, String)
-evalLoopCore evaluator expr accumFn initAcc manualInput =
-  let wrappedEval = funWrapWith evaluator expr appB
-      mainLoop measured acc strInput s = do
+evalLoopCore evaluator expr = evalSessionCore (funWrapWith evaluator expr appB)
+
+-- | The session protocol is independent of preparation and execution strategy.
+evalSessionCore :: Monoid m
+                => (Maybe (String, BasicExpr) -> (m, (String, Either RunTimeError BasicExpr)))
+                -> (String -> String -> IO String) -> String -> [String] -> IO (m, String)
+evalSessionCore wrappedEval accumFn initAcc manualInput =
+  let mainLoop measured acc strInput s = do
         let (m, (out, nextState)) = wrappedEval s
             measured' = measured <> m
         newAcc <- accumFn acc out
@@ -262,6 +269,20 @@ evalLoopCore evaluator expr accumFn initAcc manualInput =
               next : remaining -> pure (next, remaining)
             mainLoop measured' newAcc rest $ pure (inp, ns)
   in mainLoop mempty initAcc manualInput Nothing
+
+-- | Reuse a prepared IC entry over the complete session. Conversion and error
+-- reporting share the reference protocol; peaks combine by maximum, counts by
+-- addition. Plain execution does not invoke memory analysis.
+evalLoopIC :: ICProgram -> [String] -> (String -> String -> IO String)
+           -> IO (ICSpaceStats, String)
+evalLoopIC prog inputs accum = evalSessionCore wrapped accum "" inputs
+  where
+    wrapped = funWrapWith evaluator ZeroB (\_ input -> input)
+    evaluator :: CompiledExpr -> (ICSpaceStats, Either RunTimeError CompiledExpr)
+    evaluator input =
+      let basic = runIdentity $ cata (convertBasic (\_ -> error "IC session input is not data")) input
+          (result, measured) = runICProgram defaultFuel prog basic
+      in (measured, icRuntimeResult result)
 
 -- |The evaluator the unmetered wrappers share: run and measure nothing.
 plainEval :: CompiledExpr -> ((), Either RunTimeError CompiledExpr)

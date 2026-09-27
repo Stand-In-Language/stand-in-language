@@ -219,6 +219,7 @@ test-suite telomare-ic-test
   main-is:             ICTests.hs
   build-depends:       base
                      , containers
+                     , mtl
                      , strict
                      , tasty
                      , tasty-hunit
