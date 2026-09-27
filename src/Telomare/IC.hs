@@ -203,6 +203,7 @@ data ICState = ICState
   , icFuel      :: !Int
   , icSpent     :: !Int         -- ^ interactions performed
   , icStats     :: !(Map String Int)
+  , icInsts     :: !(IntMap Int) -- ^ apply-ref firings per template
   , icGuidance  :: Map (Digest SHA256) CapShape
     -- ^ per-hash capture layouts from the EAL pass ('ealCaptureLayouts'),
     -- consumed by the guided closure-duplication rule; empty means every
@@ -241,17 +242,22 @@ data ICSpaceStats = ICSpaceStats
   { spacePeak         :: !(Resources Natural)
   , spaceInteractions :: !Int
   , spaceRules        :: Map String Int
+  , spaceInsts        :: IntMap Int
+    -- ^ apply-ref firings per template, so a static instantiation bound
+    -- ('Telomare.IC.Static.staticInstBounds') can be checked against a run
   } deriving (Eq, Show)
 
 instance Semigroup ICSpaceStats where
   a <> b = ICSpaceStats (liftA2 max (spacePeak a) (spacePeak b))
-    (spaceInteractions a + spaceInteractions b) (Map.unionWith (+) (spaceRules a) (spaceRules b))
+    (spaceInteractions a + spaceInteractions b)
+    (Map.unionWith (+) (spaceRules a) (spaceRules b))
+    (IntMap.unionWith (+) (spaceInsts a) (spaceInsts b))
 
 instance Monoid ICSpaceStats where
-  mempty = ICSpaceStats (pure 0) 0 mempty
+  mempty = ICSpaceStats (pure 0) 0 mempty mempty
 
 spaceStats :: ICState -> ICSpaceStats
-spaceStats st = ICSpaceStats (icPeak st) (icSpent st) (icStats st)
+spaceStats st = ICSpaceStats (icPeak st) (icSpent st) (icStats st) (icInsts st)
 
 -- | A compiled entry body ready to run on any input: its templates and the
 -- entry net, with the boundary node whose slot 0 receives the input and
@@ -303,14 +309,15 @@ runICProgram fuel prog input =
         readback =<< peer (Port root 0)
       initial = programInitial prog
       (result, st) = State.runState (runExceptT action)
-        (initial { icFuel = fuel, icStats = mempty, icPeak = icResident initial })
+        (initial { icFuel = fuel, icStats = mempty, icInsts = mempty
+                 , icPeak = icResident initial })
   in (result, spaceStats st)
 
 type ICM = ExceptT ICError (State ICState)
 
 emptyState :: Map (Digest SHA256) CapShape -> Int -> ICState
 emptyState guidance fuel = ICState IntMap.empty 0 0 [] Map.empty IntMap.empty 0
-  Map.empty fuel 0 Map.empty guidance (pure 0) (pure 0)
+  Map.empty fuel 0 Map.empty IntMap.empty guidance (pure 0) (pure 0)
 
 -- * Primitive net operations
 
@@ -740,6 +747,7 @@ rule n nk m mk = case (nk, mk) of
   -- function dispatch, one rule per applicable head
   (ICApply, ICRef tid _) -> Just $ do
     spend "apply-ref"
+    State.modify' $ \st -> st { icInsts = IntMap.insertWith (+) tid 1 (icInsts st) }
     e <- peer (Port n 1)
     r <- peer (Port n 2)
     deleteNode n >> deleteNode m

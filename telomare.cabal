@@ -33,6 +33,7 @@ library
                      , Telomare.Driver
                      , Telomare.IC
                      , Telomare.IC.Space
+                     , Telomare.IC.Static
                      , Telomare.SpaceBound
                      , Telomare.Eval.Reference
                      , Telomare.Fast

@@ -1,14 +1,17 @@
 {- HLINT ignore "Monoid law, left identity" -}
 module Main where
 
+import Control.Applicative (liftA2)
 import Control.Monad (forM_)
 import Control.Monad.Except (runExceptT)
 import qualified Control.Monad.State.Strict as State
+import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
 import Numeric.Natural (Natural)
-import Telomare.EAL (CapShape (..))
+import Telomare.EAL (CapShape (..), inferEALCompiled)
 import Telomare.IC
 import Telomare.IC.Space
+import Telomare.IC.Static
 import Telomare.IR.Base
 import Telomare.IR.Core (CompiledExpr)
 import Telomare.Machine (appB, deferB)
@@ -120,6 +123,50 @@ main = defaultMain $ testGroup "IC space"
         result @?= Right (PairB closure closure)
         assertBool "guided copying was executed" (Map.findWithDefault 0 "dup-plan-copy" (spaceRules measured) > 0)
         assertBool (renderICSpace outcome) (certificateCovers ZeroB measured outcome)
+  , testGroup "compositional estimate"
+      [ testCase "covers the measured peak of every fixture on every finite input" .
+          forM_ allFixtures $ \(name, body) -> do
+            prog <- prepared body
+            let bounds = staticBound (inferEALCompiled body) prog
+            forM_ finiteInputs $ \input -> do
+              let (_, measured) = runICProgram defaultFuel prog input
+                  at = sbEvaluate
+                    (\p -> Map.findWithDefault 0 p (inputSizes input))
+              assertBool (name <> " input " <> show input
+                <> " peaks " <> show (spacePeak measured))
+                (and (liftA2 (\actual b -> at b >= actual) (spacePeak measured) bounds))
+      , testCase "instantiation counts bound the measured apply-ref firings" .
+          forM_ allFixtures $ \(name, body) -> do
+            prog <- prepared body
+            let eal = inferEALCompiled body
+                copies = copyMultiplier eal prog (staticInstBounds 1 prog)
+                predicted = staticInstBounds copies prog
+            forM_ finiteInputs $ \input -> do
+              let (_, measured) = runICProgram defaultFuel prog input
+              forM_ (IntMap.toList (spaceInsts measured)) $ \(tid, count) ->
+                assertBool (name <> " template " <> show tid <> " fired " <> show count)
+                  (fromIntegral count <= IntMap.findWithDefault 0 tid predicted)
+      , testCase "a straight-line instantiation is predicted exactly" $ do
+          let body = SetEnvB (PairB (deferB 80 (PairB EnvB EnvB)) EnvB)
+          prog <- prepared body
+          -- no fans anywhere, so the copy-free walk is the truth
+          let predicted = staticInstBounds 1 prog
+              (_, measured) = runICProgram defaultFuel prog ZeroB
+          assertBool "an instantiation fired" (not (IntMap.null (spaceInsts measured)))
+          forM_ (IntMap.toList (spaceInsts measured)) $ \(tid, count) ->
+            IntMap.findWithDefault 0 tid predicted @?= fromIntegral count
+      , testCase "the walk's established bound is never above the compositional estimate" .
+          forM_ allFixtures $ \(name, body) -> do
+            prog <- prepared body
+            let compositional = staticBound (inferEALCompiled body) prog
+            case analyzeIC defaultAnalysisBudget prog of
+              Unknown _ -> pure ()
+              Established walked -> forM_ finiteInputs $ \input -> do
+                let at = sbEvaluate
+                      (\p -> Map.findWithDefault 0 p (inputSizes input))
+                assertBool (name <> " at " <> show input)
+                  (and (liftA2 (\w c -> at w <= at c) walked compositional))
+      ]
   , testCase "guided copying at opaque frontiers is covered by the generic copy" $ do
       let code = deferB 20 (LeftB EnvB)
           call = appB EnvB ZeroB
@@ -156,6 +203,7 @@ main = defaultMain $ testGroup "IC space"
       [ (show (i,j), SetEnvB (PairB (deferB 90 (PairB EnvB EnvB)) (PairB a b)))
       | (i,a) <- zip [0 :: Int ..] [EnvB, LeftB EnvB, RightB EnvB, ZeroB]
       , (j,b) <- zip [0 :: Int ..] [EnvB, LeftB EnvB, RightB EnvB, ZeroB]]
+    allFixtures = dataFixtures <> generatedFixtures
 
 prepared :: CompiledExpr -> IO ICProgram
 prepared body = either (\e -> assertFailure (show e) >> error "unreachable") pure
