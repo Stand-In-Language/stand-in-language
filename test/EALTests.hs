@@ -178,6 +178,30 @@ main = do
           Just ([SL], _) -> pure ()
           other -> assertFailure $ "expected contraction at path L, got "
             <> show (fmap fst other)
+    , testCase "usage paths descend from the innermost projection" $ do
+        let uses = envUsageL . snd . deferLift $ lft (rgt env)
+        fmap fst uses @?= Map.singleton [SR, SL] 1
+    , testCase "usage ignores nested defer frames" $ do
+        let uses = envUsageL . snd . deferLift $ p (lft env) (defer 90 (p env env))
+        fmap fst uses @?= Map.singleton [SL] 1
+        contractionSite uses @?= Nothing
+    , testCase "usage resets paths at ordinary constructors" $
+        (fmap fst . envUsageL . snd . deferLift $ lft (p env (rgt env)))
+          @?= Map.fromList [([], 1), ([SR], 1)]
+    , testCase "checking wrappers retain projection paths and ignore checks" $ do
+        let at = GeneratedLoc "value occurrence" Nothing
+            value = at :< Term3S EnvSF
+            wrapper = l :< Term3CheckingWrapper l (p env env) value
+        (envUsageL . snd . deferLift $ lft wrapper)
+          @?= Map.singleton [SL] (1, at)
+    , testCase "unsized usage retains its location and first occurrence wins" $ do
+        let firstLoc = GeneratedLoc "first hole" Nothing
+            secondLoc = GeneratedLoc "second env" Nothing
+            hole = firstLoc :< Term3Unsized (toEnum 1)
+            value = secondLoc :< Term3S EnvSF
+            uses = envUsageL . snd . deferLift $ p (rgt hole) (rgt value)
+        uses @?= Map.singleton [SR] (2, firstLoc)
+        contractionSite uses @?= Just ([SR], firstLoc)
     , testCase "guidance carries path usage, bangs, and speculation" $ do
         let lr = inferEALWithLifting . defer 1 $ p (lft env) (rgt env)
         case Map.elems (ealGuidance lr) of

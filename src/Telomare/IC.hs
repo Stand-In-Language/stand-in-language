@@ -1,6 +1,7 @@
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE LambdaCase       #-}
-{-# LANGUAGE PatternSynonyms  #-}
+{-# LANGUAGE DeriveTraversable #-}
+{-# LANGUAGE FlexibleContexts  #-}
+{-# LANGUAGE LambdaCase        #-}
+{-# LANGUAGE PatternSynonyms   #-}
 
 -- | An interaction-combinator runtime for 'CompiledExpr'.
 --
@@ -11,10 +12,10 @@
 -- terms — a duplicator reaching a copy of itself through a term that
 -- duplicates its own duplicator computes garbage — and EAL typability
 -- ('Telomare.EAL') is the classical sufficient condition under which it is
--- correct. The EAL pass is therefore this runtime's admission certificate:
--- the only analysis output the runtime's *correctness* depends on is that
--- verdict (no levels, no sharing plan). Templates are keyed by the same
--- content hash that keys the DeferMap ('Telomare.Resolver.deferLift'), so
+-- correct. EAL certification is the intended correctness precondition;
+-- the public entry points accept raw terms and do not enforce it.
+-- Templates are keyed by the same
+-- content hash that keys the DeferMap ('Telomare.Resolve.deferLift'), so
 -- per-hash 'Telomare.EAL.CodeGuidance' addresses templates directly;
 -- guidance-driven choices must remain advisory (strategy, never meaning).
 --
@@ -31,7 +32,7 @@
 -- ref is copying a pointer (the code table exists at runtime), and only the
 -- instantiated body's wiring is ever duplicated structurally.
 --
--- The semantics mirror the reference evaluator ('Telomare.Possible'
+-- The semantics mirror the reference evaluator ('Telomare.Machine'
 -- 'basicStep'\/'stuckStep'\/'abortStep') rule for rule:
 --
 --   * @SetEnv (Pair (Defer d) e)@ instantiates d's template with env e.
@@ -50,8 +51,7 @@
 -- (the content hash narrows candidates; an exact 'Eq' check decides, since
 -- the hash is blind to the FunctionIndexes of nested defers). Each 'ICRef'
 -- node carries its own site's FunctionIndex, so readback reconstructs the
--- defer value the reference evaluator would produce — defer equality is by
--- index, which makes naive whole-value dedup observable.
+-- defer value the reference evaluator would produce, including nested indexes.
 --
 -- One discovered subtlety governs the error rules: the reference
 -- evaluator, being ordinary lazy Haskell, is effectively call-by-need — a
@@ -73,23 +73,26 @@ import Control.Monad.Except
 import Control.Monad.State.Strict (State)
 import qualified Control.Monad.State.Strict as State
 import Crypto.Hash (Digest, SHA256)
-import Data.Foldable (asum)
+import Data.Fix (Fix (..))
+import Data.Foldable (asum, toList)
 import Data.Functor.Foldable (cata, embed, project)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
 import Data.Map (Map)
-import qualified Data.Map as Map
+import qualified Data.Map.Strict as Map
 import Debug.Trace (trace)
+import Numeric.Natural (Natural)
 import Telomare.EAL (CapShape (..), Step (..), showSteps)
+import qualified Telomare.EnvUsage as Usage
 import Telomare.IR.Base (AbortableF (..), BasicExpr, BasicExprF (..),
                          FunctionIndex, StuckF (..), pattern AbortB,
                          pattern AbortEE, pattern AbortFW, pattern BasicFW,
                          pattern EnvB, pattern GateB, pattern PairB,
                          pattern StuckEE, pattern StuckFW, pattern ZeroB)
-import Telomare.IR.Core (CompiledExpr, RunTimeError (..), compiled2Term3)
+import Telomare.IR.Core (CompiledExpr, CompiledExprF (..), RunTimeError (..))
 import Telomare.Machine (abortInd, deferB, doLeft, doRight, leftGateInd,
                          rightGateInd)
-import Telomare.Resolve (Term3LiftingF (..), deferLift)
+import Telomare.Resolve (Term3LiftingF (..), hashLiftedBody)
 
 -- | Temporary debugging switch: trace every interaction and instantiation.
 debugIC :: Bool
@@ -141,6 +144,9 @@ data ICKind
                        --   the net fires it eagerly, so stuckness must be a
                        --   value that erasure discards and only demanded
                        --   output reports.
+  | ICInput Integer    -- ^ 1 port: an unknown finite data tree, the part of
+                       --   the input at this path. Only 'Telomare.IC.Space'
+                       --   makes these; no rule here consumes one.
   deriving (Eq, Show)
 
 data Port = Port
@@ -180,10 +186,10 @@ data ICError
   deriving (Eq, Show)
 
 data ICState = ICState
-  { icNodes     :: IntMap Node
+  { icNodes     :: !(IntMap Node)
   , icNextNode  :: !Int
   , icNextLabel :: !Int
-  , icActive    :: [(Int, Int)] -- ^ candidate active pairs (may go stale)
+  , icActive    :: ![(Int, Int)] -- ^ candidate active pairs (may go stale)
   , icEnvQueue  :: Map [Step] [Port]
                                 -- ^ compile-time: env component wires per
                                 -- projection path, to be consumed by the
@@ -196,18 +202,122 @@ data ICState = ICState
                                 -- decides, since the hash is index-blind)
   , icFuel      :: !Int
   , icSpent     :: !Int         -- ^ interactions performed
-  , icStats     :: Map String Int
+  , icStats     :: !(Map String Int)
+  , icInsts     :: !(IntMap Int) -- ^ apply-ref firings per template
   , icGuidance  :: Map (Digest SHA256) CapShape
     -- ^ per-hash capture layouts from the EAL pass ('ealCaptureLayouts'),
     -- consumed by the guided closure-duplication rule; empty means every
     -- strategy keeps to its generic default
+  , icResident  :: !(Resources Natural)
+  , icPeak      :: !(Resources Natural)
   }
+
+-- | Logical storage, componentwise: resident agents, stored port entries
+-- (dangling halves included) and pending pairs (stale entries included).
+data Resources a = Resources
+  { resourceAgents :: !a
+  , resourcePorts  :: !a
+  , resourceWork   :: !a
+  } deriving (Eq, Show, Functor, Foldable, Traversable)
+
+instance Applicative Resources where
+  pure x = Resources x x x
+  Resources f g h <*> Resources a p w = Resources (f a) (g p) (h w)
+
+-- | Independent recount, for validating the incremental counters.
+residentResources :: ICState -> Resources Natural
+residentResources st = Resources (fromIntegral (IntMap.size (icNodes st)))
+  (sum (fmap (fromIntegral . IntMap.size . nodePorts) (icNodes st)))
+  (fromIntegral (length (icActive st)))
+
+-- | Change a counter at exactly the primitive mutation boundary.
+account :: (Resources Natural -> Resources Natural) -> ICM ()
+account f = State.modify' $ \st ->
+  let current = f (icResident st)
+  in st { icResident = current, icPeak = liftA2 max current (icPeak st) }
+
+-- | What one evaluation, or a session of them, cost: peaks combine by
+-- maximum, counts by addition.
+data ICSpaceStats = ICSpaceStats
+  { spacePeak         :: !(Resources Natural)
+  , spaceInteractions :: !Int
+  , spaceRules        :: Map String Int
+  , spaceInsts        :: IntMap Int
+    -- ^ apply-ref firings per template, so a static instantiation bound
+    -- ('Telomare.IC.Static.staticInstBounds') can be checked against a run
+  } deriving (Eq, Show)
+
+instance Semigroup ICSpaceStats where
+  a <> b = ICSpaceStats (liftA2 max (spacePeak a) (spacePeak b))
+    (spaceInteractions a + spaceInteractions b)
+    (Map.unionWith (+) (spaceRules a) (spaceRules b))
+    (IntMap.unionWith (+) (spaceInsts a) (spaceInsts b))
+
+instance Monoid ICSpaceStats where
+  mempty = ICSpaceStats (pure 0) 0 mempty mempty
+
+spaceStats :: ICState -> ICSpaceStats
+spaceStats st = ICSpaceStats (icPeak st) (icSpent st) (icStats st) (icInsts st)
+
+-- | A compiled entry body ready to run on any input: its templates and the
+-- entry net, with the boundary node whose slot 0 receives the input and
+-- whose slot 1 delivers the result.
+data ICProgram = ICProgram
+  { programInitial  :: ICState
+  , programBoundary :: Int
+  }
+
+-- | Template agents and ports, resident for the whole session.
+staticStorage :: ICProgram -> Resources Natural
+staticStorage prog = Resources
+  (sum [fromIntegral (IntMap.size (tplNodes t)) | t <- ts])
+  (sum [fromIntegral (IntMap.size (nodePorts n)) | t <- ts, n <- IntMap.elems (tplNodes t)])
+  0
+  where ts = IntMap.elems (icTemplates (programInitial prog))
+
+-- | Compile an open entry body whose Env is the input, under per-hash
+-- capture layouts from the EAL pass ('Telomare.EAL.ealCaptureLayouts';
+-- empty for the generic strategy). Nothing is reduced.
+prepareIC :: Map (Digest SHA256) CapShape -> CompiledExpr -> Either ICError ICProgram
+prepareIC guidance body =
+  case State.runState (runExceptT (setupSelectors >> compileBody body))
+       (emptyState guidance defaultFuel) of
+    (Left e, _)     -> Left e
+    (Right ext, st) -> Right (ICProgram st ext)
+
+-- | Replace the boundary by the input and a root node. The construction
+-- peak is part of the run.
+initializeIC :: ICProgram -> ICM Port -> ICM Int
+initializeIC prog input = do
+  let ext = programBoundary prog
+  env <- peer (Port ext 0)
+  result <- peer (Port ext 1)
+  root <- newNode ICRoot
+  value <- input
+  deleteNode ext
+  -- An identity body has a boundary-to-boundary wire.
+  if portNode env == ext then connect (Port root 0) value
+  else connect env value >> connect result (Port root 0)
+  pure root
+
+runICProgram :: Int -> ICProgram -> BasicExpr
+             -> (Either ICError CompiledExpr, ICSpaceStats)
+runICProgram fuel prog input =
+  let action = do
+        root <- initializeIC prog (compileData input)
+        reduce
+        readback =<< peer (Port root 0)
+      initial = programInitial prog
+      (result, st) = State.runState (runExceptT action)
+        (initial { icFuel = fuel, icStats = mempty, icInsts = mempty
+                 , icPeak = icResident initial })
+  in (result, spaceStats st)
 
 type ICM = ExceptT ICError (State ICState)
 
 emptyState :: Map (Digest SHA256) CapShape -> Int -> ICState
 emptyState guidance fuel = ICState IntMap.empty 0 0 [] Map.empty IntMap.empty 0
-  Map.empty fuel 0 Map.empty guidance
+  Map.empty fuel 0 Map.empty IntMap.empty guidance (pure 0) (pure 0)
 
 -- * Primitive net operations
 
@@ -217,6 +327,7 @@ newNode k = do
   State.modify' $ \st -> st
     { icNextNode = n + 1
     , icNodes = IntMap.insert n (Node k IntMap.empty) (icNodes st) }
+  account $ \r -> r { resourceAgents = resourceAgents r + 1 }
   pure n
 
 nodeAt :: Int -> ICM Node
@@ -236,10 +347,13 @@ peer (Port n s) = do
       "unwired port " <> show n <> "/" <> show s
 
 setHalf :: Port -> Port -> ICM ()
-setHalf (Port n s) q = State.modify' $ \st -> st
-  { icNodes = IntMap.adjust
+setHalf (Port n s) q = do
+  added <- State.gets $ maybe False (not . IntMap.member s . nodePorts)
+    . IntMap.lookup n . icNodes
+  State.modify' $ \st -> st { icNodes = IntMap.adjust
       (\nd -> nd { nodePorts = IntMap.insert s q (nodePorts nd) })
       n (icNodes st) }
+  when added . account $ \r -> r { resourcePorts = resourcePorts r + 1 }
 
 -- | Wire two ports together. A principal-principal wiring between
 -- interacting kinds is enqueued as an active pair.
@@ -251,8 +365,9 @@ connect p q = do
     (Port a 0, Port b 0) -> do
       ka <- kindOf a
       kb <- kindOf b
-      when (interactive ka && interactive kb) . State.modify' $ \st ->
-        st { icActive = (a, b) : icActive st }
+      when (interactive ka && interactive kb) $ do
+        State.modify' $ \st -> st { icActive = (a, b) : icActive st }
+        account $ \r -> r { resourceWork = resourceWork r + 1 }
     _notPrincipals -> pure ()
   where interactive = \case
           ICRoot -> False
@@ -260,8 +375,12 @@ connect p q = do
           _      -> True
 
 deleteNode :: Int -> ICM ()
-deleteNode n = State.modify' $ \st ->
-  st { icNodes = IntMap.delete n (icNodes st) }
+deleteNode n = do
+  old <- State.gets (IntMap.lookup n . icNodes)
+  State.modify' $ \st -> st { icNodes = IntMap.delete n (icNodes st) }
+  forM_ old $ \nd -> account $ \r -> r
+    { resourceAgents = resourceAgents r - 1
+    , resourcePorts = resourcePorts r - fromIntegral (IntMap.size (nodePorts nd)) }
 
 freshLabel :: ICM Label
 freshLabel = do
@@ -292,13 +411,15 @@ spend name = do
 -- the steps directly applied to the occurrence, innermost first — the
 -- order they descend the env value.
 envUsage :: CompiledExpr -> Map [Step] Int
-envUsage = go [] where
-  go proj t = case project t of
-    StuckFW EnvSF         -> Map.singleton proj 1
-    StuckFW (LeftSF x)    -> go (SL : proj) x
-    StuckFW (RightSF x)   -> go (SR : proj) x
-    StuckFW (DeferSF _ _) -> Map.empty
-    x                     -> foldr (Map.unionWith (+) . go []) Map.empty x
+envUsage = fmap fst . Usage.usage envView
+
+envView :: CompiledExpr -> Usage.UsageView Step () CompiledExpr
+envView t = case project t of
+  StuckFW EnvSF         -> Usage.Occurrence ()
+  StuckFW (LeftSF x)    -> Usage.Projection SL x
+  StuckFW (RightSF x)   -> Usage.Projection SR x
+  StuckFW (DeferSF _ _) -> Usage.Closed
+  x                     -> Usage.Children (toList x)
 
 -- | The projection path this term applies directly to Env, when it is
 -- nothing but a projection chain over Env; Nothing as soon as anything
@@ -306,12 +427,7 @@ envUsage = go [] where
 -- counts, so producer and consumer of the env wiring agree by
 -- construction.
 envPathOf :: CompiledExpr -> Maybe [Step]
-envPathOf = go [] where
-  go proj t = case project t of
-    StuckFW EnvSF       -> Just proj
-    StuckFW (LeftSF x)  -> go (SL : proj) x
-    StuckFW (RightSF x) -> go (SR : proj) x
-    _notEnvChain        -> Nothing
+envPathOf = Usage.envPath envView
 
 -- | Run a net-building action against a fresh empty net, restoring the
 -- current one afterwards; returns the built nodes and their label count.
@@ -320,25 +436,45 @@ isolatedNet act = do
   saved <- State.get
   State.modify' $ \st -> st
     { icNodes = IntMap.empty, icNextNode = 0, icNextLabel = 0
-    , icActive = [], icEnvQueue = Map.empty }
-  r <- act
+    , icActive = [], icEnvQueue = Map.empty
+    , icResident = pure 0, icPeak = pure 0 }
+  result <- (Right <$> act) `catchError` (pure . Left)
   built <- State.get
   State.modify' $ \st -> st
     { icNodes = icNodes saved, icNextNode = icNextNode saved
     , icNextLabel = icNextLabel saved
-    , icActive = icActive saved, icEnvQueue = icEnvQueue saved }
+    , icActive = icActive saved, icEnvQueue = icEnvQueue saved
+    , icResident = icResident saved, icPeak = icPeak saved }
+  r <- either throwError pure result
   pure (r, icNodes built, icNextLabel built)
 
--- | The content hash of a defer value, computed by the code path that
--- keys the DeferMap ('Telomare.Resolver.deferLift') — lifting a bare
--- defer value leaves a lone reference carrying its hash — so templates
--- and per-hash 'Telomare.EAL.CodeGuidance' share one namespace by
--- construction. The hash names the lifted body (nested defers appear as
--- refs), so it is blind to FunctionIndexes.
+-- | Keep original bodies for equality/readback and a hash at each defer.
+-- The lifted view exists only while preparing the tree: nested defers are
+-- replaced by references before hashing their parent. Each defer's hash is
+-- computed once, without repeatedly converting and lifting whole subtrees.
+type PreparedExpr = Cofree CompiledExprF (CompiledExpr, Maybe (Digest SHA256))
+
+preparedBody :: PreparedExpr -> CompiledExpr
+preparedBody ((body, _) :< _) = body
+
+prepareTerm :: CompiledExpr -> PreparedExpr
+prepareTerm = snd . cata prepare where
+  prepare children =
+    let original = embed (fmap (preparedBody . snd) children)
+        (lifted, digest) = case children of
+          CompiledExprS (DeferSF _ (body, _)) ->
+            let h = hashLiftedBody body
+            in (Fix (Term3LDeferRef h), Just h)
+          CompiledExprB b -> (Fix (Term3LB (fmap fst b)), Nothing)
+          CompiledExprS s -> (Fix (Term3LS (fmap fst s)), Nothing)
+          CompiledExprA a -> (Fix (Term3LA (fmap fst a)), Nothing)
+    in (lifted, (original, digest) :< fmap snd children)
+
+-- | Same index-blind content hash as 'Telomare.Resolve.deferLift'.
 deferHash :: CompiledExpr -> Either String (Digest SHA256)
-deferHash d = case deferLift (compiled2Term3 d) of
-  (_, _ :< Term3LDeferRef h) -> Right h
-  _notDefer                  -> Left "deferHash: not a defer value"
+deferHash d = case prepareTerm d of
+  (_, Just h) :< _ -> Right h
+  _notDefer        -> Left "deferHash: not a defer value"
 
 -- | Compile one Defer value into a template, or reuse the template of an
 -- exactly-equal body already compiled (the hash narrows candidates; 'Eq'
@@ -346,9 +482,12 @@ deferHash d = case deferLift (compiled2Term3 d) of
 -- sharing would be visible to readback). The site's own FunctionIndex is
 -- returned for the caller to keep on its ref node.
 compileDefer :: CompiledExpr -> ICM (TemplateId, FunctionIndex)
-compileDefer d = case d of
-  StuckEE (DeferSF fi body) -> do
-    h <- either (throwError . ICInternal) pure (deferHash d)
+compileDefer = compilePreparedDefer . prepareTerm
+
+compilePreparedDefer :: PreparedExpr -> ICM (TemplateId, FunctionIndex)
+compilePreparedDefer d = case d of
+  (_, Just h) :< CompiledExprS (DeferSF fi prepared) -> do
+    let body = preparedBody prepared
     candidates <- State.gets (Map.findWithDefault [] h . icTplByHash)
     tpls <- State.gets icTemplates
     case [ tid | tid <- candidates
@@ -358,7 +497,7 @@ compileDefer d = case d of
         note "template-reused"
         pure (tid, fi)
       [] -> do
-        (ext, nodes, labels) <- isolatedNet (compileBody body)
+        (ext, nodes, labels) <- isolatedNet (compilePreparedBody prepared)
         tid <- State.gets icNextTpl
         State.modify' $ \st -> st
           { icNextTpl = tid + 1
@@ -372,11 +511,14 @@ compileDefer d = case d of
 -- | Build a body's net: allocate its env splitter tree, walk the term,
 -- and wire the result to the boundary node.
 compileBody :: CompiledExpr -> ICM Int
-compileBody body = do
+compileBody = compilePreparedBody . prepareTerm
+
+compilePreparedBody :: PreparedExpr -> ICM Int
+compilePreparedBody body = do
   ext <- newNode ICExt
-  wires <- envWiring (Port ext 0) (envUsage body)
+  wires <- envWiring (Port ext 0) (envUsage (preparedBody body))
   State.modify' $ \st -> st { icEnvQueue = wires }
-  root <- compileTerm body
+  root <- compilePreparedTerm body
   State.gets icEnvQueue >>= \q ->
     unless (all null (Map.elems q)) . throwError $
       ICInternal "compileBody: env wires left over"
@@ -444,24 +586,27 @@ takeEnvWire path = State.gets (Map.lookup path . icEnvQueue) >>= \case
 -- Projection chains applied directly to Env compile to nothing: their
 -- component arrives pre-split on its path's wire.
 compileTerm :: CompiledExpr -> ICM Port
-compileTerm t = case project t of
+compileTerm = compilePreparedTerm . prepareTerm
+
+compilePreparedTerm :: PreparedExpr -> ICM Port
+compilePreparedTerm t@(_ :< node) = case node of
   BasicFW ZeroSF -> value ICZero
   BasicFW (PairSF a b) -> do
     p <- newNode ICPair
-    connect (Port p 1) =<< compileTerm a
-    connect (Port p 2) =<< compileTerm b
+    connect (Port p 1) =<< compilePreparedTerm a
+    connect (Port p 2) =<< compilePreparedTerm b
     pure (Port p 0)
   StuckFW EnvSF -> takeEnvWire []
   StuckFW (SetEnvSF x) -> consumer ICSetEnv x
-  StuckFW (LeftSF x) -> case envPathOf t of
+  StuckFW (LeftSF x) -> case envPathOf (preparedBody t) of
     Just path -> takeEnvWire path
     Nothing   -> consumer ICLeft x
-  StuckFW (RightSF x) -> case envPathOf t of
+  StuckFW (RightSF x) -> case envPathOf (preparedBody t) of
     Just path -> takeEnvWire path
     Nothing   -> consumer ICRight x
   StuckFW GateSF -> value ICGate
-  d@(StuckFW (DeferSF _ _)) -> do
-    (tid, fi) <- compileDefer (embed d)
+  StuckFW (DeferSF _ _) -> do
+    (tid, fi) <- compilePreparedDefer t
     value (ICRef tid fi)
   AbortFW AbortF -> value ICAbort
   AbortFW (AbortedF m) -> do
@@ -472,7 +617,7 @@ compileTerm t = case project t of
     value k = (`Port` 0) <$> newNode k
     consumer k x = do
       n <- newNode k
-      connect (Port n 0) =<< compileTerm x
+      connect (Port n 0) =<< compilePreparedTerm x
       pure (Port n 1)
 
 compileData :: BasicExpr -> ICM Port
@@ -519,20 +664,24 @@ instantiate tid envSrc resultDst = do
 
 -- * Reduction
 
--- | Fire active pairs until quiescence. Entries whose nodes were consumed
--- by earlier interactions are skipped.
-reduce :: ICM ()
-reduce = State.gets icActive >>= \case
-  [] -> pure ()
+-- | Pop pending pairs until a live one: both agents still present and still
+-- facing each other with their principal ports.
+pop :: ICM (Maybe (Int, Int))
+pop = State.gets icActive >>= \case
+  [] -> pure Nothing
   ((a, b) : rest) -> do
     State.modify' $ \st -> st { icActive = rest }
-    live <- State.gets $ \st ->
-      IntMap.member a (icNodes st) && IntMap.member b (icNodes st)
-    when live $ do
-      pa <- peer (Port a 0)
-      pb <- peer (Port b 0)
-      when (pa == Port b 0 && pb == Port a 0) $ fire a b
-    reduce
+    account $ \r -> r { resourceWork = resourceWork r - 1 }
+    facing <- State.gets $ \st ->
+      case (IntMap.lookup a (icNodes st), IntMap.lookup b (icNodes st)) of
+        (Just na, Just nb) -> IntMap.lookup 0 (nodePorts na) == Just (Port b 0)
+                           && IntMap.lookup 0 (nodePorts nb) == Just (Port a 0)
+        _ -> False
+    if facing then pure (Just (a, b)) else pop
+
+-- | Fire active pairs until quiescence.
+reduce :: ICM ()
+reduce = pop >>= maybe (pure ()) (\(a, b) -> fire a b >> reduce)
 
 fire :: Int -> Int -> ICM ()
 fire a b = do
@@ -598,28 +747,15 @@ rule n nk m mk = case (nk, mk) of
   -- function dispatch, one rule per applicable head
   (ICApply, ICRef tid _) -> Just $ do
     spend "apply-ref"
+    State.modify' $ \st -> st { icInsts = IntMap.insertWith (+) tid 1 (icInsts st) }
     e <- peer (Port n 1)
     r <- peer (Port n 2)
     deleteNode n >> deleteNode m
     instantiate tid e r
   (ICApply, ICGate) -> Just $ awaitShape "apply-gate" n m ICScrut
   (ICApply, ICAbort) -> Just $ awaitShape "apply-abort" n m ICScrutAbort
-  (ICApply, ICAborted) -> Just $ do
-    spend "apply-aborted"
-    e <- peer (Port n 1)
-    r <- peer (Port n 2)
-    deleteNode n
-    era <- newNode ICEra
-    connect (Port era 0) e
-    connect (Port m 0) r
-  (ICApply, ICStuckV _) -> Just $ do
-    spend "apply-stuck"
-    e <- peer (Port n 1)
-    r <- peer (Port n 2)
-    deleteNode n
-    era <- newNode ICEra
-    connect (Port era 0) e
-    connect (Port m 0) r
+  (ICApply, ICAborted) -> Just $ passApplication "apply-aborted" n m
+  (ICApply, ICStuckV _) -> Just $ passApplication "apply-stuck" n m
   (ICApply, _) | valueKind mk -> Just $ do
     shape <- describeValue 6 m
     e <- peer (Port n 1)
@@ -632,12 +768,8 @@ rule n nk m mk = case (nk, mk) of
       ("applied value is " <> show mk <> ", not a function: " <> shape)
       r (e : comps)
   -- gate scrutinee arrived: yield the matching selector defer
-  (ICScrut, ICZero) -> Just $ do
-    spend "scrut-zero"
-    r <- peer (Port n 1)
-    deleteNode n >> deleteNode m
-    sel <- newNode (ICRef leftSelTpl leftSelFi)
-    connect (Port sel 0) r
+  (ICScrut, ICZero) -> Just $
+    selectZero "scrut-zero" n m leftSelTpl leftSelFi
   (ICScrut, ICPair) -> Just $ do
     spend "scrut-pair"
     la <- peer (Port m 1)
@@ -648,8 +780,7 @@ rule n nk m mk = case (nk, mk) of
     er <- newNode ICEra
     connect (Port el 0) la
     connect (Port er 0) rb
-    sel <- newNode (ICRef rightSelTpl rightSelFi)
-    connect (Port sel 0) r
+    deliverSelector rightSelTpl rightSelFi r
   (ICScrut, ICAborted) -> Just $ passThrough "scrut-aborted" n 1 m
   (ICScrut, ICStuckV _) -> Just $ passThrough "scrut-stuck" n 1 m
   (ICScrut, _) | valueKind mk -> Just $ do
@@ -658,12 +789,8 @@ rule n nk m mk = case (nk, mk) of
     stuckAt "scrut-nondata"
       ("gate scrutinee is " <> show mk <> ", not data") r []
   -- abort message arrived: Zero means carry on as the identity
-  (ICScrutAbort, ICZero) -> Just $ do
-    spend "abort-zero"
-    r <- peer (Port n 1)
-    deleteNode n >> deleteNode m
-    sel <- newNode (ICRef idSelTpl idSelFi)
-    connect (Port sel 0) r
+  (ICScrutAbort, ICZero) -> Just $
+    selectZero "abort-zero" n m idSelTpl idSelFi
   (ICScrutAbort, ICPair) -> Just $ do
     spend "abort-pair"
     r <- peer (Port n 1)
@@ -683,20 +810,12 @@ rule n nk m mk = case (nk, mk) of
   (ICLeft, ICPair) -> Just $ projectPair "left-pair" n m 1 2
   (ICLeft, ICAborted) -> Just $ passThrough "left-aborted" n 1 m
   (ICLeft, ICStuckV _) -> Just $ passThrough "left-stuck" n 1 m
-  (ICLeft, _) | valueKind mk -> Just $ do
-    r <- peer (Port n 1)
-    deleteNode n >> deleteNode m
-    stuckAt "left-nonpair"
-      ("projection target is " <> show mk <> ", not a pair") r []
+  (ICLeft, _) | valueKind mk -> Just $ projectNonPair "left-nonpair" n m mk
   (ICRight, ICZero) -> Just $ passThrough "right-zero" n 1 m
   (ICRight, ICPair) -> Just $ projectPair "right-pair" n m 2 1
   (ICRight, ICAborted) -> Just $ passThrough "right-aborted" n 1 m
   (ICRight, ICStuckV _) -> Just $ passThrough "right-stuck" n 1 m
-  (ICRight, _) | valueKind mk -> Just $ do
-    r <- peer (Port n 1)
-    deleteNode n >> deleteNode m
-    stuckAt "right-nonpair"
-      ("projection target is " <> show mk <> ", not a pair") r []
+  (ICRight, _) | valueKind mk -> Just $ projectNonPair "right-nonpair" n m mk
   -- env splitting: both components of a pair delivered in one interaction,
   -- with nothing duplicated and nothing erased. Every other case behaves
   -- exactly as a Left and a Right projection of the same value would.
@@ -956,6 +1075,35 @@ passThrough name n slot m = do
   deleteNode n
   connect (Port m 0) r
 
+-- | A poisoned application head survives; its unused argument is erased.
+passApplication :: String -> Int -> Int -> ICM ()
+passApplication name n m = do
+  spend name
+  e <- peer (Port n 1)
+  r <- peer (Port n 2)
+  deleteNode n
+  era <- newNode ICEra
+  connect (Port era 0) e
+  connect (Port m 0) r
+
+deliverSelector :: TemplateId -> FunctionIndex -> Port -> ICM ()
+deliverSelector tid fi r = do
+  sel <- newNode (ICRef tid fi)
+  connect (Port sel 0) r
+
+selectZero :: String -> Int -> Int -> TemplateId -> FunctionIndex -> ICM ()
+selectZero name n m tid fi = do
+  spend name
+  r <- peer (Port n 1)
+  deleteNode n >> deleteNode m
+  deliverSelector tid fi r
+
+projectNonPair :: String -> Int -> Int -> ICKind -> ICM ()
+projectNonPair name n m mk = do
+  r <- peer (Port n 1)
+  deleteNode n >> deleteNode m
+  stuckAt name ("projection target is " <> show mk <> ", not a pair") r []
+
 -- | An applied gate or abort must inspect its operand's shape: replace the
 -- apply with a shape-awaiting node facing the operand.
 awaitShape :: String -> Int -> Int -> ICKind -> ICM ()
@@ -985,7 +1133,7 @@ projectPair name n m keep drop' = do
 
 -- | Read a normalized value net back into syntax. A ref reads back as the
 -- defer of its template's body under its own site's index, so results
--- compare equal to the reference evaluator's (defer equality is by index)
+-- compare equal to the reference evaluator's, including nested indexes,
 -- even when sites share a template.
 readback :: Port -> ICM CompiledExpr
 readback (Port n _) = kindOf n >>= \case
@@ -1048,9 +1196,15 @@ icEvalDetailed = icEvalDetailedWith mempty
 -- ('Telomare.EAL.ealCaptureLayouts') guiding closure duplication.
 icEvalDetailedWith :: Map (Digest SHA256) CapShape -> Int -> CompiledExpr
                    -> (Either ICError CompiledExpr, Map String Int)
-icEvalDetailedWith guidance fuel term =
+icEvalDetailedWith guidance fuel term = spaceRules <$> icEvalSpaceWith guidance fuel term
+
+-- | Includes initialization and primitive-operation intermediates, even when
+-- reduction or readback fails. Isolated template scratch nets are excluded.
+icEvalSpaceWith :: Map (Digest SHA256) CapShape -> Int -> CompiledExpr
+                -> (Either ICError CompiledExpr, ICSpaceStats)
+icEvalSpaceWith guidance fuel term =
   let (r, st) = State.runState (runExceptT go) (emptyState guidance fuel)
-  in (r, icStats st)
+  in (r, spaceStats st)
   where
     go = do
       unless (Map.null (envUsage term)) . throwError $
@@ -1070,7 +1224,10 @@ icEvalIC = fst . icEvalDetailed defaultFuel
 -- surviving anywhere in the result is an 'AbortRunTime' (mirroring the
 -- reference checkError); runtime trouble maps onto 'GenericRunTimeError'.
 icEval :: CompiledExpr -> Either RunTimeError CompiledExpr
-icEval term = case icEvalIC term of
+icEval = icRuntimeResult . icEvalIC
+
+icRuntimeResult :: Either ICError CompiledExpr -> Either RunTimeError CompiledExpr
+icRuntimeResult result = case result of
   Left e -> Left $ GenericRunTimeError ("IC runtime: " <> show e) ZeroB
   Right x -> case cata findError x of
     Just msg -> Left $ AbortRunTime msg

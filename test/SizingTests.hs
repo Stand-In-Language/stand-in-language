@@ -6,7 +6,8 @@ import Data.Maybe (isJust)
 import qualified System.IO.Strict as Strict
 import Test.Hspec
 
-import Telomare.Driver (SizingOption (DebugSizing), compileModulesWith)
+import Telomare.Driver (SizingOption (DebugSizing), compileModulesWith,
+                        compileReport)
 import Telomare.IR.Loc
 import Telomare.Size (SizingReport (..), SizingSettings (SizingSettings),
                       renderSizingCertificate)
@@ -26,7 +27,7 @@ loadWith path moduleName = do
 compileProgram :: SizingOption -> FilePath -> String -> IO (Either String SizingReport)
 compileProgram sizingOption path moduleName = do
   modules <- loadWith path moduleName
-  pure . fmap fst $ compileModulesWith sizingOption modules moduleName
+  pure . fmap compileReport $ compileModulesWith sizingOption modules moduleName
 
 -- |Compile at the budget the CLI uses.
 compileAtFullBudget :: FilePath -> String -> IO (Either String SizingReport)

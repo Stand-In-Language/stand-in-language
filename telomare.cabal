@@ -16,6 +16,9 @@ build-type:          Simple
 -- there. That is the whole reason the Telomare programs appear below.
 extra-source-files:  CHANGELOG.md
                      README.md
+                     bench/DeferCompile.hs
+                     bench/ICSpace.hs
+                     bench/README.md
                      *.tel
                      test/programs/**/*.tel
 
@@ -25,15 +28,21 @@ library
                      , Telomare.Certificate
                      , Telomare.Desugar
                      , Telomare.EAL
+                     , Telomare.EnvUsage
                      , Telomare.Error
                      , Telomare.Driver
                      , Telomare.IC
+                     , Telomare.IC.Draw
+                     , Telomare.IC.Space
+                     , Telomare.IC.Static
+                     , Telomare.SpaceBound
                      , Telomare.Eval.Reference
                      , Telomare.Fast
                      , Telomare.IR.Base
                      , Telomare.IR.Builder
                      , Telomare.IR.Core
                      , Telomare.IR.Loc
+                     , Telomare.IR.Recursion
                      , Telomare.IR.Surface
                      , Telomare.IR.Types
                      , Telomare.Levels
@@ -54,7 +63,6 @@ library
                      , containers
                      , data-fix
                      , deepseq
-                     , dlist
                      , filepath
                      , megaparsec
                      , memory
@@ -216,11 +224,25 @@ test-suite telomare-ic-test
   main-is:             ICTests.hs
   build-depends:       base
                      , containers
+                     , mtl
                      , strict
                      , tasty
                      , tasty-hunit
                      , telomare
   ghc-options:         -Wall -Wunused-packages -threaded -rtsopts -with-rtsopts=-N
+  default-language:    Haskell2010
+
+test-suite telomare-ic-space-test
+  type:                exitcode-stdio-1.0
+  hs-source-dirs:      test
+  main-is:             ICSpaceTests.hs
+  build-depends:       base
+                     , containers
+                     , mtl
+                     , tasty
+                     , tasty-hunit
+                     , telomare
+  ghc-options:         -Wall -Wunused-packages
   default-language:    Haskell2010
 
 test-suite telomare-udt-test

@@ -365,7 +365,7 @@ pipeline. In pipeline order:
 | Expand | `Telomare.Expand` | removes the `SugarTermF` fragment (`ParsedSurfaceTerm -> ExpandedSurfaceTerm`), eliminating `LamPatF`/`LetSugarF` by type: multi-pattern lambdas become nested lambdas with hygienic case destructuring, list definitions and UDT conventions expand into bindings, and refinement annotations fold into `CheckF`. Module imports remain typed `ImportDecl` values in `ExpandedModuleItem`. |
 | Desugar | `Telomare.Desugar` | binds and optimizes builtins and removes the case capability (`ExpandedSurfaceTerm -> DesugaredSurfaceTerm`), lowering cases to nested conditionals before resolution. |
 | Resolve | `Telomare.Resolve` | resolves typed module imports, scope-checks only `DesugaredSurfaceTerm`, performs de Bruijn conversion and hash folding, and lowers core terms (`splitExpr`: `Term2 -> Term3`). Documents the dual `process`/`processWlet` pipeline. |
-| Type check | `Telomare.TypeCheck` | unification-based check of `Term3` against the main type. |
+| Certify | `Telomare.EAL` | defer lifting and elementary-affine certification of `Term3`; publishes advisory capture layouts for the IC runtime. |
 | Size (totality) | `Telomare.Size`, `Telomare.Size.IR`, `Telomare.Machine` | telomare's distinguishing stage: `sizeTermM` abstractly interprets the program over symbolic input and infers a finite iteration count for every recursion site, then bakes the counts in (`Term3 -> CompiledExpr`). A program that cannot be sized does not compile. `Machine` is the shared step-algebra the sizing pass and the evaluators are assembled from. |
 | Evaluate | `Telomare.Eval.Reference`, `Telomare.Eval.Meter`, `Telomare.Fast` | the reference interpreter, the step-counting meter, and the fuel-based fast path (which skips sizing). |
 | Drive | `Telomare.Driver`, `Telomare.Artifact`, `Telomare.Certificate`, `Telomare.Levels` | orchestration (`compileModules`, `evalLoop`), `.telc` artifacts, and the static report. |
@@ -390,3 +390,191 @@ If you'd like to contribute, please fork the repository and use a feature branch
 
 ## Licensing
 The code in this project is licensed under the Apache License 2.0. For more information, please refer to the [LICENSE file](https://github.com/Stand-In-Language/stand-in-language/blob/master/LICENSE).
+
+## IC logical storage
+
+`--ic` runs a sized source program or `.telc` artifact on the interaction-net
+runtime (`Telomare.IC`) instead of the reference evaluator. The rules and
+the LIFO scheduling are those of the runtime's own evaluator, unchanged in
+behavior; `--ic` adds storage counters and a prepare-once entry around them.
+Preparation is guided by the EAL capture
+layouts of the sized program (`Telomare.EAL.ealCaptureLayouts`), the
+duplication strategy the runtime was designed around; where the EAL pass has
+no layout for a body, that body copies generically.
+
+```sh
+cabal run telomare -- simpleplus.tel --ic                     # run on the net
+cabal run telomare -- simpleplus.tel --ic --meter             # plus peaks and interactions
+cabal run telomare -- simpleplus.tel --ic --certificate       # bound or estimate, any input
+cabal run telomare -- simpleplus.tel --ic --compile -o /tmp/sp.telc
+cabal run telomare -- /tmp/sp.telc --ic --certificate         # the stored certificate
+cabal run telomare -- simpleplus.tel --ic --draw-net          # net and templates, as SVG
+```
+
+`--ic --draw-net` draws the prepared program as an SVG figure
+(`simpleplus.net.svg`, or `-o FILE`) in the visual language of
+[interaction-nets.html](interaction-nets.html): one circle per agent, a
+filled dot on its principal port, and principal-to-principal wires — the
+active pairs, where rules fire — in the hot color. The first panel is the
+entry net, the net a run starts from just before the input is plugged into
+its boundary (boundary wires drawn hot become active then). That net is the
+same small scaffolding for every program, because a program's code lives in
+templates spliced in only when instantiated, so the panels after it draw
+those templates, breadth-first from `main`, until `--draw-limit` agents
+(default 400) are spent; larger templates are listed with their size
+instead. An artifact draws the same program it runs.
+
+`--ic --meter` reports interactions and the peaks of three logical
+resources: resident agents, stored port entries and pending pairs (stale
+entries count). Templates are reported separately as static storage.
+Preparation, compiler workspace, readback, the Haskell heap, GC and RSS are
+outside the model.
+
+### Reading a certificate
+
+`--ic --certificate` states what is known about an `--ic` run's storage on
+**any** finite Zero/Pair input — not a measurement of one run. When the net
+walk finishes, that is a bound, printed as an *IC space certificate*; when it
+gives up, an estimate, printed as an *IC space estimate*. The first line says
+which, and the document is written to be read on its own.
+`tc_ultra_minimal.tel --ic --certificate` in full:
+
+```
+IC space certificate
+
+  What this bounds: run this program on the interaction-net runtime
+  (--ic) on any finite Zero/Pair input, and the net's logical storage
+  stays within the figures below. |input| is the number of constructor
+  cells (Zero and Pair nodes) of that input.
+
+  How it was computed: a net walk. The analysis replayed the runtime's own
+  rules over a symbolic input, splitting wherever control depends on the
+  input's shape, and kept the worst peak over every split, plus a fixed
+  allowance for each unknown part of the input. Where the walk finishes,
+  as it did here, the figures are usually close to the real peak.
+
+  Peak storage of one evaluation (a session of several evaluations
+  peaks at the largest of them):
+
+    agents         ≤ 36·|input| + 1130
+    port entries   ≤ 108·|input| + 2894
+    pending pairs  ≤ 36·|input| + 647
+
+  Agents are the nodes resident in the net, port entries the wire
+  endpoints it stores (stale ones included), and pending pairs the
+  interactions waiting on the worklist.
+
+  The figures above fold every part of the input into the whole;
+  by part, where |input.left| counts only the cells of the input's
+  left subtree and input.left×63 folds 63 left steps, the analysis
+  established the tighter:
+
+    agents, the largest of 6 cases:
+      4·|input| + 559
+      4·|input.left| + 4·|input.right| + 505
+      4·|input.left.left| + 4·|input.left.right| + 503
+      12·|input.left.left| + 1130
+      12·|input.left.left| + 4·|input.left.left.left| + 4·|input.left.left.right| + 834
+      36·|input.left.left| + 535
+    port entries, the largest of 6 cases:
+      ⋮
+    pending pairs, the largest of 6 cases:
+      ⋮
+
+  Not counted: preparation workspace, readback of the result, Haskell
+  runtime overhead, GC and process memory.
+```
+
+Top to bottom:
+
+- **What this bounds** states the claim: the figures cover every
+  finite Zero/Pair input, expressed in that input's size. `|input|` is a
+  count of constructor cells, so the pair `(0, (0,0))` has `|input| = 5`
+  (three Zeros, two Pairs).
+- **How it was computed** names the analysis, because the two read
+  differently. A *net walk* (`Telomare.IC.Space`) replays the runtime's own
+  rules in the runtime's own order over a symbolic input, splitting where a
+  branch tests the input's shape, and adds a fixed allowance for each
+  unknown part of the input. Where it finishes, its figures are usually
+  close to the real peak: on `tc_ultra_minimal` the tightest case sits just
+  above the measured 559 agents, while on `simpleplus` the constant alone is
+  1.6× the measured peak. A program whose control depends on many
+  independent input parts exhausts the walk's budget, and the command falls
+  back to the *compositional estimate* described below.
+- **The headline figures** give one bound per resource as a plain function
+  of `|input|`: run the program on an input of 100 cells and the net never
+  holds more than 36·100 + 1130 = 4730 agents. The three resources are the
+  net's whole logical footprint: its nodes (agents), the wire endpoints it
+  stores (port entries), and the interactions queued but not yet fired
+  (pending pairs).
+- **The by-part refinement** is the same bound before parts of the input
+  were folded into the whole; it is tighter when only some parts matter.
+  `|input.left.left|` counts only the cells two lefts down, and a deep
+  position folds repeated steps: `input.left×63` is 63 lefts down. Each
+  resource's bound is the largest of a few cases because different input
+  shapes take different branches; every case is itself a bound.
+- **Not counted** delimits the model: the bound is about the net's logical
+  storage, not the Haskell process around it.
+
+A program the walk cannot finish gets an estimate instead.
+`tictactoe.tel --ic --certificate`:
+
+```
+IC space estimate
+
+  What this estimates: the net's logical storage when this program runs
+  on the interaction-net runtime (--ic) on any finite Zero/Pair input.
+  The figures are an estimate, not a guarantee (see below). |input| is
+  the number of constructor cells (Zero and Pair nodes) of that input.
+
+  How it was computed: compositionally. The walk of the runtime's own
+  rules did not finish here (IC transition budget exhausted).
+  These figures instead charge every allocation the program's templates
+  allow, in any order of firing, times an estimated multiplier for
+  copying. Figures like these exist for every program, but they are
+  loose — often by many orders of magnitude — and not a proven bound:
+  the copy multiplier can undercount programs that copy code heavily,
+  such as towers of Church numerals. Read them as an order-of-growth
+  estimate, not as a guarantee or a prediction of the actual peak.
+
+  Estimated peak storage of one evaluation (a session of several
+  evaluations peaks at the largest of them):
+
+    agents         ≤ 4.78×10^11·|input| + 1.57×10^534
+    port entries   ≤ 1.44×10^12·|input| + 4.08×10^534
+    pending pairs  ≤ 1.44×10^12·|input| + 4.08×10^534
+
+  ⋮
+
+  Figures over six digits are shown rounded up to three significant
+  figures; rounding up never shows less than the analysis computed.
+```
+
+The compositional estimate (`Telomare.IC.Static`) never runs anything: it
+charges each counter's lifetime increments from the template table, the
+reference graph and the EAL guidance, times an estimated copy multiplier
+(1 + 3F)^L for F duplication fans and EAL box depth L. It does not depend on
+firing order and exists for every program that prepares, but it is not a
+proven bound. The multiplier grows single-exponentially in L, where
+elementary affine logic allows a tower of exponentials of height L, and on
+a hand-built Church-numeral tower of height five it reports about 9×10^11
+agents for a result of 2^65536 cells. For tic-tac-toe it sits some 530
+orders of magnitude above a measured game's 265,483 agents. Making it sound,
+and tighter, is the main open work. Large figures are rounded *up*, so
+rounding never shows less than the analysis computed.
+
+The output is the walk's bound when the walk finishes, else the
+compositional estimate, labeled as such. `--ic --compile` stores it and the
+capture layouts in the artifact (format version 4; artifacts from older
+builds are rejected with a message), and an `--ic` run of the artifact
+prepares under those stored layouts, so the stored figures describe exactly
+the runs the artifact performs.
+
+Measurements are in [bench/README.md](bench/README.md); the design and the
+soundness arguments are in the module documentation of `Telomare.IC.Space`
+(the walk) and `Telomare.IC.Static` (the compositional estimate). For the
+concepts from first principles — what an interaction net is, what an agent
+is, how the node map stores the graph, and where the two analyses' figures
+come from —
+open [interaction-nets.html](interaction-nets.html) in a browser: an
+illustrated primer with worked diagrams.

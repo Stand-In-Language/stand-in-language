@@ -15,18 +15,19 @@ import Control.Lens (Identity (runIdentity))
 import Data.Functor.Foldable (cata, embed)
 import Debug.Trace
 import Telomare.Desugar (desugarTerm)
-import Telomare.EAL (certifyMain)
+import Telomare.EAL (EALLiftedResult, certifyMain, inferEALCompiled)
 import Telomare.Error
 import Telomare.Eval.Meter (Meter, evalMeter)
 import Telomare.Eval.Reference ()
 import Telomare.Expand (expandDefs, expandModule, expandTerm,
                         renderExpansionError, wrapMain)
+import Telomare.IC (ICProgram, ICSpaceStats, defaultFuel, icRuntimeResult,
+                    runICProgram)
 import Telomare.IR.Base
 import Telomare.IR.Builder
 import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.IR.Surface
-import Telomare.IR.Types
 import Telomare.Machine (appB, deferB)
 import Telomare.Parse (parseOneExprOrDefinitions, runParseModule)
 import Telomare.PrettyPrint
@@ -167,6 +168,17 @@ funWrapWith evaluator fun app inp =
       Just _ -> error "Telomare.Driver.funWrapWith: unexpected iteration value"
     Left e -> ("runtime error:\n" <> show e, Left e)
 
+-- |A compiled program with everything the actions downstream may want: the
+-- sizing report and the EAL analysis of the sized term. 'compileEAL' is a
+-- thunk, so a plain run never pays for the inference; only the IC route
+-- forces it (its hashes match the IC template table, unlike 'certifyMain''s,
+-- which runs on the pre-sizing term).
+data CompileOutput = CompileOutput
+  { compileReport :: SizingReport
+  , compileExpr   :: CompiledExpr
+  , compileEAL    :: EALLiftedResult
+  }
+
 -- |Parse and compile a module set, keeping the sizing results. Every problem
 -- comes back as text a user can act on rather than as an exception, so callers
 -- decide how to report it.
@@ -175,7 +187,7 @@ funWrapWith evaluator fun app inp =
 -- can say which file a term came from.
 compileModules :: [(String, String)] -- ^All modules as (Module_Name, Module_Content)
                -> String -- ^Module's name with `main` function
-               -> Either String (SizingReport, CompiledExpr)
+               -> Either String CompileOutput
 compileModules = compileModulesWith MainSizing
 
 -- |`compileModules` at a chosen sizing budget. Tests use a deliberately tiny
@@ -184,13 +196,15 @@ compileModules = compileModulesWith MainSizing
 compileModulesWith :: SizingOption
                    -> [(String, String)]
                    -> String
-                   -> Either String (SizingReport, CompiledExpr)
+                   -> Either String CompileOutput
 compileModulesWith so modulesStrings s =
   case [ "Error in module " <> moduleName <> ":\n" <> err
        | (moduleName, Left err) <- parsed ] of
-    [] -> first renderEvalError $ compileMainReporting so [ (n, m) | (n, Right m) <- parsed ] s
+    [] -> wrap <$> first renderEvalError
+            (compileMainReporting so [ (n, m) | (n, Right m) <- parsed ] s)
     errs -> Left $ unlines errs
   where
+    wrap (report, sized) = CompileOutput report sized (inferEALCompiled sized)
     parsed :: [(String, Either String ExpandedModule)]
     parsed = fmap parseAndExpand modulesStrings
     parseAndExpand (moduleName, content) =
@@ -205,8 +219,8 @@ runMainCore :: [(String, String)] -- ^All modules as (Module_Name, Module_Conten
 runMainCore modulesStrings s e = case compileModules modulesStrings s of
   -- Still an exception, since callers depend on that; the CLI takes the
   -- `compileModules` route instead so a user never sees this framing.
-  Left err         -> error $ "runMainCore failed: " <> err
-  Right (_, sized) -> e sized
+  Left err  -> error $ "runMainCore failed: " <> err
+  Right out -> e (compileExpr out)
 
 runMain_ :: [(String, String)] -- ^All modules as (Module_Name, Module_Content)
          -> String -- ^Module's name with `main` function
@@ -235,9 +249,14 @@ evalLoopCore :: Monoid m
              -> String
              -> [String]
              -> IO (m, String)
-evalLoopCore evaluator expr accumFn initAcc manualInput =
-  let wrappedEval = funWrapWith evaluator expr appB
-      mainLoop measured acc strInput s = do
+evalLoopCore evaluator expr = evalSessionCore (funWrapWith evaluator expr appB)
+
+-- | The session protocol is independent of preparation and execution strategy.
+evalSessionCore :: Monoid m
+                => (Maybe (String, BasicExpr) -> (m, (String, Either RunTimeError BasicExpr)))
+                -> (String -> String -> IO String) -> String -> [String] -> IO (m, String)
+evalSessionCore wrappedEval accumFn initAcc manualInput =
+  let mainLoop measured acc strInput s = do
         let (m, (out, nextState)) = wrappedEval s
             measured' = measured <> m
         newAcc <- accumFn acc out
@@ -250,6 +269,20 @@ evalLoopCore evaluator expr accumFn initAcc manualInput =
               next : remaining -> pure (next, remaining)
             mainLoop measured' newAcc rest $ pure (inp, ns)
   in mainLoop mempty initAcc manualInput Nothing
+
+-- | Reuse a prepared IC entry over the complete session. Conversion and error
+-- reporting share the reference protocol; peaks combine by maximum, counts by
+-- addition. Plain execution does not invoke memory analysis.
+evalLoopIC :: ICProgram -> [String] -> (String -> String -> IO String)
+           -> IO (ICSpaceStats, String)
+evalLoopIC prog inputs accum = evalSessionCore wrapped accum "" inputs
+  where
+    wrapped = funWrapWith evaluator ZeroB (\_ input -> input)
+    evaluator :: CompiledExpr -> (ICSpaceStats, Either RunTimeError CompiledExpr)
+    evaluator input =
+      let basic = runIdentity $ cata (convertBasic (\_ -> error "IC session input is not data")) input
+          (result, measured) = runICProgram defaultFuel prog basic
+      in (measured, icRuntimeResult result)
 
 -- |The evaluator the unmetered wrappers share: run and measure nothing.
 plainEval :: CompiledExpr -> ((), Either RunTimeError CompiledExpr)

@@ -9,7 +9,7 @@ module ConformanceTests where
 import SizingTests (loadWith)
 import Test.Hspec
 
-import Telomare.Driver (compileModules, runMainWithInput)
+import Telomare.Driver (compileExpr, compileModules, runMainWithInput)
 import Telomare.Eval.Meter (Meter (..), evalMeter)
 import Telomare.Fast (compileFast, runFastWithInput)
 import Telomare.IR.Base
@@ -41,8 +41,8 @@ agreeOn (path, name, input) = describe name $ do
     modules <- loadWith path name
     case compileModules modules name of
       Left err -> expectationFailure $ "failed to compile:\n" <> err
-      Right (_, sized) -> do
-        let applied = appB sized ZeroB
+      Right out -> do
+        let applied = appB (compileExpr out) ZeroB
             (measured, metered) = evalMeter applied
         fmap show metered `shouldBe` fmap show (eval applied)
         meterSteps measured `shouldSatisfy` (> 0)

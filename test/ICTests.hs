@@ -1,15 +1,22 @@
 {-# LANGUAGE PatternSynonyms #-}
 module Main where
 
-import Data.Bifunctor (bimap, first, second)
-import Data.List (isInfixOf)
+import Control.Monad (forM_, replicateM)
+import Control.Monad.Except (runExceptT)
+import qualified Control.Monad.State.Strict as State
+import Data.Bifunctor (first)
+import qualified Data.IntMap.Strict as IntMap
+import Data.List (isInfixOf, isPrefixOf, tails)
 import qualified Data.Map as Map
 import qualified System.IO.Strict as Strict
 import Telomare.Driver (compileUnitTest)
-import Telomare.EAL (CodeGuidance (..), EALLiftedResult (..), ealCaptureLayouts,
-                     inferEALCompiled, inferEALWithLifting)
+import Telomare.EAL (CapShape (..), CodeGuidance (..), EALLiftedResult (..),
+                     Step (..), ealCaptureLayouts, envUsageL, inferEALCompiled,
+                     inferEALWithLifting)
 import Telomare.Expand (expandModule, renderExpansionError)
 import Telomare.IC
+import Telomare.IC.Draw (DrawSummary (..), drawNet, drawProgram, netStats)
+import Telomare.IC.Space
 import Telomare.IR.Base (AbortableF (..), BasicExpr, pattern AbortB,
                          pattern AbortEE, pattern EnvB, pattern GateB,
                          pattern GateSwitchEE, pattern LeftB, pattern PairB,
@@ -87,6 +94,10 @@ icDiff name t extra = testCase name $ do
   icEval t @?= eval t
   extra t
 
+-- | Occurrences of a marker in the rendered figure, overlapping ones included.
+count :: String -> String -> Int
+count needle = length . filter (needle `isPrefixOf`) . tails
+
 main :: IO ()
 main = do
   preludeFile <- Strict.readFile "Prelude.tel"
@@ -113,10 +124,139 @@ main = do
     corpus :: String -> TestTree
     corpus src = testCase src $ case compiled src of
       Left e  -> assertFailure $ "compilation failed: " <> e
-      Right t -> icEval t @?= eval t
+      Right t -> do
+        icEval t @?= eval t
+        prog <- either (\e -> assertFailure (show e) >> error "unreachable") pure
+          (prepareIC mempty t)
+        let outcome = analyzeIC defaultAnalysisBudget prog
+            (_, measured) = runICProgram defaultFuel prog ZeroB
+        case outcome of
+          Unknown reason -> assertFailure ("closed corpus analysis: " <> reason)
+          Established _ -> assertBool "whole-run resource bound" (certificateCovers ZeroB measured outcome)
   defaultMain $ testGroup "IC runtime"
-    [ testGroup "template namespace"
-        [ testCase "deferHash agrees with the DeferMap key" $ do
+    [ testGroup "net drawing"
+        [ testCase "every agent and every wire is drawn exactly once" $ do
+            let term = se (p (d 80 (p (LeftB EnvB) (RightB EnvB))) (p z z))
+            prog <- either (\err -> assertFailure (show err) >> error "unreachable")
+              pure (prepareIC mempty term)
+            let nodes = icNodes (programInitial prog)
+                (agents, wires) = netStats nodes
+                svg = drawNet nodes
+            assertBool "figure is an svg document" $
+              "<svg" `isPrefixOf` svg && "</svg>" `isInfixOf` svg
+            count "<g class=\"agent\">" svg @?= agents
+            count "<line class=\"wire" svg + count "<circle class=\"wire\"" svg
+              @?= wires
+            forM_ (IntMap.keys nodes) $ \n ->
+              assertBool ("agent #" <> show n <> " is labeled")
+                (("#" <> show n <> "<") `isInfixOf` svg)
+        , testCase "programs that differ only inside a template draw differently" $ do
+            let withBody b = either (\err -> assertFailure (show err) >> error "unreachable")
+                  pure (prepareIC mempty (se (p (d 80 b) (p z z))))
+            split <- withBody (p (LeftB EnvB) (RightB EnvB))
+            dup <- withBody (p EnvB EnvB)
+            let entry = drawNet . icNodes . programInitial
+            entry split @?= entry dup
+            assertBool "template panels tell them apart"
+              (fst (drawProgram "t" 400 split) /= fst (drawProgram "t" 400 dup))
+        , testCase "every drawn template is drawn once, within the budget" $ do
+            let body = se (p (d 80 (p (d 81 (LeftB EnvB)) (d 82 (p EnvB z)))) (p z z))
+            prog <- either (\err -> assertFailure (show err) >> error "unreachable")
+              pure (prepareIC mempty body)
+            let st = programInitial prog
+                tplAgents = sum [ IntMap.size (tplNodes t) | t <- IntMap.elems (icTemplates st) ]
+                (svg, summary) = drawProgram "t" 400 prog
+                (entryAgents, entryWires) = netStats (icNodes st)
+                drawnWires = entryWires + sum
+                  [ snd (netStats (tplNodes t))
+                  | (tid, t) <- IntMap.toList (icTemplates st), tid > 2 ]
+            drawnTemplates summary @?= reachableTemplates summary
+            count "<g class=\"panel\"" svg @?= 1 + drawnTemplates summary
+            count "<g class=\"agent\">" svg @?= entryAgents + drawnAgents summary
+            count "<line class=\"wire" svg + count "<circle class=\"wire\"" svg
+              @?= drawnWires
+            assertBool "only reachable templates are counted"
+              (totalAgents summary <= tplAgents)
+            let (none, noneSummary) = drawProgram "t" 0 prog
+            drawnTemplates noneSummary @?= 0
+            count "<g class=\"panel\"" none @?= 1
+            count "<g class=\"collapsed\"" none @?= min 12 (reachableTemplates noneSummary)
+        , testCase "selector templates are left out of program drawings" $ do
+            prog <- either (\err -> assertFailure (show err) >> error "unreachable")
+              pure (prepareIC mempty (GateSwitchEE ZeroB (PairB ZeroB ZeroB) EnvB))
+            let (svg, summary) = drawProgram "t" 400 prog
+            reachableTemplates summary @?= 0
+            assertBool "no selector panel" (not ("template #" `isInfixOf` svg))
+        ]
+    , testGroup "logical storage accounting"
+        [ testCase "half wires, replacement, deletion and stale entries" $ do
+            let action = do
+                  a <- newNode ICEra
+                  b <- newNode ICZero
+                  setHalf (Port a 0) (Port b 0)
+                  half <- State.gets icResident
+                  connect (Port a 0) (Port b 0)
+                  connect (Port a 0) (Port b 0)
+                  deleteNode a
+                  deleteNode a
+                  before <- State.get
+                  reduce
+                  after <- State.get
+                  pure (half, before, after)
+                (result, _) = State.runState (runExceptT action) (emptyState mempty 10)
+            case result of
+              Left err -> assertFailure (show err)
+              Right (half, before, after) -> do
+                half @?= Resources 2 1 0
+                icPeak before @?= Resources 2 2 2
+                icResident before @?= Resources 1 1 2
+                residentResources before @?= icResident before
+                icResident after @?= Resources 1 1 0
+                residentResources after @?= icResident after
+        , testCase "template scratch is excluded and transient allocations count" $ do
+            let action = do
+                  _ <- newNode ICRoot
+                  _ <- isolatedNet (replicateM 20 (newNode ICZero))
+                  a <- newNode ICZero
+                  b <- newNode ICZero
+                  deleteNode a
+                  deleteNode b
+                (result, st) = State.runState (runExceptT action) (emptyState mempty 10)
+            result @?= Right ()
+            icPeak st @?= Resources 3 0 0
+            icResident st @?= Resources 1 0 0
+        , testCase "initialization and failed runs retain their peaks" $ do
+            let (result, stats) = icEvalSpaceWith mempty 0 (se (p (d 90 EnvB) z))
+            result @?= Left (ICFuelExhausted 0)
+            resourceAgents (spacePeak stats) @?= 5
+            resourcePorts (spacePeak stats) @?= 8
+            resourceWork (spacePeak stats) @?= 1
+        , testCase "runs and analyses exclude the preparation peak" $ do
+            let body = se (p (d 2 (p EnvB EnvB)) EnvB)
+            prog <- either (\e -> assertFailure (show e) >> error "unreachable") pure
+              (prepareIC mempty body)
+            let poisoned = prog { programInitial =
+                  (programInitial prog) { icPeak = pure 999999 } }
+                (result, measured) = runICProgram defaultFuel poisoned ZeroB
+            result @?= fst (runICProgram defaultFuel prog ZeroB)
+            spacePeak measured @?= spacePeak (snd (runICProgram defaultFuel prog ZeroB))
+            assertBool "peak reset at run start"
+              (resourceAgents (spacePeak measured) < 999999)
+            analyzeIC defaultAnalysisBudget poisoned
+              @?= analyzeIC defaultAnalysisBudget prog
+        ]
+    , testGroup "template namespace"
+        [ testCase "prepared entry and templates are reusable across inputs" $ do
+            let body = se (p (d 2 (p EnvB EnvB)) EnvB)
+            prog <- either (\e -> assertFailure (show e) >> error "unreachable") pure
+              (prepareIC mempty body)
+            forM_ [ZeroB, PairB ZeroB ZeroB, PairB (PairB ZeroB ZeroB) ZeroB] $ \input -> do
+              let (result, measured) = runICProgram defaultFuel prog input
+                  expected = eval (se (p (d 3 body) (basicCompiled input)))
+              icRuntimeResult result @?= expected
+              assertBool "prepared templates retained" (resourceAgents (staticStorage prog) > 0)
+              assertBool "execution measured" (resourceAgents (spacePeak measured) > 0)
+        , testCase "deferHash agrees with the DeferMap key" $ do
             let dv = d 2 (p (LeftB EnvB) z)
                 (DeferMap dm, _) = deferLift (compiled2Term3 dv)
             case (deferHash dv, Map.keys dm) of
@@ -133,6 +273,18 @@ main = do
             r @?= Right (p z z)
             Map.lookup "template-compiled" stats @?= Just 3
             Map.lookup "template-reused" stats @?= Just 2
+        , testCase "nested hashes retain the deferLift encoding" $ do
+            let bodies = [z, EnvB, p EnvB z, AbortB,
+                          AbortEE (AbortedF msgPair),
+                          d 81 (LeftB EnvB),
+                          p (d 82 (d 83 EnvB)) (d 84 (p EnvB EnvB))]
+            forM_ bodies $ \body -> do
+              let dv = d 80 body
+                  (DeferMap dm, _) = deferLift (compiled2Term3 dv)
+                  keys = [h | (h, (fi, _)) <- Map.toList dm, fi == toEnum 80]
+              case keys of
+                [h] -> deferHash dv @?= Right h
+                _   -> assertFailure "outer body's hash missing"
         , testCase "deduped defers read back with their own index" $ do
             -- the result contains both defer values; sharing a template
             -- must not collapse their indexes (defer equality is by index)
@@ -202,9 +354,42 @@ main = do
               [Right cg] -> cgUsage cg @?= envUsage body
               other -> assertFailure $
                 "expected one certified body, got " <> show other
+        , testCase "usage adapters agree across projection and frame boundaries" $ do
+            let leaves = [z, EnvB, LeftB EnvB, RightB (LeftB EnvB),
+                          d 30 (p EnvB EnvB)]
+                bodies = leaves <> [p a b | a <- leaves, b <- leaves]
+                  <> [LeftB (p a b) | a <- leaves, b <- leaves]
+                  <> [se (p (d 31 EnvB) a) | a <- leaves]
+            forM_ bodies $ \body -> do
+              envUsage body @?= (fmap fst . envUsageL . snd . deferLift $
+                compiled2Term3 body)
+              -- Compilation must consume exactly those occurrence wires.
+              icEval (se (p (d 32 body) (p z (p z z))))
+                @?= eval (se (p (d 32 body) (p z (p z z))))
+            envPathOf (LeftB (RightB EnvB)) @?= Just [SR, SL]
+            envPathOf (LeftB (p EnvB z)) @?= Nothing
         ]
     , testGroup "closure dup plans"
-        [ testCase "guided duplication copies the closure skeleton" $ do
+        [ testCase "inaccurate capture layouts preserve results" $ do
+            let code = d 5 (LeftB EnvB)
+                captures = [p z z, p (d 7 EnvB) z,
+                            p (p (d 8 (p EnvB z)) z) (p z z)]
+                shapes = [CapData, CapCode, CapPair CapCode CapData,
+                          CapPair (CapPair CapData CapCode) CapCode, CapOther]
+            h <- either assertFailure pure (deferHash code)
+            forM_ captures $ \capture -> do
+              let clo = p code capture
+                  term = se (p (d 1 (p EnvB EnvB)) clo)
+                  expected = Right (p clo clo)
+              icEval term @?= expected
+              eval term @?= expected
+              forM_ shapes $ \shape -> do
+                let (r, stats) = icEvalDetailedWith (Map.singleton h shape)
+                      defaultFuel term
+                r @?= expected
+                assertBool "supplied layout was exercised"
+                  (Map.findWithDefault 0 "dup-closure" stats > 0)
+        , testCase "guided duplication copies the closure skeleton" $ do
             -- a data-captured closure applied twice: its dup meets the
             -- closure pair, and with a layout the whole skeleton (ref,
             -- capture pair, zeros) copies in one interaction
@@ -244,6 +429,24 @@ main = do
                   r @?= r0
                   assertBool "plan fired on real closures"
                     (Map.findWithDefault 0 "dup-closure" stats > 0)
+        -- the CLI's route: prepare once under the EAL layouts, run inputs
+        , testCase "guided preparation agrees with generic across inputs" $
+            case parse "main = take $5 [1,2,3]" of
+              Left e -> assertFailure $ "parse failed: " <> e
+              Right t3 -> case compileUnitTest t3 of
+                Left e -> assertFailure $ "compile failed: " <> show e
+                Right c -> do
+                  let layouts = ealCaptureLayouts (inferEALCompiled c)
+                      body = appB c EnvB
+                      prep = either (\e -> assertFailure (show e)
+                                       >> error "unreachable") pure
+                  assertBool "has layouts" (not (Map.null layouts))
+                  guided <- prep (prepareIC layouts body)
+                  generic <- prep (prepareIC mempty body)
+                  forM_ [ZeroB, PairB ZeroB ZeroB,
+                         PairB (PairB ZeroB ZeroB) ZeroB] $ \input ->
+                    fst (runICProgram defaultFuel guided input)
+                      @?= fst (runICProgram defaultFuel generic input)
         ]
     , testGroup "application"
         [ expectTest "identity defer" (se (p (d 100 EnvB) z)) (Right z)
@@ -387,3 +590,8 @@ main = do
               r -> assertFailure $ "expected divergence, got " <> show r
         ]
     ]
+
+basicCompiled :: BasicExpr -> CompiledExpr
+basicCompiled ZeroB       = ZeroB
+basicCompiled (PairB a b) = PairB (basicCompiled a) (basicCompiled b)
+basicCompiled _           = error "non-data BasicExpr"

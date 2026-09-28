@@ -24,6 +24,7 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Debug.Trace
 import Telomare.IR.Base
+import Telomare.IR.Recursion (approximantStep)
 import Telomare.PrettyPrint
 import Telomare.Size.IR
 
@@ -409,9 +410,7 @@ sizedRecursionChain tok n = iterate link base !! n where
   -- both the lazy reference evaluator and the stuck/abort-tolerant IC
   -- runtime discard the unselected branch's value harmlessly. This is the
   -- planned post-sizing strictification applied by the compiler itself.
-  approxBody = SetEnvB (PairB (SetEnvB (PairB (StuckEE GateSF) (appB argThreeB argOneB)))
-    (PairB (appB argFiveB argOneB)
-           (appB (appB argFourB argTwoB) argOneB)))
+  approxBody = approximantStep appB (\s t e -> GateSwitchEE e t s) varB
 
 unsizedTestIndexed :: (Base g ~ f, BasicBase f, AbortBase f, IndexedInputBase f, Recursive g, Corecursive g)
   => Set Integer -> (UnsizedRecursionToken -> g -> g) -> UnsizedRecursionToken -> g -> g

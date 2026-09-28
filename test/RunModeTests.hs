@@ -15,11 +15,13 @@ import Test.Hspec
 import Telomare.Artifact (Artifact (..), decodeArtifact, encodeArtifact,
                           nodeCount, sourcesHash)
 import Telomare.Certificate (renderStaticReport)
-import Telomare.Driver (compileModules)
+import Telomare.Driver (CompileOutput (..), compileModules)
+import qualified Telomare.Fast as Fast
 import Telomare.Fast (FastError (..), FastMeter (..), compileFast,
                       runFastWithInput)
 import Telomare.IR.Base
 import Telomare.IR.Core
+import Telomare.IR.Loc (LocTag (..))
 import Telomare.Levels (LevelsInfo (..), levelsInfo)
 import Telomare.Machine (appB)
 import Telomare.Size (SizingReport (..))
@@ -32,13 +34,15 @@ runModeSpec = do
       modules <- loadWith "simpleplus.tel" "simpleplus"
       case compileModules modules "simpleplus" of
         Left err -> expectationFailure $ "failed to compile simpleplus.tel:\n" <> err
-        Right (report, sized) -> do
+        Right (CompileOutput report sized _) -> do
           let artifact = Artifact
                 { artifactEntry = "simpleplus"
                 , artifactSourceHash = sourcesHash modules
                 , artifactReport = report
                 , artifactCertificate = "the certificate text"
                 , artifactExpr = sized
+                , artifactICCertificate = Nothing
+                , artifactCaptureLayouts = mempty
                 }
           case decodeArtifact (encodeArtifact artifact) of
             Left err -> expectationFailure $ "failed to decode:\n" <> err
@@ -59,8 +63,9 @@ runModeSpec = do
       modules <- loadWith "tc_ultra_minimal.tel" "tc_ultra_minimal"
       case compileModules modules "tc_ultra_minimal" of
         Left err -> expectationFailure $ "failed to compile:\n" <> err
-        Right (report, sized) -> do
-          let artifact = Artifact "tc_ultra_minimal" (sourcesHash modules) report "" sized
+        Right (CompileOutput report sized _) -> do
+          let artifact =
+                Artifact "tc_ultra_minimal" (sourcesHash modules) report "" sized Nothing mempty
           case decodeArtifact (encodeArtifact artifact) of
             Left err -> expectationFailure $ "failed to decode:\n" <> err
             Right back ->
@@ -82,6 +87,29 @@ runModeSpec = do
   -- Transcript agreement between the fast and sized runtimes is checked
   -- corpus-wide in "ConformanceTests".
   describe "running without sizing" $ do
+    it "the approximant base case does not demand its recursive branch" $ do
+      let site = Fast.RecursionSite (toEnum 0) UnknownLoc (Just "base-case")
+          closure code = Fast.VPair (Fast.VDefer code) Fast.VZero
+          test = closure Fast.FZero
+          -- This branch cannot be applied; demanding it would fail.
+          recursive = Fast.VZero
+          base = closure (Fast.FLeft Fast.FEnv)
+          trb = Fast.VPair test (Fast.VPair recursive (Fast.VPair base Fast.VZero))
+          input = Fast.VPair Fast.VZero Fast.VZero
+          -- Apply the ladder using SetEnv, so forceValue and the actual
+          -- five-slot step frame are exercised through the evaluator.
+          run = do
+            step <- Fast.forceValue (Fast.VRec site trb)
+            Fast.evalFast (Fast.FSetEnv (Fast.FPair
+              (Fast.FLeft (Fast.FLeft Fast.FEnv))
+              (Fast.FPair (Fast.FRight Fast.FEnv)
+                (Fast.FRight (Fast.FLeft Fast.FEnv))))) (Fast.VPair step input)
+          (meter, result) = Fast.runEval (Just 100) run
+      case result of
+        Right (Fast.VPair Fast.VZero Fast.VZero) -> pure ()
+        other -> expectationFailure ("base-case evaluation failed: " <> show other)
+      Map.lookup site (Fast.fmUnrolls meter) `shouldBe` Just 1
+
     it "counts the unrolls of each recursion site separately" $ do
       modules <- loadWith "simpleplus.tel" "simpleplus"
       case compileFast modules "simpleplus" of
@@ -135,8 +163,8 @@ runModeSpec = do
       modules <- loadWith "simpleplus.tel" "simpleplus"
       case compileModules modules "simpleplus" of
         Left err -> expectationFailure $ "failed to compile simpleplus.tel:\n" <> err
-        Right (sizing, _) -> do
-          let report = renderStaticReport (Just "somehash") (Just sizing)
+        Right out -> do
+          let report = renderStaticReport (Just "somehash") (Just (compileReport out))
                 (levelsInfo modules "simpleplus")
           report `shouldSatisfy` isInfixOf "somehash"
           report `shouldSatisfy` isInfixOf "recursion sites (iterations, over every input)"
@@ -152,7 +180,7 @@ runModeSpec = do
         Left err -> expectationFailure $ "failed to compile simpleplus.tel:\n" <> err
         -- Sizing bakes iteration counts in as towers, so the compiled program
         -- is far bigger than its source.
-        Right (_, sized) -> nodeCount sized `shouldSatisfy` (> 1000)
+        Right out -> nodeCount (compileExpr out) `shouldSatisfy` (> 1000)
 
 isLeft :: Either a b -> Bool
 isLeft = either (const True) (const False)

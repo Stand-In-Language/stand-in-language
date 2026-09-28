@@ -1,4 +1,5 @@
 {-# LANGUAGE LambdaCase          #-}
+{-# LANGUAGE PatternSynonyms     #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Main where
@@ -8,20 +9,28 @@ import Data.Maybe (fromMaybe)
 import qualified Options.Applicative as O
 import System.Directory (doesFileExist)
 import System.Exit (exitFailure)
-import System.FilePath (replaceExtension, takeBaseName)
+import System.FilePath (replaceExtension, takeBaseName, takeFileName)
 import System.IO (hFlush, hPutStr, hPutStrLn, stderr, stdout)
 
 import Telomare.Artifact (Artifact (..), isArtifactPath, nodeCount,
                           readArtifact, sourcesHash, telcExtension,
                           writeArtifact)
 import Telomare.Certificate (renderStaticReport)
-import Telomare.Driver (compileModules, evalLoop, evalLoopMetered)
+import Telomare.Driver (CompileOutput (..), compileModules, evalLoop,
+                        evalLoopIC, evalLoopMetered, printAccum)
+import Telomare.EAL (EALLiftedResult, ealCaptureLayouts, inferEALCompiled)
 import Telomare.Eval.Meter (renderMeter)
 import Telomare.Fast (compileFast, defaultFastFuel, renderFastMeter,
                       runFastLoop)
+import Telomare.IC
+import Telomare.IC.Draw (DrawSummary (..), commas, drawProgram)
+import Telomare.IC.Static (icCertify, renderICCertificate)
+import Telomare.IR.Base (pattern EnvB)
+import Telomare.IR.Core (CompiledExpr)
 import Telomare.IR.Loc (locatedNameText)
 import Telomare.IR.Surface (ImportDecl (parsedImportModule), ModuleItem (..))
 import Telomare.Levels (levelsInfo)
+import Telomare.Machine (appB)
 import Telomare.Parse (runParseModule)
 import Telomare.Size (SizingReport)
 
@@ -34,6 +43,9 @@ data Action
   -- ^Report what is known about it statically, then exit.
   | Meter
   -- ^Run it, then report what the run cost.
+  | DrawNet (Maybe FilePath) Int
+  -- ^Write the prepared IC program as an SVG figure, then exit: its entry net
+  -- and, within a budget of agents, the templates the entry can instantiate.
   deriving (Eq, Show)
 
 -- |How to get to a runnable program.
@@ -41,6 +53,9 @@ data Mode
   = Sized
   -- ^The usual route: infer every recursion's iteration count, which is what
   -- makes the program total.
+  | IC
+  -- ^Run the sized program on the interaction-net runtime, prepared under
+  -- the EAL capture layouts.
   | Fast (Maybe Int)
   -- ^Skip sizing and run the recursion on demand, under a fuel cap. Faster to
   -- start, and proves nothing.
@@ -59,6 +74,7 @@ telomareOpts = TelomareOpts
   <*> mode
   where
     action = compileTo
+         O.<|> drawTo
          O.<|> O.flag' Certificate
                ( O.long "certificate"
                  <> O.help "Report each recursion site's inferred iteration count and \
@@ -74,10 +90,22 @@ telomareOpts = TelomareOpts
                 <*> O.optional (O.strOption
                       ( O.long "output" <> O.short 'o' <> O.metavar "FILE"
                         <> O.help "Where to write the compiled program" ))
+    drawTo = O.flag' DrawNet
+               ( O.long "draw-net"
+                 <> O.help "Write the prepared IC net and the templates it can \
+                           \instantiate as an SVG figure, then exit (combine with --ic)" )
+             <*> O.optional (O.strOption
+                   ( O.long "output" <> O.short 'o' <> O.metavar "FILE"
+                     <> O.help "Where to write the SVG" ))
+             <*> O.option O.auto
+                   ( O.long "draw-limit" <> O.metavar "N" <> O.value 400
+                     <> O.help "Most template agents --draw-net draws in full \
+                               \(default 400); larger templates are listed" )
     mode = O.flag' () ( O.long "fast"
                         <> O.help "Run without sizing: starts immediately, but nothing \
                                   \proves the program terminates" )
              *> (Fast <$> fuel)
+       O.<|> O.flag' IC (O.long "ic" <> O.help "Run the sized program on the IC net runtime")
        O.<|> pure Sized
     fuel = fmap toCap . O.optional $ O.option O.auto
       ( O.long "fuel" <> O.metavar "N"
@@ -122,7 +150,8 @@ main = do
     then runArtifact file action (telomareMode topts)
     else case telomareMode topts of
       Fast fuel -> runFast file action fuel
-      Sized     -> runSized file action
+      Sized     -> runSized file action False
+      IC        -> runSized file action True
 
 die :: String -> IO a
 die message = hPutStrLn stderr message >> exitFailure
@@ -137,15 +166,33 @@ reportMeter rendered = do
 -- |A program already compiled: nothing to parse, typecheck, resolve or size.
 runArtifact :: FilePath -> Action -> Mode -> IO ()
 runArtifact path action mode = do
-  when (mode /= Sized) $
+  when (mode /= Sized && mode /= IC) $
     hPutStrLn stderr "note: --fast does not apply to an already-compiled program"
   readArtifact path >>= \case
     Left err -> die $ path <> ": " <> err
     Right artifact -> do
       warnIfStale artifact
-      case action of
+      -- An `--ic` run prepares under the artifact's stored capture layouts,
+      -- so a stored bound covers exactly the runs this artifact performs.
+      -- Only a certificate the compile did not store needs an EAL result,
+      -- re-inferred from the sized expression; lazy, so nothing else pays.
+      let prepared = either (die . show) pure $
+            prepareIC (artifactCaptureLayouts artifact)
+                      (artifactExpr artifact `appB` EnvB)
+          artifactEAL = inferEALCompiled (artifactExpr artifact)
+      if mode == IC then case action of
+        Compile _ -> die $ path <> " is already compiled"
+        Certificate -> case artifactICCertificate artifact of
+          Just cert -> putStr (renderICCertificate cert)
+          Nothing   -> putStr . snd . icCertify artifactEAL =<< prepared
+        DrawNet out limit ->
+          writeNetSvg path limit (fromMaybe (replaceExtension path ".net.svg") out)
+            =<< prepared
+        _ -> runIC action =<< prepared
+      else case action of
         Compile _   -> die $ path <> " is already compiled"
         Certificate -> putStr $ artifactCertificate artifact
+        DrawNet _ _ -> die "--draw-net draws the IC net; combine it with --ic"
         Run         -> evalLoop (artifactExpr artifact)
         Meter       -> do
           measured <- evalLoopMetered [] (artifactExpr artifact)
@@ -166,19 +213,33 @@ warnIfStale artifact = do
 
 -- |The usual route. Sizing costs minutes on Prelude-heavy programs, so every
 -- action here works from one compile.
-runSized :: FilePath -> Action -> IO ()
-runSized file action = do
+runSized :: FilePath -> Action -> Bool -> IO ()
+runSized file action useIC = do
   let entryModule = takeBaseName file
   allModules <- getModulesFor entryModule
   case compileModules allModules entryModule of
     Left err -> die err
-    Right (report, sized) -> case action of
+    Right (CompileOutput report sized eal) -> case action of
+      Run | useIC -> runIC action =<< prepareEntry eal sized
       Run -> evalLoop sized
+      Certificate | useIC -> do
+        prog <- prepareEntry eal sized
+        putStr . snd $ icCertify eal prog
       Certificate -> putStr $ staticReport Nothing (Just report) allModules entryModule
+      Meter | useIC -> runIC action =<< prepareEntry eal sized
       Meter -> do
         measured <- evalLoopMetered [] sized
         reportMeter $ renderMeter measured <> "\n"
+      DrawNet out limit | useIC ->
+        writeNetSvg file limit (fromMaybe (replaceExtension file ".net.svg") out)
+          =<< prepareEntry eal sized
+      DrawNet _ _ -> die "--draw-net draws the IC net; combine it with --ic"
       Compile output -> do
+        icCertificate <- if not useIC then pure Nothing else do
+          prog <- prepareEntry eal sized
+          let (cert, rendered) = icCertify eal prog
+          hPutStr stderr rendered
+          pure (Just cert)
         let path = fromMaybe (replaceExtension file telcExtension) output
             certificate = staticReport Nothing (Just report) allModules entryModule
             artifact = Artifact
@@ -187,10 +248,44 @@ runSized file action = do
               , artifactReport = report
               , artifactCertificate = certificate
               , artifactExpr = sized
+              , artifactICCertificate = icCertificate
+              , artifactCaptureLayouts =
+                  if useIC then ealCaptureLayouts eal else mempty
               }
         writeArtifact path artifact
         hPutStrLn stderr $ "wrote " <> path <> " (" <> show (nodeCount sized)
           <> " nodes, sources " <> take 12 (sourcesHash allModules) <> ")"
+
+-- |Prepared under the EAL capture layouts of the sized term, so `--ic` runs
+-- guided, as the runtime was designed. When the EAL pass has no layout for a
+-- body (or gave up on the program), the map is simply missing entries and
+-- preparation degrades to the generic strategy for those bodies.
+prepareEntry :: EALLiftedResult -> CompiledExpr -> IO ICProgram
+prepareEntry eal =
+  either (die . show) pure . prepareIC (ealCaptureLayouts eal) . (`appB` EnvB)
+
+-- |The entry net is the same scaffolding for every program, so the figure
+-- also draws the templates it can instantiate, up to a budget of agents.
+writeNetSvg :: FilePath -> Int -> FilePath -> ICProgram -> IO ()
+writeNetSvg source limit path prog = do
+  let (svg, summary) = drawProgram (takeFileName source) limit prog
+      entryAgents = length (icNodes (programInitial prog))
+  writeFile path svg
+  hPutStrLn stderr $ "wrote " <> path <> " (entry " <> commas entryAgents
+    <> " agents; " <> show (drawnTemplates summary) <> " of "
+    <> show (reachableTemplates summary) <> " templates, "
+    <> commas (drawnAgents summary) <> " of " <> commas (totalAgents summary)
+    <> " agents; --draw-limit " <> show limit <> ")"
+
+runIC :: Action -> ICProgram -> IO ()
+runIC action prog = do
+  (measured, _) <- evalLoopIC prog [] printAccum
+  when (action == Meter) . reportMeter $ unlines
+    [ "IC interactions: " <> show (spaceInteractions measured)
+    , "IC logical storage peak: " <> show (spacePeak measured)
+    , "IC static templates: " <> show (staticStorage prog)
+    , "Excludes preparation workspace, readback, Haskell overhead, GC and RSS."
+    ]
 
 -- |Without sizing. The program runs on demand under a fuel cap; no iteration
 -- count exists, so the certificate reports structure only.
@@ -200,6 +295,7 @@ runFast file action fuel = do
   allModules <- getModulesFor entryModule
   case action of
     Compile _ -> die "--compile sizes the program, so it cannot be combined with --fast"
+    DrawNet _ _ -> die "--draw-net draws the IC net; combine it with --ic"
     Certificate -> putStr $ staticReport Nothing Nothing allModules entryModule
     _ -> case compileFast allModules entryModule of
       Left err -> die err

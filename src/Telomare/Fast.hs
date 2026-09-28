@@ -4,13 +4,11 @@
 --
 -- The compiler's usual route sizes every @{test, recursion, last}@ site — it
 -- unrolls the recursion abstractly over a symbolic input until the test stops,
--- and bakes the resulting count in as a church tower
--- @iterate SetEnvB EnvB !! (n+1)@ (`Telomare.Eval.convertPT`). That is what
--- makes a telomare program total, and it is also what makes compiling one
--- cost minutes.
+-- and installs a finite approximant chain ('Telomare.Machine.sizedRecursionChain').
+-- Abstract evaluation can be expensive.
 --
 -- This module runs the same `Term3` with that pass skipped. Where sizing would
--- install a tower, `term3ToFast` installs `FUnbounded`, and the recursion
+-- install a bounded chain, `term3ToFast` installs `FUnbounded`, and the recursion
 -- ladder becomes a `VRec` value that unrolls one layer per /demanded/ call.
 -- Sizing only ever proved that a bound suffices — at runtime the base case
 -- fires early, through the test's gate — so on every program the sizer accepts
@@ -26,7 +24,8 @@
 -- == Two things that look like details and are not
 --
 -- __Lazy gate selection.__ Only the selected branch of the syntactic
--- if-then-else shape @SetEnv (Pair (Gate else then) scrutinee)@ is evaluated.
+-- if-then-else shape @SetEnv (Pair (SetEnv (Pair Gate scrutinee)) (Pair else then))@
+-- is evaluated.
 -- The sized evaluator gets this from Haskell: it maps over both branches but
 -- discards the unselected thunk unforced. Here it has to be explicit, and it
 -- is load-bearing — an unbounded ladder's "recurse" branch is still present at
@@ -69,7 +68,7 @@ import Control.Monad ((<=<))
 import Control.Monad.Except (ExceptT, runExceptT, throwError)
 import Control.Monad.State.Strict (State, get, gets, modify', put, runState)
 import Data.Bifunctor (first)
-import Data.Functor.Foldable (cata, embed)
+import Data.Functor.Foldable (cata)
 import Data.List (sortOn)
 import Data.Map (Map)
 import qualified Data.Map as Map
@@ -82,8 +81,8 @@ import Telomare.Expand (expandModule, renderExpansionError)
 import Telomare.IR.Base
 import Telomare.IR.Core
 import Telomare.IR.Loc
+import Telomare.IR.Recursion (approximantStep)
 import Telomare.IR.Surface
-import Telomare.IR.Types
 import Telomare.Parse (runParseModule)
 import Telomare.Resolve (main2Term3, main2Term3let)
 import Telomare.Util (padRight, plural)
@@ -98,7 +97,7 @@ data RecursionSite = RecursionSite
   }
   deriving (Eq, Ord, Show)
 
--- |The compiled core, with the node sizing would have replaced by a tower.
+-- |The compiled core, with the node sizing would replace by a bounded chain.
 data FastExpr
   = FZero
   | FPair FastExpr FastExpr
@@ -295,15 +294,9 @@ app c i = FSetEnv (FSetEnv (FPair twiddle (FPair i c)))
 -- uses the gate-switch shape `evalFast` fast-paths lazily, so the recur
 -- ladder in the then branch only unrolls when the test passes.
 approxBody :: FastExpr
-approxBody = iteFast (app arg3 arg1)
-                     (app (app arg4 arg2) arg1)
-                     (app arg5 arg1)
+approxBody = approximantStep app iteFast slot
   where
-    arg1 = FLeft FEnv
-    arg2 = FLeft (FRight FEnv)
-    arg3 = FLeft (FRight (FRight FEnv))
-    arg4 = FLeft (FRight (FRight (FRight FEnv)))
-    arg5 = FLeft (FRight (FRight (FRight (FRight FEnv))))
+    slot n = FLeft (iterate FRight FEnv !! n)
     iteFast s t e = FSetEnv (FPair (FSetEnv (FPair FGate s)) (FPair e t))
 
 -- |An abort's payload keeps its pair structure and nothing else.

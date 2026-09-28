@@ -17,14 +17,14 @@
 -- 'Telomare.Driver.compileMainReporting' runs BOTH on every compile:
 --
 -- * 'process' (via 'validateVariables' + 'debruijinize'): scope-checks
---   and inlines let bindings. Its 'Term3' is what the type checker sees -
+--   and inlines let bindings. Its 'Term3' is what EAL certification sees -
 --   and is then discarded.
 -- * 'processWlet' (via 'letsToApps' + 'debruijinizeApp'): converts let
 --   bindings to lambda applications and threads @TUnsizedRepeaterF@
 --   applications for recursive references. Its 'Term3' is what the sizing
 --   pass consumes and what actually runs.
 --
--- The typechecked term is therefore NOT the executed term. Do not unify
+-- The certified term and executed term come from different lowerings. Do not unify
 -- the two paths casually: sizing depends on the shape 'letsToApps'
 -- produces, and the regression constants in the sizing tests depend on
 -- it too.
@@ -646,6 +646,12 @@ instance Monoid DeferMap where
 makeDM :: Digest SHA256 -> FunctionIndex -> Term3Lifting -> DeferMap
 makeDM k fi e = DeferMap $ Map.singleton k (fi, e)
 
+-- | The existing content-address encoding, shared with IC preparation.
+-- Nested defers must already be references; annotations and function
+-- indexes do not participate in this namespace.
+hashLiftedBody :: Fix Term3LiftingF -> Digest SHA256
+hashLiftedBody = hash . BS.pack . encode . show
+
 -- | Like lambda lifting: replace every Defer body with a hash reference and
 -- collect the bodies in a DeferMap. Sound without free-variable abstraction
 -- because Defer bodies are closed (their only free variable is their own
@@ -658,11 +664,9 @@ deferLift = cata hF where
   hF :: C.CofreeF Term3F LocTag (DeferMap, Term3Lifting) -> (DeferMap, Term3Lifting)
   hF (anno C.:< x) = case x of
     StuckFW (DeferSF ind (dm, body)) ->
-      let hash' :: ByteString -> Digest SHA256
-          hash' = hash
-          forgetL :: Term3Lifting -> Fix Term3LiftingF
+      let forgetL :: Term3Lifting -> Fix Term3LiftingF
           forgetL = forget
-          h = hash' . BS.pack . encode . show $ forgetL body
+          h = hashLiftedBody (forgetL body)
       in (dm <> makeDM h ind body, anno :< Term3LDeferRef h)
     Term3B b -> (anno :<) . Term3LB <$> sequence b
     Term3S s -> (anno :<) . Term3LS <$> sequence s
