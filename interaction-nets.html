@@ -1,0 +1,686 @@
+<title>The Net That Counts Itself</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Spectral:wght@500;600;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+:root {
+  --ground: #F6F7F4;
+  --panel: #EEF0EA;
+  --ink: #20281F;
+  --muted: #5F6B60;
+  --wire: #1E6E58;
+  --hot: #C25A2E;
+  --hot-soft: #E8D3C6;
+  --rule: #CDD3C9;
+  --code-bg: #E9ECE4;
+  --display: 'Spectral', Georgia, serif;
+  --body: 'Source Serif 4', Georgia, serif;
+  --mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground: #131917; --panel: #1B2320; --ink: #E5EAE3; --muted: #96A399;
+    --wire: #4BAE8F; --hot: #E07A47; --hot-soft: #4A342A;
+    --rule: #2E3A33; --code-bg: #1D2622;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --ground: #131917; --panel: #1B2320; --ink: #E5EAE3; --muted: #96A399;
+  --wire: #4BAE8F; --hot: #E07A47; --hot-soft: #4A342A;
+  --rule: #2E3A33; --code-bg: #1D2622;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--ground); color: var(--ink);
+  font-family: var(--body); font-size: 17px; line-height: 1.65;
+  margin: 0; padding: 0 20px;
+}
+article { max-width: 43rem; margin: 0 auto; padding: 3.5rem 0 5rem; }
+.eyebrow {
+  font-family: var(--mono); font-size: .72rem; letter-spacing: .14em;
+  text-transform: uppercase; color: var(--hot); margin: 0 0 .8rem;
+}
+h1 {
+  font-family: var(--display); font-weight: 700; font-size: 2.35rem;
+  line-height: 1.12; margin: 0 0 .6rem; text-wrap: balance;
+}
+.dek { font-size: 1.06rem; color: var(--muted); font-style: italic; margin: 0 0 2.5rem; max-width: 36rem; }
+h2 {
+  font-family: var(--display); font-weight: 600; font-size: 1.42rem;
+  line-height: 1.25; margin: 3rem 0 .9rem; text-wrap: balance;
+}
+h2 .no {
+  font-family: var(--mono); font-weight: 400; font-size: .85rem;
+  color: var(--hot); margin-right: .7em; letter-spacing: .05em;
+}
+p { margin: 0 0 1.05rem; }
+strong { font-weight: 600; }
+code, .m {
+  font-family: var(--mono); font-size: .84em;
+  background: var(--code-bg); padding: .08em .32em; border-radius: 3px;
+}
+pre {
+  font-family: var(--mono); font-size: .78rem; line-height: 1.55;
+  background: var(--code-bg); border-radius: 6px; padding: .9rem 1.05rem;
+  overflow-x: auto; margin: 0;
+}
+pre code { background: none; padding: 0; font-size: 1em; }
+figure { margin: 1.8rem 0 2rem; }
+figure svg { display: block; max-width: 100%; height: auto; margin: 0 auto; }
+figcaption {
+  font-size: .82rem; color: var(--muted); line-height: 1.5;
+  border-top: 1px solid var(--rule); padding-top: .55rem; margin-top: .9rem;
+}
+figcaption b { color: var(--ink); font-family: var(--mono); font-size: .78rem; font-weight: 600; }
+.duo { display: flex; gap: 1.2rem; flex-wrap: wrap; align-items: stretch; }
+.duo > div { flex: 1 1 240px; background: var(--panel); border-radius: 6px; padding: .8rem; }
+.duo .tag {
+  font-family: var(--mono); font-size: .68rem; letter-spacing: .1em;
+  text-transform: uppercase; color: var(--muted); display: block; margin-bottom: .4rem;
+}
+table {
+  border-collapse: collapse; width: 100%; font-size: .86rem;
+  margin: 1.4rem 0 1.8rem;
+}
+th {
+  font-family: var(--mono); font-size: .68rem; letter-spacing: .1em;
+  text-transform: uppercase; color: var(--muted); font-weight: 600;
+  text-align: left; padding: .35rem .6rem .35rem 0; border-bottom: 1px solid var(--ink);
+}
+td { padding: .42rem .6rem .42rem 0; border-bottom: 1px solid var(--rule); vertical-align: top; }
+td:first-child { font-family: var(--mono); font-size: .8rem; white-space: nowrap; }
+.bound {
+  background: var(--panel); border-left: 3px solid var(--wire);
+  border-radius: 0 6px 6px 0; padding: .85rem 1.1rem; margin: 1.4rem 0;
+  font-family: var(--mono); font-size: .85rem; line-height: 1.9; overflow-x: auto;
+}
+.bound .who { color: var(--muted); font-size: .72rem; }
+.note { font-size: .88rem; color: var(--muted); }
+svg text { font-family: var(--mono); font-size: 11px; fill: var(--ink); }
+svg text.dim { fill: var(--muted); font-size: 10px; }
+svg text.hotl { fill: var(--hot); }
+svg .wire { stroke: var(--wire); stroke-width: 1.6; fill: none; }
+svg .hotwire { stroke: var(--hot); stroke-width: 2.4; fill: none; }
+svg .body { fill: var(--panel); stroke: var(--ink); stroke-width: 1.3; }
+svg .pp { fill: var(--hot); stroke: none; }
+svg .ap { fill: var(--ground); stroke: var(--ink); stroke-width: 1.2; }
+svg .ghost { stroke: var(--rule); stroke-width: 1.2; fill: none; }
+svg .arrow { stroke: var(--muted); stroke-width: 1.4; fill: none; }
+svg .arrowhead { fill: var(--muted); stroke: none; }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+
+<article>
+<p class="eyebrow">Telomare · PR #153 · space bounds</p>
+<h1>The Net That Counts Itself</h1>
+<p class="dek">Interaction nets, how Telomare runs on one, and how a graph
+whose every rewrite is local lets a compiler bound memory.</p>
+
+<h2><span class="no">1</span>Graphs that compute</h2>
+<p>An interaction net (Lafont, 1990) is a program that is literally a graph.
+Running it means rewriting the graph in place until nothing more can fire.
+(<strong>IC</strong>, as in <code>--ic</code>, stands for <em>interaction
+combinators</em>, a minimal family of interaction nets; section 3 covers
+them and how Telomare&rsquo;s runtime differs.) Three rules define the
+whole game:</p>
+<p>Every node — called an <strong>agent</strong> — has a fixed number of
+<strong>ports</strong>, and exactly one of them is the
+<strong>principal port</strong>. Every port is connected to exactly one
+other port by a wire; nothing dangles, nothing is shared. And a rewrite may
+happen <em>only</em> where two agents meet principal-to-principal — such a
+wire is an <strong>active pair</strong> (a redex). The rule for that pair
+of agent kinds deletes both agents and splices a small, fixed replacement
+graph into their neighbors&rsquo; wires.</p>
+
+<figure>
+<svg viewBox="0 0 560 150" role="img" aria-label="Two agents wired together; the principal-to-principal wire is highlighted as an active pair">
+  <line class="hotwire" x1="205" y1="75" x2="355" y2="75"/>
+  <text class="hotl" x="280" y="63" text-anchor="middle">active pair</text>
+  <circle class="body" cx="170" cy="75" r="34"/>
+  <circle class="body" cx="390" cy="75" r="34"/>
+  <text x="170" y="79" text-anchor="middle" font-weight="600">left</text>
+  <text x="390" y="79" text-anchor="middle" font-weight="600">pair</text>
+  <circle class="pp" cx="204" cy="75" r="5.5"/>
+  <circle class="pp" cx="356" cy="75" r="5.5"/>
+  <circle class="ap" cx="170" cy="41" r="5"/>
+  <line class="wire" x1="170" y1="36" x2="170" y2="12"/>
+  <text class="dim" x="182" y="18">result</text>
+  <circle class="ap" cx="366" cy="51" r="5"/>
+  <circle class="ap" cx="366" cy="99" r="5"/>
+  <line class="wire" x1="370" y1="48" x2="420" y2="24"/>
+  <line class="wire" x1="370" y1="102" x2="420" y2="126"/>
+  <text class="dim" x="428" y="24">left component</text>
+  <text class="dim" x="428" y="132">right component</text>
+  <text class="dim" x="60" y="120">● principal port</text>
+  <text class="dim" x="60" y="136">○ auxiliary port</text>
+</svg>
+<figcaption><b>Figure 1</b> — Anatomy of an agent. Each agent is a kind
+plus fixed ports; the filled port is principal. Only the highlighted
+principal-to-principal wire can fire.</figcaption>
+</figure>
+
+<p>Two consequences make the model worth the trouble. Rewrites are
+<strong>local and of known size</strong>: no environment lookup, no global
+search, so &ldquo;what does one step cost in memory?&rdquo; has an exact
+per-rule answer — this is what makes metering possible. And the model is
+<strong>confluent</strong>: the order in which you fire active pairs cannot
+change the result, only the route taken — this is what lets one of the two
+analyses ignore scheduling entirely.</p>
+
+<h2><span class="no">2</span>An agent, and a rule firing</h2>
+<p>Here is the rule that fires when a <code>left</code> projection meets the
+pair it projects. Both agents die; the pair&rsquo;s left component is wired
+straight to wherever the result was going; the right component, now unused,
+is handed to an eraser <code>ε</code> that will consume it. Two agents are
+deleted, one is created, three wires move — and the runtime&rsquo;s
+counters record exactly that.</p>
+
+<figure>
+<svg viewBox="0 0 620 190" role="img" aria-label="Before and after of the left-pair rewrite rule">
+  <text class="dim" x="20" y="20">before</text>
+  <line class="hotwire" x1="130" y1="95" x2="210" y2="95"/>
+  <circle class="body" cx="100" cy="95" r="29"/>
+  <text x="100" y="99" text-anchor="middle" font-weight="600">left</text>
+  <circle class="pp" cx="129" cy="95" r="5"/>
+  <circle class="ap" cx="100" cy="66" r="4.5"/>
+  <line class="wire" x1="100" y1="61" x2="100" y2="38"/>
+  <text class="dim" x="110" y="44">k (consumer)</text>
+  <circle class="body" cx="240" cy="95" r="29"/>
+  <text x="240" y="99" text-anchor="middle" font-weight="600">pair</text>
+  <circle class="pp" cx="211" cy="95" r="5"/>
+  <circle class="ap" cx="260" cy="74" r="4.5"/>
+  <circle class="ap" cx="260" cy="116" r="4.5"/>
+  <line class="wire" x1="264" y1="72" x2="300" y2="55"/>
+  <line class="wire" x1="264" y1="118" x2="300" y2="135"/>
+  <text class="dim" x="306" y="55">a</text>
+  <text class="dim" x="306" y="141">b</text>
+  <line class="arrow" x1="345" y1="95" x2="395" y2="95"/>
+  <polygon class="arrowhead" points="395,90 405,95 395,100"/>
+  <text class="dim" x="440" y="20">after</text>
+  <line class="wire" x1="470" y1="60" x2="470" y2="30"/>
+  <text class="dim" x="480" y="36">k</text>
+  <text x="470" y="76" text-anchor="middle">a</text>
+  <line class="wire" x1="470" y1="82" x2="470" y2="60"/>
+  <circle class="body" cx="560" cy="120" r="20"/>
+  <text x="560" y="124" text-anchor="middle" font-weight="600">ε</text>
+  <circle class="pp" cx="560" cy="99" r="5"/>
+  <line class="wire" x1="560" y1="94" x2="560" y2="70"/>
+  <text x="560" y="62" text-anchor="middle">b</text>
+</svg>
+<figcaption><b>Figure 2</b> — The <code>left ⋈ pair</code> rule. The
+consumer <code>k</code> receives component <code>a</code> directly; an
+eraser is spawned to discard <code>b</code>. Net change: −1 agent.</figcaption>
+</figure>
+
+<p>In Telomare&rsquo;s runtime (<code>src/Telomare/IC.hs</code>) the agent
+kinds are the <code>ICKind</code> type, and they fall into five families:</p>
+
+<table>
+<tr><th>family</th><th>kinds</th><th>role</th></tr>
+<tr><td>data</td><td><code>ICZero</code> (1 port), <code>ICPair</code> (3 ports)</td>
+<td>values themselves — your input <code>(0,(0,0))</code> is five of these</td></tr>
+<tr><td>work</td><td><code>ICApply</code>, <code>ICLeft</code>, <code>ICRight</code>, <code>ICSetEnv</code>, <code>ICScrut</code></td>
+<td>operations parked with their principal port aimed at the value they await</td></tr>
+<tr><td>structure</td><td><code>ICDup</code>, <code>ICSplit</code>, <code>ICEra</code></td>
+<td>copy, take apart without copying, discard — the affine bookkeeping</td></tr>
+<tr><td>code</td><td><code>ICRef</code></td>
+<td>a pointer into the template table; applying it splices a compiled body in as fresh agents</td></tr>
+<tr><td>control</td><td><code>ICGate</code>, <code>ICAbort</code></td>
+<td>choose code by a value&rsquo;s shape</td></tr>
+</table>
+
+<h2><span class="no">3</span>Interaction combinators, and Telomare&rsquo;s dialect</h2>
+<p>Interaction nets let you invent any agents and any rules. In a second
+paper, <em>Interaction Combinators</em> (1997), Lafont showed how few you
+actually need: three agents — the <strong>constructor γ</strong>, the
+<strong>duplicator δ</strong> and the <strong>eraser ε</strong>. γ and δ
+have a principal port and two auxiliary ports; ε has only its principal.
+One rule per pair of kinds gives six rules. Two alike agents
+<em>annihilate</em> (γγ, δδ): both vanish and their auxiliary wires join
+pairwise. Two unlike agents <em>commute</em> (γδ): each passes through the
+other, leaving a square of four agents, and this is how anything gets
+copied. The eraser <em>erases</em> whatever it meets (γ or δ vanishes and
+leaves an eraser on each auxiliary wire; two erasers simply vanish). Lafont
+proved this tiny system universal: every interaction net can be translated
+into it. This is what <strong>IC</strong> stands for — interaction
+combinators — in <code>--ic</code> and <code>Telomare.IC</code>.</p>
+
+<figure>
+<svg viewBox="0 0 620 210" role="img" aria-label="The three interaction combinators, the annihilation rule and the commutation rule">
+  <text class="dim" x="105" y="12" text-anchor="middle">the three agents</text>
+  <text class="dim" x="318" y="12" text-anchor="middle">annihilation (γγ, δδ)</text>
+  <text class="dim" x="527" y="12" text-anchor="middle">commutation (γδ)</text>
+  <line class="wire" x1="29" y1="85" x2="20" y2="64"/>
+  <line class="wire" x1="47" y1="85" x2="56" y2="64"/>
+  <line class="wire" x1="38" y1="117" x2="38" y2="138"/>
+  <circle class="body" cx="38" cy="100" r="17"/>
+  <text x="38" y="104" text-anchor="middle" font-weight="600">γ</text>
+  <circle class="ap" cx="29" cy="86" r="4"/>
+  <circle class="ap" cx="47" cy="86" r="4"/>
+  <circle class="pp" cx="38" cy="117" r="5"/>
+  <text class="dim" x="38" y="156" text-anchor="middle">constructor</text>
+  <line class="wire" x1="99" y1="85" x2="90" y2="64"/>
+  <line class="wire" x1="117" y1="85" x2="126" y2="64"/>
+  <line class="wire" x1="108" y1="117" x2="108" y2="138"/>
+  <circle class="body" cx="108" cy="100" r="17"/>
+  <text x="108" y="104" text-anchor="middle" font-weight="600">δ</text>
+  <circle class="ap" cx="99" cy="86" r="4"/>
+  <circle class="ap" cx="117" cy="86" r="4"/>
+  <circle class="pp" cx="108" cy="117" r="5"/>
+  <text class="dim" x="108" y="156" text-anchor="middle">duplicator</text>
+  <line class="wire" x1="172" y1="117" x2="172" y2="138"/>
+  <circle class="body" cx="172" cy="100" r="17"/>
+  <text x="172" y="104" text-anchor="middle" font-weight="600">ε</text>
+  <circle class="pp" cx="172" cy="117" r="5"/>
+  <text class="dim" x="172" y="156" text-anchor="middle">eraser</text>
+
+  <line class="wire" x1="253" y1="53" x2="243" y2="34"/>
+  <line class="wire" x1="271" y1="53" x2="281" y2="34"/>
+  <line class="wire" x1="253" y1="163" x2="243" y2="182"/>
+  <line class="wire" x1="271" y1="163" x2="281" y2="182"/>
+  <line class="hotwire" x1="262" y1="90" x2="262" y2="126"/>
+  <circle class="body" cx="262" cy="68" r="17"/>
+  <text x="262" y="72" text-anchor="middle" font-weight="600">γ</text>
+  <circle class="ap" cx="253" cy="54" r="4"/>
+  <circle class="ap" cx="271" cy="54" r="4"/>
+  <circle class="pp" cx="262" cy="85" r="5"/>
+  <circle class="body" cx="262" cy="148" r="17"/>
+  <text x="262" y="152" text-anchor="middle" font-weight="600">γ</text>
+  <circle class="ap" cx="253" cy="162" r="4"/>
+  <circle class="ap" cx="271" cy="162" r="4"/>
+  <circle class="pp" cx="262" cy="131" r="5"/>
+  <text class="dim" x="237" y="30" text-anchor="middle">a</text>
+  <text class="dim" x="287" y="30" text-anchor="middle">b</text>
+  <text class="dim" x="237" y="196" text-anchor="middle">c</text>
+  <text class="dim" x="287" y="196" text-anchor="middle">d</text>
+  <line class="arrow" x1="303" y1="108" x2="331" y2="108"/>
+  <polygon class="arrowhead" points="331,103 341,108 331,113"/>
+  <line class="wire" x1="368" y1="36" x2="368" y2="180"/>
+  <line class="wire" x1="398" y1="36" x2="398" y2="180"/>
+  <text class="dim" x="368" y="30" text-anchor="middle">a</text>
+  <text class="dim" x="398" y="30" text-anchor="middle">b</text>
+  <text class="dim" x="368" y="196" text-anchor="middle">c</text>
+  <text class="dim" x="398" y="196" text-anchor="middle">d</text>
+
+  <line class="wire" x1="446" y1="53" x2="436" y2="34"/>
+  <line class="wire" x1="464" y1="53" x2="474" y2="34"/>
+  <line class="wire" x1="446" y1="163" x2="436" y2="182"/>
+  <line class="wire" x1="464" y1="163" x2="474" y2="182"/>
+  <line class="hotwire" x1="455" y1="90" x2="455" y2="126"/>
+  <circle class="body" cx="455" cy="68" r="17"/>
+  <text x="455" y="72" text-anchor="middle" font-weight="600">γ</text>
+  <circle class="ap" cx="446" cy="54" r="4"/>
+  <circle class="ap" cx="464" cy="54" r="4"/>
+  <circle class="pp" cx="455" cy="85" r="5"/>
+  <circle class="body" cx="455" cy="148" r="17"/>
+  <text x="455" y="152" text-anchor="middle" font-weight="600">δ</text>
+  <circle class="ap" cx="446" cy="162" r="4"/>
+  <circle class="ap" cx="464" cy="162" r="4"/>
+  <circle class="pp" cx="455" cy="131" r="5"/>
+  <text class="dim" x="430" y="30" text-anchor="middle">a</text>
+  <text class="dim" x="480" y="30" text-anchor="middle">b</text>
+  <text class="dim" x="430" y="196" text-anchor="middle">c</text>
+  <text class="dim" x="480" y="196" text-anchor="middle">d</text>
+  <line class="arrow" x1="492" y1="108" x2="515" y2="108"/>
+  <polygon class="arrowhead" points="515,103 525,108 515,113"/>
+  <line class="wire" x1="552" y1="45" x2="552" y2="32"/>
+  <line class="wire" x1="600" y1="45" x2="600" y2="32"/>
+  <line class="wire" x1="552" y1="171" x2="552" y2="184"/>
+  <line class="wire" x1="600" y1="171" x2="600" y2="184"/>
+  <line class="wire" x1="544" y1="76" x2="544" y2="140"/>
+  <line class="wire" x1="560" y1="76" x2="592" y2="140"/>
+  <line class="wire" x1="592" y1="76" x2="560" y2="140"/>
+  <line class="wire" x1="608" y1="76" x2="608" y2="140"/>
+  <circle class="body" cx="552" cy="62" r="15"/>
+  <text x="552" y="66" text-anchor="middle" font-weight="600">δ</text>
+  <circle class="pp" cx="552" cy="47" r="4.5"/>
+  <circle class="ap" cx="544" cy="75" r="3.5"/>
+  <circle class="ap" cx="560" cy="75" r="3.5"/>
+  <circle class="body" cx="600" cy="62" r="15"/>
+  <text x="600" y="66" text-anchor="middle" font-weight="600">δ</text>
+  <circle class="pp" cx="600" cy="47" r="4.5"/>
+  <circle class="ap" cx="592" cy="75" r="3.5"/>
+  <circle class="ap" cx="608" cy="75" r="3.5"/>
+  <circle class="body" cx="552" cy="154" r="15"/>
+  <text x="552" y="158" text-anchor="middle" font-weight="600">γ</text>
+  <circle class="pp" cx="552" cy="169" r="4.5"/>
+  <circle class="ap" cx="544" cy="141" r="3.5"/>
+  <circle class="ap" cx="560" cy="141" r="3.5"/>
+  <circle class="body" cx="600" cy="154" r="15"/>
+  <text x="600" y="158" text-anchor="middle" font-weight="600">γ</text>
+  <circle class="pp" cx="600" cy="169" r="4.5"/>
+  <circle class="ap" cx="592" cy="141" r="3.5"/>
+  <circle class="ap" cx="608" cy="141" r="3.5"/>
+  <text class="dim" x="552" y="27" text-anchor="middle">a</text>
+  <text class="dim" x="600" y="27" text-anchor="middle">b</text>
+  <text class="dim" x="552" y="198" text-anchor="middle">c</text>
+  <text class="dim" x="600" y="198" text-anchor="middle">d</text>
+</svg>
+<figcaption><b>Figure 3</b> — Lafont&rsquo;s interaction combinators.
+Left: the three agents, principal port filled. Middle: two alike agents
+annihilate — they vanish and their auxiliary wires join straight through.
+Right: unlike agents commute — each passes through the other, leaving a
+square; this is how a value gets copied. The eraser&rsquo;s rules (not
+drawn) delete what it meets and leave erasers on the auxiliary
+wires.</figcaption>
+</figure>
+
+<p>Telomare&rsquo;s runtime is <em>not</em> compiled down to these three
+agents. It keeps their structural rules — copying, taking apart, erasing —
+almost exactly, and adds agents of its own for everything specific to the
+language. The structural core, rule by rule, with the rule names from
+<code>src/Telomare/IC.hs</code>:</p>
+
+<div style="overflow-x:auto">
+<table>
+<tr><th>Lafont (1997)</th><th>Telomare</th><th>same or different</th></tr>
+<tr><td>γ constructor</td><td><code>ICPair</code>, and <code>ICZero</code></td>
+<td>a pair is a γ whose auxiliary wires are its left and right components;
+Zero is a constructor with no components</td></tr>
+<tr><td>γγ annihilate</td><td><code>ICSplit</code> ⋈ <code>ICPair</code> (split-pair)</td>
+<td>same shape: the pair vanishes and its components go straight to the
+split&rsquo;s two outputs. <code>ICLeft</code> and <code>ICRight</code> are a
+split with the unused side erased, fused into one agent (Figure 2)</td></tr>
+<tr><td>δ duplicator</td><td><code>ICDup ℓ</code></td>
+<td>carries a label ℓ, minted fresh for every duplicator a template
+instantiation creates</td></tr>
+<tr><td>δδ annihilate</td><td><code>ICDup ℓ</code> ⋈ <code>ICDup ℓ</code> (dup-annihilate)</td>
+<td>only when the labels match; different labels commute instead
+(dup-commute). Lafont has a single δ that always annihilates</td></tr>
+<tr><td>γδ commute</td><td><code>ICDup</code> ⋈ <code>ICPair</code> (dup-pair)</td>
+<td>the same square as Figure 3. A guided shortcut (dup-closure) copies a
+whole closure skeleton in one step when the EAL pass published its
+layout</td></tr>
+<tr><td>δ copying a leaf</td><td><code>ICDup</code> ⋈ Zero, Ref, Gate, Abort (dup-leaf)</td>
+<td>a value with no components is copied outright; for a code pointer this
+is the whole point — copying code copies a pointer</td></tr>
+<tr><td>ε eraser</td><td><code>ICEra</code></td><td>same agent</td></tr>
+<tr><td>εγ erase</td><td><code>ICEra</code> ⋈ <code>ICPair</code> (era-pair)</td>
+<td>same: the pair vanishes, an eraser goes down each component; meeting a
+leaf just deletes both (era-leaf)</td></tr>
+<tr><td>εδ, εε</td><td>none</td><td>the runtime has no such rules: an eraser
+always faces a value — see <em>polarity</em> below</td></tr>
+</table>
+</div>
+
+<p>Where the dialect departs from pure combinators:</p>
+<p><strong>Polarity.</strong> Every Telomare agent is either a
+<em>value</em> (Zero, Pair, Ref, Gate, Abort, and the two poison values) or
+a <em>consumer</em> whose principal port points at the value it waits for
+(SetEnv, Apply, Scrut, Left, Right, Split, Dup, Era). Rules fire between a
+consumer and a value, plus duplicator meeting duplicator; in Lafont&rsquo;s
+system any two agents can meet. The consequence is visible in the runtime:
+an eraser cannot meet a duplicator or an unfinished computation, so it
+waits at the computation&rsquo;s output until a value arrives, then erases
+that. This is why the net fires both arms of a gate — the unselected arm
+runs to a value before its eraser can reach it.</p>
+<p><strong>Labels.</strong> A single δ cannot correctly copy a net that
+itself contains δs: the inner and outer duplicators would annihilate when
+they should pass through each other. Indexing duplicators by labels, so
+that only equal labels annihilate, is the &ldquo;abstract algorithm&rdquo;
+of sharing-graph reduction (Lamping&rsquo;s algorithm without its bracket
+agents; the same device HVM uses). Without brackets, labels are only
+guaranteed correct for stratified programs — which is exactly what EAL
+certification (<code>Telomare.EAL</code>) establishes, and why it is the
+runtime&rsquo;s correctness precondition.</p>
+<p><strong>Code is a table, not a net.</strong> In pure combinators a
+function is a net, and copying it means a δ commuting through its entire
+body. Telomare compiles every <code>Defer</code> body to a template, stored
+once, and represents that code in the live net as a one-port
+<code>ICRef</code>; a closure is a pair of such a pointer and its
+environment. Copying code copies the pointer (dup-leaf); applying it
+(apply-ref) splices a fresh copy of the template&rsquo;s agents into the
+net. Apply-ref and the guided dup-closure shortcut are the rules whose
+result is not a small fixed graph: each is as large as the template or
+closure involved, though fixed for each.</p>
+<p><strong>Native control, errors and boundaries.</strong> Gate, Scrut and
+Abort choose code by a value&rsquo;s shape; ICStuckV and ICAborted carry
+errors as values that flow through consumers and vanish when erased; ICRoot
+and ICExt mark the net&rsquo;s free wires (the result, and a
+template&rsquo;s boundary) and never interact. None of these has a
+combinator counterpart — pure combinators would have to encode them as
+nets. By Lafont&rsquo;s universality theorem such a translation exists, but
+it would give up the code table and native branching that make this runtime
+practical. Telomare&rsquo;s IC is best read as an interaction system in the
+combinators&rsquo; style: Lafont&rsquo;s structural rules, with labels, plus
+a Telomare-specific alphabet.</p>
+
+<h2><span class="no">4</span>From Telomare to a net</h2>
+<p>Telomare compiles onto this model unusually cleanly because the language
+has no binders: <code>Env</code> is the only variable. Every
+<code>Defer</code> body becomes a static <strong>template</strong> — a
+frozen little net with a single environment wire in and a result wire out —
+plus an <code>ICRef</code> agent pointing at it. Copying a function is
+copying a one-port pointer; only when an <code>ICApply</code> reaches the
+ref does the template get <em>instantiated</em>, its nodes spliced into the
+live graph. Inside a body, the env wire fans out through an
+<code>ICSplit</code> tree shaped by which components the body actually
+uses; a component used twice gets an explicit <code>ICDup</code>, and the
+EAL analysis (<code>Telomare.EAL</code>) is what certifies that this
+duplication discipline is sound and guides <em>how</em> closures are
+copied.</p>
+
+<figure>
+<svg viewBox="0 -12 560 195" role="img" aria-label="The input (0,(0,0)) drawn as five agents">
+  <circle class="body" cx="280" cy="40" r="26"/>
+  <text x="280" y="44" text-anchor="middle" font-weight="600">pair</text>
+  <circle class="pp" cx="280" cy="13" r="5"/>
+  <line class="hotwire" x1="280" y1="8" x2="280" y2="-2"/>
+  <circle class="ap" cx="261" cy="59" r="4.5"/>
+  <circle class="ap" cx="299" cy="59" r="4.5"/>
+  <line class="wire" x1="258" y1="63" x2="185" y2="102"/>
+  <line class="wire" x1="302" y1="63" x2="375" y2="102"/>
+  <circle class="body" cx="170" cy="122" r="22"/>
+  <text x="170" y="126" text-anchor="middle" font-weight="600">0</text>
+  <circle class="pp" cx="184" cy="105" r="5"/>
+  <circle class="body" cx="390" cy="122" r="24"/>
+  <text x="390" y="126" text-anchor="middle" font-weight="600">pair</text>
+  <circle class="pp" cx="376" cy="103" r="5"/>
+  <circle class="ap" cx="374" cy="140" r="4.5"/>
+  <circle class="ap" cx="406" cy="140" r="4.5"/>
+  <line class="wire" x1="370" y1="143" x2="330" y2="160"/>
+  <line class="wire" x1="410" y1="143" x2="450" y2="160"/>
+  <circle class="body" cx="315" cy="164" r="15"/>
+  <text x="315" y="168" text-anchor="middle" font-weight="600">0</text>
+  <circle class="body" cx="465" cy="164" r="15"/>
+  <text x="465" y="168" text-anchor="middle" font-weight="600">0</text>
+  <text class="dim" x="40" y="30">|input| = 5</text>
+  <text class="dim" x="40" y="46">(5 constructor cells)</text>
+</svg>
+<figcaption><b>Figure 4</b> — The value <code>(0,(0,0))</code> as a net:
+two <code>pair</code> agents, three <code>0</code> agents. This count of
+constructor cells is exactly the <code>|input|</code> that the space
+bounds are stated in.</figcaption>
+</figure>
+
+<h2><span class="no">5</span>The machine&rsquo;s memory: the node map</h2>
+<p>The entire living graph is one Haskell value:
+<code>icNodes&nbsp;::&nbsp;IntMap&nbsp;Node</code>. Keys are agent ids —
+plain <code>Int</code>s from a counter. Each <code>Node</code> is a kind
+plus an inner map from its own port slots (slot&nbsp;0 is principal) to the
+far end of each wire, a <code>(node,&nbsp;slot)</code> pair — so every wire
+is stored twice, once from each end. Beside it sits
+<code>icActive</code>, a LIFO worklist of agent-id pairs that <em>might</em>
+be active (a rewrite can consume a node another entry mentions, so stale
+entries get skipped at pop time).</p>
+
+<figure>
+<div class="duo">
+<div><span class="tag">the graph</span>
+<svg viewBox="0 0 250 140" role="img" aria-label="Three agents wired together, with ids">
+  <line class="hotwire" x1="98" y1="70" x2="152" y2="70"/>
+  <circle class="body" cx="70" cy="70" r="27"/>
+  <text x="70" y="74" text-anchor="middle" font-weight="600">left</text>
+  <text class="dim" x="70" y="112" text-anchor="middle">#9</text>
+  <circle class="pp" cx="97" cy="70" r="5"/>
+  <circle class="body" cx="180" cy="70" r="27"/>
+  <text x="180" y="74" text-anchor="middle" font-weight="600">pair</text>
+  <text class="dim" x="180" y="112" text-anchor="middle">#4</text>
+  <circle class="pp" cx="153" cy="70" r="5"/>
+  <circle class="ap" cx="198" cy="50" r="4.5"/>
+  <line class="wire" x1="202" y1="47" x2="228" y2="30"/>
+  <circle class="body" cx="234" cy="22" r="13"/>
+  <text x="234" y="26" text-anchor="middle" font-weight="600">0</text>
+  <text class="dim" x="234" y="52" text-anchor="middle">#5</text>
+</svg>
+</div>
+<div><span class="tag">the same graph, as stored</span>
+<pre><code>icNodes:
+ 4 ↦ ICPair {0↦(9,0), 1↦(5,0), …}
+ 5 ↦ ICZero {0↦(4,1)}
+ 9 ↦ ICLeft {0↦(4,0), 1↦…}
+
+icActive: [(9,4)]      -- LIFO
+
+agents        = size icNodes
+port entries  = Σ size nodePorts
+pending pairs = length icActive</code></pre>
+</div>
+</div>
+<figcaption><b>Figure 5</b> — One graph, two views. The three certified
+resources are read straight off this structure
+(<code>residentResources</code>, <code>IC.hs:228</code>): node count, total
+stored wire-endpoints, worklist length.</figcaption>
+</figure>
+
+<p>So the units of the certificate are <strong>counts of fixed-size
+objects</strong>, not bytes: an agent is one map entry, a port entry one
+slot, a pending pair one worklist cell. Bytes are
+<span class="m">count&nbsp;×&nbsp;bytes-per-object</span> for whatever
+implementation hosts the net — roughly 300 bytes for a three-port agent
+in the current Haskell representation (its entry in the node map, the node
+itself, its own port map and three port values), on the order of 8–16 in a
+compact C-style runtime. That is why
+the certificate calls the quantity <em>logical</em> storage and excludes
+GC, readback and process memory: it bounds the abstract machine&rsquo;s
+population and lets you choose the multiplier.</p>
+
+<h2><span class="no">6</span>Why this graph can be bounded</h2>
+<p>Every rule creates and deletes map entries only at explicit
+<code>account</code> sites, so each of the three counters moves by a known
+constant per rule. The peak of the counters over a run is then a precise,
+meterable quantity (<code>--ic --meter</code> measures it) — and two
+analyses address it for <em>every</em> input at once: one bounds it, the
+other estimates it, as the end of this section explains.</p>
+
+<figure>
+<div class="duo">
+<div><span class="tag">the walk — close, may give up</span>
+<svg viewBox="0 0 250 150" role="img" aria-label="A world tree forking on input shape">
+  <circle class="body" cx="125" cy="25" r="16"/>
+  <text x="125" y="29" text-anchor="middle">?p</text>
+  <line class="wire" x1="113" y1="37" x2="70" y2="70"/>
+  <line class="wire" x1="137" y1="37" x2="180" y2="70"/>
+  <text class="dim" x="52" y="62">p = 0</text>
+  <text class="dim" x="168" y="62">p = pair</text>
+  <circle class="body" cx="62" cy="85" r="14"/>
+  <text x="62" y="89" text-anchor="middle">…</text>
+  <circle class="body" cx="188" cy="85" r="14"/>
+  <text x="188" y="89" text-anchor="middle">?q</text>
+  <line class="ghost" x1="178" y1="96" x2="150" y2="125"/>
+  <line class="ghost" x1="198" y1="96" x2="226" y2="125"/>
+  <text class="dim" x="35" y="135">worst peak over</text>
+  <text class="dim" x="35" y="148">every branch wins</text>
+</svg>
+</div>
+<div><span class="tag">compositional — an estimate, never fails</span>
+<svg viewBox="0 0 250 150" role="img" aria-label="Template table with instantiation counts multiplied and summed">
+  <rect class="body" x="20" y="18" width="140" height="24" rx="3"/>
+  <rect class="body" x="20" y="50" width="140" height="24" rx="3"/>
+  <rect class="body" x="20" y="82" width="140" height="24" rx="3"/>
+  <text x="30" y="34">tpl 12 · 9 nodes</text>
+  <text x="30" y="66">tpl 11 · 4 nodes</text>
+  <text x="30" y="98">tpl 10 · 7 nodes</text>
+  <text class="hotl" x="172" y="34">× inst₁₂</text>
+  <text class="hotl" x="172" y="66">× inst₁₁</text>
+  <text class="hotl" x="172" y="98">× inst₁₀</text>
+  <line class="arrow" x1="90" y1="112" x2="90" y2="128"/>
+  <polygon class="arrowhead" points="85,128 90,138 95,128"/>
+  <text x="106" y="136">Σ, × (1+3F)ᴸ</text>
+</svg>
+</div>
+</div>
+<figcaption><b>Figure 6</b> — Two ways to a bound.
+<b>Walk</b> (<code>Telomare.IC.Space</code>): replay the runtime&rsquo;s own
+rules over a symbolic input, fork wherever a branch tests the input&rsquo;s
+shape, keep the worst peak — close to the real peak where it finishes (on
+<code>tc_ultra_minimal</code> its tightest case, 4·|input| + 559, sits just
+above the measured 559; on <code>simpleplus</code> its constant alone is
+1.6× the measured peak), but a program testing many independent input parts
+explodes the tree and exhausts the budget.
+<b>Compositional</b> (<code>Telomare.IC.Static</code>): never run anything;
+charge every template instantiation any firing order could perform, times an
+estimated copy multiplier — independent of firing order by construction, but
+argued in prose rather than proven, and not always an upper bound (Figure
+7).</figcaption>
+</figure>
+
+<p>The walk gives usable numbers. For <code>tc_ultra_minimal</code>:</p>
+<div class="bound">
+agents&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ≤ 36·|input| + 1130<br>
+port entries&nbsp;&nbsp; ≤ 108·|input| + 2894<br>
+pending pairs&nbsp; ≤ 36·|input| + 647<br>
+<span class="who">walk · holds for every finite input · feed it 100 cells, the net never exceeds 4,730 agents</span>
+</div>
+
+<p>The compositional figure exists even when the walk gives up, and it is
+where the astronomical numbers come from: a copy multiplier
+<span class="m">(1&nbsp;+&nbsp;3F)ᴸ</span> — <em>F</em> duplication fans,
+<em>L</em> the EAL box-nesting depth — applied to the program&rsquo;s own
+code, independent of input. That multiplier grows only single-exponentially
+in <em>L</em>, while elementary affine logic promises no better than a tower
+of exponentials of height <em>L</em>, so the figure is an estimate rather
+than a proven bound. For tic-tac-toe:</p>
+<div class="bound">
+agents&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ≤ 4.78×10¹¹·|input| + 1.57×10⁵³⁴<br>
+<span class="who">compositional estimate · measured peak of a real game: 265,483 agents</span>
+</div>
+
+<figure>
+<svg viewBox="0 0 560 90" role="img" aria-label="Log-scale ruler from ten to the zero to ten to the 534, drawn to scale, marking the measured peak and the atoms in the observable universe near the left edge and the compositional figure at the right">
+  <line class="wire" x1="30" y1="58" x2="510" y2="58"/>
+  <line class="wire" x1="30" y1="54" x2="30" y2="62"/>
+  <line class="wire" x1="118" y1="54" x2="118" y2="62"/>
+  <line class="wire" x1="206" y1="54" x2="206" y2="62"/>
+  <line class="wire" x1="294" y1="54" x2="294" y2="62"/>
+  <line class="wire" x1="382.1" y1="54" x2="382.1" y2="62"/>
+  <line class="wire" x1="470.1" y1="54" x2="470.1" y2="62"/>
+  <text class="dim" x="30" y="78" text-anchor="middle">10⁰</text>
+  <text class="dim" x="118" y="78" text-anchor="middle">10¹⁰⁰</text>
+  <text class="dim" x="206" y="78" text-anchor="middle">10²⁰⁰</text>
+  <text class="dim" x="294" y="78" text-anchor="middle">10³⁰⁰</text>
+  <text class="dim" x="382.1" y="78" text-anchor="middle">10⁴⁰⁰</text>
+  <text class="dim" x="470.1" y="78" text-anchor="middle">10⁵⁰⁰</text>
+  <line class="hotwire" x1="34.8" y1="31" x2="34.8" y2="66"/>
+  <text class="hotl" x="30" y="26">measured peak 2.7×10⁵</text>
+  <line class="wire" x1="100.4" y1="46" x2="100.4" y2="64"/>
+  <text class="dim" x="106" y="42">10⁸⁰ · atoms in the observable universe</text>
+  <line class="hotwire" x1="500" y1="31" x2="500" y2="66"/>
+  <text class="hotl" x="506" y="26" text-anchor="end">compositional 1.57×10⁵³⁴</text>
+</svg>
+<figcaption><b>Figure 7</b> — Tic-tac-toe on a log scale, drawn to scale
+(100 decades per tick): the measured peak and even the number of atoms in
+the observable universe crowd the left edge, some 530 orders of magnitude
+below the compositional figure. That figure is an over-approximation whose
+derivation is argued in prose, not proven, and it can fail: on a hand-built
+Church-numeral tower of height five — a term whose program-wide EAL solve
+fails, as tic-tac-toe&rsquo;s does — it reports about 9×10¹¹ agents for a
+result with 2<sup>65536</sup> cells. Read it as an estimate, not a
+guarantee; making it sound, and tighter, is open work.</figcaption>
+</figure>
+
+<p>One last honesty device: figures over six digits are printed rounded
+<strong>up</strong> to three significant figures, so rounding never makes a
+printed figure smaller than the one the analysis computed.
+The certificate you get from <code>--ic --certificate</code> is the better
+of the two analyses, labeled with its method, and <code>--ic --compile</code>
+stores it in the artifact so a compiled program carries its own
+certificate.</p>
+
+<p class="note">Sources: the runtime and its module essay are
+<code>src/Telomare/IC.hs</code> (sfultong); the counters, walk and
+compositional estimate are <code>Telomare.IC</code> counters,
+<code>Telomare.IC.Space</code> and <code>Telomare.IC.Static</code> on
+branch <code>rewrite/ic-space-bounds</code> (PR #153). Usage and a full
+worked certificate: README.md, &ldquo;IC logical storage.&rdquo;</p>
+</article>

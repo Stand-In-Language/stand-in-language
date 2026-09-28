@@ -558,4 +558,9 @@ the runs the artifact performs.
 
 Measurements are in [bench/README.md](bench/README.md); the design and the
 soundness arguments are in the module documentation of `Telomare.IC.Space`
-(the walk) and `Telomare.IC.Static` (the compositional bound).
+(the walk) and `Telomare.IC.Static` (the compositional estimate). For the
+concepts from first principles — what an interaction net is, what an agent
+is, how the node map stores the graph, and where the two analyses' figures
+come from —
+open [interaction-nets.html](interaction-nets.html) in a browser: an
+illustrated primer with worked diagrams.
