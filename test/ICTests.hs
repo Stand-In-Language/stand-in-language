@@ -5,7 +5,8 @@ import Control.Monad (forM_, replicateM)
 import Control.Monad.Except (runExceptT)
 import qualified Control.Monad.State.Strict as State
 import Data.Bifunctor (first)
-import Data.List (isInfixOf)
+import qualified Data.IntMap.Strict as IntMap
+import Data.List (isInfixOf, isPrefixOf, tails)
 import qualified Data.Map as Map
 import qualified System.IO.Strict as Strict
 import Telomare.Driver (compileUnitTest)
@@ -14,6 +15,7 @@ import Telomare.EAL (CapShape (..), CodeGuidance (..), EALLiftedResult (..),
                      inferEALWithLifting)
 import Telomare.Expand (expandModule, renderExpansionError)
 import Telomare.IC
+import Telomare.IC.Draw (DrawSummary (..), drawNet, drawProgram, netStats)
 import Telomare.IC.Space
 import Telomare.IR.Base (AbortableF (..), BasicExpr, pattern AbortB,
                          pattern AbortEE, pattern EnvB, pattern GateB,
@@ -92,6 +94,10 @@ icDiff name t extra = testCase name $ do
   icEval t @?= eval t
   extra t
 
+-- | Occurrences of a marker in the rendered figure, overlapping ones included.
+count :: String -> String -> Int
+count needle = length . filter (needle `isPrefixOf`) . tails
+
 main :: IO ()
 main = do
   preludeFile <- Strict.readFile "Prelude.tel"
@@ -128,7 +134,61 @@ main = do
           Unknown reason -> assertFailure ("closed corpus analysis: " <> reason)
           Established _ -> assertBool "whole-run resource bound" (certificateCovers ZeroB measured outcome)
   defaultMain $ testGroup "IC runtime"
-    [ testGroup "logical storage accounting"
+    [ testGroup "net drawing"
+        [ testCase "every agent and every wire is drawn exactly once" $ do
+            let term = se (p (d 80 (p (LeftB EnvB) (RightB EnvB))) (p z z))
+            prog <- either (\err -> assertFailure (show err) >> error "unreachable")
+              pure (prepareIC mempty term)
+            let nodes = icNodes (programInitial prog)
+                (agents, wires) = netStats nodes
+                svg = drawNet nodes
+            assertBool "figure is an svg document" $
+              "<svg" `isPrefixOf` svg && "</svg>" `isInfixOf` svg
+            count "<g class=\"agent\">" svg @?= agents
+            count "<line class=\"wire" svg + count "<circle class=\"wire\"" svg
+              @?= wires
+            forM_ (IntMap.keys nodes) $ \n ->
+              assertBool ("agent #" <> show n <> " is labeled")
+                (("#" <> show n <> "<") `isInfixOf` svg)
+        , testCase "programs that differ only inside a template draw differently" $ do
+            let withBody b = either (\err -> assertFailure (show err) >> error "unreachable")
+                  pure (prepareIC mempty (se (p (d 80 b) (p z z))))
+            split <- withBody (p (LeftB EnvB) (RightB EnvB))
+            dup <- withBody (p EnvB EnvB)
+            let entry = drawNet . icNodes . programInitial
+            entry split @?= entry dup
+            assertBool "template panels tell them apart"
+              (fst (drawProgram "t" 400 split) /= fst (drawProgram "t" 400 dup))
+        , testCase "every drawn template is drawn once, within the budget" $ do
+            let body = se (p (d 80 (p (d 81 (LeftB EnvB)) (d 82 (p EnvB z)))) (p z z))
+            prog <- either (\err -> assertFailure (show err) >> error "unreachable")
+              pure (prepareIC mempty body)
+            let st = programInitial prog
+                tplAgents = sum [ IntMap.size (tplNodes t) | t <- IntMap.elems (icTemplates st) ]
+                (svg, summary) = drawProgram "t" 400 prog
+                (entryAgents, entryWires) = netStats (icNodes st)
+                drawnWires = entryWires + sum
+                  [ snd (netStats (tplNodes t))
+                  | (tid, t) <- IntMap.toList (icTemplates st), tid > 2 ]
+            drawnTemplates summary @?= reachableTemplates summary
+            count "<g class=\"panel\"" svg @?= 1 + drawnTemplates summary
+            count "<g class=\"agent\">" svg @?= entryAgents + drawnAgents summary
+            count "<line class=\"wire" svg + count "<circle class=\"wire\"" svg
+              @?= drawnWires
+            assertBool "only reachable templates are counted"
+              (totalAgents summary <= tplAgents)
+            let (none, noneSummary) = drawProgram "t" 0 prog
+            drawnTemplates noneSummary @?= 0
+            count "<g class=\"panel\"" none @?= 1
+            count "<g class=\"collapsed\"" none @?= min 12 (reachableTemplates noneSummary)
+        , testCase "selector templates are left out of program drawings" $ do
+            prog <- either (\err -> assertFailure (show err) >> error "unreachable")
+              pure (prepareIC mempty (GateSwitchEE ZeroB (PairB ZeroB ZeroB) EnvB))
+            let (svg, summary) = drawProgram "t" 400 prog
+            reachableTemplates summary @?= 0
+            assertBool "no selector panel" (not ("template #" `isInfixOf` svg))
+        ]
+    , testGroup "logical storage accounting"
         [ testCase "half wires, replacement, deletion and stale entries" $ do
             let action = do
                   a <- newNode ICEra

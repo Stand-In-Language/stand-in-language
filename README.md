@@ -407,8 +407,22 @@ cabal run telomare -- simpleplus.tel --ic                     # run on the net
 cabal run telomare -- simpleplus.tel --ic --meter             # plus peaks and interactions
 cabal run telomare -- simpleplus.tel --ic --certificate       # bound or estimate, any input
 cabal run telomare -- simpleplus.tel --ic --compile -o /tmp/sp.telc
-cabal run telomare -- /tmp/sp.telc --ic --certificate         # the stored bound
+cabal run telomare -- /tmp/sp.telc --ic --certificate         # the stored certificate
+cabal run telomare -- simpleplus.tel --ic --draw-net          # net and templates, as SVG
 ```
+
+`--ic --draw-net` draws the prepared program as an SVG figure
+(`simpleplus.net.svg`, or `-o FILE`) in the visual language of
+[interaction-nets.html](interaction-nets.html): one circle per agent, a
+filled dot on its principal port, and principal-to-principal wires — the
+active pairs, where rules fire — in the hot color. The first panel is the
+entry net, the net a run starts from just before the input is plugged into
+its boundary (boundary wires drawn hot become active then). That net is the
+same small scaffolding for every program, because a program's code lives in
+templates spliced in only when instantiated, so the panels after it draw
+those templates, breadth-first from `main`, until `--draw-limit` agents
+(default 400) are spent; larger templates are listed with their size
+instead. An artifact draws the same program it runs.
 
 `--ic --meter` reports interactions and the peaks of three logical
 resources: resident agents, stored port entries and pending pairs (stale

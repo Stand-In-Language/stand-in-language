@@ -32,6 +32,7 @@ library
                      , Telomare.Error
                      , Telomare.Driver
                      , Telomare.IC
+                     , Telomare.IC.Draw
                      , Telomare.IC.Space
                      , Telomare.IC.Static
                      , Telomare.SpaceBound

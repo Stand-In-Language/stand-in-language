@@ -9,7 +9,7 @@ import Data.Maybe (fromMaybe)
 import qualified Options.Applicative as O
 import System.Directory (doesFileExist)
 import System.Exit (exitFailure)
-import System.FilePath (replaceExtension, takeBaseName)
+import System.FilePath (replaceExtension, takeBaseName, takeFileName)
 import System.IO (hFlush, hPutStr, hPutStrLn, stderr, stdout)
 
 import Telomare.Artifact (Artifact (..), isArtifactPath, nodeCount,
@@ -23,6 +23,7 @@ import Telomare.Eval.Meter (renderMeter)
 import Telomare.Fast (compileFast, defaultFastFuel, renderFastMeter,
                       runFastLoop)
 import Telomare.IC
+import Telomare.IC.Draw (DrawSummary (..), commas, drawProgram)
 import Telomare.IC.Static (icCertify, renderICCertificate)
 import Telomare.IR.Base (pattern EnvB)
 import Telomare.IR.Core (CompiledExpr)
@@ -42,6 +43,9 @@ data Action
   -- ^Report what is known about it statically, then exit.
   | Meter
   -- ^Run it, then report what the run cost.
+  | DrawNet (Maybe FilePath) Int
+  -- ^Write the prepared IC program as an SVG figure, then exit: its entry net
+  -- and, within a budget of agents, the templates the entry can instantiate.
   deriving (Eq, Show)
 
 -- |How to get to a runnable program.
@@ -70,6 +74,7 @@ telomareOpts = TelomareOpts
   <*> mode
   where
     action = compileTo
+         O.<|> drawTo
          O.<|> O.flag' Certificate
                ( O.long "certificate"
                  <> O.help "Report each recursion site's inferred iteration count and \
@@ -85,6 +90,17 @@ telomareOpts = TelomareOpts
                 <*> O.optional (O.strOption
                       ( O.long "output" <> O.short 'o' <> O.metavar "FILE"
                         <> O.help "Where to write the compiled program" ))
+    drawTo = O.flag' DrawNet
+               ( O.long "draw-net"
+                 <> O.help "Write the prepared IC net and the templates it can \
+                           \instantiate as an SVG figure, then exit (combine with --ic)" )
+             <*> O.optional (O.strOption
+                   ( O.long "output" <> O.short 'o' <> O.metavar "FILE"
+                     <> O.help "Where to write the SVG" ))
+             <*> O.option O.auto
+                   ( O.long "draw-limit" <> O.metavar "N" <> O.value 400
+                     <> O.help "Most template agents --draw-net draws in full \
+                               \(default 400); larger templates are listed" )
     mode = O.flag' () ( O.long "fast"
                         <> O.help "Run without sizing: starts immediately, but nothing \
                                   \proves the program terminates" )
@@ -169,10 +185,14 @@ runArtifact path action mode = do
         Certificate -> case artifactICCertificate artifact of
           Just cert -> putStr (renderICCertificate cert)
           Nothing   -> putStr . snd . icCertify artifactEAL =<< prepared
+        DrawNet out limit ->
+          writeNetSvg path limit (fromMaybe (replaceExtension path ".net.svg") out)
+            =<< prepared
         _ -> runIC action =<< prepared
       else case action of
         Compile _   -> die $ path <> " is already compiled"
         Certificate -> putStr $ artifactCertificate artifact
+        DrawNet _ _ -> die "--draw-net draws the IC net; combine it with --ic"
         Run         -> evalLoop (artifactExpr artifact)
         Meter       -> do
           measured <- evalLoopMetered [] (artifactExpr artifact)
@@ -210,6 +230,10 @@ runSized file action useIC = do
       Meter -> do
         measured <- evalLoopMetered [] sized
         reportMeter $ renderMeter measured <> "\n"
+      DrawNet out limit | useIC ->
+        writeNetSvg file limit (fromMaybe (replaceExtension file ".net.svg") out)
+          =<< prepareEntry eal sized
+      DrawNet _ _ -> die "--draw-net draws the IC net; combine it with --ic"
       Compile output -> do
         icCertificate <- if not useIC then pure Nothing else do
           prog <- prepareEntry eal sized
@@ -240,6 +264,19 @@ prepareEntry :: EALLiftedResult -> CompiledExpr -> IO ICProgram
 prepareEntry eal =
   either (die . show) pure . prepareIC (ealCaptureLayouts eal) . (`appB` EnvB)
 
+-- |The entry net is the same scaffolding for every program, so the figure
+-- also draws the templates it can instantiate, up to a budget of agents.
+writeNetSvg :: FilePath -> Int -> FilePath -> ICProgram -> IO ()
+writeNetSvg source limit path prog = do
+  let (svg, summary) = drawProgram (takeFileName source) limit prog
+      entryAgents = length (icNodes (programInitial prog))
+  writeFile path svg
+  hPutStrLn stderr $ "wrote " <> path <> " (entry " <> commas entryAgents
+    <> " agents; " <> show (drawnTemplates summary) <> " of "
+    <> show (reachableTemplates summary) <> " templates, "
+    <> commas (drawnAgents summary) <> " of " <> commas (totalAgents summary)
+    <> " agents; --draw-limit " <> show limit <> ")"
+
 runIC :: Action -> ICProgram -> IO ()
 runIC action prog = do
   (measured, _) <- evalLoopIC prog [] printAccum
@@ -258,6 +295,7 @@ runFast file action fuel = do
   allModules <- getModulesFor entryModule
   case action of
     Compile _ -> die "--compile sizes the program, so it cannot be combined with --fast"
+    DrawNet _ _ -> die "--draw-net draws the IC net; combine it with --ic"
     Certificate -> putStr $ staticReport Nothing Nothing allModules entryModule
     _ -> case compileFast allModules entryModule of
       Left err -> die err

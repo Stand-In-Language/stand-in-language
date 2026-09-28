@@ -16,3 +16,5 @@ dev-profile*
 .direnv/
 # compiled programs written next to their sources by `telomare --compile`
 *.telc
+# net drawings written next to their sources by `telomare --ic --draw-net`
+*.net.svg
