@@ -33,10 +33,11 @@ module Telomare.Artifact
   , isArtifactPath
   ) where
 
-import Crypto.Hash (Digest, SHA256, hash)
+import Crypto.Hash (Digest, SHA256, digestFromByteString, hash)
 import Data.Binary.Get (Get, getInt64le, getLazyByteString, getWord8,
                         runGetOrFail)
 import Data.Binary.Put (Put, putInt64le, putLazyByteString, putWord8, runPut)
+import qualified Data.ByteArray as BA
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.UTF8 as UTF8
 import Data.Functor.Foldable (cata, embed, project)
@@ -45,6 +46,8 @@ import Data.Map (Map)
 import qualified Data.Map as Map
 import System.FilePath (takeExtension)
 
+import Telomare.EAL (CapShape (..), CodeGuidance (..), EALResult (..),
+                     Step (..))
 import Telomare.IR.Base
 import Telomare.IR.Core
 import Telomare.IR.Loc
@@ -63,6 +66,12 @@ data Artifact = Artifact
   -- ^The static report as it was rendered at compile time.
   , artifactExpr        :: CompiledExpr
   -- ^The sized program.
+  , artifactGuidance    :: Map (Digest SHA256) CodeGuidance
+  -- ^Per-hash guidance from the post-sizing EAL inference, so a guided
+  -- runtime needs no inference at load.
+  , artifactVerdict     :: Either String EALResult
+  -- ^The post-sizing whole-program EAL verdict (a refusal carried
+  -- rendered): the IC runtime's admission, decided at compile time.
   }
 
 artifactMagic :: BL.ByteString
@@ -71,7 +80,7 @@ artifactMagic = BL.pack [0x54, 0x45, 0x4C, 0x43] -- "TELC"
 -- |Bumped whenever the encoding changes, which invalidates older files rather
 -- than misreading them.
 artifactVersion :: Int
-artifactVersion = 2
+artifactVersion = 3
 
 telcExtension :: String
 telcExtension = ".telc"
@@ -105,6 +114,8 @@ encodeArtifact a = runPut $ do
   putString (artifactCertificate a)
   putReport (artifactReport a)
   putCompiled (artifactExpr a)
+  putMap putDigest putGuidance (artifactGuidance a)
+  putVerdict (artifactVerdict a)
 
 decodeArtifact :: BL.ByteString -> Either String Artifact
 decodeArtifact bytes = case runGetOrFail getArtifact bytes of
@@ -128,7 +139,10 @@ getArtifact = do
           certificate <- getString
           report <- getReport
           expr <- getCompiled
-          pure . Right $ Artifact entry sourceHash report certificate expr
+          guidance <- getMap getDigest getGuidance
+          verdict <- getVerdict
+          pure . Right $
+            Artifact entry sourceHash report certificate expr guidance verdict
 
 writeArtifact :: FilePath -> Artifact -> IO ()
 writeArtifact path = BL.writeFile path . encodeArtifact
@@ -233,6 +247,95 @@ getReport = SizingReport . SizedRecursion
   <$> getMap getToken (getMaybe getInt')
   <*> getMap getToken getLocTag
   <*> getInt'
+
+-- Guidance. The keys are content hashes, so entries validate themselves:
+-- a key that matches no body in the program is simply never looked up.
+
+putBool :: Bool -> Put
+putBool b = putWord8 (if b then 1 else 0)
+
+getBool :: Get Bool
+getBool = (/= 0) <$> getWord8
+
+putDigest :: Digest SHA256 -> Put
+putDigest = putLazyByteString . BL.fromStrict . BA.convert
+
+getDigest :: Get (Digest SHA256)
+getDigest = do
+  bytes <- getLazyByteString 32
+  case digestFromByteString (BL.toStrict bytes) of
+    Just d  -> pure d
+    Nothing -> fail "malformed body hash"
+
+putFunctionIndex :: FunctionIndex -> Put
+putFunctionIndex = putInt' . unFunctionIndex
+
+getFunctionIndex :: Get FunctionIndex
+getFunctionIndex = FunctionIndex <$> getInt'
+
+putStep :: Step -> Put
+putStep = \case
+  SL -> putWord8 0
+  SR -> putWord8 1
+
+getStep :: Get Step
+getStep = getWord8 >>= \case
+  0 -> pure SL
+  1 -> pure SR
+  n -> fail $ "unknown projection step tag " <> show n
+
+putShape :: CapShape -> Put
+putShape = \case
+  CapData     -> putWord8 0
+  CapCode     -> putWord8 1
+  CapPair a b -> putWord8 2 >> putShape a >> putShape b
+  CapOther    -> putWord8 3
+
+getShape :: Get CapShape
+getShape = getWord8 >>= \case
+  0 -> pure CapData
+  1 -> pure CapCode
+  2 -> CapPair <$> getShape <*> getShape
+  3 -> pure CapOther
+  n -> fail $ "unknown capture shape tag " <> show n
+
+putGuidance :: CodeGuidance -> Put
+putGuidance g = do
+  putFunctionIndex (cgIndex g)
+  putMap (putList putStep) putInt' (cgUsage g)
+  putInt' (cgEnvBang g)
+  putInt' (cgMaxLevel g)
+  putBool (cgSpeculatable g)
+  putMaybe putShape (cgCaptureLayout g)
+
+getGuidance :: Get CodeGuidance
+getGuidance = CodeGuidance
+  <$> getFunctionIndex
+  <*> getMap (getList getStep) getInt'
+  <*> getInt'
+  <*> getInt'
+  <*> getBool
+  <*> getMaybe getShape
+
+putVerdict :: Either String EALResult -> Put
+putVerdict = \case
+  Left refusal -> putWord8 0 >> putString refusal
+  Right r -> do
+    putWord8 1
+    putInt' (ealTopLevelBang r)
+    putMap putFunctionIndex putInt' (ealDeferBangs r)
+    putInt' (ealMaxLevel r)
+    putShape (ealMainShape r)
+
+getVerdict :: Get (Either String EALResult)
+getVerdict = getWord8 >>= \case
+  0 -> Left <$> getString
+  1 -> fmap Right $ EALResult
+    <$> getInt'
+    <*> getMap getFunctionIndex getInt'
+    <*> getInt'
+    <*> getShape
+  n -> fail $ "unknown verdict tag " <> show n
 
 -- Terms.
 

@@ -57,14 +57,21 @@
 -- evaluator, being ordinary lazy Haskell, is effectively call-by-need — a
 -- stuck redex sitting in a discarded gate branch is never forced, and
 -- compiled sizing machinery really does leave ill-shaped applications in
--- dead branches. The net instead fires every redex it instantiates, so an
+-- dead branches. The net instead fires the redexes it instantiates, so an
 -- ill-shaped interaction must produce an 'ICStuckV' poison value rather
 -- than abort the run: erasure discards it silently (the net's analogue of
 -- an unforced thunk), and only a stuck value surviving into demanded
--- output reports 'ICStuck'. The same speculation means the net eagerly
--- evaluates bounded dead code the reference skips (a cost, not a
--- correctness issue), and dead code that diverges shows up as fuel
--- exhaustion rather than being skipped.
+-- output reports 'ICStuck'. Instantiation itself — the one step whose
+-- cost is unbounded — is held back from that speculation: an apply
+-- meeting code is parked (FIFO) and fired only when no other work
+-- remains, after checking whether an eraser has meanwhile arrived at the
+-- application's result; a dead application then collapses without ever
+-- instantiating ('fireParked'), so a discarded branch's applications —
+-- a diverging one included — cost a few collapse interactions instead of
+-- their whole evaluation (or the fuel supply). The check is local, so
+-- dead work hidden behind a still-pending consumer chain can fire before
+-- its discard becomes visible — a residual cost, never a correctness
+-- issue.
 module Telomare.IC where
 
 import Control.Comonad.Cofree (Cofree ((:<)))
@@ -79,6 +86,8 @@ import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
 import Data.Map (Map)
 import qualified Data.Map as Map
+import Data.Sequence (Seq)
+import qualified Data.Sequence as Seq
 import Debug.Trace (trace)
 import Telomare.EAL (CapShape (..), Step (..), showSteps)
 import Telomare.IR.Base (AbortableF (..), BasicExpr, BasicExprF (..),
@@ -184,6 +193,11 @@ data ICState = ICState
   , icNextNode  :: !Int
   , icNextLabel :: !Int
   , icActive    :: [(Int, Int)] -- ^ candidate active pairs (may go stale)
+  , icParked    :: Seq (Int, Int)
+                                -- ^ instantiation-bound pairs (an apply
+                                -- meeting code), FIFO: fired one at a time
+                                -- only when no eager work remains, after
+                                -- the demand check of 'fireParked'
   , icEnvQueue  :: Map [Step] [Port]
                                 -- ^ compile-time: env component wires per
                                 -- projection path, to be consumed by the
@@ -199,15 +213,15 @@ data ICState = ICState
   , icStats     :: Map String Int
   , icGuidance  :: Map (Digest SHA256) CapShape
     -- ^ per-hash capture layouts from the EAL pass ('ealCaptureLayouts'),
-    -- consumed by the guided closure-duplication rule; empty means every
-    -- strategy keeps to its generic default
+    -- consumed by the guided closure duplication and erasure rules; empty
+    -- means every strategy keeps to its generic default
   }
 
 type ICM = ExceptT ICError (State ICState)
 
 emptyState :: Map (Digest SHA256) CapShape -> Int -> ICState
-emptyState guidance fuel = ICState IntMap.empty 0 0 [] Map.empty IntMap.empty 0
-  Map.empty fuel 0 Map.empty guidance
+emptyState guidance fuel = ICState IntMap.empty 0 0 [] Seq.empty Map.empty
+  IntMap.empty 0 Map.empty fuel 0 Map.empty guidance
 
 -- * Primitive net operations
 
@@ -242,7 +256,9 @@ setHalf (Port n s) q = State.modify' $ \st -> st
       n (icNodes st) }
 
 -- | Wire two ports together. A principal-principal wiring between
--- interacting kinds is enqueued as an active pair.
+-- interacting kinds is enqueued as an active pair — except an
+-- instantiation-bound pair (an apply meeting code), which is parked for
+-- the demand-checked firing of 'fireParked'.
 connect :: Port -> Port -> ICM ()
 connect p q = do
   setHalf p q
@@ -251,13 +267,22 @@ connect p q = do
     (Port a 0, Port b 0) -> do
       ka <- kindOf a
       kb <- kindOf b
-      when (interactive ka && interactive kb) . State.modify' $ \st ->
-        st { icActive = (a, b) : icActive st }
+      when (interactive ka && interactive kb) $
+        if instantiating ka kb
+          then State.modify' $ \st ->
+            st { icParked = icParked st Seq.|> (a, b) }
+          else State.modify' $ \st ->
+            st { icActive = (a, b) : icActive st }
     _notPrincipals -> pure ()
-  where interactive = \case
-          ICRoot -> False
-          ICExt  -> False
-          _      -> True
+  where
+    interactive = \case
+      ICRoot -> False
+      ICExt  -> False
+      _      -> True
+    instantiating a b = case (a, b) of
+      (ICApply, ICRef {}) -> True
+      (ICRef {}, ICApply) -> True
+      _notInstantiation   -> False
 
 deleteNode :: Int -> ICM ()
 deleteNode n = State.modify' $ \st ->
@@ -320,13 +345,14 @@ isolatedNet act = do
   saved <- State.get
   State.modify' $ \st -> st
     { icNodes = IntMap.empty, icNextNode = 0, icNextLabel = 0
-    , icActive = [], icEnvQueue = Map.empty }
+    , icActive = [], icParked = Seq.empty, icEnvQueue = Map.empty }
   r <- act
   built <- State.get
   State.modify' $ \st -> st
     { icNodes = icNodes saved, icNextNode = icNextNode saved
     , icNextLabel = icNextLabel saved
-    , icActive = icActive saved, icEnvQueue = icEnvQueue saved }
+    , icActive = icActive saved, icParked = icParked saved
+    , icEnvQueue = icEnvQueue saved }
   pure (r, icNodes built, icNextLabel built)
 
 -- | The content hash of a defer value, computed by the code path that
@@ -520,19 +546,68 @@ instantiate tid envSrc resultDst = do
 -- * Reduction
 
 -- | Fire active pairs until quiescence. Entries whose nodes were consumed
--- by earlier interactions are skipped.
+-- by earlier interactions are skipped. Parked instantiations fire one at
+-- a time, and only when no eager work remains, so erasure has drained as
+-- far as it can before each demand check; the FIFO order keeps a
+-- diverging dead application from starving the parked pair whose firing
+-- would place the eraser that kills it.
 reduce :: ICM ()
 reduce = State.gets icActive >>= \case
-  [] -> pure ()
   ((a, b) : rest) -> do
     State.modify' $ \st -> st { icActive = rest }
-    live <- State.gets $ \st ->
-      IntMap.member a (icNodes st) && IntMap.member b (icNodes st)
-    when live $ do
-      pa <- peer (Port a 0)
-      pb <- peer (Port b 0)
-      when (pa == Port b 0 && pb == Port a 0) $ fire a b
+    withLivePair a b (fire a b)
     reduce
+  [] -> State.gets (Seq.viewl . icParked) >>= \case
+    Seq.EmptyL -> pure ()
+    (a, b) Seq.:< rest -> do
+      State.modify' $ \st -> st { icParked = rest }
+      withLivePair a b (fireParked a b)
+      reduce
+
+-- | Run the action only if both nodes still exist and still face each
+-- other principally; queue entries go stale when other interactions
+-- consume their nodes.
+withLivePair :: Int -> Int -> ICM () -> ICM ()
+withLivePair a b act = do
+  live <- State.gets $ \st ->
+    IntMap.member a (icNodes st) && IntMap.member b (icNodes st)
+  when live $ do
+    pa <- peer (Port a 0)
+    pb <- peer (Port b 0)
+    when (pa == Port b 0 && pb == Port a 0) act
+
+-- | Fire a parked instantiation. Parking exists to give erasure time to
+-- reach a dead application before its template is spliced in: by the
+-- time no eager work remains, a discarded result has materialized as an
+-- eraser sitting on the apply's result wire, and the application then
+-- collapses without instantiating — the code pointer and the demanding
+-- eraser are consumed, and the operand is handed to erasure, which
+-- proceeds by the ordinary rules (the guided 'eraRegion' path included).
+-- The check is demand-negative (collapse only what is provably dead),
+-- not demand-positive: an apply whose result faces anything else still
+-- fires speculatively. That residual speculation is safe for every body
+-- this runtime can run — 'Telomare.EAL.cgSpeculatable' is False only for
+-- bodies still carrying unsized recursion oracles, and sizing has
+-- resolved those before any code reaches 'CompiledExpr'.
+fireParked :: Int -> Int -> ICM ()
+fireParked a b = do
+  ka <- kindOf a
+  let (n, m) = case ka of
+        ICApply       -> (a, b)
+        _refFirst     -> (b, a)
+  r <- peer (Port n 2)
+  discarded <- case r of
+    Port e 0 -> kindOf e >>= \case
+      ICEra      -> pure (Just e)
+      _notEraser -> pure Nothing
+    _auxPort -> pure Nothing
+  case discarded of
+    Just e -> do
+      spend "apply-erased"
+      opnd <- peer (Port n 1)
+      deleteNode n >> deleteNode m
+      connect (Port e 0) opnd
+    Nothing -> fire n m
 
 fire :: Int -> Int -> ICM ()
 fire a b = do
@@ -748,16 +823,29 @@ rule n nk m mk = case (nk, mk) of
       sv <- newNode . ICStuckV $
         "projection target is " <> show mk <> ", not a pair"
       connect (Port sv 0) c
-  -- erasure
+  -- erasure. A pair whose head is a code pointer with a published capture
+  -- layout is a closure the plan knows the shape of: drop its materialized
+  -- skeleton directly ('eraRegion') instead of unfolding the generic
+  -- eraser cascade one interaction at a time — the symmetric twin of the
+  -- guided duplication rule below, and the common fate of the closures a
+  -- gate's unselected branch carries.
   (ICEra, ICPair) -> Just $ do
-    spend "era-pair"
     la <- peer (Port m 1)
-    rb <- peer (Port m 2)
-    deleteNode n >> deleteNode m
-    el <- newNode ICEra
-    er <- newNode ICEra
-    connect (Port el 0) la
-    connect (Port er 0) rb
+    dupPlanFor la >>= \case
+      Just shape -> do
+        spend "era-closure"
+        rb <- peer (Port m 2)
+        deleteNode n >> deleteNode m
+        eraRegion CapCode la
+        eraRegion shape rb
+      Nothing -> do
+        spend "era-pair"
+        rb <- peer (Port m 2)
+        deleteNode n >> deleteNode m
+        el <- newNode ICEra
+        er <- newNode ICEra
+        connect (Port el 0) la
+        connect (Port er 0) rb
   (ICEra, ICAborted) -> Just $ do
     spend "era-aborted"
     msg <- peer (Port m 1)
@@ -875,8 +963,9 @@ materialValue (Port node slot)
       k <- kindOf node
       pure $ if valueKind k then Just k else Nothing
 
--- | The capture layout to duplicate a closure by, when the pair's head is
--- a materialized code pointer whose hash has published guidance.
+-- | The capture layout of a closure, when the pair's head is a
+-- materialized code pointer whose hash has published guidance — the plan
+-- both the guided duplication and the guided erasure rules act on.
 dupPlanFor :: Port -> ICM (Maybe CapShape)
 dupPlanFor la = materialValue la >>= \case
   Just (ICRef tid _) -> State.gets (IntMap.lookup tid . icTemplates) >>= \case
@@ -925,6 +1014,36 @@ dupRegion l shape p = materialValue p >>= \mk -> case (shape, mk) of
       connect (Port p2 1) a2
       connect (Port p2 2) b2
       pure (Port p1 0, Port p2 0)
+
+-- | Erase the value region at a delivery port by its capture shape:
+-- delete outright what is already a materialized constructor (pairs,
+-- zeros) or code pointer, and place an eraser — as the generic cascade
+-- would — at every frontier: unmaterialized values, shared or foreign
+-- nodes, and positions the shape does not vouch for. The same safety
+-- argument as 'dupRegion': the shape only chooses where deletion is
+-- attempted, the materialization checks decide, so wrong guidance can
+-- cost performance but never meaning.
+eraRegion :: CapShape -> Port -> ICM ()
+eraRegion shape p = materialValue p >>= \mk -> case (shape, mk) of
+  (CapData, Just ICZero)       -> dropLeaf
+  (CapData, Just ICPair)       -> dropPair CapData CapData
+  (CapCode, Just (ICRef _ _))  -> dropLeaf
+  (CapPair s1 s2, Just ICPair) -> dropPair s1 s2
+  _frontier -> do
+    e <- newNode ICEra
+    connect (Port e 0) p
+  where
+    n = portNode p
+    dropLeaf = do
+      deleteNode n
+      note "era-plan-drop"
+    dropPair s1 s2 = do
+      a <- peer (Port n 1)
+      b <- peer (Port n 2)
+      deleteNode n
+      note "era-plan-drop"
+      eraRegion s1 a
+      eraRegion s2 b
 
 -- | A bounded structural sketch of the value at a node, for error
 -- messages: pairs descend, leaves print their kind, in-flight machinery
@@ -1049,8 +1168,15 @@ icEvalDetailed = icEvalDetailedWith mempty
 icEvalDetailedWith :: Map (Digest SHA256) CapShape -> Int -> CompiledExpr
                    -> (Either ICError CompiledExpr, Map String Int)
 icEvalDetailedWith guidance fuel term =
-  let (r, st) = State.runState (runExceptT go) (emptyState guidance fuel)
+  let (r, st) = icRunState guidance fuel term
   in (r, icStats st)
+
+-- | Run a closed term to a finished net, returning the raw outcome and the
+-- final state — the one entry point the others project from.
+icRunState :: Map (Digest SHA256) CapShape -> Int -> CompiledExpr
+           -> (Either ICError CompiledExpr, ICState)
+icRunState guidance fuel term =
+  State.runState (runExceptT go) (emptyState guidance fuel)
   where
     go = do
       unless (Map.null (envUsage term)) . throwError $
@@ -1066,11 +1192,12 @@ icEvalDetailedWith guidance fuel term =
 icEvalIC :: CompiledExpr -> Either ICError CompiledExpr
 icEvalIC = fst . icEvalDetailed defaultFuel
 
--- | Evaluate under the reference evaluator's contract: an Aborted value
--- surviving anywhere in the result is an 'AbortRunTime' (mirroring the
--- reference checkError); runtime trouble maps onto 'GenericRunTimeError'.
-icEval :: CompiledExpr -> Either RunTimeError CompiledExpr
-icEval term = case icEvalIC term of
+-- | Interpret a finished run under the reference evaluator's contract: an
+-- Aborted value surviving anywhere in the result is an 'AbortRunTime'
+-- (mirroring the reference checkError); runtime trouble maps onto
+-- 'GenericRunTimeError'.
+icOutcome :: Either ICError CompiledExpr -> Either RunTimeError CompiledExpr
+icOutcome = \case
   Left e -> Left $ GenericRunTimeError ("IC runtime: " <> show e) ZeroB
   Right x -> case cata findError x of
     Just msg -> Left $ AbortRunTime msg
@@ -1079,3 +1206,16 @@ icEval term = case icEvalIC term of
     findError = \case
       AbortFW (AbortedF e) -> Just e
       x                    -> asum x
+
+-- | Evaluate under the reference evaluator's contract ('icOutcome').
+icEval :: CompiledExpr -> Either RunTimeError CompiledExpr
+icEval = icOutcome . icEvalIC
+
+-- | One guided run, reported for a driver: the outcome under the reference
+-- contract, the interactions spent against fuel, and the per-event
+-- counters (interaction rules and compile-time notes alike).
+icRunReport :: Map (Digest SHA256) CapShape -> Int -> CompiledExpr
+            -> (Either RunTimeError CompiledExpr, Int, Map String Int)
+icRunReport guidance fuel term =
+  let (r, st) = icRunState guidance fuel term
+  in (icOutcome r, icSpent st, icStats st)

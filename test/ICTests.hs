@@ -8,6 +8,7 @@ import qualified System.IO.Strict as Strict
 import Telomare.Driver (compileUnitTest)
 import Telomare.EAL (CodeGuidance (..), EALLiftedResult (..), ealCaptureLayouts,
                      inferEALCompiled, inferEALWithLifting)
+import Telomare.Eval.IC (ICMeter (..), ICPlan (..), admitIC, evalIC)
 import Telomare.Expand (expandModule, renderExpansionError)
 import Telomare.IC
 import Telomare.IR.Base (AbortableF (..), BasicExpr, pattern AbortB,
@@ -245,6 +246,71 @@ main = do
                   assertBool "plan fired on real closures"
                     (Map.findWithDefault 0 "dup-closure" stats > 0)
         ]
+    , testGroup "closure erasure plans"
+        [ testCase "guided erasure drops the closure skeleton" $ do
+            -- a data-captured closure in a discarded env component: the
+            -- splitter's eraser meets the closure pair, and with a layout
+            -- the whole skeleton (ref, capture pair, zeros) drops in one
+            -- interaction. Construction alone publishes the layout — the
+            -- closure is never applied.
+            let clo = p (d 5 (LeftB EnvB)) (p z z)
+                term = se (p (d 1 (RightB EnvB)) (p clo z))
+                layouts = ealCaptureLayouts
+                  (inferEALWithLifting (compiled2Term3 term))
+                (r, stats) = icEvalDetailedWith layouts defaultFuel term
+                (r0, stats0) = icEvalDetailed defaultFuel term
+            assertBool "has layouts" (not (Map.null layouts))
+            -- guided and generic runs agree, and match the reference
+            r @?= r0
+            r @?= Right z
+            icEval term @?= eval term
+            -- the guided run replaced the eraser cascade
+            assertBool "plan fired"
+              (Map.findWithDefault 0 "era-closure" stats > 0)
+            assertBool "skeleton dropped"
+              (Map.findWithDefault 0 "era-plan-drop" stats > 0)
+            Map.lookup "era-pair" stats @?= Nothing
+            Map.lookup "era-leaf" stats @?= Nothing
+            -- the generic run paid the cascade the plan avoided
+            assertBool "generic cascade present"
+              (Map.findWithDefault 0 "era-pair" stats0 > 0)
+        , testCase "a shape the value outgrew falls back to the frontier" $ do
+            -- the same hash constructed with two different captures merges
+            -- to a weaker shape; erasure must still be correct, dropping
+            -- what the merged shape vouches for and fanning out the rest
+            let cloA = p (d 5 (LeftB EnvB)) (p z z)
+                cloB = p (d 5 (LeftB EnvB)) (p (d 6 z) z)
+                term = p (se (p (d 1 (RightB EnvB)) (p cloA z)))
+                         (se (p (d 2 (RightB EnvB)) (p cloB z)))
+                layouts = ealCaptureLayouts
+                  (inferEALWithLifting (compiled2Term3 term))
+                (r, _) = icEvalDetailedWith layouts defaultFuel term
+            r @?= icEvalIC term
+            r @?= Right (p z z)
+        ]
+    , testGroup "driver admission"
+        [ testCase "a certified program is admitted and runs guided" $
+            case parse "main = take $5 [1,2,3]"
+                   >>= first show . compileUnitTest of
+              Left e -> assertFailure $ "compile failed: " <> e
+              Right c -> case admitIC c of
+                Left refusal -> assertFailure $ "refused: " <> refusal
+                Right plan -> do
+                  -- the driver's shape: admit the program once, then
+                  -- evaluate its applications under the granted plan
+                  let t = se (p (d 0 c) z)
+                      (m, r) = evalIC plan t
+                  assertBool "layouts granted"
+                    (not (Map.null (icPlanLayouts plan)))
+                  r @?= eval t
+                  assertBool "interactions measured"
+                    (icMeterInteractions m > 0)
+        , testCase "an uncertified program is refused with the verdict" $
+            case admitIC omegaApplied of
+              Left refusal -> assertBool ("refusal names it: " <> refusal)
+                ("does not certify" `isInfixOf` refusal)
+              Right _ -> assertFailure "omega must not be admitted"
+        ]
     , testGroup "application"
         [ expectTest "identity defer" (se (p (d 100 EnvB) z)) (Right z)
         , expectTest "constant body erases its env"
@@ -344,17 +410,20 @@ main = do
             (se (p (d 200 (iteB (p z z) (LeftB EnvB) omegaApplied))
                    (p z z)))
             (Right z)
-        , testCase "strict ite speculates: a diverging dead branch is fuel death" $ do
-            -- iteB_-style raw branches are fired eagerly by the net (the
-            -- price of speculation); the lazy reference evaluator skips
-            -- them, so this is a deliberate, documented divergence
+        , testCase "strict ite: a diverging dead branch collapses, not runs" $ do
+            -- iteB_-style raw branches enter the net as in-flight
+            -- computations, but instantiation is demand-checked: once the
+            -- selector's eraser reaches the dead branch, its parked
+            -- applications collapse instead of unrolling omega to fuel
+            -- death, and the net agrees with the lazy reference
             let strict = se (p (d 201 (se (p (se (p GateB (p z z)))
                                             (p omegaApplied (LeftB EnvB)))))
                              (p z z))
+                (r, stats) = icEvalDetailed 50000 strict
             eval strict @?= Right z
-            case fst (icEvalDetailed 50000 strict) of
-              Left (ICFuelExhausted _) -> pure ()
-              r -> assertFailure $ "expected fuel exhaustion, got " <> show r
+            r @?= Right z
+            assertBool "dead applications collapsed"
+              (Map.findWithDefault 0 "apply-erased" stats > 0)
         , expectTest "strict ite with a stuck dead branch still agrees"
             -- bounded dead code is fine under speculation: the stuck value
             -- is erased with the unselected branch

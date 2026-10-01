@@ -8,15 +8,20 @@ module Telomare.Driver where
 import Control.Comonad.Cofree (Cofree)
 import Control.Monad (void, (>=>))
 import qualified Control.Monad.State as State
+import Crypto.Hash (Digest, SHA256)
 import Data.Bifunctor (first)
+import Data.Map (Map)
+import qualified Data.Map as Map
 
 import qualified Control.Comonad.Trans.Cofree as CofreeT
 import Control.Lens (Identity (runIdentity))
 import Data.Functor.Foldable (cata, embed)
 import Debug.Trace
 import Telomare.Desugar (desugarTerm)
-import Telomare.EAL (certifyMain)
+import Telomare.EAL (CodeGuidance (..), EALResult, certifyMain, ealGuidance,
+                     ealLiftedMain, inferEALCompiled)
 import Telomare.Error
+import Telomare.Eval.IC (ICMeter, ICPlan (..), evalIC, renderRefusal)
 import Telomare.Eval.Meter (Meter, evalMeter)
 import Telomare.Eval.Reference ()
 import Telomare.Expand (expandDefs, expandModule, expandTerm,
@@ -98,19 +103,65 @@ runStaticChecks t =
     Just e  -> Left . StaticCheckError $ convertAbortMessage e
 
 compileMain :: ExpandedModules -> String -> Either EvalError CompiledExpr
-compileMain modules term = snd <$> compileMainReporting MainSizing modules term
+compileMain modules term = cpExpr <$> compileMainReporting MainSizing modules term
 
--- |`compileMain`, keeping the sizing results. Sizing costs minutes on
--- Prelude-heavy programs, so anything that wants to report the inferred
--- iteration counts must come by them through here rather than size again.
+-- |The compilation product: the sized program together with everything
+-- compilation proved about it. The EAL fields come from one post-sizing
+-- inference over the code that will actually run — distinct from the
+-- pre-sizing 'certifyMain' gate, whose verdict is about the recursion
+-- scaffolding as well. They are lazy, so a run on the reference evaluator
+-- never pays for them; writing an artifact or admitting the IC runtime
+-- forces them once, and from then on they travel with the program.
+data CompiledProgram = CompiledProgram
+  { cpSizing   :: SizingReport
+    -- ^ What sizing found, so reporting it never needs a second sizing run.
+  , cpExpr     :: CompiledExpr
+    -- ^ The sized program.
+  , cpGuidance :: Map (Digest SHA256) CodeGuidance
+    -- ^ Per-hash guidance for every body that certified standalone,
+    -- post-sizing — the map runtime strategies draw on.
+  , cpVerdict  :: Either String EALResult
+    -- ^ The post-sizing whole-program verdict. The reference evaluator
+    -- ignores it; IC admission ('programPlan') is exactly this field.
+    -- A refusal is carried rendered: it is for showing, and keeping it
+    -- structured would mean serializing blame chains into artifacts.
+  }
+
+-- |Package a sized program with its post-sizing EAL product.
+certifiedProgram :: SizingReport -> CompiledExpr -> CompiledProgram
+certifiedProgram report sized = CompiledProgram
+  { cpSizing = report
+  , cpExpr = sized
+  , cpGuidance = Map.fromList
+      [ (h, g) | (h, Right g) <- Map.toList (ealGuidance lr) ]
+  , cpVerdict = first (const (renderRefusal lr)) (ealLiftedMain lr)
+  }
+  where lr = inferEALCompiled sized
+
+-- |IC admission, read off the carried verdict: the plan when the program
+-- certified post-sizing, the rendered refusal when it did not. Unlike
+-- `Telomare.Eval.IC.admitIC` this runs no inference — compilation already
+-- did — so admitting an artifact is a field access.
+programPlan :: CompiledProgram -> Either String ICPlan
+programPlan cp = case cpVerdict cp of
+  Left refusal -> Left refusal
+  Right _      -> Right . ICPlan $
+    Map.mapMaybe cgCaptureLayout (cpGuidance cp)
+
+-- |`compileMain`, keeping everything the compile proved. Sizing costs
+-- minutes on Prelude-heavy programs and the post-sizing EAL inference is
+-- the IC runtime's admission certificate, so anything that wants either
+-- must come by them through here rather than derive them again.
 compileMainReporting :: SizingOption
                      -> ExpandedModules
                      -> String
-                     -> Either EvalError (SizingReport, CompiledExpr)
+                     -> Either EvalError CompiledProgram
 compileMainReporting so modules term = do
   certTerm <- first RE $ main2Term3 modules term
   _ <- first CertificationError $ certifyMain certTerm
-  first RE (main2Term3let modules term) >>= compileReporting so pure
+  (report, sized) <- first RE (main2Term3let modules term)
+    >>= compileReporting so pure
+  pure $ certifiedProgram report sized
 
 -- for testing
 compileMain' :: SizingSettings -> Term3 -> Either EvalError CompiledExpr
@@ -167,15 +218,15 @@ funWrapWith evaluator fun app inp =
       Just _ -> error "Telomare.Driver.funWrapWith: unexpected iteration value"
     Left e -> ("runtime error:\n" <> show e, Left e)
 
--- |Parse and compile a module set, keeping the sizing results. Every problem
--- comes back as text a user can act on rather than as an exception, so callers
--- decide how to report it.
+-- |Parse and compile a module set into the full compilation product. Every
+-- problem comes back as text a user can act on rather than as an exception,
+-- so callers decide how to report it.
 --
 -- Each module is parsed under its own name, so the locations in diagnostics
 -- can say which file a term came from.
 compileModules :: [(String, String)] -- ^All modules as (Module_Name, Module_Content)
                -> String -- ^Module's name with `main` function
-               -> Either String (SizingReport, CompiledExpr)
+               -> Either String CompiledProgram
 compileModules = compileModulesWith MainSizing
 
 -- |`compileModules` at a chosen sizing budget. Tests use a deliberately tiny
@@ -184,7 +235,7 @@ compileModules = compileModulesWith MainSizing
 compileModulesWith :: SizingOption
                    -> [(String, String)]
                    -> String
-                   -> Either String (SizingReport, CompiledExpr)
+                   -> Either String CompiledProgram
 compileModulesWith so modulesStrings s =
   case [ "Error in module " <> moduleName <> ":\n" <> err
        | (moduleName, Left err) <- parsed ] of
@@ -205,8 +256,8 @@ runMainCore :: [(String, String)] -- ^All modules as (Module_Name, Module_Conten
 runMainCore modulesStrings s e = case compileModules modulesStrings s of
   -- Still an exception, since callers depend on that; the CLI takes the
   -- `compileModules` route instead so a user never sees this framing.
-  Left err         -> error $ "runMainCore failed: " <> err
-  Right (_, sized) -> e sized
+  Left err -> error $ "runMainCore failed: " <> err
+  Right cp -> e (cpExpr cp)
 
 runMain_ :: [(String, String)] -- ^All modules as (Module_Name, Module_Content)
          -> String -- ^Module's name with `main` function
@@ -273,6 +324,14 @@ evalLoopWithInput inputList iexpr = snd <$> evalLoopCore plainEval iexpr keepAcc
 -- `evalLoop` prints; the caller decides what to do with the measurement.
 evalLoopMetered :: [String] -> CompiledExpr -> IO Meter
 evalLoopMetered manualInput expr = fst <$> evalLoopCore evalMeter expr printAccum "" manualInput
+
+-- |`evalLoop` on the interaction-combinator runtime, measuring what the
+-- session cost in interactions. The caller comes by the plan through
+-- `Telomare.Eval.IC.admitIC`, so the certificate is computed once per
+-- program rather than once per iteration.
+evalLoopIC :: [String] -> ICPlan -> CompiledExpr -> IO ICMeter
+evalLoopIC manualInput plan expr =
+  fst <$> evalLoopCore (evalIC plan) expr printAccum "" manualInput
 
 -- |Same as `evalLoop`, but keeping what was displayed.
 evalLoop_ :: CompiledExpr -> IO String

@@ -6,6 +6,7 @@
 -- that is what most of this checks.
 module RunModeTests where
 
+import Control.Monad (void)
 import qualified Data.ByteString.Lazy.Char8 as BL
 import Data.List (isInfixOf)
 import qualified Data.Map as Map
@@ -15,7 +16,7 @@ import Test.Hspec
 import Telomare.Artifact (Artifact (..), decodeArtifact, encodeArtifact,
                           nodeCount, sourcesHash)
 import Telomare.Certificate (renderStaticReport)
-import Telomare.Driver (compileModules)
+import Telomare.Driver (CompiledProgram (..), compileModules, programPlan)
 import Telomare.Fast (FastError (..), FastMeter (..), compileFast,
                       runFastWithInput)
 import Telomare.IR.Base
@@ -32,19 +33,22 @@ runModeSpec = do
       modules <- loadWith "simpleplus.tel" "simpleplus"
       case compileModules modules "simpleplus" of
         Left err -> expectationFailure $ "failed to compile simpleplus.tel:\n" <> err
-        Right (report, sized) -> do
-          let artifact = Artifact
+        Right cp -> do
+          let report = cpSizing cp
+              artifact = Artifact
                 { artifactEntry = "simpleplus"
                 , artifactSourceHash = sourcesHash modules
                 , artifactReport = report
                 , artifactCertificate = "the certificate text"
-                , artifactExpr = sized
+                , artifactExpr = cpExpr cp
+                , artifactGuidance = cpGuidance cp
+                , artifactVerdict = cpVerdict cp
                 }
           case decodeArtifact (encodeArtifact artifact) of
             Left err -> expectationFailure $ "failed to decode:\n" <> err
             Right back -> do
               -- The program itself must survive exactly: this is what will run.
-              artifactExpr back `shouldBe` sized
+              artifactExpr back `shouldBe` cpExpr cp
               artifactEntry back `shouldBe` "simpleplus"
               artifactSourceHash back `shouldBe` sourcesHash modules
               artifactCertificate back `shouldBe` "the certificate text"
@@ -54,18 +58,30 @@ runModeSpec = do
                 `shouldBe` unSizedRecursion (sizingReportCounts report)
               sizingReportLocs (artifactReport back) `shouldBe` sizingReportLocs report
               sizingReportBudget (artifactReport back) `shouldBe` sizingReportBudget report
+              -- And the EAL product, for the same reason: admitting the IC
+              -- runtime from an artifact must not need a second inference.
+              artifactGuidance back `shouldBe` cpGuidance cp
+              artifactVerdict back `shouldBe` cpVerdict cp
 
     it "evaluates to what the program it came from evaluates to" $ do
       modules <- loadWith "tc_ultra_minimal.tel" "tc_ultra_minimal"
       case compileModules modules "tc_ultra_minimal" of
         Left err -> expectationFailure $ "failed to compile:\n" <> err
-        Right (report, sized) -> do
-          let artifact = Artifact "tc_ultra_minimal" (sourcesHash modules) report "" sized
+        Right cp -> do
+          let artifact = Artifact "tc_ultra_minimal" (sourcesHash modules)
+                (cpSizing cp) "" (cpExpr cp) (cpGuidance cp) (cpVerdict cp)
           case decodeArtifact (encodeArtifact artifact) of
             Left err -> expectationFailure $ "failed to decode:\n" <> err
-            Right back ->
+            Right back -> do
               fmap show (eval (appB (artifactExpr back) ZeroB))
-                `shouldBe` fmap show (eval (appB sized ZeroB))
+                `shouldBe` fmap show (eval (appB (cpExpr cp) ZeroB))
+              -- The stored verdict decides IC admission exactly as the
+              -- fresh compile's does.
+              let backProgram = CompiledProgram (artifactReport back)
+                    (artifactExpr back) (artifactGuidance back)
+                    (artifactVerdict back)
+              void (programPlan backProgram)
+                `shouldBe` void (programPlan cp)
 
     it "refuses a file that is not one, rather than misreading it" $ do
       isLeftContaining "magic" (decodeArtifact (BL.pack "not a telomare artifact at all"))
@@ -135,8 +151,8 @@ runModeSpec = do
       modules <- loadWith "simpleplus.tel" "simpleplus"
       case compileModules modules "simpleplus" of
         Left err -> expectationFailure $ "failed to compile simpleplus.tel:\n" <> err
-        Right (sizing, _) -> do
-          let report = renderStaticReport (Just "somehash") (Just sizing)
+        Right cp -> do
+          let report = renderStaticReport (Just "somehash") (Just (cpSizing cp))
                 (levelsInfo modules "simpleplus")
           report `shouldSatisfy` isInfixOf "somehash"
           report `shouldSatisfy` isInfixOf "recursion sites (iterations, over every input)"
@@ -152,7 +168,7 @@ runModeSpec = do
         Left err -> expectationFailure $ "failed to compile simpleplus.tel:\n" <> err
         -- Sizing bakes iteration counts in as towers, so the compiled program
         -- is far bigger than its source.
-        Right (_, sized) -> nodeCount sized `shouldSatisfy` (> 1000)
+        Right cp -> nodeCount (cpExpr cp) `shouldSatisfy` (> 1000)
 
 isLeft :: Either a b -> Bool
 isLeft = either (const True) (const False)

@@ -3,7 +3,7 @@
 
 module Main where
 
-import Control.Monad (unless, when)
+import Control.Monad (unless, void, when)
 import Data.Maybe (fromMaybe)
 import qualified Options.Applicative as O
 import System.Directory (doesFileExist)
@@ -15,7 +15,9 @@ import Telomare.Artifact (Artifact (..), isArtifactPath, nodeCount,
                           readArtifact, sourcesHash, telcExtension,
                           writeArtifact)
 import Telomare.Certificate (renderStaticReport)
-import Telomare.Driver (compileModules, evalLoop, evalLoopMetered)
+import Telomare.Driver (CompiledProgram (..), compileModules, evalLoop,
+                        evalLoopIC, evalLoopMetered, programPlan)
+import Telomare.Eval.IC (ICPlan, renderICMeter)
 import Telomare.Eval.Meter (renderMeter)
 import Telomare.Fast (compileFast, defaultFastFuel, renderFastMeter,
                       runFastLoop)
@@ -44,7 +46,19 @@ data Mode
   | Fast (Maybe Int)
   -- ^Skip sizing and run the recursion on demand, under a fuel cap. Faster to
   -- start, and proves nothing.
+  | ICRuntime
+  -- ^Size as usual, then run on the interaction-combinator runtime
+  -- ('Telomare.IC'): admission-gated on the program's EAL certificate, and
+  -- guided by the capture layouts the certificate publishes.
   deriving (Eq, Show)
+
+-- |Which evaluator a run uses, once the program is compiled.
+data Runtime = Reference | ICNet deriving (Eq, Show)
+
+runtimeOf :: Mode -> Runtime
+runtimeOf = \case
+  ICRuntime -> ICNet
+  _         -> Reference
 
 data TelomareOpts = TelomareOpts
   { telomareFile   :: String
@@ -78,6 +92,10 @@ telomareOpts = TelomareOpts
                         <> O.help "Run without sizing: starts immediately, but nothing \
                                   \proves the program terminates" )
              *> (Fast <$> fuel)
+       O.<|> O.flag' ICRuntime
+             ( O.long "ic"
+               <> O.help "Run on the interaction-combinator runtime, gated on the \
+                         \program's EAL certificate and guided by its capture layouts" )
        O.<|> pure Sized
     fuel = fmap toCap . O.optional $ O.option O.auto
       ( O.long "fuel" <> O.metavar "N"
@@ -122,7 +140,7 @@ main = do
     then runArtifact file action (telomareMode topts)
     else case telomareMode topts of
       Fast fuel -> runFast file action fuel
-      Sized     -> runSized file action
+      mode      -> runSized (runtimeOf mode) file action
 
 die :: String -> IO a
 die message = hPutStrLn stderr message >> exitFailure
@@ -135,21 +153,30 @@ reportMeter rendered = do
   hPutStr stderr rendered
 
 -- |A program already compiled: nothing to parse, typecheck, resolve or size.
+-- The runtime choice still applies, and costs nothing extra — the EAL
+-- admission the IC runtime needs was decided at compile time and stored,
+-- so `--ic` on an artifact is a field read, not an inference.
 runArtifact :: FilePath -> Action -> Mode -> IO ()
 runArtifact path action mode = do
-  when (mode /= Sized) $
-    hPutStrLn stderr "note: --fast does not apply to an already-compiled program"
+  case mode of
+    Fast _ ->
+      hPutStrLn stderr "note: --fast does not apply to an already-compiled program"
+    _sizedOrIC -> pure ()
   readArtifact path >>= \case
     Left err -> die $ path <> ": " <> err
     Right artifact -> do
       warnIfStale artifact
+      let cp = CompiledProgram
+            { cpSizing = artifactReport artifact
+            , cpExpr = artifactExpr artifact
+            , cpGuidance = artifactGuidance artifact
+            , cpVerdict = artifactVerdict artifact
+            }
       case action of
         Compile _   -> die $ path <> " is already compiled"
         Certificate -> putStr $ artifactCertificate artifact
-        Run         -> evalLoop (artifactExpr artifact)
-        Meter       -> do
-          measured <- evalLoopMetered [] (artifactExpr artifact)
-          reportMeter $ renderMeter measured <> "\n"
+        Run         -> runCompiled (runtimeOf mode) Run cp
+        Meter       -> runCompiled (runtimeOf mode) Meter cp
 
 -- |An artifact outlives the checkout it came from, so a hash mismatch is worth
 -- saying and never worth refusing over.
@@ -164,32 +191,54 @@ warnIfStale artifact = do
         "note: the sources have changed since this program was compiled; \
         \recompile it to pick the changes up"
 
+-- |Gate a session on the carried verdict: a refusal is a user-facing
+-- report, not a crash, and nothing runs on the net without admission.
+withICPlan :: CompiledProgram -> (ICPlan -> IO a) -> IO a
+withICPlan cp k = either die k (programPlan cp)
+
+-- |Run (or run-and-meter) a compiled program on the chosen runtime; the
+-- artifact and fresh-compile routes share this.
+runCompiled :: Runtime -> Action -> CompiledProgram -> IO ()
+runCompiled runtime action cp = case (action, runtime) of
+  (Run, Reference) -> evalLoop (cpExpr cp)
+  (Run, ICNet) -> withICPlan cp $ \plan -> void (evalLoopIC [] plan (cpExpr cp))
+  (Meter, Reference) -> do
+    measured <- evalLoopMetered [] (cpExpr cp)
+    reportMeter $ renderMeter measured <> "\n"
+  (Meter, ICNet) -> withICPlan cp $ \plan -> do
+    measured <- evalLoopIC [] plan (cpExpr cp)
+    reportMeter $ renderICMeter measured
+  _notARun -> die "runCompiled: only Run and Meter reach here"
+
 -- |The usual route. Sizing costs minutes on Prelude-heavy programs, so every
 -- action here works from one compile.
-runSized :: FilePath -> Action -> IO ()
-runSized file action = do
+runSized :: Runtime -> FilePath -> Action -> IO ()
+runSized runtime file action = do
   let entryModule = takeBaseName file
   allModules <- getModulesFor entryModule
   case compileModules allModules entryModule of
     Left err -> die err
-    Right (report, sized) -> case action of
-      Run -> evalLoop sized
-      Certificate -> putStr $ staticReport Nothing (Just report) allModules entryModule
-      Meter -> do
-        measured <- evalLoopMetered [] sized
-        reportMeter $ renderMeter measured <> "\n"
+    Right cp -> case action of
+      Run -> runCompiled runtime Run cp
+      Certificate ->
+        putStr $ staticReport Nothing (Just (cpSizing cp)) allModules entryModule
+      Meter -> runCompiled runtime Meter cp
       Compile output -> do
         let path = fromMaybe (replaceExtension file telcExtension) output
-            certificate = staticReport Nothing (Just report) allModules entryModule
+            certificate =
+              staticReport Nothing (Just (cpSizing cp)) allModules entryModule
             artifact = Artifact
               { artifactEntry = entryModule
               , artifactSourceHash = sourcesHash allModules
-              , artifactReport = report
+              , artifactReport = cpSizing cp
               , artifactCertificate = certificate
-              , artifactExpr = sized
+              , artifactExpr = cpExpr cp
+              , artifactGuidance = cpGuidance cp
+              , artifactVerdict = cpVerdict cp
               }
         writeArtifact path artifact
-        hPutStrLn stderr $ "wrote " <> path <> " (" <> show (nodeCount sized)
+        hPutStrLn stderr $ "wrote " <> path
+          <> " (" <> show (nodeCount (cpExpr cp))
           <> " nodes, sources " <> take 12 (sourcesHash allModules) <> ")"
 
 -- |Without sizing. The program runs on demand under a fuel cap; no iteration

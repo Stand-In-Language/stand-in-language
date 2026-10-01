@@ -28,6 +28,7 @@ library
                      , Telomare.Error
                      , Telomare.Driver
                      , Telomare.IC
+                     , Telomare.Eval.IC
                      , Telomare.Eval.Reference
                      , Telomare.Fast
                      , Telomare.IR.Base
