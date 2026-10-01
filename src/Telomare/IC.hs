@@ -593,8 +593,8 @@ fireParked :: Int -> Int -> ICM ()
 fireParked a b = do
   ka <- kindOf a
   let (n, m) = case ka of
-        ICApply       -> (a, b)
-        _refFirst     -> (b, a)
+        ICApply   -> (a, b)
+        _refFirst -> (b, a)
   r <- peer (Port n 2)
   discarded <- case r of
     Port e 0 -> kindOf e >>= \case
