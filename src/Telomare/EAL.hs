@@ -76,16 +76,15 @@ module Telomare.EAL where
 
 import Control.Applicative ((<|>))
 import Control.Comonad.Cofree (Cofree ((:<)))
-import Data.Bifunctor (first)
 import Control.Monad (filterM, foldM, forM, forM_, unless, void, when,
                       zipWithM_)
 import Control.Monad.Except
 import Control.Monad.State.Strict (State)
 import qualified Control.Monad.State.Strict as State
 import Crypto.Hash (Digest, SHA256)
+import Data.Bifunctor (first)
 import Data.Graph (SCC (..), stronglyConnComp)
 import qualified Data.Graph as Graph
-import qualified Data.Tree as Tree
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
 import Data.IntSet (IntSet)
@@ -98,6 +97,7 @@ import Data.Ord (comparing)
 import Data.Ratio (denominator, numerator)
 import Data.Set (Set)
 import qualified Data.Set as Set
+import qualified Data.Tree as Tree
 import Telomare.Error (Blame (..), EALError (..), renderEALError)
 import Telomare.IR.Base (AbortableF (..), BasicExprF (..), FunctionIndex,
                          StuckF (..), pattern AbortFW, pattern BasicFW,
@@ -626,7 +626,7 @@ rejectSelfReference loc c = selfReferential c >>= \case
         <> " interface (cycle through " <> unwords (fmap name cycleTags) <> ")"
 
 firstJustM :: Monad m => (a -> m (Maybe b)) -> [a] -> m (Maybe b)
-firstJustM _ [] = pure Nothing
+firstJustM _ []     = pure Nothing
 firstJustM f (x:xs) = f x >>= maybe (firstJustM f xs) (pure . Just)
 
 -- * Type unification
@@ -827,14 +827,14 @@ envPath (_ :< t) = case t of
 -- * Constraint generation
 
 data DeferCtx = DeferCtx
-  { dcBang  :: BVar -- ^ bang count on this frame's env domain
-  , dcTau   :: Tau  -- ^ this frame's env type
-  , dcUnit  :: BVar -- ^ the analysis-wide unit (a bang of exactly one, up
+  { dcBang     :: BVar -- ^ bang count on this frame's env domain
+  , dcTau      :: Tau  -- ^ this frame's env type
+  , dcUnit     :: BVar -- ^ the analysis-wide unit (a bang of exactly one, up
                     --   to the homogeneous scaling of the whole system)
   , dcDoorList :: [BVar] -- ^ the door variables themselves
-  , dcIndex :: Maybe FunctionIndex -- ^ the body this frame instantiates
+  , dcIndex    :: Maybe FunctionIndex -- ^ the body this frame instantiates
                                    --   (Nothing for the program itself)
-  , dcDoors :: Map [Step] BVar
+  , dcDoors    :: Map [Step] BVar
     -- ^ per capture path this body duplicates: the part of the
     -- component's bang the body still has to open (the rest, one unit,
     -- is consumed by the contraction outside the closure's box)
@@ -1418,7 +1418,7 @@ messageAborts vis t = walkTau t >>= \case
         pure $ if null verdicts then Just False else foldr1 both verdicts
   where
     both (Just a) (Just b) = Just (a && b)
-    both _ _ = Nothing
+    both _ _               = Nothing
 
 -- * Constraint solving
 
@@ -1515,7 +1515,7 @@ derivedBlame what (Blame l s) = Blame l (what <> ": " <> s)
 -- | Zeros propagate: an unboxed total has unboxed summands; a total whose
 -- summands are all unboxed (none, in particular) is unboxed.
 zeroStep :: [EqR] -> EALM Bool
-zeroStep eqs = foldM step False eqs where
+zeroStep = foldM step False where
   step acc (EqR lhs rhs blame) = do
     rhsZero <- isForcedZero <$> classInfo rhs
     lhsZero <- mapM (fmap isForcedZero . classInfo) lhs
@@ -1533,14 +1533,14 @@ zeroStep eqs = foldM step False eqs where
 
 -- | A total with exactly one boxable summand equals it: merge the classes.
 equalityStep :: [EqR] -> EALM Bool
-equalityStep eqs = foldM step False eqs where
+equalityStep = foldM step False where
   step acc (EqR lhs rhs _) = do
     rhs' <- findB (BVar rhs)
     lhs' <- mapM (findB . BVar) lhs
     boxable <- filterM (fmap (not . isForcedZero) . classInfo) lhs'
     case boxable of
       [l] | l /= rhs' -> unionB (BVar l) (BVar rhs') >> pure True
-      _notLone -> pure acc
+      _notLone        -> pure acc
 
 -- | On the graph with an edge from every summand to its total (summand
 -- <= total), the members of a cycle are all equal. Merge them, and in
@@ -1591,7 +1591,7 @@ cycleStep eqs = do
 -- | Lower bounds add up: a total is at least the sum of its summands'
 -- lower bounds.
 boundStep :: [EqR] -> EALM Bool
-boundStep eqs = foldM step False eqs where
+boundStep = foldM step False where
   step acc (EqR lhs rhs blame) = do
     s <- sum <$> mapM (fmap getLowerBound . classInfo) lhs
     if s > 0
@@ -1856,14 +1856,14 @@ runSimplex = go False where
   go bland tab = case entering of
     Nothing -> tab
     Just c -> case leaving c of
-      Nothing -> tab -- unbounded: impossible for a nonnegative objective
+      Nothing              -> tab -- unbounded: impossible for a nonnegative objective
       Just (r, degenerate) -> go degenerate (pivot r c tab)
     where
       improving = filter ((< 0) . snd) (IntMap.toAscList (tbObj tab))
       entering = case improving of
-        [] -> Nothing
+        []                  -> Nothing
         (first : _) | bland -> Just (fst first)
-        _ -> Just (fst (minimumBy (comparing snd) improving))
+        _                   -> Just (fst (minimumBy (comparing snd) improving))
       leaving c =
         let candidates = [ (b / a, tbBasis tab IntMap.! i, i)
                          | i <- IntSet.toList (IntMap.findWithDefault IntSet.empty c (tbCols tab))
@@ -1887,7 +1887,7 @@ dropArtificials artBase tab0 =
             Just (row, _) ->
               case [ j | (j, a) <- IntMap.toAscList row, j < artBase, a /= 0 ] of
                 (j : _) -> pivot i j tab
-                [] -> deleteRow i tab
+                []      -> deleteRow i tab
       strip = IntMap.filterWithKey (\c _ -> c < artBase)
   in mkTab (IntMap.map (first strip) (tbRows tab1)) (tbBasis tab1)
        (strip (tbObj tab1))
