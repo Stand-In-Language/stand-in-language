@@ -21,8 +21,8 @@ import qualified Control.Comonad.Trans.Cofree as CofreeT (CofreeF (..))
 import Data.Foldable
 import Data.Functor.Foldable
 import Data.Map.Strict (Map)
-import Data.Maybe (isNothing)
 import qualified Data.Map.Strict as Map
+import Data.Maybe (isNothing)
 -- import Data.SBV ((.<), (.>))
 import Control.Exception (Exception)
 import Control.Exception.Base (throw)
