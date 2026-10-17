@@ -551,7 +551,7 @@ userDefAdHocTypesSuccess :: String
 userDefAdHocTypesSuccess = unlines
   [ "import Prelude"
   , "[MyInt, mkMyInt, unMyInt] = \\h ->"
-  , "  [ \\i -> if not i"
+  , "  [ \\i -> if not (toBool i)"
   , "          then \"MyInt must not be 0\""
   , "          else (h, i)"
   , "  , \\(i : MyInt) -> i"
@@ -563,7 +563,7 @@ userDefAdHocTypesFailure :: String
 userDefAdHocTypesFailure = unlines
   [ "import Prelude"
   , "[MyInt, mkMyInt, unMyInt] = \\h ->"
-  , "  [ \\i -> if not i"
+  , "  [ \\i -> if not (toBool i)"
   , "          then \"MyInt must not be 0\""
   , "          else (h, i)"
   , "  , \\(i : MyInt) -> i"

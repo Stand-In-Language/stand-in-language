@@ -57,12 +57,17 @@ findPatternVars _anno = cata alg where
     _                     -> Map.empty
 
 -- TODO: Annotate without so much fuzz
+-- |Checks that every pair node of the pattern is a pair in the term. The
+-- nodes are arbitrary values, so each is coerced to a Bool before it reaches
+-- @and@, whose arguments are refined to Bool.
 pairStructureCheck :: PatternA -> DesugaredSurfaceTerm -> DesugaredSurfaceTerm
-pairStructureCheck p upt = let a = GeneratedLoc "pairStructureCheck" Nothing in
-  AppP (AppP (AppP (rewriteOuterTag a $ VarP "__case_foldl")
-                      (VarP "__case_and"))
-               (a :< IntUPF 1))
-        ((a :<) . ListUPF $ ($ upt) <$> pairRoute2Dirs p)
+pairStructureCheck p upt = let a = GeneratedLoc "pairStructureCheck" Nothing
+                               toBool :: DesugaredSurfaceTerm -> DesugaredSurfaceTerm
+                               toBool x = ITEP x (a :< IntUPF 1) (a :< IntUPF 0)
+  in AppP (AppP (AppP (rewriteOuterTag a $ VarP "__case_foldl")
+                         (VarP "__case_and"))
+                  (a :< IntUPF 1))
+           ((a :<) . ListUPF $ toBool . ($ upt) <$> pairRoute2Dirs p)
 
 pairRoute2Dirs :: PatternA -> [DesugaredSurfaceTerm -> DesugaredSurfaceTerm]
 pairRoute2Dirs = cata alg where

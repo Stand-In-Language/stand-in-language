@@ -3,7 +3,7 @@ isEven = \n -> { \i -> left i
                , \i -> right i
                } (n, 1)
 
-validAscii = \x -> assert (not ($127 left x)) "invalid character"
+validAscii = \x -> assert (not (toBool ($127 left x))) "invalid character"
 
 main = \input -> let userInput = left input
                      firstChar = left userInput
@@ -18,7 +18,6 @@ main = \input -> let userInput = left input
                                      -- , "--"
                                      -- , if left limInput then "there's something there" else "oh no, nothing!"
                                      ]
-                     -- output = if isEven limInput then "A" else "B"
-                 in if not input
+                 in if not (toBool input)
                     then ("enter a character", 1)
                     else (output, 0)

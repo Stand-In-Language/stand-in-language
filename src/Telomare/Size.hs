@@ -2,6 +2,7 @@
 {-# LANGUAGE FlexibleContexts     #-}
 {-# LANGUAGE FlexibleInstances    #-}
 {-# LANGUAGE LambdaCase           #-}
+{-# LANGUAGE PatternSynonyms      #-}
 {-# LANGUAGE ScopedTypeVariables  #-}
 {-# LANGUAGE TypeFamilies         #-}
 {-# LANGUAGE TypeOperators        #-}
@@ -20,6 +21,7 @@ import qualified Control.Comonad.Trans.Cofree as CofreeT (CofreeF (..))
 import Data.Foldable
 import Data.Functor.Foldable
 import Data.Map.Strict (Map)
+import Data.Maybe (isNothing)
 import qualified Data.Map.Strict as Map
 -- import Data.SBV ((.<), (.>))
 import Control.Exception (Exception)
@@ -73,6 +75,13 @@ extractInputRestrictions = cleanup . f Nothing where
       Just True  -> Just (StrictAccum (InputRestrictions mempty (Set.singleton n)) $ PairB ZeroB ZeroB)
       _          -> Just (StrictAccum mempty ZeroB) -- is this ok?
     FillFunction (AbortEE AbortF) i -> f (Just False) i
+    -- a value guarded by a nested refinement check (see 'GuardedEE')
+    FillFunction (FillFunctionEE (AbortEE AbortF) chk) v -> do
+      StrictAccum sc _ <- f (Just False) chk
+      StrictAccum sv v' <- f expected v
+      pure $ StrictAccum (sc <> sv) v'
+    -- a function value is neither impossible nor restricting
+    d@(StuckFW (DeferSF _ _)) | isNothing expected -> pure . pure $ embed d
     GateSwitch l r s ->
       let nl = f expected l
           nr = f expected r
@@ -99,16 +108,67 @@ findInputLimitStepM handleOther x = f x where
     UnsizedFW (RefinementWrapperF _lt tc c) ->
       let
           performTC = SetEnvB $ PairB (AbortEE AbortF) (appB tc c)
-          wrapDefer = \case
-            FillFunction GateB i@(IndexedEE _) -> deferredEE . BarrierF . embed $ FillFunction GateB i
-            other -> error $ "findInputLimitStepM eval unexpected:\n" <> prettyPrint other
-          evalStep = basicStep (stuckStep (abortStep (deferredEvalStep (abortDeferredStep (indexedInputStep Set.empty wrapDefer)))))
           stripBarrier = \case
             DeferredFW (BarrierF inner) -> inner
             other -> embed other
-          s = extractInputRestrictions . cata stripBarrier . transformNoDefer evalStep $ performTC
+          s = extractInputRestrictions . cata stripBarrier . transformNoDefer refinementCheckStep $ performTC
       in StrictAccum s c
     _ -> handleOther x
+
+-- |A value guarded by a refinement check that could not be decided against
+-- symbolic input: @abort chk v@ yields @v@ when @chk@ is zero, and aborts
+-- otherwise. Barrier-wrapped, since @chk@ is always a residual here.
+pattern GuardedEE :: InputSizingExpr -> InputSizingExpr -> InputSizingExpr
+pattern GuardedEE chk v <- DeferredEE (BarrierF (FillFunctionEE (FillFunctionEE (AbortEE AbortF) chk) v))
+
+guardedEE :: InputSizingExpr -> InputSizingExpr -> InputSizingExpr
+guardedEE chk = \case
+  a@(AbortEE (AbortedF _)) -> a
+  v -> deferredEE . BarrierF $ FillFunctionEE (FillFunctionEE (AbortEE AbortF) chk) v
+
+-- |Evaluates a refinement check function against symbolic input, leaving
+-- input-dependent gates and aborts as barrier-wrapped residuals for
+-- 'extractInputRestrictions'.
+--
+-- A refinement nested inside the check (e.g. a check calling a Prelude
+-- function whose arguments are refined) is evaluated in place: decided
+-- checks reduce to their value or abort, undecided ones become a
+-- 'GuardedEE' residual, so their restrictions apply only on the gate paths
+-- where the nested check actually runs.
+refinementCheckStep :: InputSizingExprF InputSizingExpr -> InputSizingExpr
+refinementCheckStep = basicStep (stuckStep (abortStep (guardStep (gateSwitchStep (deferredEvalStep (abortDeferredStep (indexedInputStep Set.empty handleOther))))))) where
+  step = refinementCheckStep
+  barrier = deferredEE . BarrierF
+  -- an undecided gate yields one of its branches, so anything always done to
+  -- its result can be done to each branch instead, keeping the result
+  -- analyzable (e.g. Bool's @left vv@ when vv is @toBool x@)
+  gateSwitchStep handleOther' = \case
+    StuckFW (LeftSF (DeferredEE (BarrierF (GateSwitchEE l r s)))) ->
+      barrier $ GateSwitchEE (step . StuckFW $ LeftSF l) (step . StuckFW $ LeftSF r) s
+    StuckFW (RightSF (DeferredEE (BarrierF (GateSwitchEE l r s)))) ->
+      barrier $ GateSwitchEE (step . StuckFW $ RightSF l) (step . StuckFW $ RightSF r) s
+    FillFunction GateB (DeferredEE (BarrierF (GateSwitchEE l r s))) ->
+      barrier $ GateSwitchEE (step $ FillFunction GateB l) (step $ FillFunction GateB r) s
+    FillFunction (DeferredEE (BarrierF (GateSwitchEE l r s))) e ->
+      barrier $ GateSwitchEE (step $ FillFunction l e) (step $ FillFunction r e) s
+    other -> handleOther' other
+  -- a guard wraps a value whose check always runs, so it can float out of
+  -- any position that is always evaluated (but not out of gate branches)
+  guardStep handleOther' = \case
+    StuckFW (LeftSF (GuardedEE chk v)) -> guardedEE chk . step . StuckFW $ LeftSF v
+    StuckFW (RightSF (GuardedEE chk v)) -> guardedEE chk . step . StuckFW $ RightSF v
+    StuckFW (SetEnvSF (GuardedEE chk v)) -> guardedEE chk . step . StuckFW $ SetEnvSF v
+    FillFunction GateB (GuardedEE chk v) -> guardedEE chk . step $ FillFunction GateB v
+    FillFunction (GuardedEE chk c) e -> guardedEE chk . step $ FillFunction c e
+    other -> handleOther' other
+  handleOther = \case
+    FillFunction GateB i@(IndexedEE _) -> deferredEE . BarrierF . embed $ FillFunction GateB i
+    FillFunction a@(AbortEE AbortF) i@(IndexedEE _) -> deferredEE . BarrierF . embed $ FillFunction a i
+    UnsizedFW (RefinementWrapperF _ tc c) -> step $ FillFunction (step $ FillFunction (AbortEE AbortF) (app tc c)) c
+    other -> error $ "refinementCheckStep eval unexpected:\n" <> prettyPrint other
+  -- 'appB' over already-evaluated operands: tc is a closure, so twiddle it
+  -- into (function, (input, env)) before applying
+  app tc c = step . StuckFW . SetEnvSF . step $ FillFunction twiddleB (PairB c tc)
 
 term3ToUnsizedExpr :: Term3 -> UnsizedExpr
 term3ToUnsizedExpr = runIdentity . cata conv where

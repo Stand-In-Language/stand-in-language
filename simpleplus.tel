@@ -1,10 +1,10 @@
 import Prelude
 
-validDigit = \x -> and ($47 left x) (not ($57 left x))
+validDigit = \x -> and (toBool ($47 left x)) (not (toBool ($57 left x)))
 
 validInput = \x -> assert (and (validDigit (left x))
                                (and (validDigit (left (right (right x))))
-                                    (not ($3 right x))))
+                                    (not (toBool ($3 right x)))))
                           "invalid input"
 
 toI = \x -> $48 left x
@@ -18,6 +18,6 @@ main = \input -> let inString : validInput = left input
                      dr = if dMinus r 9
                           then concat ["1", $49 succ (dMinus r 10)]
                           else $49 succ r
-                 in if not input
+                 in if not (toBool input)
                     then ("enter two digits separated by a space", 1)
                     else (concat [succ x, " plus ", succ y, " is ", dr], 0)

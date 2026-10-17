@@ -25,6 +25,6 @@ main = \input -> let userInput = left input
                      firstChar = left userInput
                      -- WORKAROUND: firstChar : valid = left userInput
                      output = if countDown firstChar then "!" else "#"
-                 in if not input
+                 in if not (toBool input)
                     then (" ", 1)
                     else (output, 0)

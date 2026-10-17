@@ -29,19 +29,19 @@ getSquare
 
 fullBoard
  = \board -> let squares = map (\x -> getSquare (d2c x) board) [0,1,2,3,4,5,6,7,8]
-             in foldr and 1 squares
+             in foldr and 1 (map toBool squares)
 
 emptyBoard = [0,0,0,0,0,0,0,0,0]
 
 -- validInput = \x -> assert (and x (and (not (right x)) (not ($127 left x)))) "invalid input"
 -- validInput = \x -> assert (not ($127 left x)) "invalid input"
-validInput = \x -> assert (and (not ($127 left x)) (not (right x))) "invalid input"
-validPlayer = \x -> assert (not ($3 left x)) "invalid player state"
-validBoard = \x -> assert (not ($9 right x)) "invalid board state"
+validInput = \x -> assert (and (not (toBool ($127 left x))) (not (toBool (right x)))) "invalid input"
+validPlayer = \x -> assert (not (toBool ($3 left x))) "invalid player state"
+validBoard = \x -> assert (not (toBool ($9 right x))) "invalid board state"
 
 processInput
  = \string -> let num = dMinus (left string) (left "0")
-              in if and num (dMinus 10 num)
+              in if and (toBool num) (toBool (dMinus 10 num))
                  then num
                  else 0
 
@@ -72,18 +72,18 @@ main
                  oldBoard = if boardIn then boardIn else emptyBoard
                  place = processInput placeString
                  placeOccupied = getSquare (d2c (left place)) oldBoard
-                 validPlace = and place (not placeOccupied)
+                 validPlace = and (toBool place) (not (toBool placeOccupied))
                  newBoard = if validPlace
                                then setPiece (succ playerIn) (d2c (left place)) oldBoard
                                else oldBoard
                  winner = whoWon newBoard
                  filledBoard = fullBoard newBoard
                  showBoard = or (and validPlace
-                                     (and (not winner)
+                                     (and (not (toBool winner))
                                           (not filledBoard)
                                      )
                                 )
-                                (not boardIn)
+                                (not (toBool boardIn))
                  doEnd = if winner then concat [ "Player "
                                                , (d2c winner succ (left "0"), 0)
                                                , " wins!"
@@ -99,14 +99,14 @@ main
                                          ]
                              else if dEqual placeString "q"
                                      then 0
-                                     else if not place
+                                     else if not (toBool place)
                                              then "please enter a number 1-9"
                                              else if not validPlace
                                                      then "please choose unoccupied space"
                                                      else doEnd
-                 nextState = if and output
+                 nextState = if and (toBool output)
                                     (and (not filledBoard)
-                                         (not winner)
+                                         (not (toBool winner))
                                     )
                                 then (nextPlayer,newBoard)
                                 else 0

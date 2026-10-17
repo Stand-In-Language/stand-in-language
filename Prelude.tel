@@ -1,10 +1,26 @@
 id = \x -> x
 
-and = \a b -> if a then (if b then 1 else 0) else 0
+Bool = \vv -> if vv
+              then if (left vv)
+                   then "Bool cannot have non-zero val in left of pair"
+                   else if (right vv)
+                        then "Bool cannot have non-zero val in right of pair"
+                        else 0
+              else 0
 
-or = \a b -> if a then 1 else b
+toBool = \b -> if b then 1 else 0
 
-not = \x -> if x then 0 else 1
+ite = \i t e -> let si : Bool = i in if si then t else e
+
+and = \a b -> let sa : Bool = a
+                  sb : Bool = b
+              in if sa then sb else 0
+
+or = \a b -> let sa : Bool = a
+                 sb : Bool = b
+             in if sa then 1 else sb
+
+not = \x -> let sx : Bool = x in if sx then 0 else 1
 
 succ = \x -> (x,0)
 
@@ -53,7 +69,7 @@ foldl = \f b ta -> let fixed = { id
                                }
                    in fixed ta b
 
-zipWith = \f a b -> let fixed = { \ab -> and (left ab) (right ab)
+zipWith = \f a b -> let fixed = { \ab -> and (toBool (left ab)) (toBool (right ab))
                                 , \recur ab -> (f (left (left ab)) (left (right ab))
                                                , recur (right (left ab), right (right ab))
                                                )
@@ -63,9 +79,9 @@ zipWith = \f a b -> let fixed = { \ab -> and (left ab) (right ab)
 
 filter = \f -> foldr (\a b -> if f a then (a, b) else b) 0
 
-dEqual = \a b -> let equalsOne = \x -> if x then (not (left x)) else 0
+dEqual = \a b -> let equalsOne = \x -> if x then (not (toBool (left x))) else 0
                  in if a then equalsOne (d2c (left a) (\x -> left x) b)
-                         else not b
+                         else not (toBool b)
 
 dDiv = \a b -> if (dEqual b 0)
                then abort "Undefined"
@@ -101,7 +117,7 @@ dFactorial = \n -> factorial n succ 0
 
 quicksort = { \l -> right l
             , \recur l -> let t = left l
-                              test = \x -> dMinus x t
+                              test = \x -> toBool (dMinus x t)
                               p1 = filter test (right l)
                               p2 = filter (\x -> not (test x)) (right l)
                           in listPlus (recur p2) (t,(recur p1))
@@ -120,12 +136,12 @@ truncate = \n ->
                                 else 0
   in n layer (\x -> 0)
 
-min = \a b -> { \p -> and (left p) (right p)
+min = \a b -> { \p -> and (toBool (left p)) (toBool (right p))
               , \recur p -> recur (left (left p), left (right p))
               , \p -> if (left p) then b else a
               } (a,b)
 
-max = \a b -> { \p -> and (left p) (right p)
+max = \a b -> { \p -> and (toBool (left p)) (toBool (right p))
               , \recur p -> recur (left (left p), left (right p))
               , \p -> if (left p) then a else b
               } (a,b)
