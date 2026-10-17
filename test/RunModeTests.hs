@@ -30,7 +30,7 @@ runModeSpec :: Spec
 runModeSpec = do
   describe "a compiled artifact" $ do
     it "round-trips through its encoding" $ do
-      modules <- loadWith "simpleplus.tel" "simpleplus"
+      modules <- loadWith "test/programs/simpleplus.tel" "simpleplus"
       case compileModules modules "simpleplus" of
         Left err -> expectationFailure $ "failed to compile simpleplus.tel:\n" <> err
         Right cp -> do
@@ -88,7 +88,7 @@ runModeSpec = do
         `shouldBe` True
 
     it "notices when the sources it was compiled from change" $ do
-      modules <- loadWith "simpleplus.tel" "simpleplus"
+      modules <- loadWith "test/programs/simpleplus.tel" "simpleplus"
       let changed = ("simpleplus", "main = \\input -> (\"different\", 0)")
             : filter ((/= "simpleplus") . fst) modules
       sourcesHash changed `shouldNotBe` sourcesHash modules
@@ -99,7 +99,7 @@ runModeSpec = do
   -- corpus-wide in "ConformanceTests".
   describe "running without sizing" $ do
     it "counts the unrolls of each recursion site separately" $ do
-      modules <- loadWith "simpleplus.tel" "simpleplus"
+      modules <- loadWith "test/programs/simpleplus.tel" "simpleplus"
       case compileFast modules "simpleplus" of
         Left err -> expectationFailure $ "failed to compile without sizing:\n" <> err
         Right prog -> do
@@ -121,7 +121,7 @@ runModeSpec = do
           Right transcript -> transcript `shouldSatisfy` isInfixOf "done"
 
     it "stops on the fuel cap instead of running forever" $ do
-      modules <- loadWith "simpleplus.tel" "simpleplus"
+      modules <- loadWith "test/programs/simpleplus.tel" "simpleplus"
       case compileFast modules "simpleplus" of
         Left err -> expectationFailure $ "failed to compile without sizing:\n" <> err
         Right prog -> do
@@ -133,7 +133,7 @@ runModeSpec = do
 
   describe "the static report" $ do
     it "reports the structural analysis with no sizing at all" $ do
-      modules <- loadWith "simpleplus.tel" "simpleplus"
+      modules <- loadWith "test/programs/simpleplus.tel" "simpleplus"
       let levels = levelsInfo modules "simpleplus"
           report = renderStaticReport Nothing Nothing levels
       case levels of
@@ -148,7 +148,7 @@ runModeSpec = do
       report `shouldSatisfy` isInfixOf "was not sized"
 
     it "reports both analyses, and that they do not line up" $ do
-      modules <- loadWith "simpleplus.tel" "simpleplus"
+      modules <- loadWith "test/programs/simpleplus.tel" "simpleplus"
       case compileModules modules "simpleplus" of
         Left err -> expectationFailure $ "failed to compile simpleplus.tel:\n" <> err
         Right cp -> do
@@ -163,7 +163,7 @@ runModeSpec = do
           report `shouldSatisfy` isInfixOf "do not line up row by row"
 
     it "gives a sized program's nodes a count worth reporting" $ do
-      modules <- loadWith "simpleplus.tel" "simpleplus"
+      modules <- loadWith "test/programs/simpleplus.tel" "simpleplus"
       case compileModules modules "simpleplus" of
         Left err -> expectationFailure $ "failed to compile simpleplus.tel:\n" <> err
         -- Sizing bakes iteration counts in as towers, so the compiled program

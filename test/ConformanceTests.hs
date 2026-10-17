@@ -19,7 +19,7 @@ import Telomare.Machine (appB)
 -- |Every fixture that compiles under sizing, with the input its main expects.
 corpus :: [(FilePath, String, [String])]
 corpus =
-  [ ("simpleplus.tel", "simpleplus", ["3 4"])
+  [ ("test/programs/simpleplus.tel", "simpleplus", ["3 4"])
   , ("tc_ultra_minimal.tel", "tc_ultra_minimal", [])
   ]
 

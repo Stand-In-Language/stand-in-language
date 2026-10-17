@@ -322,11 +322,11 @@ unitTests parse = do
     unitTest2 "main = c2d (factorial 4)" "24"
 
   describe "main function tests" $ do
-    testMain <- runIO $ Strict.readFile "testchar.tel"
+    testMain <- runIO $ Strict.readFile "test/programs/testchar.tel"
     unitTestMain <- buildMainTest testMain
     unitTestMain ZeroB "A" ("ascii value of first char is odd", Right ZeroB)
     unitTestMain ZeroB "B" ("ascii value of first char is even", Right ZeroB)
-    testMainPlus <- runIO $ Strict.readFile "simpleplus.tel"
+    testMainPlus <- runIO $ Strict.readFile "test/programs/simpleplus.tel"
     unitTestMainPlus <- buildMainTest testMainPlus
     unitTestMainPlus ZeroB "0 0" ("0 plus 0 is 0", Right ZeroB)
     unitTestMainPlus ZeroB "9 9" ("9 plus 9 is 18", Right ZeroB)

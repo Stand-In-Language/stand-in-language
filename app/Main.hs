@@ -8,7 +8,7 @@ import Data.Maybe (fromMaybe)
 import qualified Options.Applicative as O
 import System.Directory (doesFileExist)
 import System.Exit (exitFailure)
-import System.FilePath (replaceExtension, takeBaseName)
+import System.FilePath (replaceExtension, takeBaseName, takeDirectory, (</>))
 import System.IO (hFlush, hPutStr, hPutStrLn, stderr, stdout)
 
 import Telomare.Artifact (Artifact (..), isArtifactPath, nodeCount,
@@ -106,18 +106,26 @@ telomareOpts = TelomareOpts
       Just 0  -> Nothing
       Just n  -> Just n
 
--- | Recursively load only the modules reachable from the entry file.
-getModulesFor :: String -> IO [(String, String)]
-getModulesFor entryModule = go [entryModule] []
+-- | Recursively load only the modules reachable from the entry file. The
+-- entry is read from its own path; an import is looked for beside the entry
+-- first, then in the working directory (where Prelude.tel lives).
+getModulesFor :: FilePath -> IO [(String, String)]
+getModulesFor entryFile = go [takeBaseName entryFile] []
   where
+    entryModule = takeBaseName entryFile
     go [] loaded = return loaded
     go (m:queue) loaded
       | m `elem` fmap fst loaded = go queue loaded
       | otherwise = do
-          let filePath = m <> ".tel"
+          filePath <- if m == entryModule then pure entryFile else locate m
           content <- readFile filePath
           let imports = extractImports m content
           go (queue <> imports) ((m, content) : loaded)
+
+    locate m = do
+      let besideEntry = takeDirectory entryFile </> m <> ".tel"
+      present <- doesFileExist besideEntry
+      pure $ if present then besideEntry else m <> ".tel"
 
     -- The real module parser, so commented-out and multi-line imports are
     -- read the same way the compile step will read them. A module that does
@@ -165,7 +173,7 @@ runArtifact path action mode = do
   readArtifact path >>= \case
     Left err -> die $ path <> ": " <> err
     Right artifact -> do
-      warnIfStale artifact
+      warnIfStale path artifact
       let cp = CompiledProgram
             { cpSizing = artifactReport artifact
             , cpExpr = artifactExpr artifact
@@ -180,12 +188,15 @@ runArtifact path action mode = do
 
 -- |An artifact outlives the checkout it came from, so a hash mismatch is worth
 -- saying and never worth refusing over.
-warnIfStale :: Artifact -> IO ()
-warnIfStale artifact = do
-  let entry = artifactEntry artifact
-  present <- doesFileExist (entry <> ".tel")
+warnIfStale :: FilePath -> Artifact -> IO ()
+warnIfStale artifactPath artifact = do
+  let entry = artifactEntry artifact <> ".tel"
+      besideArtifact = takeDirectory artifactPath </> entry
+  nearby <- doesFileExist besideArtifact
+  let source = if nearby then besideArtifact else entry
+  present <- doesFileExist source
   when present $ do
-    modules <- getModulesFor entry
+    modules <- getModulesFor source
     unless (sourcesHash modules == artifactSourceHash artifact) $
       hPutStrLn stderr
         "note: the sources have changed since this program was compiled; \
@@ -215,7 +226,7 @@ runCompiled runtime action cp = case (action, runtime) of
 runSized :: Runtime -> FilePath -> Action -> IO ()
 runSized runtime file action = do
   let entryModule = takeBaseName file
-  allModules <- getModulesFor entryModule
+  allModules <- getModulesFor file
   case compileModules allModules entryModule of
     Left err -> die err
     Right cp -> case action of
@@ -246,7 +257,7 @@ runSized runtime file action = do
 runFast :: FilePath -> Action -> Maybe Int -> IO ()
 runFast file action fuel = do
   let entryModule = takeBaseName file
-  allModules <- getModulesFor entryModule
+  allModules <- getModulesFor file
   case action of
     Compile _ -> die "--compile sizes the program, so it cannot be combined with --fast"
     Certificate -> putStr $ staticReport Nothing Nothing allModules entryModule

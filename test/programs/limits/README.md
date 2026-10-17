@@ -32,7 +32,7 @@ rather than by 65536 abstract unrollings.
 For programs that do size, the counts are worth looking at:
 
 ```sh
-cabal run telomare -- --certificate simpleplus.tel
+cabal run telomare -- --certificate test/programs/simpleplus.tel
 ```
 
 These are not new claims about the program. They are the very numbers the

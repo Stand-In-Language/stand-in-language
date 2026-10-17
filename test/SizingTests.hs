@@ -66,7 +66,7 @@ sizingSpec = do
 
   describe "sizing results are reported" $ do
     it "gives every recursion site a count and a source location" $ do
-      result <- compileAtFullBudget "simpleplus.tel" "simpleplus"
+      result <- compileAtFullBudget "test/programs/simpleplus.tel" "simpleplus"
       case result of
         Left err -> expectationFailure $ "failed to compile simpleplus.tel:\n" <> err
         Right report -> do
@@ -82,7 +82,7 @@ sizingSpec = do
                Nothing  -> False)
 
     it "keeps simpleplus.tel's inferred counts stable" $ do
-      result <- compileAtFullBudget "simpleplus.tel" "simpleplus"
+      result <- compileAtFullBudget "test/programs/simpleplus.tel" "simpleplus"
       case result of
         Left err -> expectationFailure $ "failed to compile simpleplus.tel:\n" <> err
         Right report ->
@@ -92,7 +92,7 @@ sizingSpec = do
             `shouldBe` [Just 11, Just 7, Just 10, Just 10]
 
     it "names the budget it searched under" $ do
-      result <- compileAtFullBudget "simpleplus.tel" "simpleplus"
+      result <- compileAtFullBudget "test/programs/simpleplus.tel" "simpleplus"
       case result of
         Left err -> expectationFailure $ "failed to compile simpleplus.tel:\n" <> err
         Right report -> do

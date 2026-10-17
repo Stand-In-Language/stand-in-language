@@ -217,9 +217,9 @@ unitTests = testGroup "Unit tests"
         other -> assertFailure $ "unexpected lambda span: " <> show other
   , testCase "all shipped Telomare programs parse and expand" $ do
       let programs = [ "Prelude.tel"
-                     , "simpleplus.tel"
+                     , "test/programs/simpleplus.tel"
                      , "tictactoe.tel"
-                     , "testchar.tel"
+                     , "test/programs/testchar.tel"
                      , "tc_ultra_minimal.tel"
                      , "test/programs/limits/unbounded-input-recursion.tel"
                      , "test/programs/limits/over-budget-recursion.tel"

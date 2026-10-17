@@ -58,7 +58,7 @@ knows without running the program, and `--meter`, which says what one run
 actually cost.
 
 ```sh
-$ cabal run telomare -- --certificate simpleplus.tel
+$ cabal run telomare -- --certificate test/programs/simpleplus.tel
 recursion sites (iterations, over every input):
   Prelude:30:18 (#0)     <= 11
   Prelude:48:23 (#1)     <= 7
@@ -88,7 +88,7 @@ term nodes built. Those are measurements of one run, not predictions about the
 next:
 
 ```sh
-$ printf '3 4\n' | cabal run telomare -- --meter simpleplus.tel
+$ printf '3 4\n' | cabal run telomare -- --meter test/programs/simpleplus.tel
 steps (measured): 46652
 nodes built (measured): 13660
 ```
@@ -130,7 +130,7 @@ immediately, plays `tictactoe.tel` identically, and will even run programs the
 sizing pass rejects:
 
 ```sh
-$ printf '3 4\n' | cabal run telomare -- simpleplus.tel --fast --meter
+$ printf '3 4\n' | cabal run telomare -- test/programs/simpleplus.tel --fast --meter
 enter two digits separated by a space
 3 plus 4 is 7
 function applications (measured): 2,560
