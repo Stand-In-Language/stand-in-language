@@ -1,0 +1,65 @@
+# Keeps nix/telomare-cabal2nix.nix in step with telomare.cabal. On a push
+# that can change what cabal2nix makes of the cabal file, this regenerates it
+# with `nix run .#cabal2nix` and, when the result differs from what was
+# pushed, appends it to the pushed branch as a commit.
+name: "cabal2nix"
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - telomare.cabal
+      - nix/telomare-cabal2nix.nix
+      - nix/haskell.nix
+      - nix/tools.nix
+      - flake.lock
+permissions:
+  contents: write
+  actions: write
+concurrency:
+  group: cabal2nix-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  regenerate:
+    runs-on: ubuntu-latest
+    steps:
+    # A push made with the job's own token starts no workflow run. With a
+    # token in the CABAL2NIX_TOKEN secret (fine-grained, contents: write on
+    # this repository), the commit is pushed as any other and runs CI the
+    # usual way, pull request checks included; without one, the commit is
+    # pushed with the job's token and Telomare CI is started on the branch
+    # by hand below.
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        token: ${{ secrets.CABAL2NIX_TOKEN || github.token }}
+    - uses: DeterminateSystems/determinate-nix-action@v3.23.0
+      with:
+        diagnostic-endpoint: ""
+        extra-conf: |
+          accept-flake-config = true
+    - uses: cachix/cachix-action@v17
+      with:
+        name: telomare
+        extraPullNames: ekala-corepkgs
+    - name: Regenerate
+      run: nix -L run .#cabal2nix
+    - name: Commit and push
+      env:
+        BRANCH: ${{ github.ref_name }}
+        OWN_TOKEN: ${{ secrets.CABAL2NIX_TOKEN == '' }}
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        if git diff --quiet -- nix/telomare-cabal2nix.nix; then
+          echo "nix/telomare-cabal2nix.nix is up to date"
+          exit 0
+        fi
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        git commit -m "Regenerate nix/telomare-cabal2nix.nix from telomare.cabal" \
+          -- nix/telomare-cabal2nix.nix
+        # The branch may have moved on since the push this run is for.
+        git pull --rebase origin "$BRANCH"
+        git push origin "HEAD:refs/heads/$BRANCH"
+        if [ "$OWN_TOKEN" = true ]; then
+          gh workflow run telomare-ci.yml --ref "$BRANCH"
+        fi
