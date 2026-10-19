@@ -88,6 +88,32 @@ unitTestsCase = testGroup "Unit tests on case expressions"
   , testCase "test case with all leaves" $ do
       res <- runTelomareStr caseExprAllLeavesStr
       res @?= "Hi, sam!\ndone"
+  , testCase "string pattern rejects a string differing after the first character" $ do
+      res <- runTelomareStr $ caseExprNearMissStr "\"ax\"" "\"ab\""
+      res @?= "False\ndone"
+  , testCase "string pattern rejects a prefix of itself" $ do
+      res <- runTelomareStr $ caseExprNearMissStr "\"a\"" "\"ab\""
+      res @?= "False\ndone"
+  , testCase "nested string pattern rejects a near miss" $ do
+      res <- runTelomareStr $ caseExprNearMissStr "(2,(5,\"ho\"))" "(2,(5,\"hi\"))"
+      res @?= "False\ndone"
+  , testCase "int pattern rejects a near miss" $ do
+      res <- runTelomareStr $ caseExprNearMissStr "(\"ab\",3)" "(\"ab\",4)"
+      res @?= "False\ndone"
+  ]
+
+-- |A case expression matching @toCase@ against a single pattern, falling
+-- through to "False".
+caseExprNearMissStr :: String -> String -> String
+caseExprNearMissStr toCase pat = unlines
+  [ "import Prelude"
+  , "main ="
+  , "  let toCase = " <> toCase
+  , "      caseTest ="
+  , "        case toCase of"
+  , "          " <> pat <> " -> \"True\""
+  , "          _ -> \"False\""
+  , "  in \\input -> (caseTest, 0)"
   ]
 
 runTelomareStr :: String -> IO String

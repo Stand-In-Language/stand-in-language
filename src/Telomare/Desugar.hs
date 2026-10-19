@@ -11,7 +11,7 @@ module Telomare.Desugar where
 
 import Control.Comonad.Cofree (Cofree (..))
 import qualified Control.Comonad.Trans.Cofree as C
-import Data.Bifunctor (bimap)
+import Data.Bifunctor (first)
 import Data.Fix (Fix (..))
 import Data.Functor.Foldable (Corecursive (embed), Recursive (..))
 import Data.Map (Map)
@@ -23,27 +23,25 @@ import Telomare.IR.Base
 import Telomare.IR.Loc
 import Telomare.IR.Surface
 
--- | Finds all PatternInt leaves returning "directions" to these leaves through pairs
--- in the form of a combination of RightUP and LeftUP from the root
+-- |Paths from the root of a pattern, through pairs, to each of its integer
+-- literals, paired with the literal. A path is the composition of 'HLeft'
+-- and 'HRight' that reaches the corresponding leaf of a matched term.
 -- e.g. PatternPair (PatternVar "x") (PatternPair (PatternInt 0) (PatternVar "y"))
---      will return [LeftUP . RightUP]
-findInts :: LocTag -> PatternA -> [DesugaredSurfaceTerm -> DesugaredSurfaceTerm]
-findInts _anno = cata alg where
+--      will return [(HLeft . HRight, 0)]
+findInts :: PatternA -> [(DesugaredSurfaceTerm -> DesugaredSurfaceTerm, Int)]
+findInts = cata alg where
   alg = \case
-    PatternPairF x y      -> ((. HLeft) <$> x) <> ((. HRight) <$> y)
-    PatternIntF _x        -> [id]
+    PatternPairF x y      -> (first (. HLeft) <$> x) <> (first (. HRight) <$> y)
+    PatternIntF i         -> [(id, i)]
     PatternAnnotatedF x _ -> x
     _                     -> []
 
--- | Finds all PatternString leaves returning "directions" to these leaves through pairs
--- in the form of a combination of RightUP and LeftUP from the root
--- e.g. PatternPair (PatternVar "x") (PatternPair (PatternString "Hello, world!") (PatternVar "y"))
---      will return [LeftUP . RightUP]
-findStrings :: LocTag -> PatternA -> [DesugaredSurfaceTerm -> DesugaredSurfaceTerm]
-findStrings _anno = cata alg where
+-- |Like 'findInts', for string literals.
+findStrings :: PatternA -> [(DesugaredSurfaceTerm -> DesugaredSurfaceTerm, String)]
+findStrings = cata alg where
   alg = \case
-    PatternPairF x y      -> ((. HLeft) <$> x) <> ((. HRight) <$> y)
-    PatternStringF _x     -> [id]
+    PatternPairF x y      -> (first (. HLeft) <$> x) <> (first (. HRight) <$> y)
+    PatternStringF str    -> [(id, str)]
     PatternAnnotatedF x _ -> x
     _                     -> []
 
@@ -112,41 +110,39 @@ mkCaseAlternative casedUPT@(anno :< _) caseResult p = appVars2ResultLambdaAlts p
     []     -> aupt
     (x:xs) -> LamP (locatedName anno' x) (makeLambdas aupt xs)
 
-case2annidatedIfs :: DesugaredSurfaceTerm -- ^ Term to be pattern matched
-                  -> [PatternA] -- ^ All patterns in a case expression
-                  -> [DesugaredSurfaceTerm] -- ^ Int leaves on term
-                  -> [DesugaredSurfaceTerm] -- ^ Int leaves on pattern
-                  -> [DesugaredSurfaceTerm] -- ^ String leaves on term
-                  -> [DesugaredSurfaceTerm] -- ^ String leaves on pattern
-                  -> [DesugaredSurfaceTerm] -- ^ Case alternatives
-                  -> DesugaredSurfaceTerm
-case2annidatedIfs (anno :< _) [] [] [] [] [] [] =
-  ITEP (anno :< IntUPF 1)
-        (AppP (VarP "__case_abort") (anno :< StringUPF "Non-exhaustive patterns in case"))
-        (anno :< IntUPF 0)
-case2annidatedIfs x (aPattern:as) ((_ :< ListUPF []) : bs) ((_ :< ListUPF []) :cs) (dirs2StringOnUPT:ds) (dirs2StringOnPattern:es) (resultAlternative@(anno :< _):fs) =
-  ITEP (AppP (AppP (rewriteOuterTag anno $ VarP "__case_and")
-                   (AppP (AppP (VarP "__case_listEqual") dirs2StringOnUPT) dirs2StringOnPattern))
-             (pairStructureCheck aPattern x))
-       (mkCaseAlternative x resultAlternative aPattern)
-       (case2annidatedIfs x as bs cs ds es fs)
-case2annidatedIfs x (aPattern:as) (dirs2IntOnUPT:bs) (dirs2IntOnPattern:cs) ((_ :< ListUPF []) : ds) ((_ :< ListUPF []) : es) (resultAlternative@(anno :< _):fs) =
-    ITEP (AppP (AppP (rewriteOuterTag anno $ VarP "__case_and")
-                        (AppP (AppP (VarP "__case_listEqual") dirs2IntOnUPT) dirs2IntOnPattern))
-                 (pairStructureCheck aPattern x))
-          (mkCaseAlternative x resultAlternative aPattern)
-          (case2annidatedIfs x as bs cs ds es fs)
-case2annidatedIfs x (aPattern:as) (dirs2IntOnUPT:bs) (dirs2IntOnPattern:cs) (dirs2StringOnUPT:ds) (dirs2StringOnPattern:es) (resultAlternative@(anno :< _):fs) =
-    ITEP (AppP (AppP (AppP (rewriteOuterTag anno $ VarP "__case_foldl")
-                           (VarP "__case_and"))
-                     (anno :< IntUPF 1))
-               (anno :< ListUPF [ AppP (AppP (VarP "__case_listEqual") dirs2IntOnUPT) dirs2IntOnPattern
-                                  , AppP (AppP (VarP "__case_listEqual") dirs2StringOnUPT) dirs2StringOnPattern
-                                  , pairStructureCheck aPattern x
-                                  ]))
-          (mkCaseAlternative x resultAlternative aPattern)
-          (case2annidatedIfs x as bs cs ds es fs)
-case2annidatedIfs _ _ _ _ _ _ _ = error "case2annidatedIfs: lists don't match in size"
+-- |Lower a case expression to nested if/else chains that try each
+-- alternative in order, aborting when none matches.
+caseToNestedIfs :: DesugaredSurfaceTerm -- ^ Term to be pattern matched
+                -> [(PatternA, DesugaredSurfaceTerm)] -- ^ Alternatives
+                -> DesugaredSurfaceTerm
+caseToNestedIfs x@(anno :< _) = foldr alternative nonExhaustive where
+  nonExhaustive =
+    ITEP (anno :< IntUPF 1)
+         (AppP (VarP "__case_abort") (anno :< StringUPF "Non-exhaustive patterns in case"))
+         (anno :< IntUPF 0)
+  alternative (p, result@(resultAnno :< _)) =
+    ITEP (patternMatches resultAnno x p) (mkCaseAlternative x result p)
+
+-- |A Bool-valued term checking that the term has the pattern's pair
+-- structure and that each literal leaf equals the pattern's. Integer leaves
+-- are compared with @dEqual@ and string leaves, as whole strings, with
+-- @listEqual@.
+patternMatches :: LocTag -> DesugaredSurfaceTerm -> PatternA -> DesugaredSurfaceTerm
+patternMatches anno x p = allOf $ intChecks <> stringChecks <> [pairStructureCheck p x]
+  where
+    intChecks = [ equal "__case_dEqual" (path x) (anno :< IntUPF i)
+                | (path, i) <- findInts p ]
+    stringChecks = [ equal "__case_listEqual" (path x) (anno :< StringUPF str)
+                   | (path, str) <- findStrings p ]
+    equal :: String -> DesugaredSurfaceTerm -> DesugaredSurfaceTerm -> DesugaredSurfaceTerm
+    equal helper a = AppP (AppP (VarP helper) a)
+    allOf = \case
+      [c]    -> c
+      [a, b] -> AppP (AppP (rewriteOuterTag anno $ VarP "__case_and") a) b
+      cs     -> AppP (AppP (AppP (rewriteOuterTag anno $ VarP "__case_foldl")
+                                 (VarP "__case_and"))
+                           (anno :< IntUPF 1))
+                     (anno :< ListUPF cs)
 
 -- |Run every post-sugar rewrite and remove the case capability from the term
 -- type before resolution.
@@ -159,21 +155,7 @@ desugarTerm = lowerCases
 lowerCases :: ExpandedSurfaceTerm -> DesugaredSurfaceTerm
 lowerCases = cata go where
   go = \case
-    anno C.:< CaseUPF x ls ->
-      let duplicate el = (el,el)
-          pairApplyList :: ([a -> a], a) -> [a]
-          pairApplyList pr = ($ snd pr) <$> fst pr
-          patterns = fst <$> ls
-          resultCaseAlts = snd <$> ls
-          dirs2LeavesOnUPT f = fmap (\y -> anno :< ListUPF y) $ (($ x) <$>) . f <$> patterns
-          dirs2LeavesOnPattern f = ((\a -> anno :< ListUPF a) . pairApplyList . bimap f (patternToTerm anno) . duplicate <$> patterns)
-      in case2annidatedIfs x
-                           patterns
-                           (dirs2LeavesOnUPT (findInts anno))
-                           (dirs2LeavesOnPattern $ findInts anno)
-                           (dirs2LeavesOnUPT $ findStrings anno)
-                           (dirs2LeavesOnPattern $ findStrings anno)
-                           resultCaseAlts
+    _ C.:< CaseUPF x ls -> caseToNestedIfs x ls
     anno C.:< UnprocessedParsedTermH x -> anno :< UnprocessedParsedTermH x
     anno C.:< UnprocessedParsedTermL x -> anno :< UnprocessedParsedTermL x
     anno C.:< UnprocessedParsedTermB x -> anno :< UnprocessedParsedTermB x
@@ -195,6 +177,7 @@ addCaseHelperAliases _term@(loc :< LetUPF bindings body) =
         )
       | (name, alias) <- [ ("and", "__case_and")
                          , ("foldl", "__case_foldl")
+                         , ("dEqual", "__case_dEqual")
                          , ("listEqual", "__case_listEqual")
                          , ("abort", "__case_abort")
                          ]
