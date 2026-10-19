@@ -100,6 +100,24 @@ unitTestsCase = testGroup "Unit tests on case expressions"
   , testCase "int pattern rejects a near miss" $ do
       res <- runTelomareStr $ caseExprNearMissStr "(\"ab\",3)" "(\"ab\",4)"
       res @?= "False\ndone"
+  , testCase "nested cases on computed scrutinees" $ do
+      res <- runTelomareStr caseExprNestedStr
+      res @?= "inin\ndone"
+  ]
+
+caseExprNestedStr :: String
+caseExprNestedStr = unlines
+  [ "import Prelude"
+  , "main ="
+  , "  let caseTest ="
+  , "        case (\"outer\", (\"in\", \"ner\")) of"
+  , "          (\"outer\", p) ->"
+  , "            case (right p, left p) of"
+  , "              (\"ner\", y) -> listPlus y (case (left p, 0) of"
+  , "                                         (z, 0) -> z)"
+  , "              _ -> \"wrong inner\""
+  , "          _ -> \"wrong outer\""
+  , "  in \\input -> (caseTest, 0)"
   ]
 
 -- |A case expression matching @toCase@ against a single pattern, falling
