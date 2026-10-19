@@ -345,6 +345,23 @@ unitTests = testGroup "Unit tests"
       case optimizeBuiltinFunctions (app (app (var "pair") (int 1)) (int 2)) of
         _ :< UnprocessedParsedTermB (PairSF _ _) -> pure ()
         term -> assertFailure $ "pair was not optimized: " <> show term
+  , testCase "builtin optimization rewrites partial, over-saturated and app-forwarded calls" $ do
+      let a = UnknownLoc
+          var n = a :< UnprocessedParsedTermL (VarF n)
+          int n = a :< IntUPF n
+          app f x = a :< UnprocessedParsedTermL (AppF f x)
+      case optimizeBuiltinFunctions (app (var "pair") (int 1)) of
+        _ :< UnprocessedParsedTermL (LamF _ (_ :< UnprocessedParsedTermB (PairSF _ _))) -> pure ()
+        term -> assertFailure $ "partial pair was not a lambda: " <> show term
+      case optimizeBuiltinFunctions (app (app (app (var "pair") (var "f")) (int 2)) (int 3)) of
+        _ :< UnprocessedParsedTermL (AppF (_ :< UnprocessedParsedTermB (PairSF _ _)) _) -> pure ()
+        term -> assertFailure $ "over-saturated pair was not optimized: " <> show term
+      case optimizeBuiltinFunctions (app (app (var "app") (var "left")) (int 1)) of
+        _ :< UnprocessedParsedTermH (HLeftF _) -> pure ()
+        term -> assertFailure $ "app left was not optimized: " <> show term
+      case optimizeBuiltinFunctions (app (app (app (var "app") (var "pair")) (int 1)) (int 2)) of
+        _ :< UnprocessedParsedTermB (PairSF _ _) -> pure ()
+        term -> assertFailure $ "app pair was not optimized: " <> show term
   , testCase "case lowering helpers cannot be captured by local bindings" $ do
       let source = unlines
             [ "import Prelude"

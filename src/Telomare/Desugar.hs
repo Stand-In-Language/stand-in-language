@@ -11,10 +11,9 @@ module Telomare.Desugar where
 
 import Control.Comonad.Cofree (Cofree (..))
 import qualified Control.Comonad.Trans.Cofree as C
-import Data.Bifunctor (first)
-import Data.Fix (Fix (..))
+import Data.Bifunctor (first, second)
 import Data.Function (on)
-import Data.Functor.Foldable (Corecursive (embed), Recursive (..))
+import Data.Functor.Foldable (Recursive (..))
 import Data.List (nubBy)
 import Data.Set (Set)
 import qualified Data.Set as Set
@@ -167,24 +166,71 @@ rewriteOuterTag :: anno -> Cofree a anno -> Cofree a anno
 rewriteOuterTag anno (_ :< x) = anno :< x
 
 
-optimizeBuiltinFunctions :: ExpandedSurfaceTerm -> ExpandedSurfaceTerm
-optimizeBuiltinFunctions = go builtinNames
-  where
-    builtinNames = Set.fromList ["left", "right", "trace", "pair", "app"]
+-- |A builtin function, given by its direct form once saturated. The
+-- location is the one of the application that saturates it.
+data Builtin
+  = Unary (LocTag -> ExpandedSurfaceTerm -> ExpandedSurfaceTerm)
+  | Binary (LocTag -> ExpandedSurfaceTerm -> ExpandedSurfaceTerm -> ExpandedSurfaceTerm)
 
+-- |The builtin functions, in binding order. 'addBuiltins' defines each as a
+-- lambda over its direct form, and 'optimizeBuiltinFunctions' rewrites
+-- applications of them to it.
+builtins :: [(String, Builtin)]
+builtins =
+  [ ("left",  Unary  $ \a x -> a :< UnprocessedParsedTermH (HLeftF x))
+  , ("right", Unary  $ \a x -> a :< UnprocessedParsedTermH (HRightF x))
+  , ("trace", Unary  $ \a x -> a :< UnprocessedParsedTermH (HTraceF x))
+  , ("pair",  Binary $ \a x y -> a :< UnprocessedParsedTermB (PairSF x y))
+  , ("app",   Binary $ \a x y -> a :< UnprocessedParsedTermL (AppF x y))
+  ]
+
+-- |Split an application into its head and its arguments, each argument
+-- with the location of the application node that supplies it.
+applicationSpine :: ExpandedSurfaceTerm -> (ExpandedSurfaceTerm, [(LocTag, ExpandedSurfaceTerm)])
+applicationSpine = collect [] where
+  collect args = \case
+    a :< UnprocessedParsedTermL (AppF f x) -> collect ((a, x) : args) f
+    h                                      -> (h, args)
+
+-- |Apply a builtin to the arguments of a spine, giving its direct form and
+-- the arguments left over, or a lambda awaiting the missing argument when
+-- there are too few. Nothing when there are no arguments.
+applyBuiltin :: Builtin -> [(LocTag, ExpandedSurfaceTerm)]
+             -> Maybe (ExpandedSurfaceTerm, [(LocTag, ExpandedSurfaceTerm)])
+applyBuiltin builtin args = case (builtin, args) of
+  (_, [])                            -> Nothing
+  (Unary f, (a, x) : rest)           -> Just (f a x, rest)
+  (Binary f, (_, x) : (a, y) : rest) -> Just (f a x y, rest)
+  (Binary f, [(a, x)])               -> Just (awaitArgument a (f a x), [])
+  where
+    argument = "__builtin_arg"
+    awaitArgument a k = a :< UnprocessedParsedTermL
+      (LamF (locatedName a argument) (k (a :< UnprocessedParsedTermL (VarF argument))))
+
+-- |Rewrite applications of builtins that are in scope to their direct forms.
+optimizeBuiltinFunctions :: ExpandedSurfaceTerm -> ExpandedSurfaceTerm
+optimizeBuiltinFunctions = go (Set.fromList (fst <$> builtins))
+  where
     go :: Set String -> ExpandedSurfaceTerm -> ExpandedSurfaceTerm
-    go scope (anno :< term) = optimize scope $ case term of
-      UnprocessedParsedTermL (AppF inner y) -> case project inner of
-        AppAFP _ f x -> case project f of
-          VarAFP _ "pair" | "pair" `Set.member` scope ->
-            anno :< UnprocessedParsedTermB (PairSF (go scope x) (go scope y))
-          VarAFP _ "app"  | "app" `Set.member` scope ->
-            anno :< UnprocessedParsedTermL (AppF (go scope x) (go scope y))
-          _ -> anno :< UnprocessedParsedTermL (AppF (go scope inner) (go scope y))
-        _ -> anno :< UnprocessedParsedTermL (AppF (go scope inner) (go scope y))
+    go scope term@(anno :< t) = case t of
+      UnprocessedParsedTermL (AppF _ _) ->
+        let (h, args) = applicationSpine term
+        in rewrite scope (go scope h) (second (go scope) <$> args)
       UnprocessedParsedTermL (LamF name body) ->
         anno :< UnprocessedParsedTermL (LamF name (go (Set.delete (locatedNameText name) scope) body))
       other -> anno :< mapScoped (go . foldr updateScope scope) other
+
+    -- Arguments are already rewritten. The direct form of @app@ is itself an
+    -- application, so its spine is rewritten in turn.
+    rewrite :: Set String -> ExpandedSurfaceTerm -> [(LocTag, ExpandedSurfaceTerm)] -> ExpandedSurfaceTerm
+    rewrite scope h args = case h of
+      _ :< UnprocessedParsedTermL (VarF name)
+        | name `Set.member` scope
+        , Just builtin <- lookup name builtins
+        , Just (direct, rest) <- applyBuiltin builtin args
+        -> let (h', args') = applicationSpine direct
+           in rewrite scope h' (args' <> rest)
+      _ -> foldl (\f (a, x) -> a :< UnprocessedParsedTermL (AppF f x)) h args
 
     -- A let binder re-exposes a builtin when tagged as its definition;
     -- every other binder (including case-pattern variables, which the
@@ -195,38 +241,15 @@ optimizeBuiltinFunctions = go builtinNames
            then Set.insert text
            else Set.delete text
 
-    optimize :: Set String -> ExpandedSurfaceTerm -> ExpandedSurfaceTerm
-    optimize scope term = case project term of
-      AppAFP a (GFix (AppAFP _ f x)) y -> case project f of
-        VarAFP _ "pair" | "pair" `Set.member` scope -> embed $ PairAFP a x y
-        VarAFP _ "app"  | "app" `Set.member` scope  -> embed $ AppAFP a x y
-        _                                           -> term
-      AppAFP a f x -> case project f of
-        VarAFP _ "left"  | "left" `Set.member` scope  -> HLeft x
-        VarAFP _ "right" | "right" `Set.member` scope -> HRight x
-        VarAFP _ "trace" | "trace" `Set.member` scope -> a :< UnprocessedParsedTermH (HTraceF x)
-        VarAFP _ "pair"  | "pair" `Set.member` scope  -> partial a x PairP
-        VarAFP _ "app"   | "app" `Set.member` scope   -> partial a x AppP
-        _ -> term
-      _ -> term
-
-    partial anno x constructor =
-      let argument = locatedName anno "__builtin_arg"
-      in embed $ LamAFP anno argument (constructor x (embed $ VarAFP anno "__builtin_arg"))
-
-
+-- |Bind @zero@ and the 'builtins' around the term.
 addBuiltins :: ExpandedSurfaceTerm -> ExpandedSurfaceTerm
-addBuiltins aupt = GeneratedLoc "addBuiltins" Nothing :< LetUPF
-  [ bind "zero" (builtin "zero" :< IntUPF 0)
-  , bind "left" (tagBuiltin "left" $ LamP (locatedName (builtin "left") "x") (HLeft $ VarP "x"))
-  , bind "right" (tagBuiltin "right" $ LamP (locatedName (builtin "right") "x") (HRight $ VarP "x"))
-  , bind "trace" (tagBuiltin "trace" $ LamP (locatedName (builtin "trace") "x") (HTrace $ VarP "x"))
-  , bind "pair" (tagBuiltin "pair" $ LamP (locatedName (builtin "pair") "x") (LamP (locatedName (builtin "pair") "y") (PairP (VarP "x") (VarP "y"))))
-  , bind "app" (tagBuiltin "app" $ LamP (locatedName (builtin "app") "x") (LamP (locatedName (builtin "app") "y") (AppP (VarP "x") (VarP "y"))))
-  ]
-  aupt
+addBuiltins term = GeneratedLoc "addBuiltins" Nothing :< LetUPF (zero : (define <$> builtins)) term
   where
-    tagBuiltin :: String -> Fix (UnprocessedParsedTermF () PatternA) -> ExpandedSurfaceTerm
-    tagBuiltin n = tag (BuiltinLoc n)
-    builtin = BuiltinLoc
-    bind name value = (locatedName (builtin name) name, value)
+    zero = (locatedName (BuiltinLoc "zero") "zero", BuiltinLoc "zero" :< IntUPF 0)
+    define (name, builtin) = (locatedName loc name, definition) where
+      loc = BuiltinLoc name
+      var n = loc :< UnprocessedParsedTermL (VarF n)
+      lam n body = loc :< UnprocessedParsedTermL (LamF (locatedName loc n) body)
+      definition = case builtin of
+        Unary f  -> lam "x" (f loc (var "x"))
+        Binary f -> lam "x" (lam "y" (f loc (var "x") (var "y")))
