@@ -10,6 +10,10 @@ let
     (hsPkgs.shellFor {
       packages = _: [ telomare ];
       withHoogle = false;
+      # shellFor gathers the dependencies through a package of its own, and
+      # corepkgs' builder, unlike nixpkgs', defaults that to `doCheck = false`,
+      # which leaves the test suites' dependencies out of the shell's GHC.
+      genericBuilderArgsModifier = args: args // { doCheck = true; };
       nativeBuildInputs = [ tools.cabal-install ] ++ extra;
     }).overrideAttrs
       (old: {
