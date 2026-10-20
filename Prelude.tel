@@ -1,26 +1,24 @@
 id = \x -> x
 
+userAbort = \x -> (1,x)
+
 Bool = \vv -> if vv
               then if (left vv)
-                   then "Bool cannot have non-zero val in left of pair"
+                   then userAbort "Bool cannot have non-zero val in left of pair"
                    else if (right vv)
-                        then "Bool cannot have non-zero val in right of pair"
+                        then userAbort "Bool cannot have non-zero val in right of pair"
                         else 0
               else 0
 
 toBool = \b -> if b then 1 else 0
 
-ite = \i t e -> let si : Bool = i in if si then t else e
+ite = \(i : Bool) t e -> if i then t else e
 
-and = \a b -> let sa : Bool = a
-                  sb : Bool = b
-              in if sa then sb else 0
+and = \(a : Bool) (b : Bool) -> if a then b else 0
 
-or = \a b -> let sa : Bool = a
-                 sb : Bool = b
-             in if sa then 1 else sb
+or = \(a : Bool) (b : Bool) -> if a then 1 else b
 
-not = \x -> let sx : Bool = x in if sx then 0 else 1
+not = \(x : Bool) -> if x then 0 else 1
 
 succ = \x -> (x,0)
 

@@ -299,11 +299,12 @@ parsePatternVar = do
 parsePatternIgnore :: TelomareParser PatternP
 parsePatternIgnore = symbol "_" >> pure (embed PatternIgnoreF)
 
--- |Parse a parenthesised pattern with a type/refinement annotation,
--- e.g. @(aa : Nat)@. The stored typeExpr is the raw check function;
--- 'Telomare.Expand.buildMultiLambda' applies it to the bound value and uses
--- the result as the case scrutinee, forcing runtime validation before
--- destructuring.
+-- |Parse a parenthesised pattern with a refinement annotation,
+-- e.g. @(x : Bool)@. The stored typeExpr is the raw check function;
+-- 'Telomare.Expand.buildMultiLambda' folds it into a 'CheckF' on the bound
+-- value, so it is checked statically like a @let x : Bool = ...@ binding.
+-- Annotations are only accepted at the top of a lambda parameter;
+-- 'Telomare.Expand' rejects them elsewhere.
 parsePatternAnnotated :: TelomareParser PatternP
 parsePatternAnnotated = parens body <?> "annotated pattern"
   where

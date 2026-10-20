@@ -39,18 +39,28 @@ expansionTests = testGroup "Expansion pass"
             Right (pats', body', expanded) ->
               stripParserLocs expanded @?= stripParserLocs (buildMultiLambda loc pats' body')
         _ -> assertFailure $ "expected raw LamPatF, got: " <> show raw
-  , testCase "annotated pattern lambda cases on the validator result" $ do
-      raw <- runTelomareParser parseLongExpr "\\(v : Nat) -> v"
+  , testCase "annotated pattern lambda binds a CheckF of the argument" $ do
+      raw <- runTelomareParser parseLongExpr "\\(v : Bool) -> v"
       case expandTerm raw of
         Right (_ :< UnprocessedParsedTermL (LamF binder
-                (_ :< CaseUPF
-                  (_ :< UnprocessedParsedTermL (AppF
-                    (_ :< UnprocessedParsedTermL (VarF "Nat"))
-                    (_ :< UnprocessedParsedTermL (VarF bound))))
-                  [(Fix (PatternVarF name), _)])))
+                (_ :< LetUPF
+                  [(name, _ :< UnprocessedParsedTermH (CheckF
+                    (_ :< UnprocessedParsedTermL (VarF "Bool"))
+                    (_ :< UnprocessedParsedTermL (VarF bound))))]
+                  (_ :< UnprocessedParsedTermL (VarF "v")))))
           | locatedNameText name == "v" ->
           bound @?= locatedNameText binder
         other -> assertFailure $ "unexpected expansion: " <> show other
+  , testCase "annotation nested inside a lambda pair pattern is an ExpansionError" $ do
+      raw <- runTelomareParser parseLongExpr "\\((a : Bool), b) -> a"
+      case expandTerm raw of
+        Left (MisplacedPatternAnnotation _) -> pure ()
+        other -> assertFailure $ "expected MisplacedPatternAnnotation: " <> show other
+  , testCase "annotation in a case alternative is an ExpansionError" $ do
+      raw <- runTelomareParser parseLongExpr "case 0 of\n  (x : Bool) -> x\n"
+      case expandTerm raw of
+        Left (MisplacedPatternAnnotation _) -> pure ()
+        other -> assertFailure $ "expected MisplacedPatternAnnotation: " <> show other
   , testCase "refinement annotation folds into CheckF" $ do
       defs <- runTelomareParser parseDefinitions "main : T = 0\n"
       case expandDefs defs of

@@ -1,4 +1,5 @@
-{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE LambdaCase    #-}
+{-# LANGUAGE TupleSections #-}
 
 -- |The surface expansion pass that runs immediately after parsing. The grammar in
 -- 'Telomare.Parse' is deliberately dumb: it emits 'ParsedSurfaceTerm' trees whose
@@ -29,8 +30,9 @@ import Control.Monad (when, (>=>))
 import Data.Bifunctor (first)
 import Data.Char (isUpper)
 import Data.Fix (Fix (..))
+import Data.Foldable (traverse_)
 import Data.Functor (void)
-import Data.Functor.Foldable (embed, project)
+import Data.Functor.Foldable (cata, embed, project)
 import Telomare.IR.Base
 import Telomare.IR.Loc
 import Telomare.IR.Surface
@@ -50,6 +52,10 @@ data ExpansionError
   | UDTArityMismatch LocTag String Int Int
     -- ^ A UDT declaration with a different number of exported names and
     -- body slots. Fields: location, type name, number of names, body slots.
+  | MisplacedPatternAnnotation LocTag
+    -- ^ A refinement annotation @(p : T)@ somewhere other than the top of
+    -- a lambda parameter, e.g. inside a pair pattern or in a @case@
+    -- alternative. Field: location of the enclosing lambda or case.
   | MissingMain
     -- ^ 'wrapMain' found no @main@ among the top-level definitions.
   deriving (Eq, Show)
@@ -66,6 +72,9 @@ renderExpansionError = \case
     "UDT declaration for [" <> tname <> "] has " <> show nNames
     <> " names for " <> show nSlots <> " value slots; expected one type name "
     <> "plus one name per slot" <> atLoc loc
+  MisplacedPatternAnnotation loc ->
+    "refinement annotations (p : T) are only supported at the top of a "
+    <> "lambda parameter" <> atLoc loc
   MissingMain -> "missing 'main' definition"
   where
     atLoc loc = maybe "" (" at " <>) (renderLocTag loc)
@@ -77,6 +86,7 @@ expansionErrorLoc = \case
   ListArityMismatch loc _ _ -> Just loc
   UDTBodyNotList loc _ _   -> Just loc
   UDTArityMismatch loc _ _ _ -> Just loc
+  MisplacedPatternAnnotation loc -> Just loc
   MissingMain              -> Nothing
 
 -- |Remove the sugar fragment, bottom-up. This is the type change that
@@ -86,6 +96,7 @@ expandTerm :: ParsedSurfaceTerm -> Either ExpansionError ExpandedSurfaceTerm
 expandTerm (loc :< term) = case term of
   ParsedTermSugar (LamPatF pats body) -> do
     pats' <- traverse (traverse expandPattern) pats
+    traverse_ checkLambdaPattern pats'
     body' <- expandTerm body
     pure $ buildMultiLambda loc pats' body'
   ParsedTermSugar (LetSugarF defs body) -> do
@@ -100,8 +111,26 @@ expandTerm (loc :< term) = case term of
     upf' <- traverse expandTerm upf
     (loc :<) <$> traverseUPTPatterns expandPattern upf'
   where
-    expandAlternative (pattern', body) =
-      (,) <$> expandPattern pattern' <*> expandTerm body
+    expandAlternative (pattern', body) = do
+      pattern'' <- expandPattern pattern'
+      checkPlainPattern loc pattern''
+      (pattern'',) <$> expandTerm body
+
+-- |A lambda parameter may be wrapped in refinement annotations, but the
+-- pattern underneath must be plain: 'buildMultiLambda' only lowers
+-- annotations at the top, and 'Telomare.Desugar' would drop any others.
+checkLambdaPattern :: (LocTag, PatternA) -> Either ExpansionError ()
+checkLambdaPattern (loc, p) = case project p of
+  PatternAnnotatedF inner _ -> checkLambdaPattern (loc, inner)
+  _                         -> checkPlainPattern loc p
+
+-- |Reject a pattern that contains a refinement annotation anywhere.
+checkPlainPattern :: LocTag -> PatternA -> Either ExpansionError ()
+checkPlainPattern loc p = when (hasAnnotation p) . Left $ MisplacedPatternAnnotation loc
+  where
+    hasAnnotation = cata $ \case
+      PatternAnnotatedF _ _ -> True
+      other                 -> or other
 
 -- |Patterns carry embedded terms in their annotations (@(v : T)@), which
 -- the parser leaves raw too.
@@ -172,12 +201,18 @@ lambdaVarNames = zipWith nameFor [0 :: Int ..]
 -- |Build a multi-argument lambda whose destructuring all happens INSIDE
 -- the innermost lambda body. For @\\p1 p2 p3 -> body@ this emits
 --
--- > \\v1 -> \\v2 -> \\v3 -> applyDestructure p3 v3
--- >                                 (applyDestructure p2 v2
--- >                                   (applyDestructure p1 v1 body))
+-- > \\v1 -> \\v2 -> \\v3 -> applyDestructure p1 v1
+-- >                          (applyDestructure p2 v2
+-- >                            (applyDestructure p3 v3 body))
 --
 -- where @applyDestructure p v body@ is @body@ when @p@ is a 'PatternVar'
--- (no destructure needed) and a @case v of p -> body@ otherwise.
+-- (no destructure needed) and a @case v of p -> body@ otherwise. Earlier
+-- parameters' bindings are in scope in later parameters' annotations.
+--
+-- A refinement annotation @(p : T)@ binds the checked value, so
+-- @\\(x : T) -> body@ becomes @\\v -> let x = CheckF T v in body@, the same
+-- as writing @let x : T = v in body@. 'checkLambdaPattern' guarantees
+-- annotations only occur at the top of a parameter.
 --
 -- This avoids putting a function-valued lambda inside a case body, which
 -- would cause the case-rewrite to type-mismatch against the (Pair-typed)
@@ -185,23 +220,26 @@ lambdaVarNames = zipWith nameFor [0 :: Int ..]
 buildMultiLambda :: LocTag -> [(LocTag, PatternA)] -> ExpandedSurfaceTerm -> ExpandedSurfaceTerm
 buildMultiLambda lt patterns body =
   let varNames = lambdaVarNames patterns
-      destructured = foldr applyDestructure body (zip (snd <$> patterns) (locatedNameText <$> varNames))
+      destructured = foldr applyDestructure body (zip patterns (locatedNameText <$> varNames))
       lamWrapped = foldr LamP destructured varNames
   in lamWrapped
   where
-    applyDestructure (p, varName) inner =
+    applyDestructure ((loc, p), varName) inner =
       let bound = lt :< embedL (VarF varName)
           abort = AppP
                     (lt :< embedL (VarF "abort"))
                     (lt :< StringUPF "buildMultiLambda: pattern not reached")
       in case project p of
            PatternVarF _ -> inner
-           PatternAnnotatedF innerPat typeExpr ->
-             -- Use the validator result as the case scrutinee instead of
-             -- CheckUPF: hash-based UDT validators are runtime values that
-             -- the static refinement analyzer cannot symbolically evaluate.
-             let tyApplied = AppP (unAnnotatedEST typeExpr) bound
-             in lt :< CaseUPF tyApplied [(innerPat, inner)]
+           PatternAnnotatedF innerPat (AnnotatedEST typeExpr) ->
+             let checked = loc :< embedH (CheckF typeExpr bound)
+             in case project innerPat of
+                  PatternVarF name -> lt :< LetUPF [(name, checked)] inner
+                  _ ->
+                    let checkedName = varName <> "_checked"
+                        checkedBinder = locatedName (GeneratedLoc "annotated lambda pattern" (Just loc)) checkedName
+                    in lt :< LetUPF [(checkedBinder, checked)]
+                         (applyDestructure ((loc, innerPat), checkedName) inner)
            _ ->
              lt :< CaseUPF bound
                [ (p, inner)
@@ -270,7 +308,7 @@ accessAt loc n e = loc :< embedH (HLeftF (iterate (\x -> loc :< embedH (HRightF 
 -- > __udt_T = wrapper (# wrapper)
 -- >   where wrapper = \\h -> let T = validatorFor T h in [h, T, mkBody, unTBody]
 -- > __udt_T_hash = left __udt_T
--- > T   = left (right __udt_T)   -- validator, usable as `(x : T)` outside
+-- > T   = left (right __udt_T)   -- validator, callable as `T x` outside
 -- > mk  = left (right (right __udt_T))
 -- > unT = left (right (right (right __udt_T)))
 -- > op1 = let h = __udt_T_hash; T = validatorFor T h in op1Body
@@ -337,12 +375,10 @@ udtSlots loc tname = go where
 
 -- |Auto-generated validator: @\\v -> if dEqual (left v) <h> then right v else abort \"not <T>\"@.
 -- Returns the validated payload on success; aborts on failure.
--- Annotated pattern lambdas use the validator's result as the case
--- scrutinee, so destructuring works on a validated value without an
--- extra ITE.
+-- Call it directly (@\\v -> let x = T v in ...@) to unwrap a branded value.
 autoValidator :: LocTag -> String -> String -> ExpandedSurfaceTerm
 autoValidator loc tname hParam =
-  LamP (locatedName (GeneratedLoc "annotated pattern lambda" (Just loc)) "__udt_v")
+  LamP (locatedName (GeneratedLoc "UDT validator" (Just loc)) "__udt_v")
     (ITEP
        (AppP
           (AppP
