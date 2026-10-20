@@ -136,6 +136,10 @@
   cache. Bump the pin, in both workflows, with the maintainer's Nix.
   magic-nix-cache is gone:
   every upload was failing, and Cachix holds everything CI needs.
+* CI pushes what it builds to the `telomare` cache. The cache signs with
+  a Cachix-managed key, which takes an auth token to push to, and CI was
+  offering only a signing key: every upload was refused (403), so nothing CI
+  built reached the cache. It now pushes with the `CACHIX_AUTH_TOKEN` secret.
 
 ## 0.1.0.0 -- YYYY-mm-dd
 

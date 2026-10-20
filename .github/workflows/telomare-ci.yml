@@ -22,10 +22,13 @@ jobs:
         diagnostic-endpoint: ""
         extra-conf: |
           accept-flake-config = true
+    # The telomare cache signs with a Cachix-managed key, so pushing takes an
+    # auth token with write access; a signing key alone is refused (403).
+    # Pull requests from forks get no secrets and only pull.
     - uses: cachix/cachix-action@v17
       with:
         name: telomare
-        signingKey: '${{ secrets.CACHIX_SIGNING_KEY }}'
+        authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
         extraPullNames: ekala-corepkgs
     - name: Build and test
       run: |
@@ -73,7 +76,7 @@ jobs:
       - uses: cachix/cachix-action@v17
         with:
           name: telomare
-          signingKey: '${{ secrets.CACHIX_SIGNING_KEY }}'
+          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
           extraPullNames: ekala-corepkgs
       - name: haddock build
         run: |
