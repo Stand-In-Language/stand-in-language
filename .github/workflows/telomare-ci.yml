@@ -38,6 +38,12 @@ jobs:
 
         nix -Lv develop -c cabal update
 
+        # With an empty CABAL_DIR there is no package index, so the plan can
+        # only use what the shell's GHC has: this fails if `nix develop`
+        # leaves out a dependency of any component, test suites included.
+        echo "Dry-running cabal test in the dev shell..."
+        CABAL_DIR=$(mktemp -d) nix -Lv develop -c cabal test --dry-run --enable-tests all
+
         echo "Testing telomare-repl..."
         REPL_OUTPUT=$(nix -Lv run .#telomare-repl -- --expr 'succ 7' 2>/dev/null | tail -n 1)
         echo "REPL output: $REPL_OUTPUT"

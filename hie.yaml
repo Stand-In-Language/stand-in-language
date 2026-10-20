@@ -16,7 +16,7 @@ cradle:
       component: "telomare:test:telomare-test"
 
     - path: "test/Common.hs"
-      component: "telomare:test:telomare-test"
+      component: "telomare:test:telomare-resolver-test"
 
     - path: "test/ParserTests.hs"
       component: "telomare:test:telomare-parser-test"
@@ -35,6 +35,15 @@ cradle:
 
     - path: "test/RunModeTests.hs"
       component: "telomare:test:telomare-sizing-test"
+
+    - path: "test/ConformanceTests.hs"
+      component: "telomare:test:telomare-sizing-test"
+
+    - path: "test/EALTests.hs"
+      component: "telomare:test:telomare-eal-test"
+
+    - path: "test/ICTests.hs"
+      component: "telomare:test:telomare-ic-test"
 
     - path: "test/UDTTests.hs"
       component: "telomare:test:telomare-udt-test"

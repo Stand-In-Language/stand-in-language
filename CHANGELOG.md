@@ -140,6 +140,17 @@
   a Cachix-managed key, which takes an auth token to push to, and CI was
   offering only a signing key: every upload was refused (403), so nothing CI
   built reached the cache. It now pushes with the `CACHIX_AUTH_TOKEN` secret.
+* Fixed `cabal test` in the dev shells, which found none of the test suites'
+  own dependencies (hspec, tasty-hunit, tasty-quickcheck): corepkgs' Haskell
+  builder defaults to `doCheck = false`, and `shellFor` gathers the
+  dependencies through a package built with that default. CI now dry-runs
+  `cabal test` in `nix develop` with no package index, so the plan has to
+  come from the shell alone.
+* haskell-language-server loads every Haskell file again: `hie.yaml` maps
+  the EAL, IC and conformance test modules to their suites, and `Common`,
+  which `telomare-test` still listed although only the resolver suite
+  imports it, belongs to that suite alone (a file in two components fails
+  to load in one of them).
 
 ## 0.1.0.0 -- YYYY-mm-dd
 
