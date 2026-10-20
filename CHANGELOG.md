@@ -130,7 +130,7 @@
   the cache instead of rebuilding the LSP wrapper, the helper and
   ShellCheck. `systems` is `x86_64-linux` until corepkgs marks
   aarch64-linux supported.
-* CI installs Determinate Nix 3.23.0, the Nix `push-cachix` is run with,
+* CI installs Determinate Nix 3.23.3, the Nix `push-cachix` is run with,
   instead of Nix 2.31.5: `nix develop` builds its environment from the
   running Nix's own get-env.sh, so only the same version finds it in the
   cache. Bump the pin, in both workflows, with the maintainer's Nix.
