@@ -17,7 +17,7 @@ jobs:
     # in a derivation built from that Nix's own get-env.sh, so only the same
     # version finds the published environment in the cache. The installer
     # sets `access-tokens` from the job's token.
-    - uses: DeterminateSystems/determinate-nix-action@v3.23.0
+    - uses: DeterminateSystems/determinate-nix-action@v3.23.3
       with:
         diagnostic-endpoint: ""
         extra-conf: |
@@ -68,7 +68,7 @@ jobs:
           token: ${{ secrets.API_TOKEN_GITHUB }}
           path: ./stand-in-language.github.io
           fetch-depth: 0
-      - uses: DeterminateSystems/determinate-nix-action@v3.23.0
+      - uses: DeterminateSystems/determinate-nix-action@v3.23.3
         with:
           diagnostic-endpoint: ""
           extra-conf: |
