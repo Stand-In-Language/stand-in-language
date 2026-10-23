@@ -85,7 +85,7 @@ import Telomare.IR.Loc
 import Telomare.IR.Surface
 import Telomare.IR.Types
 import Telomare.Parse (runParseModule)
-import Telomare.Resolve (main2Term3, main2Term3let)
+import Telomare.Resolve (main2Term3)
 import Telomare.Util (padRight, plural)
 
 -- |A recursion site: the token the sizing pass would have sized, where it is
@@ -480,7 +480,7 @@ runFastWithInput fuel inputs prog = runEval fuel $ do
             l : rest -> go acc' rest (Just (l, ns))
   go "" inputs Nothing
 
--- |Parse, typecheck and resolve, then convert without sizing. This mirrors
+-- |Parse, resolve and certify, then convert without sizing. This mirrors
 -- `Telomare.Driver.compileMainReporting` up to the point where that calls the
 -- sizing pass.
 compileFast :: [(String, String)] -- ^All modules as (Module_Name, Module_Content)
@@ -492,9 +492,8 @@ compileFast modulesStrings entry =
     errs@(_ : _) -> Left $ unlines errs
     [] -> do
       let modules = [(n, m) | (n, Right m) <- parsed]
-      certTerm <- resolved $ main2Term3 modules entry
-      _ <- first (renderEvalError . CertificationError) $ certifyMain certTerm
-      runtimeTerm <- resolved $ main2Term3let modules entry
+      runtimeTerm <- resolved $ main2Term3 modules entry
+      _ <- first (renderEvalError . CertificationError) $ certifyMain runtimeTerm
       term3ToFast (ownerMap modules) runtimeTerm
   where
     parsed = fmap parseAndExpand modulesStrings

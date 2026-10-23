@@ -671,12 +671,12 @@ showAllTransformations input = do
   --     diff = getGroupedDiff str1 str2
   -- section "optimizeBindingsReference" . show $ optimizeBindingsReferenceVar
   -- section "Diff optimizeBindingsReference" $ ppDiff diff
-  let validateVariablesVar = validateVariables (desugarTerm upt)
-      str3 = lines . show $ validateVariablesVar
-      diffValidateVariables = getGroupedDiff str3 str1
-  section "Resolve: validateVariables" . show $ validateVariablesVar
-  section "Diff Resolve: validateVariables" $ ppDiff diffValidateVariables
-  let debruijinizeVar = case (>>= debruijinize) validateVariablesVar of
+  let letsToAppsVar = letsToApps (desugarTerm upt)
+      str3 = lines . show $ letsToAppsVar
+      diffLetsToApps = getGroupedDiff str3 str1
+  section "Resolve: letsToApps" . show $ letsToAppsVar
+  section "Diff Resolve: letsToApps" $ ppDiff diffLetsToApps
+  let debruijinizeVar = case (>>= debruijinize) letsToAppsVar of
         Right x -> x
         Left e  -> error $ "Main.showAllTransformations: unexpected debruijinize failure: " <> show e
       str4 = lines . show $ debruijinizeVar

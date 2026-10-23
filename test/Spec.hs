@@ -193,13 +193,13 @@ unitTest name expected iexpr = it name $
       result <- show . PrettyBasic <$> testEval compiled
       result `shouldBe` expected
 
-unitTests :: Show a => (Bool -> String -> Either a Term3) -> SpecWith ()
+unitTests :: Show a => (String -> Either a Term3) -> SpecWith ()
 unitTests parse = do
-  let unitTestCertifies = unitTestCertifies' (parse False)
-      unitTestRejected = unitTestRejected' (parse False)
-      unitTest2 = unitTest2' (parse True)
-      unitTestStaticChecks = unitTestStaticChecks' (parse True)
-      buildMainTest s = case fmap (compileMain' (SizingSettings 255 True)) (parse True s) of
+  let unitTestCertifies = unitTestCertifies' parse
+      unitTestRejected = unitTestRejected' parse
+      unitTest2 = unitTest2' parse
+      unitTestStaticChecks = unitTestStaticChecks' parse
+      buildMainTest s = case fmap (compileMain' (SizingSettings 255 True)) (parse s) of
         Right (Right g) -> let evalMain = funWrap g appB
                            in pure $ \st i e -> it ("main input " <> i) $ evalMain (Just (i, st)) `shouldBe` e
         z -> pure $ \st _i _e -> runIO . expectationFailure $ "failed to compile main:\n" <> show st <> "\nbecause:\n" <> show z
@@ -240,7 +240,7 @@ unitTests parse = do
     unitTestRejectedTerm "infinite pair recursion" inf_pairs
     -- certification tolerates a hereditarily-data program (applying data
     -- sticks, boundedly), so the gate's extra main-shape check catches it
-    it "the compile gate rejects a data main" $ case parse False "main = 0" of
+    it "the compile gate rejects a data main" $ case parse "main = 0" of
       Left e -> expectationFailure $ "failed to parse: " <> show e
       Right g -> case certifyMain g of
         Left _  -> pure ()
@@ -420,9 +420,7 @@ main = do
              >>= first renderExpansionError . expandModule of
         Left e    -> error e
         Right pam -> ("AuxModule", pam)
-    parse :: Bool -> String -> Either String Term3
-    parse appLet str = if appLet
-      then first show $ main2Term3let (parseAuxModule str:prelude) "AuxModule"
-      else first show $ main2Term3 (parseAuxModule str:prelude) "AuxModule"
+    parse :: String -> Either String Term3
+    parse str = first show $ main2Term3 (parseAuxModule str:prelude) "AuxModule"
 
   hspec $ unitTests parse

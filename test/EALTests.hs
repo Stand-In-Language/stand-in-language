@@ -15,7 +15,7 @@ import Telomare.IR.Base (BasicExprF (..), FunctionIndex (FunctionIndex),
 import Telomare.IR.Core (Term3, Term3F (..))
 import Telomare.IR.Loc (LocTag (..))
 import Telomare.Parse (runParseModule)
-import Telomare.Resolve (DeferMap (..), deferLift, main2Term3, main2Term3let)
+import Telomare.Resolve (DeferMap (..), deferLift, main2Term3)
 import Test.Tasty
 import Test.Tasty.HUnit
 
@@ -92,13 +92,11 @@ main = do
     prelude = [("Prelude", expandNamed "Prelude" preludeFile)]
     parseAuxModule str =
       ("AuxModule", expandNamed "AuxModule" ("import Prelude\n" <> str))
-    parse :: Bool -> String -> Either String Term3
-    parse appLet str = if appLet
-      then first show $ main2Term3let (parseAuxModule str:prelude) "AuxModule"
-      else first show $ main2Term3 (parseAuxModule str:prelude) "AuxModule"
-    unitTestEAL = unitTestEAL' (parse False)
+    parse :: String -> Either String Term3
+    parse str = first show $ main2Term3 (parseAuxModule str:prelude) "AuxModule"
+    unitTestEAL = unitTestEAL' parse
     -- the main verdicts on the same program before and after sizing
-    sizedVerdicts s = case parse False s of
+    sizedVerdicts s = case parse s of
       Left e -> assertFailure $ "parse failed: " <> e
       Right t3 -> case compileUnitTest t3 of
         Left e -> assertFailure $ "compile failed: " <> show e
@@ -221,7 +219,7 @@ main = do
         -- pre-sizing, the recursion oracle's work is unbounded: its body
         -- (and every body referencing it) must not be marked speculatable,
         -- while sizing-free bodies in the same program still are
-        case parse False "main = d2c 1 succ 0" of
+        case parse "main = d2c 1 succ 0" of
           Left e -> assertFailure ("parse failed: " <> e)
           Right g -> do
             let cgs = rights (Map.elems (ealGuidance (inferEALWithLifting g)))
@@ -242,7 +240,7 @@ main = do
         -- iterates the iterator, which needs each composition rung at its
         -- own level — per-apply-site dispatch expresses that where both
         -- the old occurs check and a monomorphic flow analysis could not
-        case parse False "main = $3 $2 succ 0" of
+        case parse "main = $3 $2 succ 0" of
           Left e -> assertFailure ("parse failed: " <> e)
           Right g -> case ealLiftedMain (inferEALWithLifting g) of
             Right r -> assertBool "bounded level" (ealMaxLevel r <= 6)
@@ -267,7 +265,7 @@ main = do
     , testCase "real Prelude programs certify (listEqual)" $
         -- BENCHMARK FLIPPED: with captures per tag, the Prelude
         -- combinator plumbing types end to end
-        case parse False "main = listEqual \"ab\" \"ab\"" of
+        case parse "main = listEqual \"ab\" \"ab\"" of
           Left e -> assertFailure ("parse failed: " <> e)
           Right g -> case ealLiftedMain (inferEALWithLifting g) of
             Right r -> assertBool "bounded level" (ealMaxLevel r <= 3)
@@ -276,7 +274,7 @@ main = do
     , testCase "filter over range certifies" $
         -- BENCHMARK FLIPPED: its failing body was a solver repair pump,
         -- broken by the occurrence slack
-        case parse False
+        case parse
           "main = left (filter (\\x -> dEqual x 2) (range 0 3))" of
           Left e -> assertFailure ("parse failed: " <> e)
           Right g -> case ealLiftedMain (inferEALWithLifting g) of
@@ -346,7 +344,7 @@ main = do
         -- family (shared frame bang as rhs, shared prefix edges on the
         -- lhs); the private slack per occurrence makes repair local and
         -- the whole foldr family certifies at level 1.
-        case parse False "main = foldr (\\x l -> (x,l)) 0 [1,2]" of
+        case parse "main = foldr (\\x l -> (x,l)) 0 [1,2]" of
           Left e -> assertFailure $ "parse failed: " <> e
           Right t3 -> case compileUnitTest t3 of
             Left e -> assertFailure $ "compile failed: " <> show e
@@ -376,7 +374,7 @@ main = do
         -- adopt deliberately if wanted; (2) the blame names the deep
         -- Prelude site where the code-headed result is built, not the
         -- gate where the arms disagree.
-        case parse False "main = (if 0 then (\\x -> times $2 x) else $1) succ 0" of
+        case parse "main = (if 0 then (\\x -> times $2 x) else $1) succ 0" of
           Left e -> assertFailure ("parse failed: " <> e)
           Right g -> case ealLiftedMain (inferEALWithLifting g) of
             Left (EALTypeMismatch _ _) -> pure ()

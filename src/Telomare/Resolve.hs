@@ -6,38 +6,25 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 
 -- |Name resolution and core lowering: imports are resolved
--- ('resolveMain'), names are scope-checked, lambdas get de Bruijn indices
+-- ('resolveMain'), let bindings become lambda applications with
+-- @TUnsizedRepeaterF@ threaded to recursive references and names are
+-- scope-checked ('letsToApps'), lambdas get de Bruijn indices
 -- ('debruijinize'), @HashF@ nodes are folded to constants
 -- ('generateAllHashes'), and the result is lowered to core
--- ('splitExpr': 'Term2' -> 'Term3').
---
--- == The dual pipeline
---
--- Two resolution pipelines coexist, with different semantics, and
--- 'Telomare.Driver.compileMainReporting' runs BOTH on every compile:
---
--- * 'process' (via 'validateVariables' + 'debruijinize'): scope-checks
---   and inlines let bindings. Its 'Term3' is what the type checker sees -
---   and is then discarded.
--- * 'processWlet' (via 'letsToApps' + 'debruijinizeApp'): converts let
---   bindings to lambda applications and threads @TUnsizedRepeaterF@
---   applications for recursive references. Its 'Term3' is what the sizing
---   pass consumes and what actually runs.
---
--- The typechecked term is therefore NOT the executed term. Do not unify
--- the two paths casually: sizing depends on the shape 'letsToApps'
--- produces, and the regression constants in the sizing tests depend on
--- it too.
+-- ('splitExpr': 'Term2' -> 'Term3'). One 'Term3' serves EAL
+-- certification, sizing and execution alike; sizing depends on the shape
+-- 'letsToApps' produces, as do the regression constants in the sizing
+-- tests.
 module Telomare.Resolve where
 
 import Codec.Binary.UTF8.String (encode)
 import Control.Comonad.Cofree (Cofree (..), unwrap)
 import qualified Control.Comonad.Trans.Cofree as C
 import Control.Lens.Combinators (transform)
-import Control.Monad (forM_, (<=<))
+import Control.Monad ((<=<))
 import Control.Monad.Identity (Identity (..))
 import Control.Monad.Reader (MonadReader (ask), runReaderT)
-import Control.Monad.State (StateT, evalStateT)
+import Control.Monad.State (evalStateT)
 import qualified Control.Monad.State as State
 import Control.Monad.Trans (lift)
 import Control.Monad.Trans.Reader (local)
@@ -57,7 +44,6 @@ import qualified Data.Map as Map
 import Data.Map.Strict (Map)
 import Data.Set (Set)
 import qualified Data.Set as Set
-import Data.Void (absurd)
 import Debug.Trace (trace)
 import GHC.Generics (Generic1, Generically1 (..))
 import Telomare.Desugar (desugarTerm, rewriteOuterTag)
@@ -126,8 +112,18 @@ pruneBindings root bs = filter ((`Set.member` reachable) . fst) bs
 
 type VarList = [String]
 
+-- | Close all naked open lambdas
+closeLams :: Term2 -> Term2
+closeLams = runIdentity . flip (runReaderT . cata f) True where
+  f = \case
+    anno C.:< x -> case x of
+      ParserTermL (LamF lt ix) -> ask >>= \naked -> if naked
+        then LamP (Closed ()) <$> local (const False) ix
+        else LamP lt <$> local (const False) ix
+      x' -> (anno :<) <$> sequence x'
+
 debruijinize :: forall m. (Monad m, MonadFail m) => Term1 -> m Term2
-debruijinize = flip (runReaderT . cata f) [] where
+debruijinize = fmap closeLams . flip (runReaderT . cata f) [] where
   f = \case
     LamAFP a lt x -> embed . LamAFP a (convLam lt) <$> local (lt:) x
     VarAFP a n -> ask >>= \vl -> lift $ findElem a n vl
@@ -139,43 +135,6 @@ debruijinize = flip (runReaderT . cata f) [] where
     ParserTermH x -> ParserTermH x
     TUnsizedRepeaterF -> TUnsizedRepeaterF
     ParserTermL _ -> error "Telomare.Resolve.debruijinize: unexpected ParserTermL"
-  convLam = \case
-    Open _ -> Open ()
-    Closed _ -> Closed ()
-    LetBinding _ _ -> Open ()
-  findElem :: LocTag -> String -> [LamType String] -> m Term2
-  findElem _anno n vl = case find (ff n) (zip [0..] vl) of
-    Just (i, _) -> pure $ VarP i
-    _           -> fail $ "undefined identifier " <> n
-  ff n = \case
-    (_, Open n') | n' == n -> True
-    (_, Closed n') | n' == n -> True
-    (_, LetBinding _ n') | n' == n -> True
-    _ -> False
-
--- | Close all naked open lambdas
-closeLams :: Term2 -> Term2
-closeLams = runIdentity . flip (runReaderT . cata f) True where
-  f = \case
-    anno C.:< x -> case x of
-      ParserTermL (LamF lt ix) -> ask >>= \naked -> if naked
-        then LamP (Closed ()) <$> local (const False) ix
-        else LamP lt <$> local (const False) ix
-      x' -> (anno :<) <$> sequence x'
-
-debruijinizeApp :: forall m. (Monad m, MonadFail m) => Term1 -> m Term2
-debruijinizeApp = fmap closeLams . flip (runReaderT . cata f) [] where
-  f = \case
-    LamAFP a lt x -> embed . LamAFP a (convLam lt) <$> local (lt:) x
-    VarAFP a n -> ask >>= \vl -> lift $ findElem a n vl
-    AppAFP a fn i -> fmap embed . sequence $ AppAFP a fn i
-    x           -> fmap embed . sequence $ liftC conv x
-  liftC g (a C.:< x) = a C.:< g x
-  conv = \case
-    ParserTermB x -> ParserTermB x
-    ParserTermH x -> ParserTermH x
-    TUnsizedRepeaterF -> TUnsizedRepeaterF
-    ParserTermL _ -> error "Telomare.Resolve.debruijinizeApp: unexpected ParserTermL"
   convLam = \case
     Open _ -> Open ()
     Closed _ -> Closed ()
@@ -294,106 +253,6 @@ topologicalSort names deps = go [] names
 
     delete x = filter (/= x)
 
-validateVariables :: DesugaredSurfaceTerm
-                  -> Either ResolverError Term1
-validateVariables term =
-  let validateWithEnvironment :: DesugaredSurfaceTerm
-                              -> StateT (Map String Term1) (Either ResolverError) Term1
-      validateWithEnvironment = \case
-        _anno :< LetUPF preludeMap inner -> do
-          oldPrelude <- State.get
-
-          -- Build dependency graph
-          let dependencies :: Map String (Set String)
-              dependencies = Map.fromList
-                [(locatedNameText name, Set.fromList $ getDirectDeps def) | (name, def) <- preludeMap]
-
-              -- Get direct variable dependencies (only those defined in this let block)
-              -- Uses Set to properly handle lambda-bound variable shadowing
-              letBindingNames = Set.fromList (letBindingName <$> preludeMap)
-              getDirectDeps = Set.toList . cata alg where
-                alg = \case
-                    (VarFP n) -> if Set.member n letBindingNames then Set.singleton n else Set.empty
-                    (LamAFP _ v body) -> Set.delete (locatedNameText v) body
-                    (_ C.:< LetUPF binds body) ->
-                      let boundNames = Set.fromList (letBindingName <$> binds)
-                          bindDeps = foldMap letBindingValue binds
-                      in Set.union (bindDeps Set.\\ boundNames) (body Set.\\ boundNames)
-                    (ITEAFP _ i t e) -> i <> t <> e
-                    (PairAFP _ a b) -> a <> b
-                    (_ C.:< ListUPF l) -> F.fold l
-                    (AppAFP _ f x) -> f <> x
-                    (_ C.:< UnprocessedParsedTermH (RecursionF t r b)) -> t <> r <> b
-                    (_ C.:< UnprocessedParsedTermH (HLeftF x)) -> x
-                    (_ C.:< UnprocessedParsedTermH (HRightF x)) -> x
-                    (_ C.:< UnprocessedParsedTermH (HTraceF x)) -> x
-                    (_ C.:< UnprocessedParsedTermH (CheckF cf x)) -> cf <> x
-                    (_ C.:< UnprocessedParsedTermH (HashF x)) -> x
-                    _ -> Set.empty
-
-          -- Check if original order works (no forward references)
-          let originalOrder = letBindingName <$> preludeMap
-              hasForwardRef = any (\(i, name) ->
-                let deps = Map.findWithDefault Set.empty name dependencies
-                    laterNames = Set.fromList $ drop (i + 1) originalOrder
-                in not . Set.null $ deps `Set.intersection` laterNames
-                ) (zip [0..] originalOrder)
-
-          -- Only reorder if necessary
-          sortedBindings <- if hasForwardRef
-            then case topologicalSort originalOrder dependencies of
-              Left defCycle -> State.lift . Left $ defCycle
-              Right sortedNames ->
-                pure [(name, def) | name <- sortedNames,
-                      (name', def) <- preludeMap, name == locatedNameText name']
-            else pure $ first locatedNameText <$> preludeMap  -- Keep original order
-
-          -- Process bindings in order
-          forM_ sortedBindings $ \(name, def) -> do
-            validatedDef <- validateWithEnvironment def
-            State.modify (Map.insert name validatedDef)
-
-          result <- validateWithEnvironment inner
-          State.put oldPrelude
-          pure result
-        _anno :< UnprocessedParsedTermL (LamF v x) -> do
-          oldState <- State.get
-          State.modify (Map.insert (locatedNameText v) (VarP (locatedNameText v)))
-          result <- validateWithEnvironment x
-          State.put oldState
-          pure $ openLambda (locatedNameText v) result
-        anno :< UnprocessedParsedTermL (VarF n) -> do
-          definitionsMap <- State.get
-          case Map.lookup n definitionsMap of
-            Just v -> pure v
-            _      -> State.lift . Left $ MissingDefinitionAt anno n
-
-        anno :< (UnprocessedParsedTermH (ITEF i t e)) -> (\a b c -> embed $ ITEAFP anno a b c) <$> validateWithEnvironment i
-                                                                <*> validateWithEnvironment t
-                                                                <*> validateWithEnvironment e
-        anno :< IntUPF x -> pure $ i2t anno x
-        anno :< StringUPF s -> pure $ s2t anno s
-        anno :< UnprocessedParsedTermB ZeroSF -> pure $ anno :< ParserTermB ZeroSF
-        anno :< UnprocessedParsedTermB (PairSF a b) -> (\x y -> anno :< ParserTermB (PairSF x y)) <$> validateWithEnvironment a
-                                                            <*> validateWithEnvironment b
-        anno :< ListUPF l -> foldr (\x y -> anno :< ParserTermB (PairSF x y)) (anno :< ParserTermB ZeroSF) <$> mapM validateWithEnvironment l
-        anno :< UnprocessedParsedTermL (AppF f x) -> (\a b -> embed $ AppAFP anno a b) <$> validateWithEnvironment f
-                                                          <*> validateWithEnvironment x
-        anno :< UnprocessedParsedTermH (RecursionF t r b) ->
-          (\x y z -> embed $ AppAFP anno (anno :< embedH (RecursionF x y z)) (anno :< TUnsizedRepeaterF))
-          <$> validateWithEnvironment t
-          <*> validateWithEnvironment r
-          <*> validateWithEnvironment b
-        anno :< UnprocessedParsedTermH (ChurchF n) -> pure $ anno :< embedH (ChurchF n)
-        anno :< UnprocessedParsedTermH (HLeftF x) -> (\y -> anno :< embedH (HLeftF y)) <$> validateWithEnvironment x
-        anno :< UnprocessedParsedTermH (HRightF x) -> (\y -> anno :< embedH (HRightF y)) <$> validateWithEnvironment x
-        anno :< UnprocessedParsedTermH (HTraceF x) -> (\y -> anno :< embedH (HTraceF y)) <$> validateWithEnvironment x
-        anno :< UnprocessedParsedTermH (CheckF cf x) -> (\y y'-> anno :< embedH (CheckF y y')) <$> validateWithEnvironment cf <*> validateWithEnvironment x
-        anno :< UnprocessedParsedTermH (HashF x) -> (\y -> anno :< embedH (HashF y)) <$> validateWithEnvironment x
-        -- Cases cannot survive 'desugarTerm'; the witness field is 'Void'.
-        _ :< CaseNodeUPF v _ _ -> absurd v
-  in State.evalStateT (validateWithEnvironment term) Map.empty
-
 annotateUnsizedCount :: DesugaredSurfaceTerm
                      -> Cofree DesugaredSurfaceTermF (LocTag, Int)
 annotateUnsizedCount = capTop . flip evalStateT (0 :: Integer) . cata f where
@@ -421,13 +280,14 @@ letsToApps term =
       makeBindingsAsoc (name, def) = case runWriterT def of
         Left s           -> Left s
         Right (nx, refs) -> pure (locatedNameText name, (nx,refs))
-      -- f algebra builds Term1 wrapped with metadata (WriterT) of unbound refs (Set String) or ResolverError
+      -- f algebra builds Term1 wrapped with metadata (WriterT) of unbound refs
+      -- (each with the location of an occurrence, for error reporting) or ResolverError
       buildRefs ((anno, urC) C.:< upf) = case upf of
-        UnprocessedParsedTermL (VarF n) -> writer (embed $ VarAFP (anno, urC) n, Set.singleton n)
+        UnprocessedParsedTermL (VarF n) -> writer (embed $ VarAFP (anno, urC) n, Map.singleton n anno)
         UnprocessedParsedTermL (LamF v x) -> f (runWriterT x) where
           name = locatedNameText v
           -- f :: Either String ()
-          f (Right (nx, refs)) = let nrefs = Set.delete name refs in if null nrefs && urC == 0
+          f (Right (nx, refs)) = let nrefs = Map.delete name refs in if null nrefs && urC == 0
             then writer (embed $ LamAFP (anno, urC) (Closed name) nx, nrefs)
             else writer (embed $ LamAFP (anno, urC) (Open name) nx, nrefs)
           f (Left s)           = lift $ Left s
@@ -437,7 +297,7 @@ letsToApps term =
             -- Build dependency graph
             nBindings <- traverse makeBindingsAsoc bindings
             let originalOrder = letBindingName <$> bindings
-                dependencies = Map.fromList $ fmap (second snd) nBindings
+                dependencies = Map.fromList $ fmap (second (Map.keysSet . snd)) nBindings
                 sortedBindings =
                   -- reverse-dependency order: 'foldr makeBinding' below re-reverses
                   case reverse <$> topologicalSort originalOrder dependencies of
@@ -445,9 +305,11 @@ letsToApps term =
                     Right sortedNames ->
                       pure [(name, def) | name <- sortedNames, (name', (def, _)) <- nBindings, name == name']
                 makeBinding (n,d@((_, c) :< _)) letBody@(a :< _) = embed $ AppAFP a (embed $ LamAFP a (LetBinding c n) letBody) d
-            sortedBindings >>= \sb -> let trans = getTransitive' dependencies refs
+            sortedBindings >>= \sb -> let trans = getTransitive' dependencies (Map.keysSet refs)
                                           sb' = [(n,t) | (n,t) <- sb,  n `elem` trans]
-                                          newRefs = Set.difference trans (Set.fromList $ fmap fst sb')
+                                          boundNames = Set.fromList $ fmap fst sb'
+                                          usedRefs = refs <> mconcat [r | (n, (_, r)) <- nBindings, Set.member n boundNames]
+                                          newRefs = Map.restrictKeys usedRefs (Set.difference trans boundNames)
                                       in pure (foldr makeBinding nInner $ reverse sb', newRefs)
         x -> WriterT . fmap (first (((anno, urC) :<) . brt)) . runWriterT $ sequence x where
           brt = \case
@@ -465,10 +327,14 @@ letsToApps term =
       addRepeaters refs = if null refs
         then pure
         else \case
-        a :< ParserTermL (AppF x (_ :< ParserTermL (VarF v))) -> case Set.partition (== v) refs of
-          (found, rest) | length found == 1 -> (\c i -> embed $ AppAFP a c i) <$> addRepeaters rest x <*> pure (a :< TUnsizedRepeaterF)
-          _ -> Left . MissingDefinitions $ Set.toList refs
-        _ -> Left . MissingDefinitions $ Set.toList refs
+        a :< ParserTermL (AppF x (_ :< ParserTermL (VarF v))) | Map.member v refs ->
+          (\c i -> embed $ AppAFP a c i) <$> addRepeaters (Map.delete v refs) x <*> pure (a :< TUnsizedRepeaterF)
+        _ -> Left $ missing refs
+      -- the ':n' oracle placeholders are bound by 'addRepeaters' itself, so
+      -- any other leftover is a name the program never defines
+      missing refs = case Map.toList (Map.filterWithKey (\k _ -> take 1 k /= ":") refs) of
+        (n, loc) : _ -> MissingDefinitionAt loc n
+        []           -> MissingDefinitions $ Map.keys refs
 
       forgetURCount = cata f where
         f ((a,_c) C.:< x) = a :< x
@@ -491,25 +357,15 @@ generateAllHashes x@(anno :< _) = transform interm x where
     other                  -> other
 
 -- |Process a fully desugared surface term to 'Term3'.
-process :: DesugaredSurfaceTerm
-        -> Either ResolverError Term3
-process upt = (\dt -> debugTrace ("Resolver process term:\n" <> prettyPrint dt) dt) . splitExpr <$> process2Term2 upt
-
-processWlet :: DesugaredSurfaceTerm -> Either ResolverError Term3
-processWlet = fmap (splitExpr . (\dt -> debugTrace ("Resolver processWlet before split:\n" <> pt dt) dt)) . process2Term2let where
+process :: DesugaredSurfaceTerm -> Either ResolverError Term3
+process = fmap (splitExpr . (\dt -> debugTrace ("Resolver process before split:\n" <> pt dt) dt)) . process2Term2 where
   pt x = prettyPrint $ fg x
   fg :: Term2 -> Fix (ParserTermF (LamType ()) Int)
   fg = forget
 
-process2Term2 :: DesugaredSurfaceTerm
-              -> Either ResolverError Term2
+process2Term2 :: DesugaredSurfaceTerm -> Either ResolverError Term2
 process2Term2 = fmap generateAllHashes
-               . debruijinize <=< (fmap tf . validateVariables)
-                  where tf x = debugTrace ("reg Term1:\n" <> prettyPrint x) x
-
-process2Term2let :: DesugaredSurfaceTerm -> Either ResolverError Term2
-process2Term2let = fmap generateAllHashes
-                  . debruijinizeApp <=< fmap tf . letsToApps
+                  . debruijinize <=< fmap tf . letsToApps
                   where tf x = debugTrace ("wLet Term1:\n" <> prettyPrint x) x
 
 resolveAllImports :: ExpandedModules -- ^All modules
@@ -588,11 +444,6 @@ main2Term3 :: ExpandedModules
            -> String -- ^Module name with main
            -> Either ResolverError Term3 -- ^Error on Left
 main2Term3 moduleBindings s = resolveMain moduleBindings s >>= process . desugarTerm
-
-main2Term3let :: ExpandedModules
-            -> String -- ^Module name with main
-            -> Either ResolverError Term3 -- ^Error on Left
-main2Term3let moduleBindings s = resolveMain moduleBindings s >>= processWlet . desugarTerm
 
 data Term3LiftingF f
   = Term3LB (BasicExprF f)

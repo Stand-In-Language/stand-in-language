@@ -19,7 +19,7 @@ import Telomare.IR.Core (AbstractRunTime (..), CompiledExpr, RunTimeError (..),
                          Term3, compiled2Term3)
 import Telomare.Machine (abortInd, appB, deferB, iteB)
 import Telomare.Parse (runParseModule)
-import Telomare.Resolve (DeferMap (..), deferLift, main2Term3let)
+import Telomare.Resolve (DeferMap (..), deferLift, main2Term3)
 import Test.Tasty
 import Test.Tasty.HUnit
 
@@ -102,7 +102,7 @@ main = do
       ("AuxModule", expandNamed "AuxModule" ("import Prelude\n" <> str))
     parse :: String -> Either String Term3
     parse str =
-      first show $ main2Term3let (parseAuxModule str : prelude) "AuxModule"
+      first show $ main2Term3 (parseAuxModule str : prelude) "AuxModule"
     -- compile a source program and evaluate it the way the unit-test
     -- corpus does: the compiled expression applied to a Zero env
     compiled :: String -> Either String CompiledExpr
