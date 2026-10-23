@@ -509,14 +509,65 @@ deferLift = cata hF where
   hF :: C.CofreeF Term3F LocTag (DeferMap, Term3Lifting) -> (DeferMap, Term3Lifting)
   hF (anno C.:< x) = case x of
     StuckFW (DeferSF ind (dm, body)) ->
-      let hash' :: ByteString -> Digest SHA256
-          hash' = hash
-          forgetL :: Term3Lifting -> Fix Term3LiftingF
-          forgetL = forget
-          h = hash' . BS.pack . encode . show $ forgetL body
+      let h = liftedBodyHash body
       in (dm <> makeDM h ind body, anno :< Term3LDeferRef h)
     Term3B b -> (anno :<) . Term3LB <$> sequence b
     Term3S s -> (anno :<) . Term3LS <$> sequence s
     Term3A a -> (anno :<) . Term3LA <$> sequence a
     Term3Unsized urt -> pure $ anno :< Term3LUnsized urt
     Term3CheckingWrapper loc cf f -> (anno :<) <$> (Term3LCheckingWrapper loc <$> cf <*> f)
+
+-- | The key a lifted body is stored under in a 'DeferMap': a hash of the
+-- annotation-stripped body, in which nested defers appear as references.
+liftedBodyHash :: Term3Lifting -> Digest SHA256
+liftedBodyHash = hash' . BS.pack . encode . show . forgetL where
+  hash' :: ByteString -> Digest SHA256
+  hash' = hash
+  forgetL :: Term3Lifting -> Fix Term3LiftingF
+  forgetL = forget
+
+-- | The two names one defer body goes by.
+data DeferKeys = DeferKeys
+  { dkHash  :: !(Digest SHA256)
+    -- ^ Its 'DeferMap' key, exactly as 'deferLift' computes it: blind to
+    -- the FunctionIndexes of the defers nested in it, so it is the
+    -- namespace per-body analyses ('Telomare.EAL.CodeGuidance') live in.
+  , dkExact :: !(Digest SHA256)
+    -- ^ Additionally pins every nested defer's FunctionIndex, so equal
+    -- exact keys mean equal bodies. Defer equality is by index, so code
+    -- that must read a body back as it was written dedupes on this.
+  } deriving (Eq, Ord, Show)
+
+-- | A compiled term with every defer node carrying its body's keys.
+type KeyedExpr = Cofree CompiledExprF (Maybe DeferKeys)
+
+-- | Key every defer in a compiled term in one bottom-up pass. Hashing each
+-- defer separately ('deferLift' on the defer alone) re-lifts every nested
+-- body once per enclosing defer; here each body is lifted and hashed once,
+-- its keys built from its children's.
+keyDefers :: CompiledExpr -> KeyedExpr
+keyDefers = (\(_, keyed, _) -> keyed) . cata f where
+  anno = GeneratedLoc "keyDefers" Nothing
+  -- carrier: the subterm lifted (for the blind hash), the subterm keyed,
+  -- and the (index, exact key) of each defer directly inside it
+  f :: CompiledExprF (Term3Lifting, KeyedExpr, [(FunctionIndex, Digest SHA256)])
+    -> (Term3Lifting, KeyedExpr, [(FunctionIndex, Digest SHA256)])
+  f = \case
+    CompiledExprS (DeferSF fi (lifted, keyed, nested)) ->
+      let h = liftedBodyHash lifted
+          -- the blind hash fixes the body's shape and where each nested
+          -- defer sits; the nested indexes and exact keys, in that same
+          -- traversal order, pin the rest
+          exact = hash . BS.pack . encode $ show h <> show nested
+      in ( anno :< Term3LDeferRef h
+         , Just (DeferKeys h exact) :< CompiledExprS (DeferSF fi keyed)
+         , [(fi, exact)] )
+    x -> ( anno :< case x of
+             CompiledExprB b -> Term3LB (liftedOf <$> b)
+             CompiledExprS s -> Term3LS (liftedOf <$> s)
+             CompiledExprA a -> Term3LA (liftedOf <$> a)
+         , Nothing :< fmap keyedOf x
+         , foldMap nestedOf x )
+  liftedOf (l, _, _) = l
+  keyedOf (_, k, _) = k
+  nestedOf (_, _, n) = n

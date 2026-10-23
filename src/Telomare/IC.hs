@@ -74,14 +74,14 @@
 -- issue.
 module Telomare.IC where
 
-import Control.Comonad.Cofree (Cofree ((:<)))
+import Control.Comonad.Cofree (Cofree ((:<)), unwrap)
 import Control.Monad (forM, forM_, unless, when)
 import Control.Monad.Except
 import Control.Monad.State.Strict (State)
 import qualified Control.Monad.State.Strict as State
 import Crypto.Hash (Digest, SHA256)
 import Data.Foldable (asum)
-import Data.Functor.Foldable (cata, embed, project)
+import Data.Functor.Foldable (cata, project)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
 import Data.Map (Map)
@@ -91,14 +91,14 @@ import qualified Data.Sequence as Seq
 import Debug.Trace (trace)
 import Telomare.EAL (CapShape (..), Step (..), showSteps)
 import Telomare.IR.Base (AbortableF (..), BasicExpr, BasicExprF (..),
-                         FunctionIndex, StuckF (..), pattern AbortB,
-                         pattern AbortEE, pattern AbortFW, pattern BasicFW,
-                         pattern EnvB, pattern GateB, pattern PairB,
-                         pattern StuckEE, pattern StuckFW, pattern ZeroB)
-import Telomare.IR.Core (CompiledExpr, RunTimeError (..), compiled2Term3)
+                         FunctionIndex, StuckF (..), forget, pattern AbortB,
+                         pattern AbortEE, pattern AbortFW, pattern EnvB,
+                         pattern GateB, pattern PairB, pattern StuckEE,
+                         pattern StuckFW, pattern ZeroB)
+import Telomare.IR.Core (CompiledExpr, CompiledExprF (..), RunTimeError (..))
 import Telomare.Machine (abortInd, deferB, doLeft, doRight, leftGateInd,
                          rightGateInd)
-import Telomare.Resolve (Term3LiftingF (..), deferLift)
+import Telomare.Resolve (DeferKeys (..), KeyedExpr, keyDefers)
 
 -- | Temporary debugging switch: trace every interaction and instantiation.
 debugIC :: Bool
@@ -164,9 +164,9 @@ data Node = Node
   } deriving Show
 
 -- | One compiled Defer body: its nodes (boundary included), how many local
--- dup labels it mints, the body term (for reading refs back and for the
--- exact-equality dedup check), and its content hash — the shared key under
--- which 'Telomare.EAL.CodeGuidance' addresses this code.
+-- dup labels it mints, the body term (for reading refs back), and its
+-- content hash — the shared key under which 'Telomare.EAL.CodeGuidance'
+-- addresses this code.
 data Template = Template
   { tplNodes  :: IntMap Node
   , tplExt    :: Int
@@ -204,10 +204,11 @@ data ICState = ICState
                                 -- body's occurrences
   , icTemplates :: IntMap Template
   , icNextTpl   :: !Int
-  , icTplByHash :: Map (Digest SHA256) [TemplateId]
-                                -- ^ dedup index: candidate templates per
-                                -- content hash (exact 'Eq' on the body
-                                -- decides, since the hash is index-blind)
+  , icTplByKey  :: Map (Digest SHA256) TemplateId
+                                -- ^ dedup index, by exact key ('dkExact'):
+                                -- the content hash alone is index-blind,
+                                -- and index-blind sharing would be visible
+                                -- to readback
   , icFuel      :: !Int
   , icSpent     :: !Int         -- ^ interactions performed
   , icStats     :: Map String Int
@@ -355,52 +356,47 @@ isolatedNet act = do
     , icEnvQueue = icEnvQueue saved }
   pure (r, icNodes built, icNextLabel built)
 
--- | The content hash of a defer value, computed by the code path that
--- keys the DeferMap ('Telomare.Resolver.deferLift') — lifting a bare
--- defer value leaves a lone reference carrying its hash — so templates
--- and per-hash 'Telomare.EAL.CodeGuidance' share one namespace by
+-- | The content hash of a defer value: its 'DeferMap' key, computed by
+-- the hashing 'Telomare.Resolve.deferLift' uses, so templates and
+-- per-hash 'Telomare.EAL.CodeGuidance' share one namespace by
 -- construction. The hash names the lifted body (nested defers appear as
 -- refs), so it is blind to FunctionIndexes.
 deferHash :: CompiledExpr -> Either String (Digest SHA256)
-deferHash d = case deferLift (compiled2Term3 d) of
-  (_, _ :< Term3LDeferRef h) -> Right h
-  _notDefer                  -> Left "deferHash: not a defer value"
+deferHash d = case keyDefers d of
+  Just keys :< _ -> Right (dkHash keys)
+  _notDefer      -> Left "deferHash: not a defer value"
 
 -- | Compile one Defer value into a template, or reuse the template of an
--- exactly-equal body already compiled (the hash narrows candidates; 'Eq'
--- decides, since the hash ignores nested defer indexes and index-blind
--- sharing would be visible to readback). The site's own FunctionIndex is
--- returned for the caller to keep on its ref node.
-compileDefer :: CompiledExpr -> ICM (TemplateId, FunctionIndex)
-compileDefer d = case d of
-  StuckEE (DeferSF fi body) -> do
-    h <- either (throwError . ICInternal) pure (deferHash d)
-    candidates <- State.gets (Map.findWithDefault [] h . icTplByHash)
-    tpls <- State.gets icTemplates
-    case [ tid | tid <- candidates
-         , Just tpl <- [IntMap.lookup tid tpls]
-         , tplBody tpl == body ] of
-      (tid : _) -> do
+-- equal body already compiled. Equality is by exact key: the content hash
+-- ignores nested defer indexes, and index-blind sharing would be visible
+-- to readback. The site's own FunctionIndex is returned for the caller to
+-- keep on its ref node.
+compileDefer :: KeyedExpr -> ICM (TemplateId, FunctionIndex)
+compileDefer = \case
+  Just keys :< CompiledExprS (DeferSF fi body) ->
+    State.gets (Map.lookup (dkExact keys) . icTplByKey) >>= \case
+      Just tid -> do
         note "template-reused"
         pure (tid, fi)
-      [] -> do
+      Nothing -> do
         (ext, nodes, labels) <- isolatedNet (compileBody body)
         tid <- State.gets icNextTpl
         State.modify' $ \st -> st
           { icNextTpl = tid + 1
           , icTemplates = IntMap.insert tid
-              (Template nodes ext labels body h) (icTemplates st)
-          , icTplByHash = Map.insertWith (<>) h [tid] (icTplByHash st) }
+              (Template nodes ext labels (forget body) (dkHash keys))
+              (icTemplates st)
+          , icTplByKey = Map.insert (dkExact keys) tid (icTplByKey st) }
         note "template-compiled"
         pure (tid, fi)
-  _notDefer -> throwError $ ICInternal "compileDefer: not a defer value"
+  _notDefer -> throwError $ ICInternal "compileDefer: not a keyed defer value"
 
 -- | Build a body's net: allocate its env splitter tree, walk the term,
 -- and wire the result to the boundary node.
-compileBody :: CompiledExpr -> ICM Int
+compileBody :: KeyedExpr -> ICM Int
 compileBody body = do
   ext <- newNode ICExt
-  wires <- envWiring (Port ext 0) (envUsage body)
+  wires <- envWiring (Port ext 0) (envUsage (forget body))
   State.modify' $ \st -> st { icEnvQueue = wires }
   root <- compileTerm body
   State.gets icEnvQueue >>= \q ->
@@ -469,28 +465,28 @@ takeEnvWire path = State.gets (Map.lookup path . icEnvQueue) >>= \case
 -- | Compile one term, returning the port its value is delivered from.
 -- Projection chains applied directly to Env compile to nothing: their
 -- component arrives pre-split on its path's wire.
-compileTerm :: CompiledExpr -> ICM Port
-compileTerm t = case project t of
-  BasicFW ZeroSF -> value ICZero
-  BasicFW (PairSF a b) -> do
+compileTerm :: KeyedExpr -> ICM Port
+compileTerm t = case unwrap t of
+  CompiledExprB ZeroSF -> value ICZero
+  CompiledExprB (PairSF a b) -> do
     p <- newNode ICPair
     connect (Port p 1) =<< compileTerm a
     connect (Port p 2) =<< compileTerm b
     pure (Port p 0)
-  StuckFW EnvSF -> takeEnvWire []
-  StuckFW (SetEnvSF x) -> consumer ICSetEnv x
-  StuckFW (LeftSF x) -> case envPathOf t of
+  CompiledExprS EnvSF -> takeEnvWire []
+  CompiledExprS (SetEnvSF x) -> consumer ICSetEnv x
+  CompiledExprS (LeftSF x) -> case envPathOf (forget t) of
     Just path -> takeEnvWire path
     Nothing   -> consumer ICLeft x
-  StuckFW (RightSF x) -> case envPathOf t of
+  CompiledExprS (RightSF x) -> case envPathOf (forget t) of
     Just path -> takeEnvWire path
     Nothing   -> consumer ICRight x
-  StuckFW GateSF -> value ICGate
-  d@(StuckFW (DeferSF _ _)) -> do
-    (tid, fi) <- compileDefer (embed d)
+  CompiledExprS GateSF -> value ICGate
+  CompiledExprS (DeferSF _ _) -> do
+    (tid, fi) <- compileDefer t
     value (ICRef tid fi)
-  AbortFW AbortF -> value ICAbort
-  AbortFW (AbortedF m) -> do
+  CompiledExprA AbortF -> value ICAbort
+  CompiledExprA (AbortedF m) -> do
     a <- newNode ICAborted
     connect (Port a 1) =<< compileData m
     pure (Port a 0)
@@ -1148,9 +1144,9 @@ idSelFi = toEnum abortInd
 
 setupSelectors :: ICM ()
 setupSelectors = do
-  (lt, _) <- compileDefer doLeft
-  (rt, _) <- compileDefer doRight
-  (it, _) <- compileDefer (deferB abortInd EnvB)
+  (lt, _) <- compileDefer (keyDefers doLeft)
+  (rt, _) <- compileDefer (keyDefers doRight)
+  (it, _) <- compileDefer (keyDefers (deferB abortInd EnvB))
   unless ([lt, rt, it] == [leftSelTpl, rightSelTpl, idSelTpl])
     . throwError $ ICInternal "selector templates got unexpected ids"
 
@@ -1183,7 +1179,7 @@ icRunState guidance fuel term =
         ICStuck "unbound Env at top level"
       setupSelectors
       root <- newNode ICRoot
-      p <- compileTerm term
+      p <- compileTerm (keyDefers term)
       connect (Port root 0) p
       reduce
       readback =<< peer (Port root 0)

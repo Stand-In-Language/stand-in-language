@@ -2,8 +2,11 @@
 module Main where
 
 import Data.Bifunctor (bimap, first, second)
+import Data.Foldable (toList)
 import Data.List (isInfixOf)
 import qualified Data.Map as Map
+import Data.Maybe (catMaybes)
+import qualified Data.Set as Set
 import qualified System.IO.Strict as Strict
 import Telomare.Driver (compileUnitTest)
 import Telomare.EAL (CodeGuidance (..), EALLiftedResult (..), ealCaptureLayouts,
@@ -19,7 +22,8 @@ import Telomare.IR.Core (AbstractRunTime (..), CompiledExpr, RunTimeError (..),
                          Term3, compiled2Term3)
 import Telomare.Machine (abortInd, appB, deferB, iteB)
 import Telomare.Parse (runParseModule)
-import Telomare.Resolve (DeferMap (..), deferLift, main2Term3)
+import Telomare.Resolve (DeferKeys (..), DeferMap (..), deferLift, keyDefers,
+                         main2Term3)
 import Test.Tasty
 import Test.Tasty.HUnit
 
@@ -124,6 +128,15 @@ main = do
               (Right h, [h']) -> h @?= h'
               other -> assertFailure $ "expected one shared hash, got "
                 <> show other
+        , testCase "keyDefers names every nested body by its DeferMap key" $ do
+            -- guidance is looked up by these keys, so the one-pass keying
+            -- must agree with deferLift at every depth, not just the top
+            let dv = d 2 (p (d 3 (se (p (d 4 (LeftB EnvB)) EnvB)))
+                            (d 5 (p EnvB z)))
+                (DeferMap dm, _) = deferLift (compiled2Term3 dv)
+                keys = catMaybes . toList $ keyDefers dv
+            Map.keysSet dm @?= Set.fromList (dkHash <$> keys)
+            length keys @?= 4
         , testCase "equal bodies share one template (selectors included)" $ do
             -- both bodies equal doLeft's, so all three refs reuse the
             -- selector template and only the three reserved templates are
@@ -143,8 +156,8 @@ main = do
             icEval term @?= Right term
         , testCase "bodies equal only modulo nested indexes stay separate" $ do
             -- outer bodies hash alike (the hash names nested defers by
-            -- content) but differ by Eq, so each keeps its own template
-            -- and readback stays exact
+            -- content) but their exact keys differ, so each keeps its own
+            -- template and readback stays exact
             let outer i j = d i (se (p (d j (LeftB EnvB)) EnvB))
                 term = p (outer 2 10) (outer 3 11)
                 (r, stats) = icEvalDetailed defaultFuel term
