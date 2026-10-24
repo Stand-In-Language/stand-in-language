@@ -11,8 +11,9 @@ import qualified System.IO.Strict as Strict
 import Telomare.Driver (CompiledProgram (..), SizingOption (..),
                         compileMainReporting, compileUnitTest, evalLoopCore,
                         keepAccum, plainEval, programPlan)
-import Telomare.EAL (CodeGuidance (..), EALLiftedResult (..), ealCaptureLayouts,
-                     inferEALCompiled, inferEALWithLifting)
+import Telomare.EAL (CodeGuidance (..), EALLiftedResult (..),
+                     deriveSizedGuidance, ealCaptureLayouts, inferEALCompiled,
+                     inferEALFaithful, inferEALWithLifting)
 import Telomare.Eval.IC (ICMeter (..), ICPlan (..), admitIC, evalIC)
 import Telomare.Expand (expandModule, renderExpansionError)
 import Telomare.IC
@@ -22,10 +23,11 @@ import Telomare.IR.Base (AbortableF (..), BasicExpr, pattern AbortB,
                          pattern RightB, pattern SetEnvB, pattern ZeroB, varB)
 import Telomare.IR.Core (AbstractRunTime (..), CompiledExpr, RunTimeError (..),
                          Term3, compiled2Term3)
-import Telomare.Machine (abortInd, appB, deferB, iteB)
+import Telomare.Machine (abortInd, appB, chainLinks, deferB, iteB)
 import Telomare.Parse (runParseModule)
 import Telomare.Resolve (DeferKeys (..), DeferMap (..), deferLift, keyDefers,
                          main2Term3)
+import Telomare.Size (SizingReport (..))
 import Test.Tasty
 import Test.Tasty.HUnit
 
@@ -139,6 +141,25 @@ main = do
             (_, viaRef) <- evalLoopCore plainEval (cpExpr cp)
                              keepAccum "" []
             viaIC @?= viaRef
+    -- the driver's post-sizing guidance is derived from the unsized
+    -- program's size-independent certificate, and it is the guidance
+    -- inferring the sized program again gives: the same bodies, the same
+    -- capture layouts
+    derivedAgrees :: String -> TestTree
+    derivedAgrees src = testCase src $
+      case (parse src, compileMainReporting MainSizing (parseAuxModule src : prelude)
+                         "AuxModule") of
+        (Left e, _) -> assertFailure $ "parse failed: " <> e
+        (_, Left e) -> assertFailure $ "compilation failed: " <> show e
+        (Right t3, Right cp) -> do
+          let links = chainLinks (sizingReportCounts (cpSizing cp))
+              full = inferEALCompiled (cpExpr cp)
+          derived <- either (assertFailure . ("not derived: " <>)) pure $
+            deriveSizedGuidance links t3 (inferEALFaithful t3) (cpExpr cp)
+          either (assertFailure . show) (const (pure ())) (ealLiftedMain full)
+          Map.keysSet (ealGuidance derived) @?= Map.keysSet (ealGuidance full)
+          ealCaptureLayouts derived @?= ealCaptureLayouts full
+          Map.keysSet (cpGuidance cp) @?= Map.keysSet (ealGuidance full)
   defaultMain $ testGroup "IC runtime"
     [ testGroup "template namespace"
         [ testCase "deferHash agrees with the DeferMap key" $ do
@@ -478,6 +499,44 @@ main = do
         , driverAdmits "main = \\input -> (concat [\"a\", \"b\"], 0)"
         , driverAdmits ("main = \\input -> (concat [succ (left input), \" is \"]"
                      <> ", 0)")
+          -- a recursive function inside its own step argument, directly
+          -- and through a wrapper with no recursion of its own
+        , driverAdmits "main = \\input -> (d2c 1 (\\x -> d2c 1 succ x) 0, 0)"
+        , driverAdmits ("main = \\input -> (foldr (\\a b -> foldr (\\x l -> (x,l)) b a)"
+                     <> " 0 [[1],[2]], 0)")
+        , driverAdmits "main = \\input -> (concat [concat [\"a\", \"b\"], \"c\"], 0)"
+          -- a step that passes its argument through (every link of the
+          -- sized chain applies the one step, and test, to the previous
+          -- link's result)
+        , driverAdmits "main = \\input -> (map (\\a -> 0) [d2c 1 id [1]], 0)"
+          -- the same shapes under main's input lambda, sized against
+          -- input a refinement bounds
+        , driverAdmits ("validPlayer = \\x -> assert (not (toBool ($3 left x))) \"bad\"\n"
+                     <> "main = \\input -> let p : validPlayer = left input\n"
+                     <> "                 in (concat [concat [\"a\", \"b\"], (d2c p succ 0, 0)], 0)")
+        ]
+    , testGroup "post-sizing guidance derived from the unsized certificate"
+        [ derivedAgrees "main = \\input -> (d2c 2 succ 0, 0)"
+        , derivedAgrees "main = \\input -> (map succ [1,2], 0)"
+        , derivedAgrees "main = \\input -> (d2c 1 (\\x -> d2c 1 succ x) 0, 0)"
+        , derivedAgrees "main = \\input -> (concat [concat [\"a\", \"b\"], \"c\"], 0)"
+          -- a pass-through step: no level is shared by every chain length
+          -- at the post-sizing levels, but a uniform one exists a level up
+        , derivedAgrees "main = \\input -> (map (\\a -> 0) [d2c 1 id [1]], 0)"
+        , derivedAgrees ("validPlayer = \\x -> assert (not (toBool ($3 left x))) \"bad\"\n"
+                      <> "main = \\input -> let p : validPlayer = left input\n"
+                      <> "                 in (concat [concat [\"a\", \"b\"], (d2c p succ 0, 0)], 0)")
+        , testCase "a sized program that is not the certified one is not derived" $
+            case ( parse "main = \\input -> (d2c 2 succ 0, 0)"
+                 , compileMainReporting MainSizing
+                     (parseAuxModule "main = \\input -> (d2c 3 succ 0, 0)" : prelude)
+                     "AuxModule" ) of
+              (Right t3, Right other) ->
+                case deriveSizedGuidance (chainLinks (sizingReportCounts (cpSizing other)))
+                       t3 (inferEALFaithful t3) (cpExpr other) of
+                  Left _  -> pure ()
+                  Right _ -> assertFailure "derived guidance for another program"
+              _failed -> assertFailure "setup failed"
         ]
     , testGroup "EAL boundary experiments"
         [ testCase "EAL-certified numeral composition: runtime agrees" $

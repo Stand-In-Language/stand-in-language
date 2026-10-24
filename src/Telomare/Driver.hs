@@ -18,8 +18,9 @@ import Control.Lens (Identity (runIdentity))
 import Data.Functor.Foldable (cata, embed)
 import Debug.Trace
 import Telomare.Desugar (desugarTerm)
-import Telomare.EAL (CodeGuidance (..), EALResult, certifyMain, ealGuidance,
-                     ealLiftedMain, inferEALCompiled)
+import Telomare.EAL (CodeGuidance (..), EALLiftedResult, EALResult, certifyMain,
+                     deriveSizedGuidance, ealGuidance, ealLiftedMain,
+                     inferEALCompiled, inferEALFaithful)
 import Telomare.Error
 import Telomare.Eval.IC (ICMeter, ICPlan (..), evalIC, renderRefusal)
 import Telomare.Eval.Meter (Meter, evalMeter)
@@ -32,7 +33,7 @@ import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.IR.Surface
 import Telomare.IR.Types
-import Telomare.Machine (appB, deferB)
+import Telomare.Machine (appB, chainLinks, deferB)
 import Telomare.Parse (parseOneExprOrDefinitions, runParseModule)
 import Telomare.PrettyPrint
 import Telomare.Resolve (main2Term3, process, resolveAllImports)
@@ -106,10 +107,12 @@ compileMain :: ExpandedModules -> String -> Either EvalError CompiledExpr
 compileMain modules term = cpExpr <$> compileMainReporting MainSizing modules term
 
 -- |The compilation product: the sized program together with everything
--- compilation proved about it. The EAL fields come from one post-sizing
--- inference over the code that will actually run — distinct from the
--- pre-sizing 'certifyMain' gate, whose verdict is about the recursion
--- scaffolding as well. They are lazy, so a run on the reference evaluator
+-- compilation proved about it. The EAL fields are about the code that will
+-- actually run — distinct from the pre-sizing 'certifyMain' gate, whose
+-- verdict is about the recursion scaffolding as well — and are derived
+-- from a certificate of the unsized program that holds for every size
+-- ('certifiedProgramFrom'), or inferred over the sized program when that
+-- certificate does not cover it. They are lazy, so a run on the reference evaluator
 -- never pays for them; writing an artifact or admitting the IC runtime
 -- forces them once, and from then on they travel with the program.
 data CompiledProgram = CompiledProgram
@@ -127,16 +130,31 @@ data CompiledProgram = CompiledProgram
     -- structured would mean serializing blame chains into artifacts.
   }
 
--- |Package a sized program with its post-sizing EAL product.
+-- |Package a sized program with its post-sizing EAL product, inferred
+-- over the sized program.
 certifiedProgram :: SizingReport -> CompiledExpr -> CompiledProgram
-certifiedProgram report sized = CompiledProgram
+certifiedProgram report sized = programWith report sized (inferEALCompiled sized)
+
+-- |Package a sized program with its post-sizing EAL product, derived from
+-- the size-independent certificate of the program it was sized from
+-- (`Telomare.EAL.inferEALFaithful`) when that certifies — a derivation is
+-- a relabelling, where inferring the sized program again costs most of a
+-- compile — and inferred over the sized program otherwise.
+certifiedProgramFrom :: Term3 -> SizingReport -> CompiledExpr -> CompiledProgram
+certifiedProgramFrom t3 report sized = programWith report sized $
+  case deriveSizedGuidance (chainLinks (sizingReportCounts report)) t3
+         (inferEALFaithful t3) sized of
+    Right lr         -> lr
+    Left _notCovered -> inferEALCompiled sized
+
+programWith :: SizingReport -> CompiledExpr -> EALLiftedResult -> CompiledProgram
+programWith report sized lr = CompiledProgram
   { cpSizing = report
   , cpExpr = sized
   , cpGuidance = Map.fromList
       [ (h, g) | (h, Right g) <- Map.toList (ealGuidance lr) ]
   , cpVerdict = first (const (renderRefusal lr)) (ealLiftedMain lr)
   }
-  where lr = inferEALCompiled sized
 
 -- |IC admission, read off the carried verdict: the plan when the program
 -- certified post-sizing, the rendered refusal when it did not. Unlike
@@ -160,7 +178,7 @@ compileMainReporting so modules term = do
   t3 <- first RE $ main2Term3 modules term
   _ <- first CertificationError $ certifyMain t3
   (report, sized) <- compileReporting so pure t3
-  pure $ certifiedProgram report sized
+  pure $ certifiedProgramFrom t3 report sized
 
 -- for testing
 compileMain' :: SizingSettings -> Term3 -> Either EvalError CompiledExpr

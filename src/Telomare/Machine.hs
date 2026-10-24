@@ -413,7 +413,26 @@ sizedRecursionChain tok n = iterate link base !! n where
     (PairB (appB argFiveB argOneB)
            (appB (appB argFourB argTwoB) argOneB)))
 
-unsizedTestIndexed :: (Base g ~ f, BasicBase f, AbortBase f, IndexedInputBase f, Recursive g, Corecursive g)
+-- | How many links sizing gives a recursion site's chain: one of slack
+-- over the abstractly-observed depth, matching the old tower's n+1
+-- convention (the abstract run can undercount the final test round by
+-- one), and a single link to a site sizing found no size for.
+chainLinks :: SizedRecursion -> UnsizedRecursionToken -> Int
+chainLinks (SizedRecursion sm) tok = case Map.lookup tok sm of
+  Just (Just n) -> n + 1
+  _noSize       -> 1
+
+-- | What a refinement wrapper around @c@ with check function @tc@ compiles
+-- to once sizing is done: apply @tc@ to @c@ and abort with the result as
+-- the message (a Zero result is the identity continuation), then yield @c@.
+refinementCheckB :: (Base g ~ f, BasicBase f, StuckBase f, AbortBase f, Recursive g, Corecursive g)
+  => g -> g -> g
+refinementCheckB tc c = SetEnvB $ PairB performTC (PairB tc c) where
+  innerTC = appB (LeftB EnvB) (RightB EnvB)
+  performTC = deferB removeRefinementWrappersTC . SetEnvB $
+    PairB (SetEnvB $ PairB (AbortEE AbortF) innerTC) (RightB EnvB)
+
+unsizedTestIndexed ::(Base g ~ f, BasicBase f, AbortBase f, IndexedInputBase f, Recursive g, Corecursive g)
   => Set Integer -> (UnsizedRecursionToken -> g -> g) -> UnsizedRecursionToken -> g -> g
 unsizedTestIndexed zeroes handleOther ri = \case
   iv@(IndexedEE (IVarF n)) -> debugTrace ("evalRecursionTest ivar " <> show n) $ if isUnbounded zeroes n

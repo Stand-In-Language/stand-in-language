@@ -1,6 +1,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase       #-}
 {-# LANGUAGE PatternSynonyms  #-}
+{-# LANGUAGE TupleSections    #-}
 
 -- | Elementary Affine Logic annotation inference for 'Term3'.
 --
@@ -83,7 +84,7 @@ import Control.Monad.Except
 import Control.Monad.State.Strict (State)
 import qualified Control.Monad.State.Strict as State
 import Crypto.Hash (Digest, SHA256, hash)
-import Data.Bifunctor (first)
+import Data.Bifunctor (first, second)
 import qualified Data.ByteString as BS
 import Data.Fix (Fix)
 import Data.Graph (SCC (..), stronglyConnComp)
@@ -103,12 +104,14 @@ import qualified Data.Set as Set
 import qualified Data.Tree as Tree
 import Telomare.Error (Blame (..), EALError (..), pattern Blame, renderEALError)
 import Telomare.IR.Base (AbortableF (..), BasicExprF (..), FunctionIndex,
-                         StuckF (..), forget, pattern AbortFW, pattern BasicFW,
-                         pattern StuckFW)
+                         StuckF (..), UnsizedRecursionToken, forget,
+                         pattern AbortFW, pattern BasicFW, pattern StuckFW,
+                         pattern ZeroB)
 import Telomare.IR.Core (CompiledExpr, Term3, compiled2Term3)
 import Telomare.IR.Loc (LocTag (..))
+import Telomare.Machine (refinementCheckB, sizedRecursionChain, unsizedStepMrfb)
 import Telomare.Resolve (DeferMap (..), Term3Lifting, Term3LiftingF (..),
-                         deferLift)
+                         deferLift, liftedBodyHash)
 
 -- | A bang-count variable (also used for per-edge box counts).
 newtype BVar = BVar { unBVar :: Int } deriving (Eq, Ord, Show)
@@ -204,35 +207,38 @@ data ApplySite = ApplySite
   }
 
 data EALState = EALState
-  { esNextVar    :: Int
-  , esTVarBinds  :: Map Int Tau
-  , esParents    :: Map Int Int       -- ^ union-find parent pointers (bangs)
-  , esClasses    :: Map Int ClassInfo -- ^ info stored at roots
-  , esTagParents :: Map Int Int       -- ^ union-find parent pointers (tags)
-  , esTagSets    :: Map Int (Map Tag TagInfo)
+  { esNextVar       :: Int
+  , esTVarBinds     :: Map Int Tau
+  , esParents       :: Map Int Int       -- ^ union-find parent pointers (bangs)
+  , esClasses       :: Map Int ClassInfo -- ^ info stored at roots
+  , esTagParents    :: Map Int Int       -- ^ union-find parent pointers (tags)
+  , esTagSets       :: Map Int (Map Tag TagInfo)
     -- ^ per class root: its tags, each with the capture that rides with
     -- that tag's code and the interface of the instance it came from
-  , esSumEqs     :: [SumEq]
-  , esSumEqCount :: !Int              -- ^ length of 'esSumEqs', so template
+  , esSumEqs        :: [SumEq]
+  , esSumEqCount    :: !Int              -- ^ length of 'esSumEqs', so template
                                       -- capture can take a delta in O(delta)
-  , esApplies    :: Map Int ApplySite
-  , esNextApply  :: Int
-  , esDefers     :: [(FunctionIndex, BVar)]
+  , esApplies       :: Map Int ApplySite
+  , esNextApply     :: Int
+  , esDefers        :: [(FunctionIndex, BVar)]
     -- ^ per body instance: its env domain bang (reported per Defer as
     -- their max); append-only, so template capture can take a delta
-  , esDeferCount :: !Int              -- ^ length of 'esDefers'
-  , esLeafPaths  :: [(Maybe FunctionIndex, [BVar])]
+  , esDeferCount    :: !Int              -- ^ length of 'esDefers'
+  , esLeafPaths     :: [(Maybe FunctionIndex, [BVar])]
                                       -- ^ leaf depths as [base, depth],
                                       -- tagged with the body they sit in
                                       -- depth
-  , esLeafCount  :: !Int              -- ^ length of 'esLeafPaths'
-  , esBodies     :: Map (Digest SHA256) (FunctionIndex, Term3Lifting)
+  , esLeafCount     :: !Int              -- ^ length of 'esLeafPaths'
+  , esBodies        :: Map (Digest SHA256) (FunctionIndex, Term3Lifting)
     -- ^ the DeferMap: a DeferRef occurrence instantiates its body from here
-  , esTemplates  :: Map (Digest SHA256) BodyTemplate
+  , esTemplates     :: Map (Digest SHA256) BodyTemplate
     -- ^ per body: the reusable constraint delta of its walk
-  , esFrame      :: Maybe FunctionIndex
+  , esFrame         :: Maybe FunctionIndex
     -- ^ the lifted body being walked, if any: the blames made meanwhile
     --   name it
+  , esUniformChains :: Bool
+    -- ^ type every link of a sized recursion chain like the link it holds
+    --   ('chainLink'), so one derivation covers chains of every length
   }
 
 initEALState :: EALState
@@ -254,6 +260,7 @@ initEALState = EALState
   , esBodies = mempty
   , esTemplates = mempty
   , esFrame = Nothing
+  , esUniformChains = False
   }
 
 -- | One body's walk, captured as a reusable constraint template. The walk
@@ -911,7 +918,20 @@ recordLeaf ctx paths = do
 -- and wrap its intrinsic type into the type seen by the parent (view
 -- bang = edge boxes + intrinsic bang).
 viewNode :: DeferCtx -> Paths -> Term3Lifting -> EALM Sigma
-viewNode ctx paths term@(anno :< _) = do
+viewNode ctx paths term = fst <$> viewNodeD ctx paths term
+
+-- | 'viewNode', also giving the node's depth.
+viewNodeD :: DeferCtx -> Paths -> Term3Lifting -> EALM (Sigma, BVar)
+viewNodeD ctx paths term@(anno :< _) = do
+  (s, d, ()) <- viewNodeWith paths anno $ \inner ->
+    (, ()) <$> intrinsic ctx inner term
+  pure (s, d)
+
+-- | The edge and view bookkeeping of 'viewNode' around any intrinsic
+-- typing of the node, which may report something besides its sigma.
+viewNodeWith :: Paths -> LocTag -> (Paths -> EALM (Sigma, a))
+             -> EALM (Sigma, BVar, a)
+viewNodeWith paths anno inner = do
   w <- freshB
   d <- case pParent paths of
     Nothing -> pure w
@@ -920,10 +940,10 @@ viewNode ctx paths term@(anno :< _) = do
       addSumEq (Blame anno "box depth = the parent's depth + this edge's boxes")
         [p, w] d
       pure d
-  Sigma bi ti <- intrinsic ctx paths { pParent = Just d } term
+  (Sigma bi ti, x) <- inner paths { pParent = Just d }
   v <- freshB
   addSumEq (Blame anno "view bangs = edge boxes + intrinsic bangs") [w, bi] v
-  pure $ Sigma v ti
+  pure (Sigma v ti, d, x)
 
 intrinsic :: DeferCtx -> Paths -> Term3Lifting -> EALM Sigma
 intrinsic ctx paths (anno :< t) = case t of
@@ -931,44 +951,14 @@ intrinsic ctx paths (anno :< t) = case t of
     recordLeaf ctx paths
     plainSigma anno "Zero is an unboxed value" DataT
   BasicFW (PairSF a b) -> do
-    -- a closed data tree under a pair is not walked node by node: its
-    -- internal edges would carry no constraint, and its type would carry
-    -- a view bang per component that every instance copies. It becomes
-    -- one leaf: data with a free bang (data is level-free), keeping one
-    -- level of pair structure so that an abort message @(0, token)@ still
-    -- reads as a pair and a capture layout still says pair-of-data
-    let dataLeaf = (`Sigma` DataT) <$> freshB
-        childView c
-          | dataLiteral c = do
-              recordLeaf ctx paths
-              case c of
-                _ :< BasicFW (PairSF _ _) -> do
-                  l <- dataLeaf
-                  r <- dataLeaf
-                  (`Sigma` PairT l r) <$> freshB
-                _zero -> dataLeaf
-          | otherwise = viewNode ctx paths c
-    sa@(Sigma _ ta) <- childView a
-    sb@(Sigma bCap _) <- childView b
-    walkTau ta >>= \case
-      -- a code-headed pair is a closure package: whatever rides in its
-      -- Right belongs to its Left's tags, so record the capture per tag
-      -- and expose the position symbolically — joins of different
-      -- packages then union instead of unifying captures structurally
-      CodeT i -> do
-        p <- packageClass i sb
-        -- a closure whose body contracts a capture outside its own box
-        -- (a door) is born inside that box: the package's own bang
-        -- bounds every door of its code
-        infos <- capturesOf i
-        bpkg <- freshB
-        forM_ [ d | TagInfo _ (Just (Iface _ _ ds)) <- Map.elems infos, d <- ds ] $
-          \d -> do
-            slack <- freshB
-            addSumEq (Blame anno "a door needs the closure's own box") [d, slack] bpkg
-        pure . Sigma bpkg $ PairT sa (Sigma bCap (CapT p))
-      _notCode -> plainSigma anno "pair constructor is locally unboxed" $
-        PairT sa sb
+    uniform <- State.gets esUniformChains
+    link <- if uniform then chainLinkParts a b else pure Nothing
+    case link of
+      Just (bAnno, prev, trb) -> chainLink ctx paths anno a bAnno prev trb
+      Nothing -> do
+        sa <- pairChild ctx paths a
+        sb <- pairChild ctx paths b
+        pairOf anno sa sb
   StuckFW EnvSF -> envOccurrence ctx paths anno []
   Term3LUnsized _ -> envOccurrence ctx paths anno []
   StuckFW (DeferSF _ _) -> throwError $
@@ -1014,7 +1004,7 @@ intrinsic ctx paths (anno :< t) = case t of
           (ApplySite fnT (Sigma calleeEnvB siT) so anno mempty)
           (esApplies st)
       , esNextApply = esNextApply st + 1 }
-    pure (Sigma outB (let Sigma _ t = so in t))
+    pure (Sigma outB (let Sigma _ t' = so in t'))
   StuckFW GateSF -> do
     recordLeaf ctx paths
     ct <- builtinCode TGate
@@ -1033,6 +1023,93 @@ intrinsic ctx paths (anno :< t) = case t of
     plainSigma anno "abort is an unboxed value" ct
   AbortFW (AbortedF _) -> recordLeaf ctx paths >> bottomSigma
   Term3LCheckingWrapper _ _ c -> intrinsic ctx paths c
+
+-- | The view of a pair's component. A closed data tree under a pair is
+-- not walked node by node: its internal edges would carry no constraint,
+-- and its type would carry a view bang per component that every instance
+-- copies. It becomes one leaf: data with a free bang (data is
+-- level-free), keeping one level of pair structure so that an abort
+-- message @(0, token)@ still reads as a pair and a capture layout still
+-- says pair-of-data.
+pairChild :: DeferCtx -> Paths -> Term3Lifting -> EALM Sigma
+pairChild ctx paths c
+  | dataLiteral c = do
+      recordLeaf ctx paths
+      case c of
+        _ :< BasicFW (PairSF _ _) -> do
+          l <- dataLeaf
+          r <- dataLeaf
+          (`Sigma` PairT l r) <$> freshB
+        _zero -> dataLeaf
+  | otherwise = viewNode ctx paths c
+  where dataLeaf = (`Sigma` DataT) <$> freshB
+
+-- | A sized recursion chain link, @(link code, (previous, trb))@, as its
+-- code, the inner pair's annotation, and the inner pair's components.
+chainLinkParts :: Term3Lifting -> Term3Lifting
+               -> EALM (Maybe (LocTag, Term3Lifting, Term3Lifting))
+chainLinkParts a b = case b of
+  bAnno :< BasicFW (PairSF prev trb) -> do
+    isLink <- linkCode a
+    pure $ if isLink then Just (bAnno, prev, trb) else Nothing
+  _notLink -> pure Nothing
+
+-- | Is this the code of a sized recursion chain link? Asked of the body's
+-- index rather than its hash, since specialization rehashes copies.
+linkCode :: Term3Lifting -> EALM Bool
+linkCode = \case
+  _ :< Term3LDeferRef h -> State.gets $
+    maybe False ((== toEnum unsizedStepMrfb) . fst) . Map.lookup h . esBodies
+  _notCode -> pure False
+
+-- | A chain link typed like the link it holds ('esUniformChains'): when
+-- the previous approximant is itself a link, the two share their value's
+-- sigma and their depth. Every chain of n >= 1 links then unrolls from
+-- this derivation of a two-link chain: give the outermost link the outer
+-- link's variables, every other link the inner one's, and the abort base
+-- the base's — every parent and child pair of the long chain then meets
+-- exactly the constraints of a pair the short chain has, since the joins
+-- make a link's view, depth and code class those of its predecessor.
+chainLink :: DeferCtx -> Paths -> LocTag -> Term3Lifting -> LocTag
+          -> Term3Lifting -> Term3Lifting -> EALM Sigma
+chainLink ctx paths anno a bAnno prev trb = do
+  dLink <- nodeDepth paths
+  prevIsLink <- case prev of
+    _ :< BasicFW (PairSF pa (_ :< BasicFW (PairSF _ _))) -> linkCode pa
+    _notLink                                             -> pure False
+  sa <- pairChild ctx paths a
+  (sb, _, sPrev) <- viewNodeWith paths bAnno $ \inner -> do
+    (sPrev, dPrev) <- viewNodeD ctx inner prev
+    when prevIsLink $ unionB dPrev dLink
+    sTrb <- pairChild ctx inner trb
+    s <- pairOf bAnno sPrev sTrb
+    pure (s, sPrev)
+  s <- pairOf anno sa sb
+  when prevIsLink $ unifySigma anno s sPrev
+  pure s
+
+-- | A pair's intrinsic sigma from its components' views.
+pairOf :: LocTag -> Sigma -> Sigma -> EALM Sigma
+pairOf anno sa@(Sigma _ ta) sb@(Sigma bCap _) =
+    walkTau ta >>= \case
+      -- a code-headed pair is a closure package: whatever rides in its
+      -- Right belongs to its Left's tags, so record the capture per tag
+      -- and expose the position symbolically — joins of different
+      -- packages then union instead of unifying captures structurally
+      CodeT i -> do
+        p <- packageClass i sb
+        -- a closure whose body contracts a capture outside its own box
+        -- (a door) is born inside that box: the package's own bang
+        -- bounds every door of its code
+        infos <- capturesOf i
+        bpkg <- freshB
+        forM_ [ d | TagInfo _ (Just (Iface _ _ ds)) <- Map.elems infos, d <- ds ] $
+          \d -> do
+            slack <- freshB
+            addSumEq (Blame anno "a door needs the closure's own box") [d, slack] bpkg
+        pure . Sigma bpkg $ PairT sa (Sigma bCap (CapT p))
+      _notCode -> plainSigma anno "pair constructor is locally unboxed" $
+        PairT sa sb
 
 -- | An occurrence of the env at a projection path. In EAL a variable is
 -- used exactly as many box doors deep as its type has bangs, so the
@@ -1262,14 +1339,23 @@ instantiateTemplate newBase t = do
 -- tolerated without constraints — input is data by the runtime contract,
 -- and applying data sticks only when demanded.
 resolveApplies :: EALM ()
-resolveApplies = do
+resolveApplies = resolveAppliesWith True
+
+-- | 'resolveApplies', optionally stopping at the first fixpoint instead
+-- of forcing deferred abort readings: code not yet connected to its
+-- operands (the body under main's input lambda, before
+-- 'virtualMainApply') must not have its aborts read before their
+-- messages can arrive — a sized chain's abort base, whose message rides
+-- in the link captures, would be read as the identity continuation.
+resolveAppliesWith :: Bool -> EALM ()
+resolveAppliesWith allowForce = do
   changed <- dispatchRound False
   if changed
-    then resolveApplies
+    then resolveAppliesWith allowForce
     else do
       -- at a fixpoint some abort sites may still be waiting to learn
       -- their message's shape; read those conservatively and go on
-      committed <- dispatchRound True
+      committed <- if allowForce then dispatchRound True else pure False
       when committed resolveApplies
   where
   dispatchRound force = do
@@ -1297,8 +1383,13 @@ resolveApplies = do
       AbortedT -> do
         bottomSigma >>= unifySigma (apLoc site) (apRes site)
         pure False
-      other -> throwError . EALTypeMismatch (apLoc site) $
-        "applied value is " <> describeTau other <> ", not code"
+      other -> do
+        fnShape <- deepShowTau 4 other
+        let Sigma _ envT = apEnv site
+        envShape <- deepShowTau 4 envT
+        throwError . EALTypeMismatch (apLoc site) $
+          "applied value is " <> describeTau other <> ", not code: "
+            <> fnShape <> " applied to " <> envShape
   dispatchNew force k site infos = do
     let new = Map.withoutKeys infos (apDispatched site)
     if Map.null new
@@ -1967,7 +2058,7 @@ walkTop applyToInput what term = do
   rootBase <- forcedZeroB $
     Blame (GeneratedLoc "EAL root" Nothing) "the program's root sits at depth zero"
   sRes <- viewNode ctx (Paths Nothing rootBase) term
-  resolveApplies
+  resolveAppliesWith (not applyToInput)
   when applyToInput $ virtualMainApply sRes >> resolveApplies
   presolve
   pure (bEnv, tEnv, sRes)
@@ -2064,11 +2155,12 @@ syntacticGuidance bodies fi body = CodeGuidance
 -- failure of main to the bodies that fail on their own: structure only
 -- (walk, dispatch, presolve), since the standalone system is never
 -- solved and its levels are never reported.
-summarizeBody :: Map (Digest SHA256) (FunctionIndex, Term3Lifting)
+summarizeBody :: Bool -> Map (Digest SHA256) (FunctionIndex, Term3Lifting)
               -> FunctionIndex -> Term3Lifting
               -> Either EALError CodeGuidance
-summarizeBody bodies fi body =
-  State.evalState (runExceptT go) (initEALState { esBodies = bodies }) where
+summarizeBody uniform bodies fi body =
+  State.evalState (runExceptT go)
+    (initEALState { esBodies = bodies, esUniformChains = uniform }) where
     go = do
       _ <- walkTop False ("env of lifted body " <> show fi) body
       pure (syntacticGuidance bodies fi body)
@@ -2109,12 +2201,17 @@ shapeOfSigma (Sigma _ t) = walkTau t >>= \case
 -- their own, and why) and to blame main's own failure on a failing
 -- dependency.
 inferEALLifted :: DeferMap -> Term3Lifting -> EALLiftedResult
-inferEALLifted (DeferMap dm) mainTerm = case runMain dm mainTerm of
+inferEALLifted = inferEALLiftedWith False
+
+-- | 'inferEALLifted', optionally typing sized recursion chains uniformly
+-- ('esUniformChains').
+inferEALLiftedWith :: Bool -> DeferMap -> Term3Lifting -> EALLiftedResult
+inferEALLiftedWith uniform (DeferMap dm) mainTerm = case runMain dm mainTerm of
   Right (r, layouts, bodyLevels) -> certified r layouts bodyLevels
   -- the let-polymorphic reading (see 'specializeLets'): narrow first, as
   -- it keeps the system near its unspecialized size, then shallow, and
   -- deep only where shallow fails
-  Left mainError -> case narrowed mainError <|> specialized False <|> specialized True of
+  Left mainError -> case narrowed (located dm mainTerm mainError) <|> specialized False <|> specialized True of
     Just (r, layouts, bodyLevels, originS) ->
       certified r (originLayouts originS layouts) bodyLevels
     Nothing ->
@@ -2146,7 +2243,7 @@ inferEALLifted (DeferMap dm) mainTerm = case runMain dm mainTerm of
       in if Set.null new then Nothing
          else case runMain dmS mainS of
            Right (r, layouts, bodyLevels) -> Just (r, layouts, bodyLevels, originS)
-           Left err'                      -> narrowFrom allowed' err'
+           Left err' -> narrowFrom allowed' (located dmS mainS err')
     -- what substituting everything deep substitutes, and where
     (_, _, _, SpecInfo everything readsIn) = specializeLets Nothing True dm mainTerm
     -- the bodies each body reaches, itself included (a lazy
@@ -2171,7 +2268,7 @@ inferEALLifted (DeferMap dm) mainTerm = case runMain dm mainTerm of
     -- layouts left at their defaults (nothing here is a certificate; a
     -- consumer only reads guidance under a certified main)
     bodyResults = Map.mapWithKey summarize dm
-    summarize _h (fi, body) = withDeps body $ summarizeBody dm fi body
+    summarize _h (fi, body) = withDeps body $ summarizeBody uniform dm fi body
     resultOf d = case Map.lookup d bodyResults of
       Just r  -> r
       Nothing -> Left $ EALDependencyFailed d
@@ -2184,8 +2281,17 @@ inferEALLifted (DeferMap dm) mainTerm = case runMain dm mainTerm of
       case [d | d <- Set.toList (refsOf term), Left _ <- [resultOf d]] of
         (d:_) -> Left $ EALDependencyFailed d
         []    -> k
-    runMain bodies term = State.evalState (runExceptT (goMain term))
-      (initEALState { esBodies = bodies })
+    runMain = runMainAs uniform
+    runMainAs u bodies term = State.evalState (runExceptT (goMain term))
+      (initEALState { esBodies = bodies, esUniformChains = u })
+    -- the failure to narrow by. A uniform chain types its links as one, so
+    -- a conflict a shared definition causes can surface first inside code
+    -- every chain reaches, which points at every definition; the per-link
+    -- reading of the same program blames the definition itself, and what
+    -- it needs copies of is the same
+    located bodies term err
+      | uniform, Left e <- runMainAs False bodies term = e
+      | otherwise = err
     goMain term = do
       (bMain, _, sRes, vals) <- analyzeTopWith True "program input" term
       let value r = fromMaybe 0 $ Map.lookup r vals
@@ -2215,6 +2321,108 @@ inferEALWithLifting = uncurry inferEALLifted . deferLift
 -- as well.
 inferEALCompiled :: CompiledExpr -> EALLiftedResult
 inferEALCompiled = inferEALWithLifting . compiled2Term3
+
+-- * Size-independent certification
+
+-- | Certify, before sizing, the program sizing will produce — for every
+-- size at once. Sizing is a substitution ('Telomare.Size.sizeTermM'):
+-- each recursion hole becomes an n-link approximant chain and each
+-- refinement wrapper the check it compiles to, and nothing else changes.
+-- So this certifies the unsized program under that substitution with
+-- n = 2 ('faithfulProgram'), typing the chain's links as one
+-- ('chainLink'), which a derivation of the chain for any n >= 1 unrolls
+-- from. A certificate here is a certificate of the sized program,
+-- whatever the sizes turn out to be; post-sizing guidance is then read
+-- off it rather than inferred again (see 'deriveSizedGuidance').
+--
+-- It is stricter than the post-sizing inference: a chain whose links need
+-- levels growing with n — a step passing its argument through, as in
+-- @d2c 1 id@ — has a derivation for each n but no uniform one.
+inferEALFaithful :: Term3 -> EALLiftedResult
+inferEALFaithful = uncurry (inferEALLiftedWith True) . uncurry faithfulProgram . deferLift
+
+-- | Post-sizing guidance read off 'inferEALFaithful''s certificate of the
+-- unsized program, instead of inferring the sized program again. The
+-- sized program is the unsized one under the sizing substitution, so its
+-- bodies are the images of the unsized bodies, plus the chain and check
+-- bodies, which are constants the certificate holds under their own keys.
+-- An image takes its preimages' solved bangs, levels and capture
+-- layouts (bodies whose images coincide meet); usage and speculatability
+-- are read off the image itself.
+--
+-- Left when the certificate is a refusal, or when the sized program is
+-- not the image of the unsized one (the substitution this assumes is not
+-- the one sizing made): the image of main must be the sized main, which,
+-- bodies being keyed by content, makes every body the image of one.
+deriveSizedGuidance :: (UnsizedRecursionToken -> Int) -> Term3
+                    -> EALLiftedResult -> CompiledExpr
+                    -> Either String EALLiftedResult
+deriveSizedGuidance links unsized cert sized = do
+  r <- first renderEALError (ealLiftedMain cert)
+  let (DeferMap pre, preMain) = deferLift unsized
+      (DeferMap post, postMain) = deferLift (compiled2Term3 sized)
+      images = Map.map (liftedBodyHash . image . snd) pre
+      image (anno :< t) = case t of
+        Term3LDeferRef h -> anno :< Term3LDeferRef (Map.findWithDefault h h images)
+        Term3LUnsized tok -> snd (liftedChain tok (links tok))
+        Term3LCheckingWrapper _ tc c -> snd (refinementCheckL anno (image tc) (image c))
+        other -> anno :< fmap image other
+      preimages = Map.fromListWith (<>) [ (h', [h]) | (h, h') <- Map.toList images ]
+      solved h = case Map.lookup h (ealGuidance cert) of
+        Just (Right g) -> Just g
+        _uncertified   -> Nothing
+      derive h' (fi, body) =
+        case traverse solved (Map.findWithDefault [h'] h' preimages) of
+          Just gs@(_ : _) -> Right $ Right (syntacticGuidance post fi body)
+            { cgEnvBang = maximum (fmap cgEnvBang gs)
+            , cgMaxLevel = maximum (fmap cgMaxLevel gs)
+            , cgCaptureLayout = case mapMaybe cgCaptureLayout gs of
+                [] -> Nothing
+                ls -> Just (foldr1 meetShape ls)
+            }
+          _uncovered -> Left $ "no certified preimage for sized body " <> show fi
+  unless (forgetL (image preMain) == forgetL postMain) $
+    Left "the sized program is not the sizing substitution of the certified one"
+  guidance <- Map.traverseWithKey derive post
+  pure (EALLiftedResult guidance (Right r))
+
+-- | The sizing substitution, with a two-link chain for every hole. Bodies
+-- keep the keys they had (the map is a namespace, and nothing reads a key
+-- back as a hash); the chain and check bodies are added under theirs.
+faithfulProgram :: DeferMap -> Term3Lifting -> (DeferMap, Term3Lifting)
+faithfulProgram (DeferMap dm) mainTerm =
+  let (extraMain, main') = rewrite mainTerm
+      rewritten = fmap (second rewrite) dm
+      DeferMap extras = extraMain <> foldMap (fst . snd) rewritten
+  in (DeferMap (Map.union (fmap (fmap snd) rewritten) extras), main')
+  where
+    rewrite :: Term3Lifting -> (DeferMap, Term3Lifting)
+    rewrite (anno :< t) = case t of
+      Term3LUnsized tok -> (anno <$) <$> liftedChain tok 2
+      Term3LCheckingWrapper _ tc c -> do
+        tc' <- rewrite tc
+        c' <- rewrite c
+        refinementCheckL anno tc' c'
+      other -> (anno :<) <$> traverse rewrite other
+
+-- | A sized recursion chain of n links, lifted: its constant bodies (the
+-- link, 'Telomare.Machine.unsizedStepMrfb', and the abort base) and the
+-- chain value.
+liftedChain :: UnsizedRecursionToken -> Int -> (DeferMap, Term3Lifting)
+liftedChain tok n = deferLift . compiled2Term3 $ sizedRecursionChain tok n
+
+-- | The check a refinement wrapper compiles to, lifted, around lifted
+-- operands.
+refinementCheckL :: LocTag -> Term3Lifting -> Term3Lifting
+                 -> (DeferMap, Term3Lifting)
+refinementCheckL anno tc c = case deferLift (compiled2Term3 template) of
+  (dm, _ :< Term3LS (SetEnvSF (_ :< Term3LB (PairSF perform _)))) ->
+    (dm, anno :< Term3LS (SetEnvSF (anno :< Term3LB (PairSF (anno <$ perform)
+      (anno :< Term3LB (PairSF tc c))))))
+  _unexpected -> error "refinementCheckL: unexpected refinement check shape"
+  where
+    template :: CompiledExpr
+    template = refinementCheckB ZeroB ZeroB
 
 -- | The compile gate: certify a whole program, additionally requiring
 -- that main is an appliable function. Certification itself tolerates a

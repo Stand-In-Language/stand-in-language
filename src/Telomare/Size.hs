@@ -256,12 +256,9 @@ sizeTermM sizingSettings x = tidyUp . transformNoDeferM evalStep $ mx where
     Right converted -> converted
   setSizes :: Map UnsizedRecursionToken (Maybe Int) -> UnsizedExpr -> UnsizedExpr
   setSizes sizeMap = cata $ \case
-    UnsizedFW _us@(UnsizedStubF tok _) -> case Map.lookup tok sizeMap of
-      -- one link of slack over the abstractly-observed depth, matching the
-      -- old tower's n+1 convention: the abstract run can undercount the
-      -- final test round by one
-      Just (Just n) -> debugTrace ("sizeTermM setting size: " <> show (tok, n)) sizedRecursionChain tok (n + 1)
-      _      -> debugTrace ("no size found for " <> show tok) sizedRecursionChain tok 1
+    UnsizedFW _us@(UnsizedStubF tok _) ->
+      let n = chainLinks (SizedRecursion sizeMap) tok
+      in debugTrace ("sizeTermM setting size: " <> show (tok, n)) sizedRecursionChain tok n
     UnsizedFW (TraceF _ inner) -> inner
     other -> embed other
   foldAborted = cata f where
@@ -285,10 +282,7 @@ sizeTermM sizingSettings x = tidyUp . transformNoDeferM evalStep $ mx where
 removeRefinementWrappers :: (Base g ~ f, BasicBase f, StuckBase f, AbortBase f, UnsizedBase f, Recursive g, Corecursive g) => g -> g
 removeRefinementWrappers = cata f where
   f = \case
-    UnsizedFW (RefinementWrapperF _lt tc c) ->
-      let innerTC = appB (LeftB EnvB) (RightB EnvB)
-          performTC = deferB removeRefinementWrappersTC . SetEnvB $ PairB (SetEnvB $ PairB (AbortEE AbortF) innerTC) (RightB EnvB)
-      in SetEnvB $ PairB performTC (PairB tc c)
+    UnsizedFW (RefinementWrapperF _lt tc c) -> refinementCheckB tc c
     x -> embed x
 
 evalStaticCheck :: Bool -> StaticCheckExpr -> Maybe BasicExpr
