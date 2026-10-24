@@ -1854,30 +1854,39 @@ pivot r c (Tab rows basis obj cols neg) =
       -- row - a*prow', dropping what cancels; rows hold no zeros, so
       -- only the overlap can cancel
       combine a row = IntMap.mergeWithKey
-        (\_ x y -> let z = x - a * y in if z == 0 then Nothing else Just z)
+        (\_ x y -> let z = subMul x a y in if z == 0 then Nothing else Just z)
         id (IntMap.map (negate . (a *))) row prow'
-      -- the column index is a superset: an entry that cancelled to zero
-      -- stays listed and is skipped here, which is cheaper than keeping
-      -- the index exact
-      affected = [ j | j <- IntSet.toList (IntMap.findWithDefault IntSet.empty c cols)
-                 , j /= r, IntMap.member c (fst (rows IntMap.! j)) ]
-      step (rs, cs, ng) j =
+      -- the column index is a superset: an entry that cancelled to zero,
+      -- or a row since deleted, stays listed and is skipped here, which is
+      -- cheaper than keeping the index exact
+      affected = IntSet.filter
+        (\j -> j /= r && maybe False (IntMap.member c . fst) (IntMap.lookup j rows))
+        (IntMap.findWithDefault IntSet.empty c cols)
+      step (rs, ng) j =
         let (row, b) = rs IntMap.! j
             a = row IntMap.! c
             row' = combine a row
-            b' = b - a * pb'
-            new = IntMap.keys (IntMap.difference prow' row)
-            cs' = foldr (\k -> IntMap.insertWith IntSet.union k (IntSet.singleton j)) cs new
+            b' = subMul b a pb'
             ng' = if b' < 0 then IntSet.insert j ng else IntSet.delete j ng
-        in (IntMap.insert j (row', b') rs, cs', ng')
-      (rows1, cols1, neg1) = foldl step (rows, cols, neg) affected
-      -- scaling the pivot row changes no sparsity pattern; afterwards
-      -- column c is nonzero in row r alone
+        in (IntMap.insert j (row', b') rs, ng')
+      (rows1, neg1) = IntSet.foldl' step (rows, neg) affected
+      -- every affected row now has an entry in each column of the pivot
+      -- row (but where it cancelled), so those columns take the affected
+      -- rows as a set; column c is nonzero in row r alone
+      cols' = IntMap.insert c (IntSet.singleton r) $ IntMap.unionWith IntSet.union cols
+        (IntMap.fromSet (const affected) (IntSet.delete c (IntMap.keysSet prow')))
       rows' = IntMap.insert r (prow', pb') rows1
-      cols' = cols1
       neg' = if pb' < 0 then IntSet.insert r neg1 else IntSet.delete r neg1
       obj' = maybe obj (`combine` obj) (IntMap.lookup c obj)
   in Tab rows' (IntMap.insert r c basis) obj' cols' neg'
+
+-- | @x - a*y@, on the integers when all three are (nearly always: the
+-- coefficients stay small integers), which skips 'Rational''s gcds.
+subMul :: Rational -> Rational -> Rational -> Rational
+subMul x a y
+  | denominator x == 1 && denominator a == 1 && denominator y == 1 =
+      fromInteger (numerator x - numerator a * numerator y)
+  | otherwise = x - a * y
 
 -- | Minimize. Pricing is Dantzig.s (the most negative reduced cost
 -- enters) while pivots are non-degenerate, and Bland.s (the
@@ -2250,10 +2259,17 @@ components rows =
 -- leaves). The slack basis is dual feasible from the start, because every
 -- weight is positive and slacks cost nothing, and it is primal infeasible
 -- only on the rows a lower bound made negative. Each pivot repairs one
--- such row: the infeasible basic variable with the lowest index leaves
--- (Bland), and the column minimizing reduced cost over its negative entry
--- enters, lowest index on ties; with that rule the dual simplex cannot
--- cycle, so it terminates. A row with no negative entry cannot be
+-- such row: an infeasible row leaves, and the column minimizing reduced
+-- cost over its negative entry enters, lowest index on ties, which keeps
+-- the basis dual feasible. The leaving row is the shortest infeasible one
+-- (lowest basic column on ties): a pivot costs the pivot row's length
+-- times the entering column's density, and a short pivot row also spreads
+-- the least fill. A pivot never lowers the objective and a non-degenerate
+-- one raises it, so no basis comes back across a non-degenerate pivot; a
+-- run of 'blandAfter' degenerate pivots switches to Bland's rule (the
+-- infeasible row whose basic column is lowest leaves) until the next
+-- non-degenerate pivot, and under Bland's rule a run of degenerate pivots
+-- cannot cycle, so this terminates. A row with no negative entry cannot be
 -- repaired: the system is infeasible and the row's origins are blamed.
 --
 -- Rows enter the tableau lazily: only the rows the current point violates
@@ -2262,9 +2278,18 @@ components rows =
 -- the violated ones are rewritten over the current nonbasic columns and
 -- added (primal infeasible, dual feasibility untouched), and the dual
 -- simplex resumes. The active set is a relaxation, so a point satisfying
--- every row is optimal for the whole system, and each outer step adds at
--- least one of finitely many rows. A pivot then touches the active rows
--- alone, which stay a small fraction of the residual.
+-- every row is optimal for the whole system.
+--
+-- Rows leave it too. At that same moment every row whose basic column is
+-- its own slack holds at the point and carries no dual weight; deleting
+-- it changes neither the point nor any other row, so it goes back to
+-- waiting, to be added again if the point moves to violate it. Most
+-- active rows are of this kind (a row added once and since satisfied),
+-- and every pivot would otherwise pay for them. Rows are deleted only
+-- when the objective has risen since the last deletion: it never falls
+-- (adding or deleting a row leaves the point alone), and it takes
+-- finitely many values, so deletions happen finitely often, and between
+-- two of them each outer step adds at least one of finitely many rows.
 dualSolve :: (Int -> Integer) -> IntMap Row -> Either [EqR] (IntMap Rational)
 dualSolve weight rows =
   let vars = IntSet.toList . IntSet.unions $ fmap (IntMap.keysSet . rowCoefs) (IntMap.elems rows)
@@ -2280,20 +2305,26 @@ dualSolve weight rows =
       tRows = IntMap.fromList (fmap build active0)
       basis0 = IntMap.fromList [ (i, slackBase + i) | (i, _) <- active0 ]
       obj0 = IntMap.fromList [ (colOf IntMap.! v, fromInteger (weight v)) | v <- vars ]
-      go tab
+      -- the argument counts the degenerate pivots in a row
+      go :: Int -> Tab -> Either [EqR] Tab
+      go degenerate tab
         | IntSet.null (tbNeg tab) = Right tab
         | otherwise =
-            -- the infeasible row whose basic column is lowest
-            let r = snd $ IntMap.foldlWithKey'
-                  (\acc i c -> if c < fst acc then (c, i) else acc)
-                  (maxBound, -1) (IntMap.restrictKeys (tbBasis tab) (tbNeg tab))
+            let infeasible = IntMap.restrictKeys (tbBasis tab) (tbNeg tab)
+                r | degenerate >= blandAfter = snd $ IntMap.foldlWithKey'
+                      (\acc i c -> if c < fst acc then (c, i) else acc)
+                      (maxBound, -1) infeasible
+                  | otherwise = (\(_, _, i) -> i) $ IntMap.foldlWithKey'
+                      (\acc i c -> min acc (IntMap.size (fst (tbRows tab IntMap.! i)), c, i))
+                      (maxBound, maxBound, -1) infeasible
                 (row, _) = tbRows tab IntMap.! r
                 candidates =
                   [ (IntMap.findWithDefault 0 j (tbObj tab) / negate a, j)
                   | (j, a) <- IntMap.toList row, a < 0 ]
             in case candidates of
                  [] -> Left (rowFrom (rowByIndex IntMap.! r))
-                 _  -> go (pivot r (snd (minimum candidates)) tab)
+                 _  -> let (ratio, c) = minimum candidates
+                       in go (if ratio == 0 then degenerate + 1 else 0) (pivot r c tab)
       -- the current point: basic structural columns carry their row's
       -- rhs, every other column is zero
       pointOf tab = IntMap.fromList
@@ -2322,18 +2353,21 @@ dualSolve weight rows =
                , tbCols = foldr (\k -> IntMap.insertWith IntSet.union k (IntSet.singleton i))
                             (tbCols tab) (IntMap.keys coefs')
                , tbNeg = if b' < 0 then IntSet.insert i (tbNeg tab) else tbNeg tab }
-      -- the waiting rows by the columns they mention
+      -- every row by the columns it mentions (any row can wait: a deleted
+      -- one waits again)
       waitingAt = IntMap.fromListWith IntSet.union
         [ (colOf IntMap.! v, IntSet.singleton i)
-        | (i, r) <- waiting0, v <- IntMap.keys (rowCoefs r) ]
+        | (i, r) <- rowList, v <- IntMap.keys (rowCoefs r) ]
       -- a waiting row held at the last point, so it can fail at this one
       -- only if one of its columns moved (the first point's predecessor is
       -- zero, which every waiting row holds at: its constant is nonnegative)
       moved p0 p1 = IntMap.keysSet $ IntMap.mergeWithKey
         (\_ x y -> if x /= y then Just () else Nothing)
         (void . IntMap.filter (/= 0)) (void . IntMap.filter (/= 0)) p0 p1
-      loop tab prev waitSet = do
-        tab' <- go tab
+      objectiveAt point = sum
+        [ fromInteger (weight (varOf IntMap.! c)) * b | (c, b) <- IntMap.toList point ]
+      loop tab prev waitSet lastDeletion = do
+        tab' <- go 0 tab
         let point = pointOf tab'
             value r = sum [ a * IntMap.findWithDefault 0 (colOf IntMap.! v) point
                           | (v, a) <- IntMap.toList (rowCoefs r) ]
@@ -2343,16 +2377,27 @@ dualSolve weight rows =
             violated = [ (i, r) | i <- IntSet.toAscList suspects
                        , let r = rowByIndex IntMap.! i, value r > rowConst r ]
             waiting' = IntSet.difference waitSet (IntSet.fromList (fmap fst violated))
+            objective = objectiveAt point
+            deleting = objective > lastDeletion
+            idle = [ i | deleting, (i, c) <- IntMap.toList (tbBasis tab'), c == slackBase + i ]
+            kept = foldr deleteRow tab' idle
         if null violated
           then pure tab'
-          else loop (foldl (addRow (rowsOfBasics tab')) tab' violated) point waiting'
+          else loop (foldl (addRow (rowsOfBasics kept)) kept violated) point
+                 (IntSet.union waiting' (IntSet.fromList idle))
+                 (if deleting then objective else lastDeletion)
   in do
     tab <- loop (mkTab tRows basis0 obj0) IntMap.empty
-      (IntSet.fromList (fmap fst waiting0))
+      (IntSet.fromList (fmap fst waiting0)) (-1)
     pure $ IntMap.fromList
       [ (varOf IntMap.! c, b)
       | (i, (_, b)) <- IntMap.toList (tbRows tab)
       , let c = tbBasis tab IntMap.! i, c < slackBase ]
+
+-- | How many degenerate pivots in a row 'dualSolve' makes by its own rule
+-- before it falls back to Bland's.
+blandAfter :: Int
+blandAfter = 1000
 
 -- | A closed data tree: Zero, or a pair of closed data trees.
 dataLiteral :: Term3Lifting -> Bool

@@ -402,14 +402,16 @@ clash as `EALBoxConflict` with both blames; sparse Gaussian elimination that kee
 nonnegativity, leaving inequalities over the free variables only, with vacuous rows
 dropped; and an exact dual simplex. The slack basis is dual feasible from the start
 (every weight is positive) and primal infeasible only on the rows a lower bound made
-negative, so each pivot repairs one such row; Bland's rule makes it terminate, and a
-row with no negative entry names the origins that cannot hold together
-(`EALUnsatisfiable`). The objective is total leaf depth, so the reported levels are
-a shallowest decoration in aggregate, not a canonical least one. Depths are
-cumulative, one variable per node (`depth = parent + edge`), so every equation has
-at most three terms. The level cap, the round budgets and `EALSolverGaveUp` are
-gone. A residual with equality rows (which elimination never leaves) falls back to
-a two-phase primal simplex.
+negative, so each pivot repairs one such row: the shortest infeasible one, or, after
+1000 degenerate pivots in a row and until the next nondegenerate one, the one Bland's
+rule picks, so it cannot cycle (the 1000 switches rules; nothing gives up). A row with
+no negative entry names the origins that cannot hold together (`EALUnsatisfiable`).
+The objective is total leaf depth, so the reported levels are a shallowest decoration
+in aggregate, not a canonical least one; where several decorations attain it, the
+pivot rule picks which. Depths are cumulative, one variable per node
+(`depth = parent + edge`), so every equation has at most three terms. The level cap,
+the round budgets and `EALSolverGaveUp` are gone. A residual with equality rows (which
+elimination never leaves) falls back to a two-phase primal simplex.
 - Serves: C2 (a rejection is a fact about the program), C3 (levels that mean
   something).
 - Rationale: the greedy repair could not tell "no solution" from "stopped looking",
@@ -719,9 +721,11 @@ Collected here so contributors see it in one place.
    body's subtree once per ancestor, and their cost is almost entirely presolve
    over those copies. An infeasibility only the solver can see is reported on
    main rather than on the body. The solver's dual simplex admits rows lazily
-   (only the rows the current point violates are in the tableau). Interface
-   projection was tried and reverted: the type structure mirrors the term's pair
-   structure, so almost no bang variable is interior and nothing projects away.
+   (only the rows the current point violates are in the tableau), and once the objective
+   has risen it sends the rows basic in their own slack back to waiting, so the
+   tableau holds about the rows that bind. Interface projection was tried and
+   reverted: the type structure mirrors the term's pair structure, so almost no bang
+   variable is interior and nothing projects away.
 2. **Gate joins in EAL** — one pinned test: arms of disagreeing arity are rejected
    (would need a real data⊔code lattice join at result positions; also blame should
    name the gate, not the deep build site).
