@@ -2,6 +2,7 @@
 {-# LANGUAGE DeriveGeneric     #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE LambdaCase        #-}
+{-# LANGUAGE PatternSynonyms   #-}
 
 -- |Every error the pipeline can produce, in one place. 'EvalError' unions
 -- the per-stage errors ('ResolverError' from resolution, 'EALError' from
@@ -13,12 +14,21 @@ import Control.DeepSeq (NFData (..))
 import Crypto.Hash (Digest, SHA256)
 import Data.Validity (Validity)
 import GHC.Generics (Generic)
-import Telomare.IR.Base (UnsizedRecursionToken (..))
+import Telomare.IR.Base (FunctionIndex, UnsizedRecursionToken (..))
 import Telomare.IR.Core (RunTimeError)
 import Telomare.IR.Loc (LocTag, renderLocTagCompact, renderLocTagVerbose)
 
--- | Where and why an EAL constraint arose, for error reporting.
-data Blame = Blame LocTag String deriving (Eq, Show)
+-- | Where and why an EAL constraint arose, for error reporting, and the
+-- lifted body whose walk made it, if one did: a failed certification
+-- names the bodies it is about through these (see
+-- 'Telomare.EAL.specializeLets').
+data Blame = BlameIn LocTag String (Maybe FunctionIndex) deriving (Eq, Show)
+
+-- | A blame by where and why alone; built, it names no body.
+pattern Blame :: LocTag -> String -> Blame
+pattern Blame loc why <- BlameIn loc why _
+  where Blame loc why = BlameIn loc why Nothing
+{-# COMPLETE Blame #-}
 
 renderBlame :: Blame -> String
 renderBlame (Blame loc why) = why <> case renderLocTagCompact loc of

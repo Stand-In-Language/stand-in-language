@@ -8,7 +8,9 @@ import qualified Data.Map as Map
 import Data.Maybe (catMaybes)
 import qualified Data.Set as Set
 import qualified System.IO.Strict as Strict
-import Telomare.Driver (compileUnitTest)
+import Telomare.Driver (CompiledProgram (..), SizingOption (..),
+                        compileMainReporting, compileUnitTest, evalLoopCore,
+                        keepAccum, plainEval, programPlan)
 import Telomare.EAL (CodeGuidance (..), EALLiftedResult (..), ealCaptureLayouts,
                      inferEALCompiled, inferEALWithLifting)
 import Telomare.Eval.IC (ICMeter (..), ICPlan (..), admitIC, evalIC)
@@ -119,6 +121,24 @@ main = do
     corpus src = testCase src $ case compiled src of
       Left e  -> assertFailure $ "compilation failed: " <> e
       Right t -> icEval t @?= eval t
+    -- what `telomare --ic` does: compile through the driver (whose gate
+    -- certifies the program before sizing), read IC admission off the
+    -- compiled program (a second certification, after sizing), run the
+    -- net; both certifications must pass, and the net must print what the
+    -- reference evaluator prints
+    driverAdmits :: String -> TestTree
+    driverAdmits src = testCase src $
+      case compileMainReporting MainSizing (parseAuxModule src : prelude)
+             "AuxModule" of
+        Left e   -> assertFailure $ "compilation failed: " <> show e
+        Right cp -> case programPlan cp of
+          Left refusal -> assertFailure $ "refused: " <> refusal
+          Right plan   -> do
+            (_, viaIC) <- evalLoopCore (evalIC plan) (cpExpr cp)
+                            keepAccum "" []
+            (_, viaRef) <- evalLoopCore plainEval (cpExpr cp)
+                             keepAccum "" []
+            viaIC @?= viaRef
   defaultMain $ testGroup "IC runtime"
     [ testGroup "template namespace"
         [ testCase "deferHash agrees with the DeferMap key" $ do
@@ -444,6 +464,20 @@ main = do
                                 (p (se (p (p z z) z)) (LeftB EnvB)))))
                   (p z z)))
             (Right z)
+        ]
+    , testGroup "programs with shared definitions certify and run under --ic"
+        -- a definition used both directly and inside a closure that gets
+        -- copied (by the program, or by sizing's unrolling of a recursion)
+        -- needs two box depths if it is shared as one value; copied into
+        -- each use, it certifies. All three run under --ic at 88acbdb4;
+        -- with definitions only shared, the first is refused at compile
+        -- time and the others at admission ("a duplicated value cannot
+        -- be boxed")
+        [ driverAdmits ("main = \\input -> (let t = \\f x -> f (f x)\n"
+                     <> "                    in t (\\b -> t id 0) 0, 0)")
+        , driverAdmits "main = \\input -> (concat [\"a\", \"b\"], 0)"
+        , driverAdmits ("main = \\input -> (concat [succ (left input), \" is \"]"
+                     <> ", 0)")
         ]
     , testGroup "EAL boundary experiments"
         [ testCase "EAL-certified numeral composition: runtime agrees" $

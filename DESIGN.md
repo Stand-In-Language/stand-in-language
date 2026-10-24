@@ -235,13 +235,13 @@ one more name than body slot (the extra name is the generated validator). This i
 elaboration-level convention, not parser behavior.
 - Serves: C1 (keeps UDTs out of the core entirely).
 
-**[open] The certified term is not the executed term.** `compileMainReporting` resolves
-the program twice: a `let`-inlined build (`main2Term3`) is EAL-certified and discarded,
-while a `let`-as-application build (`main2Term3let`) is what actually gets sized and
-run. The two are believed equivalent, but nothing checks it per-program. Unifying the
-two pipelines (or certifying the executed build) is a known destination — the
-DeferMap-native pipeline work (lifting, `linkDefers`, the parity harness) is
-scaffolding toward it.
+**[open] The certified term is not always the executed term.** One `let`-as-application
+build (`main2Term3`) is certified, sized and run. But a program that certifies only
+with its closed definitions copied into their uses (§5) is certified on that copy,
+while the shared build is what gets sized and run. Copying a closed value changes
+nothing the program computes, and on the IC runtime a duplicator meeting a closed
+value only ever copies it (the argument is in `specializeLets`), but nothing checks
+the two per program, and the IC runtime's correctness rests on EAL-typability (§7).
 
 ## 4. Totality: recursion and sizing
 
@@ -355,6 +355,31 @@ the program being EAL-typable, so `admitIC` re-certifies the compiled expression
 per program.
 - Serves: C2, C4.
 
+**[decision] A closed `let`-bound definition is typed per use when sharing it fails.**
+A `let` resolves to an application of a lambda, so a definition reaches its uses
+through an env, as one value, and the box discipline gives it one depth. A definition
+used both directly and inside a closure that gets copied (by the program, or by
+sizing's unrolling of a recursion) needs two, and certification fails with
+`a duplicated value cannot be boxed`, though each use alone certifies. So when main
+fails, `inferEALLifted` retries on copies of the program with closed definitions
+substituted into their uses (HM's `let` rule, read as substitution), each copy typed
+at its own depth: first only the definitions the failure's blames point at, adding
+what the next failure points at until main certifies or nothing is left to add; then
+every closed definition with closure bodies left shared; then every closed
+definition everywhere. Guidance found on a copy is filed under the body it was copied
+from, whose layouts meet there; the runtime still runs the shared program (§3).
+- Serves: C2 (a rejection is a fact about the program, not about how the resolver
+  shares its definitions), C4.
+- Rationale: copying everything multiplies the system (simpleplus: 21K equations
+  shared, 132K with closure bodies left shared, 473K with everything copied); on
+  tictactoe the first does not certify and the second runs out of memory. Blame
+  already names the duplication (the blame decision below shapes it as the input to
+  repairs like this one). Each narrow round adds at least one of finitely many
+  definitions, so the retry ends without a budget.
+- Alternatives: copy in the resolver, so the copy is also what is sized and run
+  (sizing's input, the program and the sizing regression constants all change);
+  copy every definition up front.
+
 **[decision] Every analysis phase terminates by construction, not by budget.** The
 walk instantiates each DeferRef occurrence once (finite because the DeferMap is a
 DAG); dispatch only unifies, so its fixpoint is bounded by sites times tags;
@@ -377,14 +402,16 @@ clash as `EALBoxConflict` with both blames; sparse Gaussian elimination that kee
 nonnegativity, leaving inequalities over the free variables only, with vacuous rows
 dropped; and an exact dual simplex. The slack basis is dual feasible from the start
 (every weight is positive) and primal infeasible only on the rows a lower bound made
-negative, so each pivot repairs one such row; Bland's rule makes it terminate, and a
-row with no negative entry names the origins that cannot hold together
-(`EALUnsatisfiable`). The objective is total leaf depth, so the reported levels are
-a shallowest decoration in aggregate, not a canonical least one. Depths are
-cumulative, one variable per node (`depth = parent + edge`), so every equation has
-at most three terms. The level cap, the round budgets and `EALSolverGaveUp` are
-gone. A residual with equality rows (which elimination never leaves) falls back to
-a two-phase primal simplex.
+negative, so each pivot repairs one such row: the shortest infeasible one, or, after
+1000 degenerate pivots in a row and until the next nondegenerate one, the one Bland's
+rule picks, so it cannot cycle (the 1000 switches rules; nothing gives up). A row with
+no negative entry names the origins that cannot hold together (`EALUnsatisfiable`).
+The objective is total leaf depth, so the reported levels are a shallowest decoration
+in aggregate, not a canonical least one; where several decorations attain it, the
+pivot rule picks which. Depths are cumulative, one variable per node
+(`depth = parent + edge`), so every equation has at most three terms. The level cap,
+the round budgets and `EALSolverGaveUp` are gone. A residual with equality rows (which
+elimination never leaves) falls back to a two-phase primal simplex.
 - Serves: C2 (a rejection is a fact about the program), C3 (levels that mean
   something).
 - Rationale: the greedy repair could not tell "no solution" from "stopped looking",
@@ -685,17 +712,20 @@ Collected here so contributors see it in one place.
    Certification cost rose with exactness, and the cost is the exact solver, not
    the instancing (the walk, the template copies and dispatch are a few percent).
    The box constraints are solved once, in the global pass, which is the only pass
-   a certifying program runs: a certified main has certified every body's
-   instances, and a body's own constraints are a subset of its instance's, so
+   a program that certifies with its definitions shared runs (one that needs copies
+   runs one more per round of copying, §5): a certified main has certified every
+   body's instances, and a body's own constraints are a subset of its instance's, so
    per-body guidance is read off the global solve. The standalone per-body passes
    (walk, dispatch, presolve — where type cycles and boxed/unboxed clashes are
    found) run only when main fails, to localize the failure; they instantiate each
    body's subtree once per ancestor, and their cost is almost entirely presolve
    over those copies. An infeasibility only the solver can see is reported on
    main rather than on the body. The solver's dual simplex admits rows lazily
-   (only the rows the current point violates are in the tableau). Interface
-   projection was tried and reverted: the type structure mirrors the term's pair
-   structure, so almost no bang variable is interior and nothing projects away.
+   (only the rows the current point violates are in the tableau), and once the objective
+   has risen it sends the rows basic in their own slack back to waiting, so the
+   tableau holds about the rows that bind. Interface projection was tried and
+   reverted: the type structure mirrors the term's pair structure, so almost no bang
+   variable is interior and nothing projects away.
 2. **Gate joins in EAL** — one pinned test: arms of disagreeing arity are rejected
    (would need a real data⊔code lattice join at result positions; also blame should
    name the gate, not the deep build site).
