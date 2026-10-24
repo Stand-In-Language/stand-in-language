@@ -235,13 +235,13 @@ one more name than body slot (the extra name is the generated validator). This i
 elaboration-level convention, not parser behavior.
 - Serves: C1 (keeps UDTs out of the core entirely).
 
-**[open] The certified term is not the executed term.** `compileMainReporting` resolves
-the program twice: a `let`-inlined build (`main2Term3`) is EAL-certified and discarded,
-while a `let`-as-application build (`main2Term3let`) is what actually gets sized and
-run. The two are believed equivalent, but nothing checks it per-program. Unifying the
-two pipelines (or certifying the executed build) is a known destination — the
-DeferMap-native pipeline work (lifting, `linkDefers`, the parity harness) is
-scaffolding toward it.
+**[open] The certified term is not always the executed term.** One `let`-as-application
+build (`main2Term3`) is certified, sized and run. But a program that certifies only
+with its closed definitions copied into their uses (§5) is certified on that copy,
+while the shared build is what gets sized and run. Copying a closed value changes
+nothing the program computes, and on the IC runtime a duplicator meeting a closed
+value only ever copies it (the argument is in `specializeLets`), but nothing checks
+the two per program, and the IC runtime's correctness rests on EAL-typability (§7).
 
 ## 4. Totality: recursion and sizing
 
@@ -354,6 +354,31 @@ rejected — a program must be a function of its input.
 the program being EAL-typable, so `admitIC` re-certifies the compiled expression once
 per program.
 - Serves: C2, C4.
+
+**[decision] A closed `let`-bound definition is typed per use when sharing it fails.**
+A `let` resolves to an application of a lambda, so a definition reaches its uses
+through an env, as one value, and the box discipline gives it one depth. A definition
+used both directly and inside a closure that gets copied (by the program, or by
+sizing's unrolling of a recursion) needs two, and certification fails with
+`a duplicated value cannot be boxed`, though each use alone certifies. So when main
+fails, `inferEALLifted` retries on copies of the program with closed definitions
+substituted into their uses (HM's `let` rule, read as substitution), each copy typed
+at its own depth: first only the definitions the failure's blames point at, adding
+what the next failure points at until main certifies or nothing is left to add; then
+every closed definition with closure bodies left shared; then every closed
+definition everywhere. Guidance found on a copy is filed under the body it was copied
+from, whose layouts meet there; the runtime still runs the shared program (§3).
+- Serves: C2 (a rejection is a fact about the program, not about how the resolver
+  shares its definitions), C4.
+- Rationale: copying everything multiplies the system (simpleplus: 21K equations
+  shared, 132K with closure bodies left shared, 473K with everything copied); on
+  tictactoe the first does not certify and the second runs out of memory. Blame
+  already names the duplication (the blame decision below shapes it as the input to
+  repairs like this one). Each narrow round adds at least one of finitely many
+  definitions, so the retry ends without a budget.
+- Alternatives: copy in the resolver, so the copy is also what is sized and run
+  (sizing's input, the program and the sizing regression constants all change);
+  copy every definition up front.
 
 **[decision] Every analysis phase terminates by construction, not by budget.** The
 walk instantiates each DeferRef occurrence once (finite because the DeferMap is a
@@ -685,8 +710,9 @@ Collected here so contributors see it in one place.
    Certification cost rose with exactness, and the cost is the exact solver, not
    the instancing (the walk, the template copies and dispatch are a few percent).
    The box constraints are solved once, in the global pass, which is the only pass
-   a certifying program runs: a certified main has certified every body's
-   instances, and a body's own constraints are a subset of its instance's, so
+   a program that certifies with its definitions shared runs (one that needs copies
+   runs one more per round of copying, §5): a certified main has certified every
+   body's instances, and a body's own constraints are a subset of its instance's, so
    per-body guidance is read off the global solve. The standalone per-body passes
    (walk, dispatch, presolve — where type cycles and boxed/unboxed clashes are
    found) run only when main fails, to localize the failure; they instantiate each

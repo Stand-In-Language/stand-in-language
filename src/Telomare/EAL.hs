@@ -74,6 +74,7 @@
 -- namespace that 'CodeGuidance' and the IC runtime's templates share.
 module Telomare.EAL where
 
+import Codec.Binary.UTF8.String (encode)
 import Control.Applicative ((<|>))
 import Control.Comonad.Cofree (Cofree ((:<)))
 import Control.Monad (filterM, foldM, forM, forM_, unless, void, when,
@@ -81,8 +82,10 @@ import Control.Monad (filterM, foldM, forM, forM_, unless, void, when,
 import Control.Monad.Except
 import Control.Monad.State.Strict (State)
 import qualified Control.Monad.State.Strict as State
-import Crypto.Hash (Digest, SHA256)
+import Crypto.Hash (Digest, SHA256, hash)
 import Data.Bifunctor (first)
+import qualified Data.ByteString as BS
+import Data.Fix (Fix)
 import Data.Graph (SCC (..), stronglyConnComp)
 import qualified Data.Graph as Graph
 import Data.IntMap.Strict (IntMap)
@@ -92,15 +95,15 @@ import qualified Data.IntSet as IntSet
 import Data.List (isPrefixOf, minimumBy, partition, sortOn)
 import Data.Map (Map)
 import qualified Data.Map as Map
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, mapMaybe)
 import Data.Ord (comparing)
 import Data.Ratio (denominator, numerator)
 import Data.Set (Set)
 import qualified Data.Set as Set
 import qualified Data.Tree as Tree
-import Telomare.Error (Blame (..), EALError (..), renderEALError)
+import Telomare.Error (Blame (..), EALError (..), pattern Blame, renderEALError)
 import Telomare.IR.Base (AbortableF (..), BasicExprF (..), FunctionIndex,
-                         StuckF (..), pattern AbortFW, pattern BasicFW,
+                         StuckF (..), forget, pattern AbortFW, pattern BasicFW,
                          pattern StuckFW)
 import Telomare.IR.Core (CompiledExpr, Term3, compiled2Term3)
 import Telomare.IR.Loc (LocTag (..))
@@ -227,6 +230,9 @@ data EALState = EALState
     -- ^ the DeferMap: a DeferRef occurrence instantiates its body from here
   , esTemplates  :: Map (Digest SHA256) BodyTemplate
     -- ^ per body: the reusable constraint delta of its walk
+  , esFrame      :: Maybe FunctionIndex
+    -- ^ the lifted body being walked, if any: the blames made meanwhile
+    --   name it
   }
 
 initEALState :: EALState
@@ -247,6 +253,7 @@ initEALState = EALState
   , esLeafCount = 0
   , esBodies = mempty
   , esTemplates = mempty
+  , esFrame = Nothing
   }
 
 -- | One body's walk, captured as a reusable constraint template. The walk
@@ -448,7 +455,12 @@ classInfo r = State.gets (fromMaybe Unrestricted . Map.lookup r . esClasses)
 -- 'propagate' uses to detect its fixpoint). Throws on a level over the cap
 -- or a boxed/unboxed conflict.
 constrainB :: BVar -> ClassInfo -> EALM Bool
-constrainB b nc = do
+constrainB b nc0 = do
+    frame <- State.gets esFrame
+    let nc = case nc0 of
+          ForcedZero blame    -> ForcedZero (inFrame frame blame)
+          ForcedLevel n blame -> ForcedLevel n (inFrame frame blame)
+          other               -> other
     r <- findB b
     ci <- classInfo r
     rc <- mergeClasses ci nc
@@ -502,7 +514,7 @@ getLowerBound = \case
 
 addSumEq :: Blame -> [BVar] -> BVar -> EALM ()
 addSumEq blame lhs rhs = State.modify $ \st ->
-  st { esSumEqs = SumEq lhs rhs blame : esSumEqs st
+  st { esSumEqs = SumEq lhs rhs (inFrame (esFrame st) blame) : esSumEqs st
      , esSumEqCount = esSumEqCount st + 1 }
 
 -- * Union-find over tag-set classes
@@ -1138,9 +1150,12 @@ captureTemplate unit base h fi body = do
       defer0 = esDeferCount st0
   bEnv <- freshB
   tEnv <- freshTau
+  let frame0 = esFrame st0
+  State.modify $ \st -> st { esFrame = Just fi }
   ctx <- frameContext unit (Just fi) ("env of " <> show fi) bEnv tEnv body
   recordDefer fi bEnv
   sBody <- viewNode ctx (Paths Nothing base) body
+  State.modify $ \st -> st { esFrame = frame0 }
   st1 <- State.get
   let blockOf :: Map Int a -> [(Int, a)]
       blockOf = Map.toAscList . snd . Map.split (v0 - 1)
@@ -1463,7 +1478,10 @@ resolveEqs = do
 -- canonical least one.
 solveConstraints :: EALM (Map Int Int)
 solveConstraints = do
-  presolve
+  -- no 'presolve' here: its one caller, 'analyzeTopWith', runs this right
+  -- after 'walkTop', which ends by drawing presolve to its fixpoint, and a
+  -- round at a fixpoint changes nothing (it only cost a pass over every
+  -- equation)
   eqs <- resolveEqs
   classes <- State.gets esClasses
   let info r = fromMaybe Unrestricted (Map.lookup r classes)
@@ -1510,7 +1528,21 @@ presolve = do
   when changed presolve
 
 derivedBlame :: String -> Blame -> Blame
-derivedBlame what (Blame l s) = Blame l (what <> ": " <> s)
+derivedBlame what (BlameIn l s frame) = BlameIn l (what <> ": " <> s) frame
+
+-- | A blame made in this frame names its body, unless it names one already
+-- (an instance's blames name the body they were first made in).
+inFrame :: Maybe FunctionIndex -> Blame -> Blame
+inFrame frame blame@(BlameIn l s Nothing) = maybe blame (BlameIn l s . Just) frame
+inFrame _ blame                           = blame
+
+-- | The lifted bodies a failed certification's blames were made in.
+errorBodies :: EALError -> Set FunctionIndex
+errorBodies = \case
+  EALBoxConflict need forbid -> Set.fromList (mapMaybe bodyOf [need, forbid])
+  EALUnsatisfiable blames    -> Set.fromList (mapMaybe bodyOf blames)
+  _noBlames                  -> mempty
+  where bodyOf (BlameIn _ _ frame) = frame
 
 -- | Zeros propagate: an unboxed total has unboxed summands; a total whose
 -- summands are all unboxed (none, in particular) is unboxed.
@@ -1553,20 +1585,20 @@ cycleStep eqs = do
   let zero r = maybe False isForcedZero (Map.lookup r classes)
       live = [ EqR (filter (not . zero) lhs) rhs b
              | EqR lhs rhs b <- eqs, not (zero rhs) ]
-      edges = Map.fromListWith (<>) [ (l, [eqRhs e]) | e <- live, l <- eqLhs e ]
-      nodes = Set.toList . Set.fromList $ concatMap (\e -> eqRhs e : eqLhs e) live
+      edges = IntMap.fromListWith (<>) [ (l, [eqRhs e]) | e <- live, l <- eqLhs e ]
+      nodes = IntSet.toAscList . IntSet.fromList $ concatMap (\e -> eqRhs e : eqLhs e) live
       cyclic = [ ms | CyclicSCC ms <-
-                   stronglyConnComp [ (n, n, Map.findWithDefault [] n edges)
+                   stronglyConnComp [ (n, n, IntMap.findWithDefault [] n edges)
                                     | n <- nodes ] ]
-      sccOf = Map.fromList [ (m, i) | (i, ms) <- zip [0 :: Int ..] cyclic, m <- ms ]
+      sccOf = IntMap.fromList [ (m, i) | (i, ms) <- zip [0 :: Int ..] cyclic, m <- ms ]
   c1 <- foldM (\acc ms -> case ms of
                   (m : rest) -> foldM (\a m' -> (a ||) <$> unionBChanged m m') acc rest
                   [] -> pure acc)
           False cyclic
-  c2 <- foldM (\acc (EqR lhs rhs blame) -> case Map.lookup rhs sccOf of
+  c2 <- foldM (\acc (EqR lhs rhs blame) -> case IntMap.lookup rhs sccOf of
           Nothing -> pure acc
           Just i ->
-            let (members, others) = partition (\l -> Map.lookup l sccOf == Just i) lhs
+            let (members, others) = partition (\l -> IntMap.lookup l sccOf == Just i) lhs
                 ms = cyclic !! i
                 touching = [ (eqLhs e, eqRhs e, take 24 (let Blame _ s = eqBlame e in s))
                            | e <- live, any (`elem` ms) (eqRhs e : eqLhs e) ]
@@ -1819,8 +1851,11 @@ pivot r c (Tab rows basis obj cols neg) =
       p = prow IntMap.! c
       prow' = IntMap.map (/ p) prow
       pb' = pb / p
-      combine a row = IntMap.filter (/= 0) $
-        IntMap.unionWith (+) row (IntMap.map (negate . (a *)) prow')
+      -- row - a*prow', dropping what cancels; rows hold no zeros, so
+      -- only the overlap can cancel
+      combine a row = IntMap.mergeWithKey
+        (\_ x y -> let z = x - a * y in if z == 0 then Nothing else Just z)
+        id (IntMap.map (negate . (a *))) row prow'
       -- the column index is a superset: an entry that cancelled to zero
       -- stays listed and is skipped here, which is cheaper than keeping
       -- the index exact
@@ -2065,16 +2100,64 @@ shapeOfSigma (Sigma _ t) = walkTau t >>= \case
 -- their own, and why) and to blame main's own failure on a failing
 -- dependency.
 inferEALLifted :: DeferMap -> Term3Lifting -> EALLiftedResult
-inferEALLifted (DeferMap dm) mainTerm = case runMain of
-  Right (r, layouts, bodyLevels) ->
-    let guidanceOf h (fi, body) = Right (syntacticGuidance dm fi body)
-          { cgCaptureLayout = Map.lookup h layouts
-          , cgEnvBang = Map.findWithDefault 0 fi (ealDeferBangs r)
-          , cgMaxLevel = Map.findWithDefault 0 fi bodyLevels }
-    in EALLiftedResult (Map.mapWithKey guidanceOf dm) (Right r)
-  Left mainError ->
-    EALLiftedResult bodyResults (withDeps mainTerm (Left mainError))
+inferEALLifted (DeferMap dm) mainTerm = case runMain dm mainTerm of
+  Right (r, layouts, bodyLevels) -> certified r layouts bodyLevels
+  -- the let-polymorphic reading (see 'specializeLets'): narrow first, as
+  -- it keeps the system near its unspecialized size, then shallow, and
+  -- deep only where shallow fails
+  Left mainError -> case narrowed mainError <|> specialized False <|> specialized True of
+    Just (r, layouts, bodyLevels, originS) ->
+      certified r (originLayouts originS layouts) bodyLevels
+    Nothing ->
+      EALLiftedResult bodyResults (withDeps mainTerm (Left mainError))
   where
+    certified r layouts bodyLevels =
+      let guidanceOf h (fi, body) = Right (syntacticGuidance dm fi body)
+            { cgCaptureLayout = Map.lookup h layouts
+            , cgEnvBang = Map.findWithDefault 0 fi (ealDeferBangs r)
+            , cgMaxLevel = Map.findWithDefault 0 fi bodyLevels }
+      in EALLiftedResult (Map.mapWithKey guidanceOf dm) (Right r)
+    specialized deep =
+      let (dmS, originS, mainS, _) = specializeLets Nothing deep dm mainTerm
+      in if Map.null originS then Nothing
+         else case runMain dmS mainS of
+           Right (r, layouts, bodyLevels) -> Just (r, layouts, bodyLevels, originS)
+           Left _notCertified             -> Nothing
+    -- the narrow reading: deep, but substituting only the definitions a
+    -- failure points at, and adding those the next failure points at
+    -- until the program certifies or there is none left to add (each
+    -- round adds one at least, of finitely many). A round costs a whole
+    -- analysis, but substituting everything multiplies the system:
+    -- tictactoe runs out of memory shallow or deep and certifies narrow
+    narrowed = narrowFrom mempty
+    narrowFrom allowed err =
+      let new = pointedAt (errorBodies err) `Set.difference` allowed
+          allowed' = allowed <> new
+          (dmS, originS, mainS, _) = specializeLets (Just allowed') True dm mainTerm
+      in if Set.null new then Nothing
+         else case runMain dmS mainS of
+           Right (r, layouts, bodyLevels) -> Just (r, layouts, bodyLevels, originS)
+           Left err'                      -> narrowFrom allowed' err'
+    -- what substituting everything deep substitutes, and where
+    (_, _, _, SpecInfo everything readsIn) = specializeLets Nothing True dm mainTerm
+    -- the bodies each body reaches, itself included (a lazy
+    -- self-reference, finite as 'withDeps' below is)
+    reach = Map.map (\(fi, body) -> Set.insert fi
+      (foldMap reachOf (Set.toList (refsOf body)))) dm
+    reachOf h = Map.findWithDefault mempty h reach
+    readIn fis = foldMap (\fi -> Map.findWithDefault mempty fi readsIn) (Set.toList fis)
+    -- a failure in these bodies points at the definitions whose code
+    -- reaches one of them, the definitions they read, and what the
+    -- bodies of all those read in turn
+    pointedAt fis =
+      let owners = Set.fromList [ Just h | h <- Set.toList everything
+                                , not (Set.disjoint (reachOf h) fis) ]
+                   <> readIn fis
+      in owners <> foldMap (maybe mempty (readIn . reachOf)) (Set.toList owners)
+    -- a specialized body's packages are, at runtime, packages of the
+    -- body it was specialized from: their layouts meet there
+    originLayouts originS ls = Map.fromListWith meetShape
+      [ (Map.findWithDefault h h originS, s) | (h, s) <- Map.toList ls ]
     -- the localizing pass: structural per-body verdicts, with levels and
     -- layouts left at their defaults (nothing here is a certificate; a
     -- consumer only reads guidance under a certified main)
@@ -2092,10 +2175,10 @@ inferEALLifted (DeferMap dm) mainTerm = case runMain of
       case [d | d <- Set.toList (refsOf term), Left _ <- [resultOf d]] of
         (d:_) -> Left $ EALDependencyFailed d
         []    -> k
-    runMain = State.evalState (runExceptT goMain)
-      (initEALState { esBodies = dm })
-    goMain = do
-      (bMain, _, sRes, vals) <- analyzeTopWith True "program input" mainTerm
+    runMain bodies term = State.evalState (runExceptT (goMain term))
+      (initEALState { esBodies = bodies })
+    goMain term = do
+      (bMain, _, sRes, vals) <- analyzeTopWith True "program input" term
       let value r = fromMaybe 0 $ Map.lookup r vals
       topBang <- value <$> findB bMain
       defers <- State.gets esDefers >>= fmap (Map.fromListWith max) .
@@ -2197,11 +2280,13 @@ dualSolve weight rows =
       tRows = IntMap.fromList (fmap build active0)
       basis0 = IntMap.fromList [ (i, slackBase + i) | (i, _) <- active0 ]
       obj0 = IntMap.fromList [ (colOf IntMap.! v, fromInteger (weight v)) | v <- vars ]
-      go tab =
-        case IntSet.toList (tbNeg tab) of
-          [] -> Right tab
-          infeasible ->
-            let r = minimumBy (comparing (tbBasis tab IntMap.!)) infeasible
+      go tab
+        | IntSet.null (tbNeg tab) = Right tab
+        | otherwise =
+            -- the infeasible row whose basic column is lowest
+            let r = snd $ IntMap.foldlWithKey'
+                  (\acc i c -> if c < fst acc then (c, i) else acc)
+                  (maxBound, -1) (IntMap.restrictKeys (tbBasis tab) (tbNeg tab))
                 (row, _) = tbRows tab IntMap.! r
                 candidates =
                   [ (IntMap.findWithDefault 0 j (tbObj tab) / negate a, j)
@@ -2216,9 +2301,12 @@ dualSolve weight rows =
         , let c = tbBasis tab IntMap.! i, c < slackBase ]
       -- a waiting row over the current nonbasic columns: substitute every
       -- basic structural column by its tableau row
-      addRow tab (i, r) =
-        let rowOfCol = IntMap.fromList [ (c, ri) | (ri, c) <- IntMap.toList (tbBasis tab) ]
-            coefs0 = coefsOf r
+      -- the structural basic columns' rows: built once per batch, since an
+      -- added row's basic column is its own slack
+      rowsOfBasics tab = IntMap.fromList
+        [ (c, ri) | (ri, c) <- IntMap.toList (tbBasis tab), c < slackBase ]
+      addRow rowOfCol tab (i, r) =
+        let coefs0 = coefsOf r
             substitute (cs, b) (j, a) = case IntMap.lookup j rowOfCol of
               Nothing -> (cs, b)
               Just ri ->
@@ -2234,17 +2322,33 @@ dualSolve weight rows =
                , tbCols = foldr (\k -> IntMap.insertWith IntSet.union k (IntSet.singleton i))
                             (tbCols tab) (IntMap.keys coefs')
                , tbNeg = if b' < 0 then IntSet.insert i (tbNeg tab) else tbNeg tab }
-      loop tab waiting = do
+      -- the waiting rows by the columns they mention
+      waitingAt = IntMap.fromListWith IntSet.union
+        [ (colOf IntMap.! v, IntSet.singleton i)
+        | (i, r) <- waiting0, v <- IntMap.keys (rowCoefs r) ]
+      -- a waiting row held at the last point, so it can fail at this one
+      -- only if one of its columns moved (the first point's predecessor is
+      -- zero, which every waiting row holds at: its constant is nonnegative)
+      moved p0 p1 = IntMap.keysSet $ IntMap.mergeWithKey
+        (\_ x y -> if x /= y then Just () else Nothing)
+        (void . IntMap.filter (/= 0)) (void . IntMap.filter (/= 0)) p0 p1
+      loop tab prev waitSet = do
         tab' <- go tab
         let point = pointOf tab'
             value r = sum [ a * IntMap.findWithDefault 0 (colOf IntMap.! v) point
                           | (v, a) <- IntMap.toList (rowCoefs r) ]
-            (violated, waiting') = partition (\(_, r) -> value r > rowConst r) waiting
+            suspects = IntSet.intersection waitSet . IntSet.unions $
+              [ IntMap.findWithDefault IntSet.empty c waitingAt
+              | c <- IntSet.toList (moved prev point) ]
+            violated = [ (i, r) | i <- IntSet.toAscList suspects
+                       , let r = rowByIndex IntMap.! i, value r > rowConst r ]
+            waiting' = IntSet.difference waitSet (IntSet.fromList (fmap fst violated))
         if null violated
           then pure tab'
-          else loop (foldl addRow tab' violated) waiting'
+          else loop (foldl (addRow (rowsOfBasics tab')) tab' violated) point waiting'
   in do
-    tab <- loop (mkTab tRows basis0 obj0) waiting0
+    tab <- loop (mkTab tRows basis0 obj0) IntMap.empty
+      (IntSet.fromList (fmap fst waiting0))
     pure $ IntMap.fromList
       [ (varOf IntMap.! c, b)
       | (i, (_, b)) <- IntMap.toList (tbRows tab)
@@ -2256,3 +2360,258 @@ dataLiteral (_ :< t) = case t of
   BasicFW ZeroSF       -> True
   BasicFW (PairSF a b) -> dataLiteral a && dataLiteral b
   _notData             -> False
+
+-- * Let specialization
+
+-- | Closed values standing at env paths of a frame: the substitution a
+-- specialized body is built under. Paths are steps from the env root,
+-- in application order (as 'envPath' gives them); no key is a prefix of
+-- another.
+type SpecSubst = Map [Step] Term3Lifting
+
+data SpecState = SpecState
+  { ssBodies  :: Map (Digest SHA256) (FunctionIndex, Term3Lifting)
+    -- ^ the DeferMap, growing by the specialized bodies
+  , ssOrigin  :: Map (Digest SHA256) (Digest SHA256)
+    -- ^ specialized body -> the body of the original program it came from
+  , ssMemo    :: Map (Digest SHA256, String) (Digest SHA256)
+  , ssDeep    :: Bool
+    -- ^ whether closures get specialized too, or only let bodies
+  , ssAllowed :: Maybe (Set SpecKey)
+    -- ^ the definitions that may be substituted (all, if none given)
+  , ssBody    :: Maybe FunctionIndex
+    -- ^ the body being specialized
+  , ssInfo    :: SpecInfo
+  }
+
+-- | A substituted value by the code at its head ('codeOf'), as the body of
+-- the original program it came from; data and other values share Nothing.
+type SpecKey = Maybe (Digest SHA256)
+
+-- | What a specialization met, whatever it was allowed to substitute.
+data SpecInfo = SpecInfo
+  { siDefinitions :: Set (Digest SHA256)
+    -- ^ the code of every value it could substitute
+  , siReads       :: Map FunctionIndex (Set SpecKey)
+    -- ^ per body, the values it could substitute in it
+  }
+
+-- | The let-polymorphic reading of a program. The executed pipeline
+-- compiles @let x = v in e@ to an application of a lambda
+-- ('Telomare.Resolve.letsToApps'), so a definition reaches its uses
+-- through an env, as one value, and the faithful box discipline makes
+-- it monomorphic in level: a definition used both at depth zero and
+-- inside a box (a Prelude function used directly and inside a closure
+-- that is iterated) has no decoration, though each use alone has one.
+--
+-- When the bound value is CLOSED — no env occurrence of the frame it is
+-- built in, after the enclosing definitions are substituted — this pass
+-- substitutes it into the body for every use, and into every closure
+-- that captures it, so each use is a DeferRef occurrence of its own:
+-- its own instance, typed at its own depth. This is HM's let rule, read
+-- as substitution. It changes nothing the program computes. What the
+-- runtime does differs only in sharing: it duplicates the one value,
+-- and a duplicator meeting a closed value only ever copies it — the
+-- value is a tree of data and code pointers ('ICRef' is copied as a
+-- pointer), and being closed, its construction never consumes what the
+-- duplicator emits, so the copies cannot meet each other.
+--
+-- Only applications of a literal closure to an operand are sources (the
+-- shape 'appS' compiles @(\\x -> e) v@ to), only values that carry code
+-- are substituted (data is level-free already), and a closure is
+-- specialized only on what its captures take from the substitution —
+-- closed values a capture builds itself (the links of a sized recursion
+-- chain) are left alone, so chains keep their regular shape.
+--
+-- Shallow (the first argument False), closures are not specialized at
+-- all: a closure built in a specialized body captures its own instances
+-- of the closed values it takes, but its body reads them from its env, so
+-- every call of that one closure shares them. Deep, the closure's body is
+-- specialized too, and each call gets instances of its own. Shallow is
+-- not always enough (@let t = \f x -> f (f x) in t (\b -> t id 0) 0@
+-- needs deep), but deep makes every substituted value a whole instance
+-- at every use inside every closure, which on a sized program multiplies
+-- the system many times over (simpleplus: 132K equations shallow, 473K
+-- deep, 21K before sizing).
+--
+-- So substitution can be narrowed (the first argument): only the values
+-- whose code is a given definition's are substituted, the rest stay env
+-- occurrences. Each use of a definition left alone shares its one level
+-- again, but a definition that is only ever used at one depth needs no
+-- copies, and the copies are what grows the system. Which definitions
+-- need them is what a failed certification says: its blames name the
+-- bodies they were made in ('errorBodies'), and 'SpecInfo' says which
+-- definitions reach those bodies and which they read.
+specializeLets :: Maybe (Set SpecKey) -> Bool
+               -> Map (Digest SHA256) (FunctionIndex, Term3Lifting)
+               -> Term3Lifting
+               -> ( Map (Digest SHA256) (FunctionIndex, Term3Lifting)
+                  , Map (Digest SHA256) (Digest SHA256)
+                  , Term3Lifting
+                  , SpecInfo )
+specializeLets allowed deep dm term =
+  let (term', st) = State.runState (specTerm mempty term)
+        (SpecState dm mempty mempty deep allowed Nothing (SpecInfo mempty mempty))
+  in (ssBodies st, ssOrigin st, term', ssInfo st)
+
+specTerm :: SpecSubst -> Term3Lifting -> State SpecState Term3Lifting
+specTerm sub term@(anno :< t)
+  | Just p <- envPath term = case substAt anno sub p of
+      Nothing -> pure term
+      Just v -> do
+        st <- State.get
+        let key = (\h -> Map.findWithDefault h h (ssOrigin st)) <$> codeOf v
+            SpecInfo defs readsIn = ssInfo st
+        State.put st { ssInfo = SpecInfo
+          (maybe defs (`Set.insert` defs) key)
+          (maybe readsIn (\fi -> Map.insertWith (<>) fi (Set.singleton key) readsIn) (ssBody st)) }
+        pure $ if maybe True (Set.member key) (ssAllowed st) then v else term
+  | Just (operand, code, cap, rebuild) <- appliedClosure term = do
+      bodies <- State.gets ssBodies
+      if not (twiddleRef bodies term)
+        then plain
+        else do
+          operand' <- specTerm sub operand
+          cap' <- specTerm sub cap
+          let fromOperand
+                | closedTerm operand' = Map.singleton [] operand'
+                | otherwise = closedParts sub operand
+              sub' = Map.filter carriesCode $
+                Map.mapKeys (SL :) fromOperand <> Map.mapKeys (SR :) (closedParts sub cap)
+          code' <- specBody code sub'
+          pure (rebuild operand' code' cap')
+  | BasicFW (PairSF (codeAnno :< Term3LDeferRef code) cap) <- t = do
+      bodies <- State.gets ssBodies
+      deep <- State.gets ssDeep
+      cap' <- specTerm sub cap
+      -- the twiddle of an application whose function is not a literal
+      -- closure only reroutes its operands: it is never specialized
+      code' <- if not deep || maybe False (isTwiddle . snd) (Map.lookup code bodies)
+        then pure code
+        else specBody code . Map.filter carriesCode . Map.mapKeys (SR :) $
+          closedParts sub cap
+      pure (anno :< Term3LB (PairSF (codeAnno :< Term3LDeferRef code') cap'))
+  -- any other body still gets walked, for the applied closures inside it
+  | Term3LDeferRef h <- t = (\h' -> anno :< Term3LDeferRef h') <$> specBody h mempty
+  | otherwise = plain
+  where plain = (anno :<) <$> traverse (specTerm sub) t
+
+-- | A body specialized under a substitution, as a hash of the growing
+-- map (the body itself when the substitution touches nothing in it).
+specBody :: Digest SHA256 -> SpecSubst -> State SpecState (Digest SHA256)
+specBody h sub = do
+      let key = (h, show (Map.toList (fmap forgetL sub)))
+      State.gets (Map.lookup key . ssMemo) >>= \case
+        Just h' -> pure h'
+        Nothing -> State.gets (Map.lookup h . ssBodies) >>= \case
+          Nothing -> pure h
+          Just (fi, body) -> do
+            outer <- State.gets ssBody
+            State.modify $ \st -> st { ssBody = Just fi }
+            body' <- specTerm sub body
+            State.modify $ \st -> st { ssBody = outer }
+            h' <- if forgetL body' == forgetL body
+              then pure h
+              else do
+                let h' = hashBody body'
+                State.modify $ \st -> st
+                  { ssBodies = Map.insert h' (fi, body') (ssBodies st)
+                  , ssOrigin = Map.insert h'
+                      (Map.findWithDefault h h (ssOrigin st)) (ssOrigin st) }
+                pure h'
+            State.modify $ \st -> st { ssMemo = Map.insert key h' (ssMemo st) }
+            pure h'
+  where
+    hashBody b =
+      let hash' :: BS.ByteString -> Digest SHA256
+          hash' = hash
+      in hash' . BS.pack . encode . show $ forgetL b
+
+forgetL :: Term3Lifting -> Fix Term3LiftingF
+forgetL = forget
+
+-- | The value the substitution holds for an env occurrence at this path,
+-- projected the rest of the way (through literal pairs directly).
+substAt :: LocTag -> SpecSubst -> [Step] -> Maybe Term3Lifting
+substAt anno sub p =
+  case [ (q, v) | (q, v) <- Map.toList sub, q `isPrefixOf` p ] of
+    (q, v) : _ -> Just $ foldl project v (drop (length q) p)
+    []         -> Nothing
+  where
+    project (_ :< BasicFW (PairSF a b)) s = case s of
+      SL -> a
+      SR -> b
+    project v s = anno :< Term3LS (case s of
+      SL -> LeftSF v
+      SR -> RightSF v)
+
+-- | The closed parts of a value built in this frame, by path into the
+-- value: only what it takes from the substitution, through env
+-- occurrences and pair structure.
+closedParts :: SpecSubst -> Term3Lifting -> SpecSubst
+closedParts sub term@(_ :< t) = case envPath term of
+  Just p -> case substAt UnknownLoc sub p of
+    Just v  -> Map.singleton [] v
+    Nothing -> Map.fromList
+      [ (drop (length p) q, v) | (q, v) <- Map.toList sub
+      , p `isPrefixOf` q, q /= p ]
+  Nothing -> case t of
+    BasicFW (PairSF a b) ->
+      Map.mapKeys (SL :) (closedParts sub a) <> Map.mapKeys (SR :) (closedParts sub b)
+    Term3LCheckingWrapper _ _ c -> closedParts sub c
+    _other -> mempty
+
+-- | No env occurrence of the frame (DeferRefs are closed).
+closedTerm :: Term3Lifting -> Bool
+closedTerm (_ :< t) = case t of
+  StuckFW EnvSF   -> False
+  Term3LUnsized _ -> False
+  other           -> all closedTerm other
+
+-- | The code at a value's head: a closure's, or a defer's itself.
+codeOf :: Term3Lifting -> Maybe (Digest SHA256)
+codeOf (_ :< t) = case t of
+  Term3LDeferRef h                           -> Just h
+  BasicFW (PairSF (_ :< Term3LDeferRef h) _) -> Just h
+  _noCode                                    -> Nothing
+
+carriesCode :: Term3Lifting -> Bool
+carriesCode (_ :< t) = case t of
+  Term3LDeferRef _ -> True
+  StuckFW GateSF   -> True
+  AbortFW AbortF   -> True
+  other            -> any carriesCode other
+
+-- | @SetEnv (SetEnv (Pair tw (Pair operand (Pair (DeferRef code) cap))))@:
+-- the shape 'Telomare.IR.Builder.appS' gives an application whose
+-- function is a literal closure, with a rebuilder.
+appliedClosure :: Term3Lifting
+  -> Maybe ( Term3Lifting, Digest SHA256, Term3Lifting
+           , Term3Lifting -> Digest SHA256 -> Term3Lifting -> Term3Lifting )
+appliedClosure
+  (a1 :< Term3LS (SetEnvSF (a2 :< Term3LS (SetEnvSF
+    (a3 :< Term3LB (PairSF tw
+      (a4 :< Term3LB (PairSF operand
+        (a5 :< Term3LB (PairSF (a6 :< Term3LDeferRef code) cap)))))))))) =
+  Just ( operand, code, cap
+       , \o c k -> a1 :< Term3LS (SetEnvSF (a2 :< Term3LS (SetEnvSF
+           (a3 :< Term3LB (PairSF tw
+             (a4 :< Term3LB (PairSF o
+               (a5 :< Term3LB (PairSF (a6 :< Term3LDeferRef c) k)))))))))
+       )
+appliedClosure _ = Nothing
+
+-- | Is the applied pair's head the twiddle defer 'appS' routes every
+-- application through, @(Left (Right Env), (Left Env, Right (Right Env)))@?
+twiddleRef :: Map (Digest SHA256) (FunctionIndex, Term3Lifting) -> Term3Lifting -> Bool
+twiddleRef bodies = \case
+  _ :< Term3LS (SetEnvSF (_ :< Term3LS (SetEnvSF
+    (_ :< Term3LB (PairSF (_ :< Term3LDeferRef tw) _))))) ->
+      maybe False (isTwiddle . snd) (Map.lookup tw bodies)
+  _notApp -> False
+
+isTwiddle :: Term3Lifting -> Bool
+isTwiddle = \case
+  _ :< Term3LB (PairSF x (_ :< Term3LB (PairSF y z))) ->
+    envPath x == Just [SR, SL] && envPath y == Just [SL] && envPath z == Just [SR, SR]
+  _notTwiddle -> False
