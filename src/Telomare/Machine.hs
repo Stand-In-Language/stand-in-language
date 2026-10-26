@@ -28,6 +28,7 @@ import qualified Data.Set as Set
 import Debug.Trace
 import GHC.Exts (isTrue#, reallyUnsafePtrEquality#)
 import Telomare.IR.Base
+import Telomare.IR.Recursion (approximantStep)
 import Telomare.PrettyPrint
 import Telomare.Size.IR
 
@@ -601,9 +602,7 @@ sizedRecursionChain n = iterate link base !! n where
   -- both the lazy reference evaluator and the stuck/abort-tolerant IC
   -- runtime discard the unselected branch's value harmlessly. This is the
   -- planned post-sizing strictification applied by the compiler itself.
-  approxBody = SetEnvB (PairB (SetEnvB (PairB (StuckEE GateSF) (appB argThreeB argOneB)))
-    (PairB (appB argFiveB argOneB)
-           (appB (appB argFourB argTwoB) argOneB)))
+  approxBody = approximantStep appB (\s t e -> GateSwitchEE e t s) varB
 
 -- | How many links sizing gives a recursion site's chain: one per depth
 -- whose test the abstract run reached ('unsizedStepBody'), and a single
