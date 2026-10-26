@@ -22,7 +22,8 @@ import Data.Ord (Down (..))
 import Telomare.EAL (CapShape, EALLiftedResult (..), ealCaptureLayouts,
                      inferEALCompiled, renderEALVerdict)
 import Telomare.Error (EALError (..), renderEALError)
-import Telomare.IC (defaultFuel, icRunReport)
+import Telomare.IC (ICCost (..), Resources (..), defaultFuel, icRunReport,
+                    maxResources, noResources)
 import Telomare.IR.Core (CompiledExpr, RunTimeError)
 
 -- | What admission grants a session: the right to run on the net at all,
@@ -64,22 +65,30 @@ renderRefusal lr = unlines $ verdict : bodies
       [ "  body " <> take 12 (show h) <> ": " <> renderEALError e
       | (h, e) <- rootCauses ]
 
--- | What a session on the net cost: interactions spent against fuel, and
+-- | What a session on the net cost: interactions spent against fuel,
 -- every counter the runtime keeps (interaction rules and compile-time
--- notes alike, told apart by name).
+-- notes alike, told apart by name), and storage: the largest net any one
+-- iteration built and the largest template table. Storage is counted in
+-- the net's own units ('Telomare.IC.Resources'), not bytes.
 data ICMeter = ICMeter
   { icMeterInteractions :: !Int
   , icMeterEvents       :: Map String Int
+  , icMeterPeak         :: !Resources
+  , icMeterTemplates    :: !Resources
   } deriving (Eq, Show)
 
--- | Across a session both the total and the per-event counts accumulate.
+-- | Across a session the total and the per-event counts accumulate;
+-- storage peaks combine by maximum, since each iteration builds its net
+-- afresh.
 instance Semigroup ICMeter where
   a <> b = ICMeter
     (icMeterInteractions a + icMeterInteractions b)
     (Map.unionWith (+) (icMeterEvents a) (icMeterEvents b))
+    (maxResources (icMeterPeak a) (icMeterPeak b))
+    (maxResources (icMeterTemplates a) (icMeterTemplates b))
 
 instance Monoid ICMeter where
-  mempty = ICMeter 0 Map.empty
+  mempty = ICMeter 0 Map.empty noResources noResources
 
 -- | What to print for a measured session, busiest counters first.
 renderICMeter :: ICMeter -> String
@@ -87,12 +96,23 @@ renderICMeter m = unlines $
   ("interactions (measured): " <> show (icMeterInteractions m))
     : [ "  " <> name <> ": " <> show n
       | (name, n) <- sortOn (Down . snd) (Map.toList (icMeterEvents m)) ]
+  <> [ "peak net, largest iteration (measured): "
+         <> show (resAgents peak) <> " agents, "
+         <> show (resPorts peak) <> " port entries, "
+         <> show (resWork peak) <> " pending pairs"
+     , "template table (measured): "
+         <> show (resAgents tpl) <> " agents, "
+         <> show (resPorts tpl) <> " port entries" ]
+  where
+    peak = icMeterPeak m
+    tpl = icMeterTemplates m
 
 -- | One iteration on the net under an admission's plan, measured. The
 -- outcome follows the reference evaluator's contract
 -- ('Telomare.IC.icOutcome'), so the loop treats both evaluators alike.
 evalIC :: ICPlan -> CompiledExpr -> (ICMeter, Either RunTimeError CompiledExpr)
 evalIC plan term =
-  let (outcome, spent, events) =
-        icRunReport (icPlanLayouts plan) defaultFuel term
-  in (ICMeter spent events, outcome)
+  let (outcome, cost) = icRunReport (icPlanLayouts plan) defaultFuel term
+  in ( ICMeter (costInteractions cost) (costEvents cost)
+         (costPeak cost) (costTemplates cost)
+     , outcome )
