@@ -765,10 +765,9 @@ any of these should require no design discussion beyond this list; if one is act
 load-bearing, promote it into the body.
 
 **Stale docs / names**
-- README still lists a `Telomare.TypeCheck` pipeline stage (module deleted; EAL
-  replaced it) and documents neither `--ic` nor the IC modules.
-- Comments referencing `Telomare.Resolver` (module is `Resolve`) and the deleted
-  `IExpr` type (`funWrap` error strings, `eval2IExpr`).
+- README documents neither `--ic` nor the IC modules.
+- Comments referencing the deleted `IExpr` type (`funWrap` error strings,
+  `eval2IExpr`).
 - `Show1` instances print pre-rename constructor names (`VarUPF`, `UnsizedRecursionUPF`, …).
 - `src/SIL/` is an empty directory left from the "Stand In Language" rename;
   `src/Telomare/*.hs.~undo-tree~` are ~2.5MB of Emacs undo files for deleted modules;
@@ -776,7 +775,7 @@ load-bearing, promote it into the body.
 
 **Dead code**
 - `Telomare.IR.Types` (`PartialTypeF` etc.) is orphaned by the type-checker removal
-  (only pretty-printer instances remain; `Driver` imports it for nothing).
+  (only pretty-printer instances remain).
 - `SizingOption.NoSizing` is marked deprecated but still implemented (and uses the old
   church-tower encoding that no longer matches the runtime).
 - Unreferenced Machine step variants (`superStep`, `unsizedStep`, `zeroedInputStepM`,
@@ -788,7 +787,6 @@ load-bearing, promote it into the body.
   printing an artifact's hash exists but is never fed).
 
 **Drift / duplication (maintenance hazards, kept honest only by parity tests)**
-- The approximant step body exists twice (Machine and Fast), hand-mirrored.
 - Lazy gate selection is implemented three different ways (implicit laziness /
   explicit case / syntactic pattern), plus the IC's speculation non-implementation.
 - Abort-message truncation ×4 and find-surviving-abort ×4 across the runtimes.

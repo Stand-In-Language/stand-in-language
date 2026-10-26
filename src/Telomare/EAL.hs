@@ -59,17 +59,15 @@
 --     domain bang to be at least one.
 --   * Gate branches are counted multiplicatively (evaluation is strict, so
 --     both branches consume their Env occurrences).
---   * Term3Unsized is treated exactly like an Env occurrence, mirroring the
---     type checker.
---   * The check function of Term3CheckingWrapper is ignored, mirroring the
---     type checker.
+--   * Term3Unsized is treated exactly like an Env occurrence.
+--   * Term3CheckingWrapper analyzes its value and ignores its check function.
 --
 -- The constraint solver is a propagate-then-repair heuristic with caps
 -- rather than a complete ILP procedure; its limitations surface as errors
 -- rather than wrong certificates.
 --
 -- The analyzer runs only over defer-lifted programs (see
--- 'Telomare.Resolver.deferLift'): every Defer body is hash-keyed in the
+-- 'Telomare.Resolve.deferLift'): every Defer body is hash-keyed in the
 -- DeferMap and referenced via DeferRef, so raw DeferSF never reaches the
 -- analyzer and the tags dispatched at apply sites are exactly the DeferMap
 -- namespace that 'CodeGuidance' and the IC runtime's templates share.
@@ -102,6 +100,7 @@ import Data.Ratio (denominator, numerator)
 import Data.Set (Set)
 import qualified Data.Set as Set
 import qualified Data.Tree as Tree
+import qualified Telomare.EnvUsage as Usage
 import Telomare.Error (Blame (..), EALError (..), pattern Blame, renderEALError)
 import Telomare.IR.Base (AbortableF (..), BasicExprF (..), FunctionIndex,
                          StuckF (..), UnsizedRecursionToken, forget,
@@ -445,13 +444,19 @@ plainSigma loc what tau = flip Sigma tau <$> forcedZeroB (Blame loc what)
 -- * Union-find over bang variables
 
 findB :: BVar -> EALM Int
-findB (BVar i) = go i where
-  go j = State.gets (Map.lookup j . esParents) >>= \case
+findB (BVar i) = findParent esParents (\parents st -> st { esParents = parents }) i
+
+-- | Parent traversal and path compression only. Bang/tag merge semantics
+-- stay with their respective callers.
+findParent :: (EALState -> Map Int Int)
+           -> (Map Int Int -> EALState -> EALState) -> Int -> EALM Int
+findParent parents setParents = go where
+  go j = State.gets (Map.lookup j . parents) >>= \case
     Nothing -> pure j
     Just p -> do
       r <- go p
       unless (r == p) . State.modify $ \st ->
-        st { esParents = Map.insert j r (esParents st) }
+        setParents (Map.insert j r (parents st)) st
       pure r
 
 classInfo :: Int -> EALM ClassInfo
@@ -527,13 +532,7 @@ addSumEq blame lhs rhs = State.modify $ \st ->
 -- * Union-find over tag-set classes
 
 findTag :: Int -> EALM Int
-findTag i = State.gets (Map.lookup i . esTagParents) >>= \case
-  Nothing -> pure i
-  Just p -> do
-    r <- findTag p
-    unless (r == p) . State.modify $ \st ->
-      st { esTagParents = Map.insert i r (esTagParents st) }
-    pure r
+findTag = findParent esTagParents (\parents st -> st { esTagParents = parents })
 
 capturesOf :: Int -> EALM (Map Tag TagInfo)
 capturesOf i = do
@@ -799,49 +798,40 @@ resolveCapT vis mode loc i t = do
 -- projection path directly applied to the occurrence. DeferRefs are closed
 -- values (their bodies use their own Env, not this frame's).
 envUsageL :: Term3Lifting -> Map [Step] (Int, LocTag)
-envUsageL = go [] where
-  merge = Map.unionWith (\(c1, l1) (c2, _) -> (c1 + c2, l1))
-  go proj (anno :< t) = case t of
-    StuckFW (LeftSF x)          -> go (SL : proj) x
-    StuckFW (RightSF x)         -> go (SR : proj) x
-    -- the accumulated list is innermost projection first, which is the order
-    -- the projections apply to the env value, so it is used unreversed
-    StuckFW EnvSF               -> Map.singleton proj (1, anno)
-    Term3LUnsized _             -> Map.singleton proj (1, anno)
-    Term3LDeferRef _            -> mempty
-    -- unreachable in a lifted term; 'intrinsic' rejects it
-    StuckFW (DeferSF _ _)       -> mempty
-    Term3LCheckingWrapper _ _ c -> go proj c
-    BasicFW (PairSF a b)        -> merge (go [] a) (go [] b)
-    StuckFW (SetEnvSF x)        -> go [] x
-    -- gate is a value; branch and scrutinee usage flows through the
-    -- SetEnv/Pair nodes of the GateSwitch encoding
-    StuckFW GateSF              -> mempty
-    BasicFW ZeroSF              -> mempty
-    AbortFW _                   -> mempty
-    _                           -> mempty
+envUsageL = Usage.usage envView
+
+-- | How one node uses the current env frame. Paths are innermost
+-- projection first, the order the projections apply to the env value.
+envView :: Term3Lifting -> Usage.UsageView Step LocTag Term3Lifting
+envView (anno :< t) = case t of
+  StuckFW (LeftSF x)          -> Usage.Projection SL x
+  StuckFW (RightSF x)         -> Usage.Projection SR x
+  StuckFW EnvSF               -> Usage.Occurrence anno
+  Term3LUnsized _             -> Usage.Occurrence anno
+  Term3LDeferRef _            -> Usage.Closed
+  -- unreachable in a lifted term; 'intrinsic' rejects it
+  StuckFW (DeferSF _ _)       -> Usage.Closed
+  Term3LCheckingWrapper _ _ c -> Usage.Transparent c
+  BasicFW (PairSF a b)        -> Usage.Children [a, b]
+  StuckFW (SetEnvSF x)        -> Usage.Children [x]
+  -- gate is a value; branch and scrutinee usage flows through the
+  -- SetEnv/Pair nodes of the GateSwitch encoding
+  StuckFW GateSF              -> Usage.Closed
+  BasicFW ZeroSF              -> Usage.Closed
+  AbortFW _                   -> Usage.Closed
+  _                           -> Usage.Closed
 
 -- | Is some env path consumed more than once? A path is duplicated if it has
 -- two direct uses, or a direct use plus a use of one of its sub-paths.
 -- Disjoint sub-path uses (Left once, Right once) are linear destructuring.
 contractionSites :: Map [Step] (Int, LocTag) -> [([Step], LocTag)]
-contractionSites m =
-  let ks = Map.keys m
-      subPathUsed p = any (\q -> p /= q && p `isPrefixOf` q) ks
-      bad (p, (c, _)) = c >= 2 || (c >= 1 && subPathUsed p)
-  in [ (p, l) | (p, (_, l)) <- Map.toList m, bad (p, (fst (m Map.! p), l)) ]
+contractionSites = Usage.contractions
 
--- | The projection path of an env occurrence:  (Right Env)@ is
+-- | The projection path of an env occurrence: @Left (Right Env)@ is
 -- @[SR, SL]@, innermost projection first (the order they apply to the
 -- env value, matching 'envUsageL'). Nothing for any other term.
 envPath :: Term3Lifting -> Maybe [Step]
-envPath (_ :< t) = case t of
-  StuckFW EnvSF               -> Just []
-  Term3LUnsized _             -> Just []
-  StuckFW (LeftSF x)          -> (<> [SL]) <$> envPath x
-  StuckFW (RightSF x)         -> (<> [SR]) <$> envPath x
-  Term3LCheckingWrapper _ _ c -> envPath c
-  _notAnOccurrence            -> Nothing
+envPath = Usage.envPath envView
 
 -- * Constraint generation
 
@@ -999,11 +989,7 @@ intrinsic ctx paths (anno :< t) = case t of
     outB <- freshB
     addSumEq (Blame anno "result boxes = boxes entered + the callee's result boxes")
       [k, soB] outB
-    State.modify $ \st -> st
-      { esApplies = Map.insert (esNextApply st)
-          (ApplySite fnT (Sigma calleeEnvB siT) so anno mempty)
-          (esApplies st)
-      , esNextApply = esNextApply st + 1 }
+    registerApply (ApplySite fnT (Sigma calleeEnvB siT) so anno mempty)
     pure (Sigma outB (let Sigma _ t' = so in t'))
   StuckFW GateSF -> do
     recordLeaf ctx paths
@@ -2098,11 +2084,12 @@ virtualMainApply (Sigma _ tRes) = walkTau tRes >>= \case
     inputSigma = flip Sigma DataT <$> freshB
     register fnT env = do
       so <- freshSigma
-      State.modify $ \st -> st
-        { esApplies = Map.insert (esNextApply st)
-            (ApplySite fnT env so vAnno mempty)
-            (esApplies st)
-        , esNextApply = esNextApply st + 1 }
+      registerApply (ApplySite fnT env so vAnno mempty)
+
+registerApply :: ApplySite -> EALM ()
+registerApply site = State.modify $ \st -> st
+  { esApplies = Map.insert (esNextApply st) site (esApplies st)
+  , esNextApply = esNextApply st + 1 }
 
 leafDepths :: Map Int Int -> EALM [Int]
 leafDepths vals = State.gets esLeafPaths >>= mapM (depth . snd) where
@@ -2428,7 +2415,7 @@ refinementCheckL anno tc c = case deferLift (compiled2Term3 template) of
 -- that main is an appliable function. Certification itself tolerates a
 -- hereditarily-data program (applying data sticks at runtime, which is
 -- bounded work), but a main that can never consume input is a mistake
--- worth naming at compile time, as the type checker used to.
+-- worth naming at compile time.
 certifyMain :: Term3 -> Either EALError EALResult
 certifyMain t = do
   r <- ealLiftedMain (inferEALWithLifting t)

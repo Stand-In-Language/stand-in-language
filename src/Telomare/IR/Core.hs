@@ -7,7 +7,7 @@
 
 -- |The lowered IRs. In pipeline order: 'Term1' (named lambdas, produced by
 -- resolution), 'Term2' (de Bruijn indices), 'Term3' (core with unsized
--- recursion stubs, consumed by the type checker and the sizing pass),
+-- recursion stubs, consumed by EAL certification and the sizing pass),
 -- 'CompiledExpr' (sized, executable core) and 'StuckExpr' (abort-free
 -- executable core). 'TelomareLike'/'AbstractRunTime' connect any of these
 -- to the reference evaluator.

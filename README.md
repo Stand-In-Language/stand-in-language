@@ -131,7 +131,7 @@ $ cabal run telomare -- tictactoe.telc               # starts immediately
 ```
 
 A `.telc` file holds the sized program together with its counts and its
-certificate, so running it skips parsing, typechecking, resolving and sizing,
+certificate, so running it skips parsing, certifying, resolving and sizing,
 and `--certificate` on it prints instantly. If the sources are still around and
 have changed since it was built, running it says so and carries on — an
 artifact is expected to outlive the checkout it came from.
@@ -378,8 +378,8 @@ pipeline. In pipeline order:
 | Parse | `Telomare.Parse` | megaparsec grammar producing raw `ParsedSurfaceTerm` trees: no expansion, resolving, or semantic checks. Modules use `ModuleItem`; multi-pattern lambdas, refinement annotations, and list definitions remain as written. Complete public runners reject trailing input. |
 | Expand | `Telomare.Expand` | removes the `SugarTermF` fragment (`ParsedSurfaceTerm -> ExpandedSurfaceTerm`), eliminating `LamPatF`/`LetSugarF` by type: multi-pattern lambdas become nested lambdas with hygienic case destructuring, list definitions and UDT conventions expand into bindings, and refinement annotations fold into `CheckF`. Module imports remain typed `ImportDecl` values in `ExpandedModuleItem`. |
 | Desugar | `Telomare.Desugar` | binds and optimizes builtins and removes the case capability (`ExpandedSurfaceTerm -> DesugaredSurfaceTerm`), lowering cases to nested conditionals before resolution. |
-| Resolve | `Telomare.Resolve` | resolves typed module imports, scope-checks only `DesugaredSurfaceTerm`, performs de Bruijn conversion and hash folding, and lowers core terms (`splitExpr`: `Term2 -> Term3`). Documents the dual `process`/`processWlet` pipeline. |
-| Type check | `Telomare.TypeCheck` | unification-based check of `Term3` against the main type. |
+| Resolve | `Telomare.Resolve` | resolves typed module imports, scope-checks only `DesugaredSurfaceTerm`, performs de Bruijn conversion and hash folding, and lowers core terms (`splitExpr`: `Term2 -> Term3`). |
+| Certify | `Telomare.EAL` | defer lifting and elementary-affine (EAL) certification of `Term3`; also publishes per-code guidance for the IC runtime. |
 | Size (totality) | `Telomare.Size`, `Telomare.Size.IR`, `Telomare.Machine` | telomare's distinguishing stage: `sizeTermM` abstractly interprets the program over symbolic input and infers a finite iteration count for every recursion site, then bakes the counts in (`Term3 -> CompiledExpr`). A program that cannot be sized does not compile. `Machine` is the shared step-algebra the sizing pass and the evaluators are assembled from. |
 | Evaluate | `Telomare.Eval.Reference`, `Telomare.Eval.Meter`, `Telomare.Fast` | the reference interpreter, the step-counting meter, and the fuel-based fast path (which skips sizing). |
 | Drive | `Telomare.Driver`, `Telomare.Artifact`, `Telomare.Certificate`, `Telomare.Levels` | orchestration (`compileModules`, `evalLoop`), `.telc` artifacts, and the static report. |

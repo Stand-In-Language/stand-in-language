@@ -12,7 +12,7 @@
 -- interprets the program over a symbolic input ('initialInput', bounded by
 -- the refinement-derived 'InputRestrictions' from 'getInputLimits') and
 -- infers, per unsized recursion site, an iteration count that holds for
--- every input - then bakes those counts into the term as church towers.
+-- every input, then installs finite approximant chains in the term.
 -- A program that cannot be sized does not compile ('SizingFailure').
 module Telomare.Size where
 

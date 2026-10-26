@@ -14,7 +14,7 @@
 -- correct. The EAL pass is therefore this runtime's admission certificate:
 -- the only analysis output the runtime's *correctness* depends on is that
 -- verdict (no levels, no sharing plan). Templates are keyed by the same
--- content hash that keys the DeferMap ('Telomare.Resolver.deferLift'), so
+-- content hash that keys the DeferMap ('Telomare.Resolve.deferLift'), so
 -- per-hash 'Telomare.EAL.CodeGuidance' addresses templates directly;
 -- guidance-driven choices must remain advisory (strategy, never meaning).
 --
@@ -31,7 +31,7 @@
 -- ref is copying a pointer (the code table exists at runtime), and only the
 -- instantiated body's wiring is ever duplicated structurally.
 --
--- The semantics mirror the reference evaluator ('Telomare.Possible'
+-- The semantics mirror the reference evaluator ('Telomare.Machine'
 -- 'basicStep'\/'stuckStep'\/'abortStep') rule for rule:
 --
 --   * @SetEnv (Pair (Defer d) e)@ instantiates d's template with env e.
@@ -80,7 +80,7 @@ import Control.Monad.Except
 import Control.Monad.State.Strict (State)
 import qualified Control.Monad.State.Strict as State
 import Crypto.Hash (Digest, SHA256)
-import Data.Foldable (asum)
+import Data.Foldable (asum, toList)
 import Data.Functor.Foldable (cata, project)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
@@ -90,6 +90,7 @@ import Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
 import Debug.Trace (trace)
 import Telomare.EAL (CapShape (..), Step (..), showSteps)
+import qualified Telomare.EnvUsage as Usage
 import Telomare.IR.Base (AbortableF (..), BasicExpr, BasicExprF (..),
                          FunctionIndex, StuckF (..), forget, pattern AbortB,
                          pattern AbortEE, pattern AbortFW, pattern EnvB,
@@ -318,13 +319,15 @@ spend name = do
 -- the steps directly applied to the occurrence, innermost first — the
 -- order they descend the env value.
 envUsage :: CompiledExpr -> Map [Step] Int
-envUsage = go [] where
-  go proj t = case project t of
-    StuckFW EnvSF         -> Map.singleton proj 1
-    StuckFW (LeftSF x)    -> go (SL : proj) x
-    StuckFW (RightSF x)   -> go (SR : proj) x
-    StuckFW (DeferSF _ _) -> Map.empty
-    x                     -> foldr (Map.unionWith (+) . go []) Map.empty x
+envUsage = fmap fst . Usage.usage envView
+
+envView :: CompiledExpr -> Usage.UsageView Step () CompiledExpr
+envView t = case project t of
+  StuckFW EnvSF         -> Usage.Occurrence ()
+  StuckFW (LeftSF x)    -> Usage.Projection SL x
+  StuckFW (RightSF x)   -> Usage.Projection SR x
+  StuckFW (DeferSF _ _) -> Usage.Closed
+  x                     -> Usage.Children (toList x)
 
 -- | The projection path this term applies directly to Env, when it is
 -- nothing but a projection chain over Env; Nothing as soon as anything
@@ -332,12 +335,7 @@ envUsage = go [] where
 -- counts, so producer and consumer of the env wiring agree by
 -- construction.
 envPathOf :: CompiledExpr -> Maybe [Step]
-envPathOf = go [] where
-  go proj t = case project t of
-    StuckFW EnvSF       -> Just proj
-    StuckFW (LeftSF x)  -> go (SL : proj) x
-    StuckFW (RightSF x) -> go (SR : proj) x
-    _notEnvChain        -> Nothing
+envPathOf = Usage.envPath envView
 
 -- | Run a net-building action against a fresh empty net, restoring the
 -- current one afterwards; returns the built nodes and their label count.
@@ -675,22 +673,8 @@ rule n nk m mk = case (nk, mk) of
     instantiate tid e r
   (ICApply, ICGate) -> Just $ awaitShape "apply-gate" n m ICScrut
   (ICApply, ICAbort) -> Just $ awaitShape "apply-abort" n m ICScrutAbort
-  (ICApply, ICAborted) -> Just $ do
-    spend "apply-aborted"
-    e <- peer (Port n 1)
-    r <- peer (Port n 2)
-    deleteNode n
-    era <- newNode ICEra
-    connect (Port era 0) e
-    connect (Port m 0) r
-  (ICApply, ICStuckV _) -> Just $ do
-    spend "apply-stuck"
-    e <- peer (Port n 1)
-    r <- peer (Port n 2)
-    deleteNode n
-    era <- newNode ICEra
-    connect (Port era 0) e
-    connect (Port m 0) r
+  (ICApply, ICAborted) -> Just $ passApplication "apply-aborted" n m
+  (ICApply, ICStuckV _) -> Just $ passApplication "apply-stuck" n m
   (ICApply, _) | valueKind mk -> Just $ do
     shape <- describeValue 6 m
     e <- peer (Port n 1)
@@ -703,12 +687,8 @@ rule n nk m mk = case (nk, mk) of
       ("applied value is " <> show mk <> ", not a function: " <> shape)
       r (e : comps)
   -- gate scrutinee arrived: yield the matching selector defer
-  (ICScrut, ICZero) -> Just $ do
-    spend "scrut-zero"
-    r <- peer (Port n 1)
-    deleteNode n >> deleteNode m
-    sel <- newNode (ICRef leftSelTpl leftSelFi)
-    connect (Port sel 0) r
+  (ICScrut, ICZero) -> Just $
+    selectZero "scrut-zero" n m leftSelTpl leftSelFi
   (ICScrut, ICPair) -> Just $ do
     spend "scrut-pair"
     la <- peer (Port m 1)
@@ -719,8 +699,7 @@ rule n nk m mk = case (nk, mk) of
     er <- newNode ICEra
     connect (Port el 0) la
     connect (Port er 0) rb
-    sel <- newNode (ICRef rightSelTpl rightSelFi)
-    connect (Port sel 0) r
+    deliverSelector rightSelTpl rightSelFi r
   (ICScrut, ICAborted) -> Just $ passThrough "scrut-aborted" n 1 m
   (ICScrut, ICStuckV _) -> Just $ passThrough "scrut-stuck" n 1 m
   (ICScrut, _) | valueKind mk -> Just $ do
@@ -729,12 +708,8 @@ rule n nk m mk = case (nk, mk) of
     stuckAt "scrut-nondata"
       ("gate scrutinee is " <> show mk <> ", not data") r []
   -- abort message arrived: Zero means carry on as the identity
-  (ICScrutAbort, ICZero) -> Just $ do
-    spend "abort-zero"
-    r <- peer (Port n 1)
-    deleteNode n >> deleteNode m
-    sel <- newNode (ICRef idSelTpl idSelFi)
-    connect (Port sel 0) r
+  (ICScrutAbort, ICZero) -> Just $
+    selectZero "abort-zero" n m idSelTpl idSelFi
   (ICScrutAbort, ICPair) -> Just $ do
     spend "abort-pair"
     r <- peer (Port n 1)
@@ -754,20 +729,12 @@ rule n nk m mk = case (nk, mk) of
   (ICLeft, ICPair) -> Just $ projectPair "left-pair" n m 1 2
   (ICLeft, ICAborted) -> Just $ passThrough "left-aborted" n 1 m
   (ICLeft, ICStuckV _) -> Just $ passThrough "left-stuck" n 1 m
-  (ICLeft, _) | valueKind mk -> Just $ do
-    r <- peer (Port n 1)
-    deleteNode n >> deleteNode m
-    stuckAt "left-nonpair"
-      ("projection target is " <> show mk <> ", not a pair") r []
+  (ICLeft, _) | valueKind mk -> Just $ projectNonPair "left-nonpair" n m mk
   (ICRight, ICZero) -> Just $ passThrough "right-zero" n 1 m
   (ICRight, ICPair) -> Just $ projectPair "right-pair" n m 2 1
   (ICRight, ICAborted) -> Just $ passThrough "right-aborted" n 1 m
   (ICRight, ICStuckV _) -> Just $ passThrough "right-stuck" n 1 m
-  (ICRight, _) | valueKind mk -> Just $ do
-    r <- peer (Port n 1)
-    deleteNode n >> deleteNode m
-    stuckAt "right-nonpair"
-      ("projection target is " <> show mk <> ", not a pair") r []
+  (ICRight, _) | valueKind mk -> Just $ projectNonPair "right-nonpair" n m mk
   -- env splitting: both components of a pair delivered in one interaction,
   -- with nothing duplicated and nothing erased. Every other case behaves
   -- exactly as a Left and a Right projection of the same value would.
@@ -1070,6 +1037,39 @@ passThrough name n slot m = do
   r <- peer (Port n slot)
   deleteNode n
   connect (Port m 0) r
+
+-- | A poisoned application head survives; its unused argument is erased.
+passApplication :: String -> Int -> Int -> ICM ()
+passApplication name n m = do
+  spend name
+  e <- peer (Port n 1)
+  r <- peer (Port n 2)
+  deleteNode n
+  era <- newNode ICEra
+  connect (Port era 0) e
+  connect (Port m 0) r
+
+-- | Hand a reserved selector defer to the waiting port.
+deliverSelector :: TemplateId -> FunctionIndex -> Port -> ICM ()
+deliverSelector tid fi r = do
+  sel <- newNode (ICRef tid fi)
+  connect (Port sel 0) r
+
+-- | A gate or abort awaiting its operand's shape met Zero: both nodes go
+-- and the matching selector defer takes their place.
+selectZero :: String -> Int -> Int -> TemplateId -> FunctionIndex -> ICM ()
+selectZero name n m tid fi = do
+  spend name
+  r <- peer (Port n 1)
+  deleteNode n >> deleteNode m
+  deliverSelector tid fi r
+
+-- | A projection met a value that is not a pair.
+projectNonPair :: String -> Int -> Int -> ICKind -> ICM ()
+projectNonPair name n m mk = do
+  r <- peer (Port n 1)
+  deleteNode n >> deleteNode m
+  stuckAt name ("projection target is " <> show mk <> ", not a pair") r []
 
 -- | An applied gate or abort must inspect its operand's shape: replace the
 -- apply with a shape-awaiting node facing the operand.

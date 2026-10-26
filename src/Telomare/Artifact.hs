@@ -7,7 +7,7 @@
 -- input, so nothing about a particular run can change it. Paying that on every
 -- invocation is pure waste. `--compile` writes the sized program, its
 -- per-site iteration counts and its rendered certificate to a @.telc@ file;
--- running that file skips parsing, typechecking, resolving and sizing
+-- running that file skips parsing, certifying, resolving and sizing
 -- entirely.
 --
 -- The encoding is a tag byte per node, written by hand rather than derived.
@@ -88,7 +88,7 @@ telcExtension = ".telc"
 isArtifactPath :: FilePath -> Bool
 isArtifactPath = (== telcExtension) . takeExtension
 
--- |How many nodes the sized program has. Church towers make sized programs
+-- |How many nodes the sized program has. Approximant chains make sized programs
 -- much larger than their sources, which is worth reporting when one is
 -- written.
 nodeCount :: CompiledExpr -> Int

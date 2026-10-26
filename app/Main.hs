@@ -160,7 +160,7 @@ reportMeter rendered = do
   hFlush stdout
   hPutStr stderr rendered
 
--- |A program already compiled: nothing to parse, typecheck, resolve or size.
+-- |A program already compiled: nothing to parse, certify, resolve or size.
 -- The runtime choice still applies, and costs nothing extra — the EAL
 -- admission the IC runtime needs was decided at compile time and stored,
 -- so `--ic` on an artifact is a field read, not an inference.

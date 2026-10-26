@@ -1,7 +1,8 @@
 {-# LANGUAGE PatternSynonyms #-}
 module Main where
 
-import Data.Bifunctor (bimap, first, second)
+import Control.Monad (forM_)
+import Data.Bifunctor (first)
 import Data.Foldable (toList)
 import Data.List (isInfixOf)
 import qualified Data.Map as Map
@@ -11,9 +12,9 @@ import qualified System.IO.Strict as Strict
 import Telomare.Driver (CompiledProgram (..), SizingOption (..),
                         compileMainReporting, compileUnitTest, evalLoopCore,
                         keepAccum, plainEval, programPlan)
-import Telomare.EAL (CodeGuidance (..), EALLiftedResult (..),
-                     deriveSizedGuidance, ealCaptureLayouts, inferEALCompiled,
-                     inferEALFaithful, inferEALWithLifting)
+import Telomare.EAL (CodeGuidance (..), EALLiftedResult (..), Step (..),
+                     deriveSizedGuidance, ealCaptureLayouts, envUsageL,
+                     inferEALCompiled, inferEALFaithful, inferEALWithLifting)
 import Telomare.Eval.IC (ICMeter (..), ICPlan (..), admitIC, evalIC)
 import Telomare.Expand (expandModule, renderExpansionError)
 import Telomare.IC
@@ -257,6 +258,20 @@ main = do
               [Right cg] -> cgUsage cg @?= envUsage body
               other -> assertFailure $
                 "expected one certified body, got " <> show other
+        , testCase "usage adapters agree across projection and frame boundaries" $ do
+            let leaves = [z, EnvB, LeftB EnvB, RightB (LeftB EnvB),
+                          d 30 (p EnvB EnvB)]
+                bodies = leaves <> [p a b | a <- leaves, b <- leaves]
+                  <> [LeftB (p a b) | a <- leaves, b <- leaves]
+                  <> [se (p (d 31 EnvB) a) | a <- leaves]
+            forM_ bodies $ \body -> do
+              envUsage body @?= (fmap fst . envUsageL . snd . deferLift $
+                compiled2Term3 body)
+              -- compilation must consume exactly those occurrence wires
+              icEval (se (p (d 32 body) (p z (p z z))))
+                @?= eval (se (p (d 32 body) (p z (p z z))))
+            envPathOf (LeftB (RightB EnvB)) @?= Just [SR, SL]
+            envPathOf (LeftB (p EnvB z)) @?= Nothing
         ]
     , testGroup "closure dup plans"
         [ testCase "guided duplication copies the closure skeleton" $ do
