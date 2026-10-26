@@ -217,20 +217,64 @@ data ICState = ICState
     -- ^ per-hash capture layouts from the EAL pass ('ealCaptureLayouts'),
     -- consumed by the guided closure duplication and erasure rules; empty
     -- means every strategy keeps to its generic default
+  , icResident  :: !Resources   -- ^ what the net holds now
+  , icPeak      :: !Resources   -- ^ the most it has held, per component
   }
+
+-- | The net's storage, counted in its own units: resident agents, stored
+-- port entries (a wire is two entries, one per end; a dangling half is
+-- one) and pending pairs (eager and parked, stale entries included until
+-- they are popped). The counters change at exactly the primitive
+-- mutations, so they are measurements, not estimates. Templates live in
+-- their own table and are not part of the net ('templateStorage').
+data Resources = Resources
+  { resAgents :: !Int
+  , resPorts  :: !Int
+  , resWork   :: !Int
+  } deriving (Eq, Show)
+
+noResources :: Resources
+noResources = Resources 0 0 0
+
+-- | Componentwise maximum: each component's own peak. The components need
+-- not peak at the same moment.
+maxResources :: Resources -> Resources -> Resources
+maxResources (Resources a p w) (Resources a' p' w') =
+  Resources (max a a') (max p p') (max w w')
+
+-- | Count a change in what the net holds, raising the peak if needed.
+account :: (Resources -> Resources) -> ICState -> ICState
+account f st =
+  let now = f (icResident st)
+  in st { icResident = now, icPeak = maxResources now (icPeak st) }
+
+-- | A recount from scratch, for checking the incremental counters.
+residentResources :: ICState -> Resources
+residentResources st = Resources
+  (IntMap.size (icNodes st))
+  (sum (IntMap.size . nodePorts <$> icNodes st))
+  (length (icActive st) + Seq.length (icParked st))
+
+-- | The template table: agents and port entries of every compiled body.
+templateStorage :: ICState -> Resources
+templateStorage st = Resources
+  (sum (IntMap.size . tplNodes <$> tpls))
+  (sum [ IntMap.size (nodePorts nd) | t <- tpls, nd <- IntMap.elems (tplNodes t) ])
+  0
+  where tpls = IntMap.elems (icTemplates st)
 
 type ICM = ExceptT ICError (State ICState)
 
 emptyState :: Map (Digest SHA256) CapShape -> Int -> ICState
 emptyState guidance fuel = ICState IntMap.empty 0 0 [] Seq.empty Map.empty
-  IntMap.empty 0 Map.empty fuel 0 Map.empty guidance
+  IntMap.empty 0 Map.empty fuel 0 Map.empty guidance noResources noResources
 
 -- * Primitive net operations
 
 newNode :: ICKind -> ICM Int
 newNode k = do
   n <- State.gets icNextNode
-  State.modify' $ \st -> st
+  State.modify' $ \st -> account (\r -> r { resAgents = resAgents r + 1 }) st
     { icNextNode = n + 1
     , icNodes = IntMap.insert n (Node k IntMap.empty) (icNodes st) }
   pure n
@@ -252,10 +296,15 @@ peer (Port n s) = do
       "unwired port " <> show n <> "/" <> show s
 
 setHalf :: Port -> Port -> ICM ()
-setHalf (Port n s) q = State.modify' $ \st -> st
-  { icNodes = IntMap.adjust
-      (\nd -> nd { nodePorts = IntMap.insert s q (nodePorts nd) })
-      n (icNodes st) }
+setHalf (Port n s) q = State.modify' $ \st ->
+  case IntMap.lookup n (icNodes st) of
+    Nothing -> st
+    Just nd ->
+      let ports = nodePorts nd
+          st' = st { icNodes = IntMap.insert n
+                       nd { nodePorts = IntMap.insert s q ports } (icNodes st) }
+      in if IntMap.member s ports then st'
+         else account (\r -> r { resPorts = resPorts r + 1 }) st'
 
 -- | Wire two ports together. A principal-principal wiring between
 -- interacting kinds is enqueued as an active pair — except an
@@ -271,9 +320,9 @@ connect p q = do
       kb <- kindOf b
       when (interactive ka && interactive kb) $
         if instantiating ka kb
-          then State.modify' $ \st ->
+          then State.modify' $ \st -> pending
             st { icParked = icParked st Seq.|> (a, b) }
-          else State.modify' $ \st ->
+          else State.modify' $ \st -> pending
             st { icActive = (a, b) : icActive st }
     _notPrincipals -> pure ()
   where
@@ -281,6 +330,7 @@ connect p q = do
       ICRoot -> False
       ICExt  -> False
       _      -> True
+    pending = account (\r -> r { resWork = resWork r + 1 })
     instantiating a b = case (a, b) of
       (ICApply, ICRef {}) -> True
       (ICRef {}, ICApply) -> True
@@ -288,7 +338,11 @@ connect p q = do
 
 deleteNode :: Int -> ICM ()
 deleteNode n = State.modify' $ \st ->
-  st { icNodes = IntMap.delete n (icNodes st) }
+  case IntMap.lookup n (icNodes st) of
+    Nothing -> st
+    Just nd -> account (\r -> r { resAgents = resAgents r - 1
+                                , resPorts = resPorts r - IntMap.size (nodePorts nd) })
+      st { icNodes = IntMap.delete n (icNodes st) }
 
 freshLabel :: ICM Label
 freshLabel = do
@@ -344,14 +398,17 @@ isolatedNet act = do
   saved <- State.get
   State.modify' $ \st -> st
     { icNodes = IntMap.empty, icNextNode = 0, icNextLabel = 0
-    , icActive = [], icParked = Seq.empty, icEnvQueue = Map.empty }
+    , icActive = [], icParked = Seq.empty, icEnvQueue = Map.empty
+    , icResident = noResources, icPeak = noResources }
   r <- act
   built <- State.get
+  -- a scratch net becomes a template; it never counts as part of the net
   State.modify' $ \st -> st
     { icNodes = icNodes saved, icNextNode = icNextNode saved
     , icNextLabel = icNextLabel saved
     , icActive = icActive saved, icParked = icParked saved
-    , icEnvQueue = icEnvQueue saved }
+    , icEnvQueue = icEnvQueue saved
+    , icResident = icResident saved, icPeak = icPeak saved }
   pure (r, icNodes built, icNextLabel built)
 
 -- | The content hash of a defer value: its 'DeferMap' key, computed by
@@ -548,15 +605,16 @@ instantiate tid envSrc resultDst = do
 reduce :: ICM ()
 reduce = State.gets icActive >>= \case
   ((a, b) : rest) -> do
-    State.modify' $ \st -> st { icActive = rest }
+    State.modify' $ \st -> popped st { icActive = rest }
     withLivePair a b (fire a b)
     reduce
   [] -> State.gets (Seq.viewl . icParked) >>= \case
     Seq.EmptyL -> pure ()
     (a, b) Seq.:< rest -> do
-      State.modify' $ \st -> st { icParked = rest }
+      State.modify' $ \st -> popped st { icParked = rest }
       withLivePair a b (fireParked a b)
       reduce
+  where popped = account (\r -> r { resWork = resWork r - 1 })
 
 -- | Run the action only if both nodes still exist and still face each
 -- other principally; queue entries go stale when other interactions
@@ -1207,11 +1265,24 @@ icOutcome = \case
 icEval :: CompiledExpr -> Either RunTimeError CompiledExpr
 icEval = icOutcome . icEvalIC
 
+-- | What one run cost, measured: the interactions spent against fuel, the
+-- per-event counters (interaction rules and compile-time notes alike),
+-- the net's peak storage (construction included) and the template table.
+data ICCost = ICCost
+  { costInteractions :: !Int
+  , costEvents       :: Map String Int
+  , costPeak         :: !Resources
+  , costTemplates    :: !Resources
+  } deriving (Eq, Show)
+
+icCost :: ICState -> ICCost
+icCost st = ICCost (icSpent st) (icStats st) (icPeak st) (templateStorage st)
+
 -- | One guided run, reported for a driver: the outcome under the reference
--- contract, the interactions spent against fuel, and the per-event
--- counters (interaction rules and compile-time notes alike).
+-- contract and what the run cost. A run that fails still reports what it
+-- cost up to the failure.
 icRunReport :: Map (Digest SHA256) CapShape -> Int -> CompiledExpr
-            -> (Either RunTimeError CompiledExpr, Int, Map String Int)
+            -> (Either RunTimeError CompiledExpr, ICCost)
 icRunReport guidance fuel term =
   let (r, st) = icRunState guidance fuel term
-  in (icOutcome r, icSpent st, icStats st)
+  in (icOutcome r, icCost st)

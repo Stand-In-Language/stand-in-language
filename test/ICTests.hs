@@ -85,6 +85,7 @@ expectTest :: String -> CompiledExpr -> Either RunTimeError CompiledExpr
 expectTest name t v = testCase name $ do
   icEval t @?= v
   eval t @?= v
+  storageAgrees t
 
 -- | The IC runtime must agree with the reference evaluator, whatever the
 -- outcome.
@@ -95,7 +96,25 @@ diffTest name t = icDiff name t (const (pure ()))
 icDiff :: String -> CompiledExpr -> (CompiledExpr -> Assertion) -> TestTree
 icDiff name t extra = testCase name $ do
   icEval t @?= eval t
+  storageAgrees t
   extra t
+
+-- | The incremental storage counters must agree with a recount of the net
+-- a run leaves behind (finished or failed), and the peak must cover it.
+storageAgrees :: CompiledExpr -> Assertion
+storageAgrees t = do
+  let (_, st) = icRunState mempty defaultFuel t
+      now = icResident st
+      peak = icPeak st
+  now @?= residentResources st
+  assertBool ("peak " <> show peak <> " covers " <> show now) $
+    resAgents peak >= resAgents now && resPorts peak >= resPorts now
+      && resWork peak >= resWork now
+
+-- | Storage measured for one run.
+storageOf :: CompiledExpr -> (Resources, Resources)
+storageOf t = let (_, st) = icRunState mempty defaultFuel t
+              in (icPeak st, templateStorage st)
 
 main :: IO ()
 main = do
@@ -374,6 +393,8 @@ main = do
                   r @?= eval t
                   assertBool "interactions measured"
                     (icMeterInteractions m > 0)
+                  assertBool "peak storage measured"
+                    (resAgents (icMeterPeak m) > 0)
         , testCase "an uncertified program is refused with the verdict" $
             case admitIC omegaApplied of
               Left refusal -> assertBool ("refusal names it: " <> refusal)
@@ -450,6 +471,34 @@ main = do
             case fst (icEvalDetailed 3 (app (app churchTwo succC) z)) of
               Left (ICFuelExhausted _) -> pure ()
               r -> assertFailure $ "expected fuel exhaustion, got " <> show r
+        , testCase "a failed run still reports consistent storage" $
+            storageAgrees (app (app churchTwo succC) z) >>
+              let (_, st) = icRunState mempty 3 (app (app churchTwo succC) z)
+              in icResident st @?= residentResources st
+        ]
+    , testGroup "storage meter"
+        [ testCase "a data value's net is exactly its own nodes and wires" $
+            -- 3 pairs, 4 zeros and the root; every pair has 3 port
+            -- entries, every zero and the root one; no pair is pending
+            fst (storageOf (num 3)) @?= Resources 8 14 0
+        , testCase "templates are kept apart from the net" $ do
+            let big = d 102 (p (num 6) (p (LeftB EnvB) (RightB EnvB)))
+                (peak, tpls) = storageOf big
+            -- the net holds only the root and one code pointer
+            peak @?= Resources 2 2 0
+            assertBool ("template table holds the body: " <> show tpls)
+              (resAgents tpls > resAgents peak)
+        , testCase "erased input counts at its peak, not at the end" $ do
+            let t = se (p (d 101 z) (num 20))
+                (_, st) = icRunState mempty defaultFuel t
+            icEval t @?= Right z
+            resAgents (icResident st) @?= 2
+            assertBool ("peak holds the input: " <> show (icPeak st))
+              (resAgents (icPeak st) >= 41)
+        , testCase "across a session storage takes the maximum, interactions add" $
+            ICMeter 1 Map.empty (Resources 5 1 9) (Resources 1 0 0)
+              <> ICMeter 2 Map.empty (Resources 3 8 2) (Resources 4 2 0)
+              @?= ICMeter 3 Map.empty (Resources 5 8 9) (Resources 4 2 0)
         ]
     , testGroup "compiled program corpus (IC vs reference evaluator)"
         [ corpus "main = 0"

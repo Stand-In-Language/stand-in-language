@@ -539,6 +539,10 @@ terms DAGs.
   as a tree overstates a run by orders of magnitude (~1.2TB vs a few GB on tictactoe),
   and an honest figure needs reachability over distinct nodes, which is consciously
   left unimplemented rather than reported wrong (C3: never report a dishonest number).
+  The IC runtime has no such problem: its net holds each node once, so
+  `--ic --meter` counts resident agents, port entries and pending pairs at every
+  primitive mutation and reports the largest net any iteration built, plus the
+  template table. These are measurements in net units, not bytes.
 
 **[decision] The IO model is an iterated pure `main`.** Per iteration: input is `0`
 (first) or `(inputString, oldState)`; output is `0` (abort) or `(displayString,
