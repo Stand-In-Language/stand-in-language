@@ -607,6 +607,14 @@ Design points the implementation commits to:
   apart one layer at a time, only when a consumer needs its shape (`revealData`);
   copying or erasing it is one interaction. So a run depends on its input only
   through the shapes the program looks at.
+- **Constants are data too**: a compiled subterm made only of pairs and zeros (an
+  error message, a string literal, a number) becomes one `ICData` node holding the
+  value, so building, copying or erasing it is one interaction. Telomare spells
+  characters and numbers in unary, so constants are large: `tictactoe.tel` built and
+  erased the two error messages of `Prelude.tel`'s `Bool` check (about 17,000 cells)
+  on every `and`/`or`/`not`, two thirds of a turn's interactions. The value is held
+  once, with the code; the template table counts its cells as if built node by node,
+  so no storage figure gets smaller by holding it whole.
 
 **[decision] The storage certificate is the runtime's own net, run for every input
 at once** (`Telomare.IC.Space`, `--ic --certificate`). The input is an `ICData` node

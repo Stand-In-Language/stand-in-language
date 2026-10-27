@@ -288,11 +288,13 @@ main = do
             Map.lookup "era-pair" stats @?= Nothing
         , testCase "whole-and-part use duplicates exactly once" $ do
             -- the whole env is copied (the analyzer's contraction), then
-            -- one copy is split for the component
+            -- one copy is split for the component. The env (0,0) is a
+            -- constant, held whole: the copy is one interaction
             let term = se (p (d 2 (p EnvB (LeftB EnvB))) (p z z))
                 (r, stats) = icEvalDetailed defaultFuel term
             r @?= Right (p (p z z) z)
-            Map.lookup "dup-pair" stats @?= Just 1
+            Map.lookup "dup-leaf" stats @?= Just 1
+            Map.lookup "dup-pair" stats @?= Nothing
             Map.lookup "split-pair" stats @?= Just 1
         , expectTest "unused env component is erased, not projected"
             (se (p (d 2 (LeftB EnvB)) (p z (p z z)))) (Right z)
@@ -360,8 +362,10 @@ main = do
               (Map.findWithDefault 0 "dup-closure" stats > 0)
             assertBool "skeleton copied"
               (Map.findWithDefault 0 "dup-plan-copy" stats > 0)
+            -- the capture (0,0) is a constant held whole: one copy, not
+            -- a cascade
             Map.lookup "dup-pair" stats @?= Nothing
-            Map.lookup "dup-leaf" stats @?= Nothing
+            assertBool "no cascade" (Map.findWithDefault 0 "dup-leaf" stats <= 1)
             -- the generic run paid the cascade the plan avoided
             assertBool "generic cascade present"
               (Map.findWithDefault 0 "dup-pair" stats0 > 0)
@@ -403,8 +407,10 @@ main = do
               (Map.findWithDefault 0 "era-closure" stats > 0)
             assertBool "skeleton dropped"
               (Map.findWithDefault 0 "era-plan-drop" stats > 0)
+            -- the capture (0,0) is a constant held whole: one erasure,
+            -- not a cascade
             Map.lookup "era-pair" stats @?= Nothing
-            Map.lookup "era-leaf" stats @?= Nothing
+            assertBool "no cascade" (Map.findWithDefault 0 "era-leaf" stats <= 1)
             -- the generic run paid the cascade the plan avoided
             assertBool "generic cascade present"
               (Map.findWithDefault 0 "era-pair" stats0 > 0)
@@ -524,10 +530,28 @@ main = do
               in icResident st @?= residentResources st
         ]
     , testGroup "storage meter"
-        [ testCase "a data value's net is exactly its own nodes and wires" $
-            -- 3 pairs, 4 zeros and the root; every pair has 3 port
-            -- entries, every zero and the root one; no pair is pending
-            fst (storageOf (num 3)) @?= Resources 8 14 0
+        [ testCase "a constant is one node in the net, its cells in the table" $ do
+            -- the net holds the root and the constant, one port entry
+            -- each; the table counts the 3 pairs and 4 zeros the constant
+            -- stands for, 3 port entries per pair and one per zero, on
+            -- top of the selectors every net carries
+            let (peak, Resources ta tp _) = storageOf (num 3)
+                (_, Resources ba bp _) = storageOf z
+            peak @?= Resources 2 2 0
+            (ta - ba, tp - bp) @?= (7, 13)
+        , testCase "a constant is copied and erased in one interaction each" $ do
+            -- (20 as a number is 41 cells): used twice, then dropped
+            let t = se (p (d 2 (p EnvB EnvB)) (num 20))
+                t' = se (p (d 101 z) (num 20))
+                (r, stats) = icEvalDetailed defaultFuel t
+                (r', stats') = icEvalDetailed defaultFuel t'
+            icEval t @?= eval t
+            r @?= Right (p (num 20) (num 20))
+            r' @?= Right z
+            Map.lookup "dup-leaf" stats @?= Just 1
+            Map.lookup "dup-pair" stats @?= Nothing
+            Map.lookup "era-leaf" stats' @?= Just 1
+            Map.lookup "era-pair" stats' @?= Nothing
         , testCase "templates are kept apart from the net" $ do
             let big = d 102 (p (num 6) (p (LeftB EnvB) (RightB EnvB)))
                 (peak, tpls) = storageOf big
@@ -536,12 +560,16 @@ main = do
             assertBool ("template table holds the body: " <> show tpls)
               (resAgents tpls > resAgents peak)
         , testCase "erased input counts at its peak, not at the end" $ do
+            -- the constant input is one node, its 41 cells in the table;
+            -- the peak still holds it, the end does not
             let t = se (p (d 101 z) (num 20))
                 (_, st) = icRunState mempty defaultFuel t
             icEval t @?= Right z
             resAgents (icResident st) @?= 2
             assertBool ("peak holds the input: " <> show (icPeak st))
-              (resAgents (icPeak st) >= 41)
+              (resAgents (icPeak st) > resAgents (icResident st))
+            assertBool ("table counts its cells: " <> show (templateStorage st))
+              (resAgents (templateStorage st) >= 41)
         , testCase "across a session storage takes the maximum, interactions add" $
             ICMeter 1 Map.empty (Resources 5 1 9) (Resources 1 0 0)
               <> ICMeter 2 Map.empty (Resources 3 8 2) (Resources 4 2 0)
