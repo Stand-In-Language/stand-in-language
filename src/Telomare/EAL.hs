@@ -1062,7 +1062,7 @@ linkCode = \case
 -- the previous approximant is itself a link, the two share their value's
 -- sigma and their depth. Every chain of n >= 1 links then unrolls from
 -- this derivation of a two-link chain: give the outermost link the outer
--- link's variables, every other link the inner one's, and the abort base
+-- link's variables, every other link the inner one's, and the base
 -- the base's — every parent and child pair of the long chain then meets
 -- exactly the constraints of a pair the short chain has, since the joins
 -- make a link's view, depth and code class those of its predecessor.
@@ -2289,7 +2289,7 @@ deriveSizedGuidance links unsized cert sized = do
       images = Map.map (liftedBodyHash . image . snd) pre
       image (anno :< t) = case t of
         Term3LDeferRef h -> anno :< Term3LDeferRef (Map.findWithDefault h h images)
-        Term3LUnsized tok -> snd (liftedChain tok (links tok))
+        Term3LUnsized tok -> snd (liftedChain (links tok))
         Term3LCheckingWrapper o tc c -> snd (refinementCheckL o anno (image tc) (image c))
         other -> anno :< fmap image other
       preimages = Map.fromListWith (<>) [ (h', [h]) | (h, h') <- Map.toList images ]
@@ -2323,7 +2323,7 @@ faithfulProgram (DeferMap dm) mainTerm =
   where
     rewrite :: Term3Lifting -> (DeferMap, Term3Lifting)
     rewrite (anno :< t) = case t of
-      Term3LUnsized tok -> (anno <$) <$> liftedChain tok 2
+      Term3LUnsized _ -> (anno <$) <$> liftedChain 2
       Term3LCheckingWrapper o tc c -> do
         tc' <- rewrite tc
         c' <- rewrite c
@@ -2331,10 +2331,10 @@ faithfulProgram (DeferMap dm) mainTerm =
       other -> (anno :<) <$> traverse rewrite other
 
 -- | A sized recursion chain of n links, lifted: its constant bodies (the
--- link, 'Telomare.Machine.unsizedStepMrfb', and the abort base) and the
+-- link, 'Telomare.Machine.unsizedStepMrfb', and the base) and the
 -- chain value.
-liftedChain :: UnsizedRecursionToken -> Int -> (DeferMap, Term3Lifting)
-liftedChain tok n = deferLift . compiled2Term3 $ sizedRecursionChain tok n
+liftedChain :: Int -> (DeferMap, Term3Lifting)
+liftedChain n = deferLift . compiled2Term3 $ sizedRecursionChain n
 
 -- | The check a refinement wrapper compiles to, lifted, around lifted
 -- operands.

@@ -254,7 +254,7 @@ sizeTermM sizingSettings x = tidyUp . transformNoDeferM evalStep $ mx where
   setSizes sizeMap = cata $ \case
     UnsizedFW _us@(UnsizedStubF tok _) ->
       let n = chainLinks (SizedRecursion sizeMap) tok
-      in debugTrace ("sizeTermM setting size: " <> show (tok, n)) sizedRecursionChain tok n
+      in debugTrace ("sizeTermM setting size: " <> show (tok, n)) sizedRecursionChain n
     UnsizedFW (TraceF _ inner) -> inner
     other -> embed other
   -- only the sizing analysis's own aborts say anything about sizing; the

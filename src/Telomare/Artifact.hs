@@ -80,7 +80,7 @@ artifactMagic = BL.pack [0x54, 0x45, 0x4C, 0x43] -- "TELC"
 -- |Bumped whenever the encoding changes, which invalidates older files rather
 -- than misreading them.
 artifactVersion :: Int
-artifactVersion = 5
+artifactVersion = 6
 
 telcExtension :: String
 telcExtension = ".telc"
@@ -237,9 +237,8 @@ putOrigin (AbortOrigin kind loc) = putWord8 (kindTag kind) >> putLocTag loc wher
     UserAbort       -> 1
     CaseAbort       -> 2
     ValidatorAbort  -> 3
-    RecursionAbort  -> 4
-    SizingAbort     -> 5
-    UnknownAbort    -> 6
+    SizingAbort     -> 4
+    UnknownAbort    -> 5
 
 getOrigin :: Get AbortOrigin
 getOrigin = AbortOrigin <$> (getWord8 >>= kind) <*> getLocTag where
@@ -248,9 +247,8 @@ getOrigin = AbortOrigin <$> (getWord8 >>= kind) <*> getLocTag where
     1 -> pure UserAbort
     2 -> pure CaseAbort
     3 -> pure ValidatorAbort
-    4 -> pure RecursionAbort
-    5 -> pure SizingAbort
-    6 -> pure UnknownAbort
+    4 -> pure SizingAbort
+    5 -> pure UnknownAbort
     n -> fail $ "unknown abort kind " <> show n
 
 putToken :: UnsizedRecursionToken -> Put

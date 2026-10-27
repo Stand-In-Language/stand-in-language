@@ -214,7 +214,6 @@ data AbortKind
   | UserAbort       -- ^ a call of @abort@
   | CaseAbort       -- ^ no case alternative (or lambda pattern) matched
   | ValidatorAbort  -- ^ a generated UDT validator rejected its value
-  | RecursionAbort  -- ^ a sized recursion chain ran out of links
   | SizingAbort     -- ^ produced by the sizing analysis, never by a program
   | UnknownAbort
   deriving (Eq, Ord, Show, Generic)
@@ -239,10 +238,6 @@ data AbortOrigin = AbortOrigin
 unknownOrigin :: AbortOrigin
 unknownOrigin = AbortOrigin UnknownAbort UnknownLoc
 
--- | The origin of the abort at the bottom of every sized recursion chain.
-recursionOrigin :: AbortOrigin
-recursionOrigin = AbortOrigin RecursionAbort (GeneratedLoc "sized recursion chain" Nothing)
-
 -- | The origin of aborts the sizing analysis makes up.
 sizingOrigin :: AbortOrigin
 sizingOrigin = AbortOrigin SizingAbort (GeneratedLoc "sizing" Nothing)
@@ -256,7 +251,6 @@ renderAbortOrigin (AbortOrigin kind loc) = describe kind <> located where
     UserAbort       -> "abort"
     CaseAbort       -> "pattern match"
     ValidatorAbort  -> "type validator"
-    RecursionAbort  -> "recursion limit"
     SizingAbort     -> "sizing analysis"
     UnknownAbort    -> "unknown source"
   located = maybe "" (" at " <>) (renderLocTagCompact loc)

@@ -340,31 +340,41 @@ intB n = PairB (intB (n - 1)) ZeroB
 -- | One unfolding of a sized recursion during abstract evaluation. The env
 -- at execution is @(i, (tWrap, (r, (b, 0))))@; the recur position holds the
 -- stub that expands into the next unfolding on demand (it sits inside the
--- lazy ite's branch defer, so it only expands when the test passes), and
--- the else branch records that the recursion terminated at depth @n@.
+-- lazy ite's branch defer, so it only expands when the test passes).
+--
+-- The test records that the recursion reached depth @n@, whatever it
+-- decides. A sized chain has one link per depth recorded, and its base
+-- calls the base case without a test (see 'sizedRecursionChain'), so
+-- every test a run can evaluate must have a link of its own: recording
+-- only the depths where the recursion stops would miss a test that aborts
+-- below them.
 unsizedStepBody :: (Base g ~ f, BasicBase f, StuckBase f, UnsizedBase f, Recursive g, Corecursive g)
   => UnsizedRecursionToken -> Int -> g
-unsizedStepBody tok n = iteB (appB argTwoB argOneB)
-  (appB (appB argThreeB (unsizedEE $ SizeStepStubF tok n EnvB)) argOneB)
+unsizedStepBody tok n = iteB
   (unsizedEE . SizeStageF (SizedRecursion . Map.singleton tok $ pure n) $
-    appB argFourB argOneB)
+    appB argTwoB argOneB)
+  (appB (appB argThreeB (unsizedEE $ SizeStepStubF tok n EnvB)) argOneB)
+  (appB argFourB argOneB)
 
 -- | The n-fold approximant chain a solved recursion hole becomes: the
 -- textbook elementary-affine treatment of bounded recursion, replacing the
 -- old self-applying repeat frame (which was outside the EAL fragment).
 -- Sits where @Env = (trb, _)@ with @trb = (tWrap, (r, (b, 0)))@; each link
 -- is a closure @(step, (previous approximant, trb))@ executing with env
--- @(i, (recur, (tWrap, (r, (b, 0)))))@, and the innermost link aborts with
--- the recursion token if the iteration budget is really exhausted at
--- runtime.
-sizedRecursionChain :: (Base g ~ f, BasicBase f, StuckBase f, AbortBase f, Recursive g, Corecursive g)
-  => UnsizedRecursionToken -> Int -> g
-sizedRecursionChain tok n = iterate link base !! n where
+-- @(i, (recur, (tWrap, (r, (b, 0)))))@.
+--
+-- Below the innermost link is the base: a closure, executing with env
+-- @(i, (tWrap, (r, (b, 0))))@, that applies the base case without
+-- testing. Sizing gives a chain a link for every depth whose test a run
+-- can reach ('chainLinks'), so the innermost link's test never passes and
+-- a run reaches the base only speculatively (the IC runtime evaluates
+-- both branches of a strict gate). The chain is then a plain total
+-- function: no abort for exhausting it, since sound sizing never does.
+sizedRecursionChain :: (Base g ~ f, BasicBase f, StuckBase f, Recursive g, Corecursive g)
+  => Int -> g
+sizedRecursionChain n = iterate link base !! n where
   trbE = LeftB EnvB
-  base = PairB (deferB unsizedStepMw abortBody)
-               (PairB ZeroB (intB $ fromEnum tok))
-  -- env: (i, (0, tok)); aborts with the AbortRecursion message (0, tok)
-  abortBody = AbortB recursionOrigin (RightB EnvB)
+  base = PairB (deferB unsizedStepMw (appB argFourB argOneB)) trbE
   link prev = PairB (deferB unsizedStepMrfb approxBody) (PairB prev trbE)
   -- env: (i, (recur, (tWrap, (r, (b, 0))))). The conditional is the STRICT
   -- gate-switch shape, deliberately: lazy branches capture the whole env in
@@ -379,13 +389,12 @@ sizedRecursionChain tok n = iterate link base !! n where
     (PairB (appB argFiveB argOneB)
            (appB (appB argFourB argTwoB) argOneB)))
 
--- | How many links sizing gives a recursion site's chain: one of slack
--- over the abstractly-observed depth, matching the old tower's n+1
--- convention (the abstract run can undercount the final test round by
--- one), and a single link to a site sizing found no size for.
+-- | How many links sizing gives a recursion site's chain: one per depth
+-- whose test the abstract run reached ('unsizedStepBody'), and a single
+-- link to a site sizing found no size for.
 chainLinks :: SizedRecursion -> UnsizedRecursionToken -> Int
 chainLinks (SizedRecursion sm) tok = case Map.lookup tok sm of
-  Just (Just n) -> n + 1
+  Just (Just n) -> n
   _noSize       -> 1
 
 -- | What a refinement wrapper around @c@ with check function @tc@ compiles
