@@ -17,14 +17,32 @@ import Telomare.Artifact (Artifact (..), decodeArtifact, encodeArtifact,
                           nodeCount, sourcesHash)
 import Telomare.Certificate (renderStaticReport)
 import Telomare.Driver (CompiledProgram (..), compileModules, programPlan)
+import qualified Telomare.Fast as Fast
 import Telomare.Fast (FastError (..), FastMeter (..), compileFast,
                       runFastWithInput)
+import Telomare.IC (Resources (..))
+import Telomare.IC.Space (Peak (..), SpaceCertificate (..), SpaceOutcome (..))
 import Telomare.IR.Base
 import Telomare.IR.Core
+import Telomare.IR.Loc (LocTag (..))
 import Telomare.Levels (LevelsInfo (..), levelsInfo)
 import Telomare.Machine (appB)
 import Telomare.Size (SizingReport (..))
 import Telomare.Size.IR (SizedRecursion (..))
+
+-- |A storage certificate to round-trip: every field distinct.
+storedSpace :: SpaceOutcome
+storedSpace = SpaceBound SpaceCertificate
+  { certAgents = Peak 101 (PairB ZeroB (PairB ZeroB ZeroB))
+  , certPorts = Peak 202 ZeroB
+  , certWork = Peak 3 (PairB ZeroB ZeroB)
+  , certTemplates = Resources 40 50 0
+  , certWorlds = 6
+  , certErrorWorlds = 1
+  , certInteractions = 7890
+  , certStates = 12
+  , certMerged = 34
+  }
 
 runModeSpec :: Spec
 runModeSpec = do
@@ -43,6 +61,7 @@ runModeSpec = do
                 , artifactExpr = cpExpr cp
                 , artifactGuidance = cpGuidance cp
                 , artifactVerdict = cpVerdict cp
+                , artifactICSpace = Just storedSpace
                 }
           case decodeArtifact (encodeArtifact artifact) of
             Left err -> expectationFailure $ "failed to decode:\n" <> err
@@ -62,6 +81,9 @@ runModeSpec = do
               -- runtime from an artifact must not need a second inference.
               artifactGuidance back `shouldBe` cpGuidance cp
               artifactVerdict back `shouldBe` cpVerdict cp
+              -- And the IC storage certificate, worked out once at
+              -- compile time.
+              artifactICSpace back `shouldBe` Just storedSpace
 
     it "evaluates to what the program it came from evaluates to" $ do
       modules <- loadWith "tc_ultra_minimal.tel" "tc_ultra_minimal"
@@ -70,6 +92,7 @@ runModeSpec = do
         Right cp -> do
           let artifact = Artifact "tc_ultra_minimal" (sourcesHash modules)
                 (cpSizing cp) "" (cpExpr cp) (cpGuidance cp) (cpVerdict cp)
+                (Just (SpaceUnknown "the world budget ran out" 7 1234))
           case decodeArtifact (encodeArtifact artifact) of
             Left err -> expectationFailure $ "failed to decode:\n" <> err
             Right back -> do
@@ -98,6 +121,29 @@ runModeSpec = do
   -- Transcript agreement between the fast and sized runtimes is checked
   -- corpus-wide in "ConformanceTests".
   describe "running without sizing" $ do
+    it "the approximant base case does not demand its recursive branch" $ do
+      let site = Fast.RecursionSite (toEnum 0) UnknownLoc (Just "base-case")
+          closure code = Fast.VPair (Fast.VDefer code) Fast.VZero
+          test = closure Fast.FZero
+          -- this branch cannot be applied; demanding it would fail
+          recursive = Fast.VZero
+          base = closure (Fast.FLeft Fast.FEnv)
+          trb = Fast.VPair test (Fast.VPair recursive (Fast.VPair base Fast.VZero))
+          input = Fast.VPair Fast.VZero Fast.VZero
+          -- apply the ladder through SetEnv, so forceValue and the actual
+          -- five-slot step frame are exercised by the evaluator
+          run = do
+            step <- Fast.forceValue (Fast.VRec site trb)
+            Fast.evalFast (Fast.FSetEnv (Fast.FPair
+              (Fast.FLeft (Fast.FLeft Fast.FEnv))
+              (Fast.FPair (Fast.FRight Fast.FEnv)
+                (Fast.FRight (Fast.FLeft Fast.FEnv))))) (Fast.VPair step input)
+          (meter, result) = Fast.runEval (Just 100) run
+      case result of
+        Right (Fast.VPair Fast.VZero Fast.VZero) -> pure ()
+        other -> expectationFailure ("base-case evaluation failed: " <> show other)
+      Map.lookup site (Fast.fmUnrolls meter) `shouldBe` Just 1
+
     it "counts the unrolls of each recursion site separately" $ do
       modules <- loadWith "test/programs/simpleplus.tel" "simpleplus"
       case compileFast modules "simpleplus" of

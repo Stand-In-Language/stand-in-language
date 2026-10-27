@@ -32,7 +32,6 @@ import Telomare.IR.Builder
 import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.IR.Surface
-import Telomare.IR.Types
 import Telomare.Machine (appB, chainLinks, deferB)
 import Telomare.Parse (parseOneExprOrDefinitions, runParseModule)
 import Telomare.PrettyPrint
@@ -208,22 +207,29 @@ compileReporting so staticCheck t = debugTrace ("compiling term3:\n" <> prettyPr
 
 -- converts between easily understood Haskell types and untyped IExprs around an iteration of a Telomare expression
 funWrap :: forall a. (Show a, AbstractRunTime a) => a -> (a -> a -> a) -> Maybe (String, BasicExpr) -> (String, Either RunTimeError BasicExpr)
-funWrap fun app inp = snd $ funWrapWith (\x -> ((), eval x)) fun app inp
+funWrap fun app inp = snd $ funWrapWith (\f i -> ((), eval (app f (dataValue i)))) fun inp
+
+-- |A data value in a runtime's term type.
+dataValue :: TelomareLike a => BasicExpr -> a
+dataValue = fromTelomare . conv where
+  conv :: BasicExpr -> StuckExpr
+  conv = runIdentity . cata (convertBasic (\_ -> error "funWrap conversion error"))
 
 -- |`funWrap` over an evaluator that also reports something about the run, so
--- the metered and plain loops share one conversion path.
+-- the metered and plain loops share one conversion path. The evaluator is
+-- handed main and the iteration's input separately, and applies one to the
+-- other itself.
 funWrapWith :: forall a m. (Show a, TelomareLike a, Monoid m)
-            => (a -> (m, Either RunTimeError a))
-            -> a -> (a -> a -> a) -> Maybe (String, BasicExpr)
+            => (a -> BasicExpr -> (m, Either RunTimeError a))
+            -> a -> Maybe (String, BasicExpr)
             -> (m, (String, Either RunTimeError BasicExpr))
-funWrapWith evaluator fun app inp =
-  let iexpInp = conv $ case inp of
+funWrapWith evaluator fun inp =
+  let input = case inp of
         Nothing                  -> ZeroB
         Just (userInp, oldState) -> PairB (s2b userInp) oldState
-      conv = runIdentity . cata (convertBasic (\_ -> error "funWrap conversion error"))
       conv2 = runIdentity . cata (convertBasic (convertStuck (\_ -> error "funWrap conversion error2")))
       conv3 = runIdentity . cata (convertBasic (\_ -> error "funWrap conversion error3"))
-      (measured, outcome) = evaluator (app fun $ fromTelomare iexpInp)
+      (measured, outcome) = evaluator fun input
   in (,) measured $ case outcome of
     Right x -> case toTelomare x of
       Nothing -> ("error converting iteration value:\n" <> show x, Left $ AbortRunTime ZeroB)
@@ -295,7 +301,8 @@ runMainWithInput inputList modulesStrings s = runMainCore modulesStrings s (eval
 -- |The one iteration loop every eval entry point goes through. The evaluator
 -- reports a measurement per iteration (the unmetered wrappers use '()'), and
 -- each iteration's display goes through @accumFn@; the loop returns the summed
--- measurements alongside the final accumulator.
+-- measurements alongside the final accumulator. This form evaluates the
+-- closed term of each iteration, main applied to its input.
 evalLoopCore :: Monoid m
              => (CompiledExpr -> (m, Either RunTimeError CompiledExpr))
              -> CompiledExpr
@@ -303,8 +310,21 @@ evalLoopCore :: Monoid m
              -> String
              -> [String]
              -> IO (m, String)
-evalLoopCore evaluator expr accumFn initAcc manualInput =
-  let wrappedEval = funWrapWith evaluator expr appB
+evalLoopCore evaluator =
+  evalLoopApplied (\fun input -> evaluator (appB fun (dataValue input)))
+
+-- |`evalLoopCore` for an evaluator that takes main and the iteration's input
+-- separately (the IC runtime, which keeps the input whole until the program
+-- takes it apart).
+evalLoopApplied :: Monoid m
+                => (CompiledExpr -> BasicExpr -> (m, Either RunTimeError CompiledExpr))
+                -> CompiledExpr
+                -> (String -> String -> IO String)
+                -> String
+                -> [String]
+                -> IO (m, String)
+evalLoopApplied evaluator expr accumFn initAcc manualInput =
+  let wrappedEval = funWrapWith evaluator expr
       mainLoop measured acc strInput s = do
         let (m, (out, nextState)) = wrappedEval s
             measured' = measured <> m
@@ -348,7 +368,7 @@ evalLoopMetered manualInput expr = fst <$> evalLoopCore evalMeter expr printAccu
 -- program rather than once per iteration.
 evalLoopIC :: [String] -> ICPlan -> CompiledExpr -> IO ICMeter
 evalLoopIC manualInput plan expr =
-  fst <$> evalLoopCore (evalIC plan) expr printAccum "" manualInput
+  fst <$> evalLoopApplied (evalIC plan) expr printAccum "" manualInput
 
 -- |Same as `evalLoop`, but keeping what was displayed.
 evalLoop_ :: CompiledExpr -> IO String

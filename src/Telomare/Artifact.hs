@@ -6,8 +6,9 @@
 -- produces the same answer every time: it runs the program over a /symbolic/
 -- input, so nothing about a particular run can change it. Paying that on every
 -- invocation is pure waste. `--compile` writes the sized program, its
--- per-site iteration counts and its rendered certificate to a @.telc@ file;
--- running that file skips parsing, typechecking, resolving and sizing
+-- per-site iteration counts and its rendered certificate to a @.telc@ file
+-- (and, with @--ic@, the most storage the IC runtime's net can reach);
+-- running that file skips parsing, certifying, resolving and sizing
 -- entirely.
 --
 -- The encoding is a tag byte per node, written by hand rather than derived.
@@ -48,6 +49,8 @@ import System.FilePath (takeExtension)
 
 import Telomare.EAL (CapShape (..), CodeGuidance (..), EALResult (..),
                      Step (..))
+import Telomare.IC (Resources (..))
+import Telomare.IC.Space (Peak (..), SpaceCertificate (..), SpaceOutcome (..))
 import Telomare.IR.Base
 import Telomare.IR.Core
 import Telomare.IR.Loc
@@ -72,6 +75,10 @@ data Artifact = Artifact
   , artifactVerdict     :: Either String EALResult
   -- ^The post-sizing whole-program EAL verdict (a refusal carried
   -- rendered): the IC runtime's admission, decided at compile time.
+  , artifactICSpace     :: Maybe SpaceOutcome
+  -- ^The most storage the IC runtime's net can reach on any input
+  -- ('Telomare.IC.Space'), when it was worked out at compile time
+  -- (@--ic --compile@).
   }
 
 artifactMagic :: BL.ByteString
@@ -80,7 +87,7 @@ artifactMagic = BL.pack [0x54, 0x45, 0x4C, 0x43] -- "TELC"
 -- |Bumped whenever the encoding changes, which invalidates older files rather
 -- than misreading them.
 artifactVersion :: Int
-artifactVersion = 3
+artifactVersion = 4
 
 telcExtension :: String
 telcExtension = ".telc"
@@ -88,7 +95,7 @@ telcExtension = ".telc"
 isArtifactPath :: FilePath -> Bool
 isArtifactPath = (== telcExtension) . takeExtension
 
--- |How many nodes the sized program has. Church towers make sized programs
+-- |How many nodes the sized program has. Approximant chains make sized programs
 -- much larger than their sources, which is worth reporting when one is
 -- written.
 nodeCount :: CompiledExpr -> Int
@@ -116,6 +123,7 @@ encodeArtifact a = runPut $ do
   putCompiled (artifactExpr a)
   putMap putDigest putGuidance (artifactGuidance a)
   putVerdict (artifactVerdict a)
+  putMaybe putSpace (artifactICSpace a)
 
 decodeArtifact :: BL.ByteString -> Either String Artifact
 decodeArtifact bytes = case runGetOrFail getArtifact bytes of
@@ -141,8 +149,10 @@ getArtifact = do
           expr <- getCompiled
           guidance <- getMap getDigest getGuidance
           verdict <- getVerdict
+          icSpace <- getMaybe getSpace
           pure . Right $
             Artifact entry sourceHash report certificate expr guidance verdict
+              icSpace
 
 writeArtifact :: FilePath -> Artifact -> IO ()
 writeArtifact path = BL.writeFile path . encodeArtifact
@@ -336,6 +346,35 @@ getVerdict = getWord8 >>= \case
     <*> getInt'
     <*> getShape
   n -> fail $ "unknown verdict tag " <> show n
+
+-- The IC storage certificate.
+
+putSpace :: SpaceOutcome -> Put
+putSpace = \case
+  SpaceBound c -> do
+    putWord8 0
+    mapM_ putPeak [certAgents c, certPorts c, certWork c]
+    putResources (certTemplates c)
+    mapM_ putInt' [ certWorlds c, certErrorWorlds c, certInteractions c
+                  , certStates c, certMerged c ]
+  SpaceUnknown why worlds interactions -> do
+    putWord8 1
+    putString why
+    putInt' worlds
+    putInt' interactions
+  where
+    putPeak (Peak v input) = putInt' v >> putBasic input
+    putResources (Resources a p w) = mapM_ putInt' [a, p, w]
+
+getSpace :: Get SpaceOutcome
+getSpace = getWord8 >>= \case
+  0 -> fmap SpaceBound $ SpaceCertificate
+    <$> getPeak <*> getPeak <*> getPeak
+    <*> (Resources <$> getInt' <*> getInt' <*> getInt')
+    <*> getInt' <*> getInt' <*> getInt' <*> getInt' <*> getInt'
+  1 -> SpaceUnknown <$> getString <*> getInt' <*> getInt'
+  n -> fail $ "unknown IC storage certificate tag " <> show n
+  where getPeak = Peak <$> getInt' <*> getBasic
 
 -- Terms.
 

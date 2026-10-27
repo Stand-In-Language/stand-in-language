@@ -539,6 +539,11 @@ terms DAGs.
   as a tree overstates a run by orders of magnitude (~1.2TB vs a few GB on tictactoe),
   and an honest figure needs reachability over distinct nodes, which is consciously
   left unimplemented rather than reported wrong (C3: never report a dishonest number).
+  The IC runtime has no such problem: its net holds each node once, so
+  `--ic --meter` counts resident agents, port entries and pending pairs at every
+  primitive mutation and reports the largest net any iteration built, plus the
+  template table. These are measurements in net units, not bytes. `--ic
+  --certificate` works the same figure out *before* running, for every input (§7).
 
 **[decision] The IO model is an iterated pure `main`.** Per iteration: input is `0`
 (first) or `(inputString, oldState)`; output is `0` (abort) or `(displayString,
@@ -598,6 +603,40 @@ Design points the implementation commits to:
 - **Guided duplication and erasure** consume the advisory capture layouts
   (dup-closure/era-closure bulk operations with generic fans/erasers at the frontier),
   under the advisory-only contract from §5.
+- **An iteration's input enters the net whole**, as one `ICData` node, and is taken
+  apart one layer at a time, only when a consumer needs its shape (`revealData`);
+  copying or erasing it is one interaction. So a run depends on its input only
+  through the shapes the program looks at.
+- **Constants are data too**: a compiled subterm made only of pairs and zeros (an
+  error message, a string literal, a number) becomes one `ICData` node holding the
+  value, so building, copying or erasing it is one interaction. Telomare spells
+  characters and numbers in unary, so constants are large: `tictactoe.tel` built and
+  erased the two error messages of `Prelude.tel`'s `Bool` check (about 17,000 cells)
+  on every `and`/`or`/`not`, two thirds of a turn's interactions. The value is held
+  once, with the code; the template table counts its cells as if built node by node,
+  so no storage figure gets smaller by holding it whole.
+
+**[decision] The storage certificate is the runtime's own net, run for every input
+at once** (`Telomare.IC.Space`, `--ic --certificate`). The input is an `ICData` node
+holding a path instead of a value; every pair fires by the runtime's own code, in its
+own order (both schedule through `nextPair`); where a consumer needs the shape of an
+input part not yet looked at, the walk splits into a Zero world and a Pair world. All
+inputs of one world run identically, interaction for interaction, so the largest
+peak over the worlds is the exact worst case — not an estimate — and each figure is
+reported with an input that reaches it. A runtime error ends a world where the run
+would end.
+- Serves: C3 (a resource bound as an output of compilation, honest by construction).
+- Consequence: worlds never rejoin, so the cost grows with the number of input shapes
+  the program tells apart; the walk has an explicit budget and, when it runs out, says
+  that no limit was worked out rather than give a partial figure. With the default
+  budget, `simpleplus.tel` and `tictactoe.tel` (which read characters as unary
+  numbers, so tell many shapes apart) run out.
+- Alternatives: #153's walk replayed the older all-LIFO runtime with input regions
+  that stood for whole trees and summarized copy cascades with a fixed allowance per
+  region; once the runtime parked instantiations for a demand check, the order of
+  that check depended on how far a cascade had got, which the summary could not
+  follow. Holding the input whole in the runtime itself removes the cascades the
+  summary was for.
 
 **[open] The IC runtime is mid-landing.** The `--ic` CLI mode, the admission driver
 (`Telomare.Eval.IC`), and guided erasure are uncommitted; known ceiling: guidance is
@@ -629,7 +668,9 @@ on EAL polyvariance being strong enough.
 Nothing here is a commitment; these are the current means of delivering C3.
 
 **[decision] Compile once: `.telc`.** An artifact stores the sized expression, the
-sizing report, the *rendered* certificate text, the entry module, and a source hash —
+sizing report, the *rendered* certificate text, the EAL guidance and verdict, the IC
+storage certificate when compiled with `--ic` (format version 4), the entry module,
+and a source hash —
 so running it skips parse/certify/size entirely and `--certificate` prints instantly
 with no sources present.
 - Serves: C3 (the bounds are a durable output), and the pay-once sizing decision (§4).
@@ -647,7 +688,9 @@ orphan instances were rejected on principle).
 per-instantiation counts — which assert nothing new, being the numbers already baked
 into the program — plus a cheap structural nesting/duplication-pressure reading that
 indexes differently and is explicitly not merged into one table). `--meter` says what
-*one run cost* (measurements, not predictions).
+*one run cost* (measurements, not predictions). Under `--ic`, `--certificate` is the
+storage certificate (§7): a prediction, over every input, of exactly the quantity
+`--ic --meter` measures for one run.
 - Serves: C3.
 - Rationale: prediction and measurement answer different questions and should not be
   blurred in one table; and no number known to be dishonest is reported (see the
@@ -765,10 +808,9 @@ any of these should require no design discussion beyond this list; if one is act
 load-bearing, promote it into the body.
 
 **Stale docs / names**
-- README still lists a `Telomare.TypeCheck` pipeline stage (module deleted; EAL
-  replaced it) and documents neither `--ic` nor the IC modules.
-- Comments referencing `Telomare.Resolver` (module is `Resolve`) and the deleted
-  `IExpr` type (`funWrap` error strings, `eval2IExpr`).
+- README documents neither `--ic` nor the IC modules.
+- Comments referencing the deleted `IExpr` type (`funWrap` error strings,
+  `eval2IExpr`).
 - `Show1` instances print pre-rename constructor names (`VarUPF`, `UnsizedRecursionUPF`, …).
 - `src/SIL/` is an empty directory left from the "Stand In Language" rename;
   `src/Telomare/*.hs.~undo-tree~` are ~2.5MB of Emacs undo files for deleted modules;
@@ -776,7 +818,7 @@ load-bearing, promote it into the body.
 
 **Dead code**
 - `Telomare.IR.Types` (`PartialTypeF` etc.) is orphaned by the type-checker removal
-  (only pretty-printer instances remain; `Driver` imports it for nothing).
+  (only pretty-printer instances remain).
 - `SizingOption.NoSizing` is marked deprecated but still implemented (and uses the old
   church-tower encoding that no longer matches the runtime).
 - Unreferenced Machine step variants (`superStep`, `unsizedStep`, `zeroedInputStepM`,
@@ -788,7 +830,6 @@ load-bearing, promote it into the body.
   printing an artifact's hash exists but is never fed).
 
 **Drift / duplication (maintenance hazards, kept honest only by parity tests)**
-- The approximant step body exists twice (Machine and Fast), hand-mirrored.
 - Lazy gate selection is implemented three different ways (implicit laziness /
   explicit case / syntactic pattern), plus the IC's speculation non-implementation.
 - Abort-message truncation ×4 and find-surviving-abort ×4 across the runtimes.

@@ -1,7 +1,9 @@
+{-# LANGUAGE LambdaCase      #-}
 {-# LANGUAGE PatternSynonyms #-}
 module Main where
 
-import Data.Bifunctor (bimap, first, second)
+import Control.Monad (forM_)
+import Data.Bifunctor (first)
 import Data.Foldable (toList)
 import Data.List (isInfixOf)
 import qualified Data.Map as Map
@@ -9,14 +11,15 @@ import Data.Maybe (catMaybes)
 import qualified Data.Set as Set
 import qualified System.IO.Strict as Strict
 import Telomare.Driver (CompiledProgram (..), SizingOption (..),
-                        compileMainReporting, compileUnitTest, evalLoopCore,
-                        keepAccum, plainEval, programPlan)
-import Telomare.EAL (CodeGuidance (..), EALLiftedResult (..),
-                     deriveSizedGuidance, ealCaptureLayouts, inferEALCompiled,
-                     inferEALFaithful, inferEALWithLifting)
+                        compileMainReporting, compileUnitTest, evalLoopApplied,
+                        evalLoopCore, keepAccum, plainEval, programPlan)
+import Telomare.EAL (CodeGuidance (..), EALLiftedResult (..), Step (..),
+                     deriveSizedGuidance, ealCaptureLayouts, envUsageL,
+                     inferEALCompiled, inferEALFaithful, inferEALWithLifting)
 import Telomare.Eval.IC (ICMeter (..), ICPlan (..), admitIC, evalIC)
 import Telomare.Expand (expandModule, renderExpansionError)
 import Telomare.IC
+import Telomare.IC.Space
 import Telomare.IR.Base (AbortableF (..), BasicExpr, pattern AbortB,
                          pattern AbortEE, pattern EnvB, pattern GateB,
                          pattern GateSwitchEE, pattern LeftB, pattern PairB,
@@ -84,6 +87,7 @@ expectTest :: String -> CompiledExpr -> Either RunTimeError CompiledExpr
 expectTest name t v = testCase name $ do
   icEval t @?= v
   eval t @?= v
+  storageAgrees t
 
 -- | The IC runtime must agree with the reference evaluator, whatever the
 -- outcome.
@@ -94,7 +98,25 @@ diffTest name t = icDiff name t (const (pure ()))
 icDiff :: String -> CompiledExpr -> (CompiledExpr -> Assertion) -> TestTree
 icDiff name t extra = testCase name $ do
   icEval t @?= eval t
+  storageAgrees t
   extra t
+
+-- | The incremental storage counters must agree with a recount of the net
+-- a run leaves behind (finished or failed), and the peak must cover it.
+storageAgrees :: CompiledExpr -> Assertion
+storageAgrees t = do
+  let (_, st) = icRunState mempty defaultFuel t
+      now = icResident st
+      peak = icPeak st
+  now @?= residentResources st
+  assertBool ("peak " <> show peak <> " covers " <> show now) $
+    resAgents peak >= resAgents now && resPorts peak >= resPorts now
+      && resWork peak >= resWork now
+
+-- | Storage measured for one run.
+storageOf :: CompiledExpr -> (Resources, Resources)
+storageOf t = let (_, st) = icRunState mempty defaultFuel t
+              in (icPeak st, templateStorage st)
 
 main :: IO ()
 main = do
@@ -136,11 +158,55 @@ main = do
         Right cp -> case programPlan cp of
           Left refusal -> assertFailure $ "refused: " <> refusal
           Right plan   -> do
-            (_, viaIC) <- evalLoopCore (evalIC plan) (cpExpr cp)
+            (_, viaIC) <- evalLoopApplied (evalIC plan) (cpExpr cp)
                             keepAccum "" []
             (_, viaRef) <- evalLoopCore plainEval (cpExpr cp)
                              keepAccum "" []
             viaIC @?= viaRef
+    -- `--ic --certificate`: the walk must finish, each figure must be
+    -- exactly what a run on the input it names measures, and no input
+    -- may measure more. Every run on a lazily held input must also compute
+    -- what the reference evaluator computes on the built term.
+    spaceCertified :: String -> TestTree
+    spaceCertified src = testCase src $
+      case compileMainReporting MainSizing (parseAuxModule src : prelude)
+             "AuxModule" of
+        Left e   -> assertFailure $ "compilation failed: " <> show e
+        Right cp -> case programPlan cp of
+          Left refusal -> assertFailure $ "refused: " <> refusal
+          Right plan -> do
+            let layouts = icPlanLayouts plan
+                mainTerm = cpExpr cp
+                run = icRunApplied layouts defaultFuel mainTerm
+                measured i = icPeak (snd (run i))
+            certifySpace defaultSpaceBudget EveryInput layouts mainTerm >>= \case
+              SpaceUnknown why _ _ -> assertFailure $ "no certificate: " <> why
+              outcome@(SpaceBound c) -> do
+                resAgents (measured (peakInput (certAgents c)))
+                  @?= peakValue (certAgents c)
+                resPorts (measured (peakInput (certPorts c)))
+                  @?= peakValue (certPorts c)
+                resWork (measured (peakInput (certWork c)))
+                  @?= peakValue (certWork c)
+                forM_ sampleInputs $ \i -> do
+                  assertBool (renderData i <> " measures "
+                                <> show (measured i) <> ", beyond the certificate")
+                    (certificateCovers (measured i) outcome)
+                  icOutcome (fst (run i))
+                    @?= icOutcome (fst (icRunState layouts defaultFuel
+                                          (appB mainTerm (dataTerm' i))))
+                  icOutcome (fst (run i)) @?= eval (appB mainTerm (dataTerm' i))
+    -- every data value with at most four pairs
+    sampleInputs :: [BasicExpr]
+    sampleInputs = concatMap trees [0 .. 4]
+      where
+        trees :: Int -> [BasicExpr]
+        trees 0 = [ZeroB]
+        trees n = [ PairB a b | k <- [0 .. n - 1], a <- trees k, b <- trees (n - 1 - k) ]
+    dataTerm' :: BasicExpr -> CompiledExpr
+    dataTerm' = \case
+      PairB a b -> p (dataTerm' a) (dataTerm' b)
+      _zero     -> z
     -- the driver's post-sizing guidance is derived from the unsized
     -- program's size-independent certificate, and it is the guidance
     -- inferring the sized program again gives: the same bodies, the same
@@ -222,11 +288,13 @@ main = do
             Map.lookup "era-pair" stats @?= Nothing
         , testCase "whole-and-part use duplicates exactly once" $ do
             -- the whole env is copied (the analyzer's contraction), then
-            -- one copy is split for the component
+            -- one copy is split for the component. The env (0,0) is a
+            -- constant, held whole: the copy is one interaction
             let term = se (p (d 2 (p EnvB (LeftB EnvB))) (p z z))
                 (r, stats) = icEvalDetailed defaultFuel term
             r @?= Right (p (p z z) z)
-            Map.lookup "dup-pair" stats @?= Just 1
+            Map.lookup "dup-leaf" stats @?= Just 1
+            Map.lookup "dup-pair" stats @?= Nothing
             Map.lookup "split-pair" stats @?= Just 1
         , expectTest "unused env component is erased, not projected"
             (se (p (d 2 (LeftB EnvB)) (p z (p z z)))) (Right z)
@@ -257,6 +325,20 @@ main = do
               [Right cg] -> cgUsage cg @?= envUsage body
               other -> assertFailure $
                 "expected one certified body, got " <> show other
+        , testCase "usage adapters agree across projection and frame boundaries" $ do
+            let leaves = [z, EnvB, LeftB EnvB, RightB (LeftB EnvB),
+                          d 30 (p EnvB EnvB)]
+                bodies = leaves <> [p a b | a <- leaves, b <- leaves]
+                  <> [LeftB (p a b) | a <- leaves, b <- leaves]
+                  <> [se (p (d 31 EnvB) a) | a <- leaves]
+            forM_ bodies $ \body -> do
+              envUsage body @?= (fmap fst . envUsageL . snd . deferLift $
+                compiled2Term3 body)
+              -- compilation must consume exactly those occurrence wires
+              icEval (se (p (d 32 body) (p z (p z z))))
+                @?= eval (se (p (d 32 body) (p z (p z z))))
+            envPathOf (LeftB (RightB EnvB)) @?= Just [SR, SL]
+            envPathOf (LeftB (p EnvB z)) @?= Nothing
         ]
     , testGroup "closure dup plans"
         [ testCase "guided duplication copies the closure skeleton" $ do
@@ -280,8 +362,10 @@ main = do
               (Map.findWithDefault 0 "dup-closure" stats > 0)
             assertBool "skeleton copied"
               (Map.findWithDefault 0 "dup-plan-copy" stats > 0)
+            -- the capture (0,0) is a constant held whole: one copy, not
+            -- a cascade
             Map.lookup "dup-pair" stats @?= Nothing
-            Map.lookup "dup-leaf" stats @?= Nothing
+            assertBool "no cascade" (Map.findWithDefault 0 "dup-leaf" stats <= 1)
             -- the generic run paid the cascade the plan avoided
             assertBool "generic cascade present"
               (Map.findWithDefault 0 "dup-pair" stats0 > 0)
@@ -323,8 +407,10 @@ main = do
               (Map.findWithDefault 0 "era-closure" stats > 0)
             assertBool "skeleton dropped"
               (Map.findWithDefault 0 "era-plan-drop" stats > 0)
+            -- the capture (0,0) is a constant held whole: one erasure,
+            -- not a cascade
             Map.lookup "era-pair" stats @?= Nothing
-            Map.lookup "era-leaf" stats @?= Nothing
+            assertBool "no cascade" (Map.findWithDefault 0 "era-leaf" stats <= 1)
             -- the generic run paid the cascade the plan avoided
             assertBool "generic cascade present"
               (Map.findWithDefault 0 "era-pair" stats0 > 0)
@@ -352,13 +438,16 @@ main = do
                 Right plan -> do
                   -- the driver's shape: admit the program once, then
                   -- evaluate its applications under the granted plan
-                  let t = se (p (d 0 c) z)
-                      (m, r) = evalIC plan t
+                  let f = p (d 0 c) z
+                      t = appB f z
+                      (m, r) = evalIC plan f ZeroB
                   assertBool "layouts granted"
                     (not (Map.null (icPlanLayouts plan)))
                   r @?= eval t
                   assertBool "interactions measured"
                     (icMeterInteractions m > 0)
+                  assertBool "peak storage measured"
+                    (resAgents (icMeterPeak m) > 0)
         , testCase "an uncertified program is refused with the verdict" $
             case admitIC omegaApplied of
               Left refusal -> assertBool ("refusal names it: " <> refusal)
@@ -435,6 +524,56 @@ main = do
             case fst (icEvalDetailed 3 (app (app churchTwo succC) z)) of
               Left (ICFuelExhausted _) -> pure ()
               r -> assertFailure $ "expected fuel exhaustion, got " <> show r
+        , testCase "a failed run still reports consistent storage" $
+            storageAgrees (app (app churchTwo succC) z) >>
+              let (_, st) = icRunState mempty 3 (app (app churchTwo succC) z)
+              in icResident st @?= residentResources st
+        ]
+    , testGroup "storage meter"
+        [ testCase "a constant is one node in the net, its cells in the table" $ do
+            -- the net holds the root and the constant, one port entry
+            -- each; the table counts the 3 pairs and 4 zeros the constant
+            -- stands for, 3 port entries per pair and one per zero, on
+            -- top of the selectors every net carries
+            let (peak, Resources ta tp _) = storageOf (num 3)
+                (_, Resources ba bp _) = storageOf z
+            peak @?= Resources 2 2 0
+            (ta - ba, tp - bp) @?= (7, 13)
+        , testCase "a constant is copied and erased in one interaction each" $ do
+            -- (20 as a number is 41 cells): used twice, then dropped
+            let t = se (p (d 2 (p EnvB EnvB)) (num 20))
+                t' = se (p (d 101 z) (num 20))
+                (r, stats) = icEvalDetailed defaultFuel t
+                (r', stats') = icEvalDetailed defaultFuel t'
+            icEval t @?= eval t
+            r @?= Right (p (num 20) (num 20))
+            r' @?= Right z
+            Map.lookup "dup-leaf" stats @?= Just 1
+            Map.lookup "dup-pair" stats @?= Nothing
+            Map.lookup "era-leaf" stats' @?= Just 1
+            Map.lookup "era-pair" stats' @?= Nothing
+        , testCase "templates are kept apart from the net" $ do
+            let big = d 102 (p (num 6) (p (LeftB EnvB) (RightB EnvB)))
+                (peak, tpls) = storageOf big
+            -- the net holds only the root and one code pointer
+            peak @?= Resources 2 2 0
+            assertBool ("template table holds the body: " <> show tpls)
+              (resAgents tpls > resAgents peak)
+        , testCase "erased input counts at its peak, not at the end" $ do
+            -- the constant input is one node, its 41 cells in the table;
+            -- the peak still holds it, the end does not
+            let t = se (p (d 101 z) (num 20))
+                (_, st) = icRunState mempty defaultFuel t
+            icEval t @?= Right z
+            resAgents (icResident st) @?= 2
+            assertBool ("peak holds the input: " <> show (icPeak st))
+              (resAgents (icPeak st) > resAgents (icResident st))
+            assertBool ("table counts its cells: " <> show (templateStorage st))
+              (resAgents (templateStorage st) >= 41)
+        , testCase "across a session storage takes the maximum, interactions add" $
+            ICMeter 1 Map.empty (Resources 5 1 9) (Resources 1 0 0)
+              <> ICMeter 2 Map.empty (Resources 3 8 2) (Resources 4 2 0)
+              @?= ICMeter 3 Map.empty (Resources 5 8 9) (Resources 4 2 0)
         ]
     , testGroup "compiled program corpus (IC vs reference evaluator)"
         [ corpus "main = 0"
@@ -514,6 +653,58 @@ main = do
         , driverAdmits ("validPlayer = \\x -> assert (not (toBool ($3 left x))) \"bad\"\n"
                      <> "main = \\input -> let p : validPlayer = left input\n"
                      <> "                 in (concat [concat [\"a\", \"b\"], (d2c p succ 0, 0)], 0)")
+        ]
+    , testGroup "storage certificate (--ic --certificate)"
+        [ spaceCertified "main = \\input -> (\"a\", 0)"
+        , spaceCertified "main = \\input -> (if left input then \"yes\" else \"no\", 0)"
+        , spaceCertified ("main = \\input -> (if left input then (if right input then \"ab\" else \"a\")"
+                       <> " else concat [\"b\", \"c\"], 0)")
+        , spaceCertified ("main = \\input -> (concat [succ (left input), \" is \"]"
+                       <> ", 0)")
+        , spaceCertified "main = \\input -> (d2c 1 (\\x -> d2c 1 succ x) 0, 0)"
+        , spaceCertified ("validPlayer = \\x -> assert (not (toBool ($3 left x))) \"bad\"\n"
+                       <> "main = \\input -> let p : validPlayer = left input\n"
+                       <> "                 in (concat [concat [\"a\", \"b\"], (d2c p succ 0, 0)], 0)")
+        , testCase "control that depends on the input splits the walk" $
+            case compileMainReporting MainSizing
+                   (parseAuxModule "main = \\input -> (if left input then \"yes\" else \"no\", 0)" : prelude)
+                   "AuxModule" of
+              Left e -> assertFailure $ "compilation failed: " <> show e
+              Right cp -> certifySpace defaultSpaceBudget EveryInput mempty (cpExpr cp) >>= \case
+                SpaceBound c -> assertBool ("worlds: " <> show (certWorlds c))
+                  (certWorlds c >= 3)
+                other -> assertFailure $ "expected a certificate, got " <> show other
+        , testCase "a spent budget claims nothing" $
+            case compileMainReporting MainSizing
+                   (parseAuxModule "main = \\input -> (concat [\"a\", \"b\"], 0)" : prelude)
+                   "AuxModule" of
+              Left e -> assertFailure $ "compilation failed: " <> show e
+              Right cp -> certifySpace defaultSpaceBudget { budgetInteractions = 10
+                                                          , budgetWorlds = 100 }
+                            EveryInput mempty (cpExpr cp) >>= \case
+                SpaceUnknown {} -> pure ()
+                other -> assertFailure $ "expected no certificate, got " <> show other
+        , testCase "a session that ends on its first turn carries no state" $
+            case compileMainReporting MainSizing
+                   (parseAuxModule "main = \\input -> (\"ab\", 0)" : prelude)
+                   "AuxModule" of
+              Left e -> assertFailure $ "compilation failed: " <> show e
+              Right cp -> certifySpace defaultSpaceBudget Sessions mempty (cpExpr cp) >>= \case
+                SpaceBound c -> certStates c @?= 0
+                other -> assertFailure $ "expected a certificate, got " <> show other
+        , testCase "a lazily held input runs as the built one does" $
+            -- the same projections and copies, on the input held whole
+            -- and on the input built into the net node by node; main is a
+            -- closure whose body sees (input, captured env)
+            let body = p (d 300 (p (LeftB (LeftB EnvB))
+                                   (p (RightB (LeftB (LeftB EnvB))) (LeftB EnvB))))
+                         z
+                i = PairB (PairB ZeroB ZeroB) (PairB ZeroB (PairB ZeroB ZeroB))
+                lazy = fst (icRunApplied mempty defaultFuel body i)
+                built = fst (icRunState mempty defaultFuel (appB body (dataTerm' i)))
+            in do
+              lazy @?= built
+              icOutcome lazy @?= eval (appB body (dataTerm' i))
         ]
     , testGroup "post-sizing guidance derived from the unsized certificate"
         [ derivedAgrees "main = \\input -> (d2c 2 succ 0, 0)"

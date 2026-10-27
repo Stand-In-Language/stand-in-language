@@ -186,6 +186,37 @@ main = do
           [([SL], _)] -> pure ()
           other -> assertFailure $ "expected contraction at path L, got "
             <> show (fmap fst other)
+    , testCase "usage paths descend from the innermost projection" $ do
+        let lifted = snd . deferLift $ lft (rgt env)
+        fmap fst (envUsageL lifted) @?= Map.singleton [SR, SL] 1
+        envPath lifted @?= Just [SR, SL]
+    , testCase "usage ignores nested defer frames" $ do
+        let uses = envUsageL . snd . deferLift $ p (lft env) (defer 90 (p env env))
+        fmap fst uses @?= Map.singleton [SL] 1
+        fmap fst (contractionSites uses) @?= []
+    , testCase "usage resets paths at ordinary constructors" $ do
+        let lifted = snd . deferLift $ lft (p env (rgt env))
+        fmap fst (envUsageL lifted) @?= Map.fromList [([], 1), ([SR], 1)]
+        envPath lifted @?= Nothing
+    , testCase "checking wrappers retain projection paths and ignore checks" $ do
+        let at = GeneratedLoc "value occurrence" Nothing
+            value = at :< Term3S EnvSF
+            wrapper = l :< Term3CheckingWrapper l (p env env) value
+            lifted = snd . deferLift $ lft wrapper
+        envUsageL lifted @?= Map.singleton [SL] (1, at)
+        envPath lifted @?= Just [SL]
+    , testCase "unsized usage retains its location and first occurrence wins" $ do
+        let firstLoc = GeneratedLoc "first hole" Nothing
+            secondLoc = GeneratedLoc "second env" Nothing
+            hole = firstLoc :< Term3Unsized (toEnum 1)
+            value = secondLoc :< Term3S EnvSF
+            uses = envUsageL . snd . deferLift $ p (rgt hole) (rgt value)
+        uses @?= Map.singleton [SR] (2, firstLoc)
+        contractionSites uses @?= [([SR], firstLoc)]
+    , testCase "every contraction site is reported" $
+        fmap fst (contractionSites . envUsageL . snd . deferLift $
+          p (p env (lft env)) (p (rgt env) (rgt env)))
+          @?= [[], [SR]]
     , testCase "guidance carries path usage, bangs, and speculation" $ do
         let lr = inferEALWithLifting . defer 1 $ p (lft env) (rgt env)
         case Map.elems (ealGuidance lr) of
