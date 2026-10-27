@@ -17,10 +17,12 @@ import Telomare.Artifact (Artifact (..), isArtifactPath, nodeCount,
 import Telomare.Certificate (renderStaticReport)
 import Telomare.Driver (CompiledProgram (..), compileModules, evalLoop,
                         evalLoopIC, evalLoopMetered, programPlan)
-import Telomare.Eval.IC (ICPlan, renderICMeter)
+import Telomare.Eval.IC (ICPlan (..), renderICMeter)
 import Telomare.Eval.Meter (renderMeter)
 import Telomare.Fast (compileFast, defaultFastFuel, renderFastMeter,
                       runFastLoop)
+import Telomare.IC.Space (SpaceOutcome, certifySpace, defaultSpaceBudget,
+                          renderSpace)
 import Telomare.IR.Loc (locatedNameText)
 import Telomare.IR.Surface (ImportDecl (parsedImportModule), ModuleItem (..))
 import Telomare.Levels (levelsInfo)
@@ -33,7 +35,8 @@ data Action
   | Compile (Maybe FilePath)
   -- ^Size it once and write the result, so later runs need not size again.
   | Certificate
-  -- ^Report what is known about it statically, then exit.
+  -- ^Report what is known about it statically, then exit. With the IC
+  -- runtime, that is the most storage its net can reach on any input.
   | Meter
   -- ^Run it, then report what the run cost.
   deriving (Eq, Show)
@@ -76,7 +79,8 @@ telomareOpts = TelomareOpts
          O.<|> O.flag' Certificate
                ( O.long "certificate"
                  <> O.help "Report each recursion site's inferred iteration count and \
-                           \nesting level, then exit" )
+                           \nesting level, then exit; with --ic, instead work out the \
+                           \most storage the net can reach on any input" )
          O.<|> O.flag' Meter
                ( O.long "meter"
                  <> O.help "Run the program, then report what the run cost" )
@@ -180,11 +184,12 @@ runArtifact path action mode = do
             , cpGuidance = artifactGuidance artifact
             , cpVerdict = artifactVerdict artifact
             }
-      case action of
-        Compile _   -> die $ path <> " is already compiled"
-        Certificate -> putStr $ artifactCertificate artifact
-        Run         -> runCompiled (runtimeOf mode) Run cp
-        Meter       -> runCompiled (runtimeOf mode) Meter cp
+      case (action, runtimeOf mode) of
+        (Compile _, _) -> die $ path <> " is already compiled"
+        (Certificate, ICNet) -> withICPlan cp (putStr . renderSpace . icSpace cp)
+        (Certificate, Reference) -> putStr $ artifactCertificate artifact
+        (Run, _) -> runCompiled (runtimeOf mode) Run cp
+        (Meter, _) -> runCompiled (runtimeOf mode) Meter cp
 
 -- |An artifact outlives the checkout it came from, so a hash mismatch is worth
 -- saying and never worth refusing over.
@@ -201,6 +206,11 @@ warnIfStale artifactPath artifact = do
       hPutStrLn stderr
         "note: the sources have changed since this program was compiled; \
         \recompile it to pick the changes up"
+
+-- |The most storage an iteration's net can reach on any input, under the
+-- guidance a session would run with ('Telomare.IC.Space').
+icSpace :: CompiledProgram -> ICPlan -> SpaceOutcome
+icSpace cp plan = certifySpace defaultSpaceBudget (icPlanLayouts plan) (cpExpr cp)
 
 -- |Gate a session on the carried verdict: a refusal is a user-facing
 -- report, not a crash, and nothing runs on the net without admission.
@@ -231,8 +241,10 @@ runSized runtime file action = do
     Left err -> die err
     Right cp -> case action of
       Run -> runCompiled runtime Run cp
-      Certificate ->
-        putStr $ staticReport Nothing (Just (cpSizing cp)) allModules entryModule
+      Certificate -> case runtime of
+        ICNet -> withICPlan cp (putStr . renderSpace . icSpace cp)
+        Reference ->
+          putStr $ staticReport Nothing (Just (cpSizing cp)) allModules entryModule
       Meter -> runCompiled runtime Meter cp
       Compile output -> do
         let path = fromMaybe (replaceExtension file telcExtension) output

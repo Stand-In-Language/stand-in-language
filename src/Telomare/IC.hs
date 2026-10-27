@@ -97,7 +97,7 @@ import Telomare.IR.Base (AbortableF (..), BasicExpr, BasicExprF (..),
                          pattern GateB, pattern PairB, pattern StuckEE,
                          pattern StuckFW, pattern ZeroB)
 import Telomare.IR.Core (CompiledExpr, CompiledExprF (..), RunTimeError (..))
-import Telomare.Machine (abortInd, deferB, doLeft, doRight, leftGateInd,
+import Telomare.Machine (abortInd, appB, deferB, doLeft, doRight, leftGateInd,
                          rightGateInd)
 import Telomare.Resolve (DeferKeys (..), KeyedExpr, keyDefers)
 
@@ -151,6 +151,20 @@ data ICKind
                        --   the net fires it eagerly, so stuckness must be a
                        --   value that erasure discards and only demanded
                        --   output reports.
+  | ICData DataSrc     -- ^ 1 port: a data value held whole, not yet taken
+                       --   apart: an iteration's input, or a part of one.
+                       --   Copying and erasing it take one interaction; a
+                       --   consumer that needs its shape first turns it into
+                       --   the Zero or Pair it is ('revealData').
+  deriving (Eq, Show)
+
+-- | What an 'ICData' node holds: a known value when the net runs, or, when
+-- 'Telomare.IC.Space' walks the net for every input at once, the part of the
+-- input at a path (the whole input is path 0; the parts of the pair at path
+-- @p@ are at @2p+1@ and @2p+2@).
+data DataSrc
+  = DataKnown BasicExpr
+  | DataPart Integer
   deriving (Eq, Show)
 
 data Port = Port
@@ -603,30 +617,54 @@ instantiate tid envSrc resultDst = do
 -- diverging dead application from starving the parked pair whose firing
 -- would place the eraser that kills it.
 reduce :: ICM ()
-reduce = State.gets icActive >>= \case
-  ((a, b) : rest) -> do
-    State.modify' $ \st -> popped st { icActive = rest }
-    withLivePair a b (fire a b)
-    reduce
+reduce = nextPair >>= \case
+  Nothing -> pure ()
+  Just next -> popNext next >> fireNext next >> reduce
+
+-- | A pair the scheduler has chosen to fire: eager, or a parked
+-- instantiation.
+data Next = Eager Int Int | Parked Int Int
+  deriving (Eq, Show)
+
+-- | The pair 'reduce' fires next, left at the head of its queue: eager
+-- pairs first, newest first; parked ones only once no eager work remains,
+-- oldest first. Entries gone stale on the way, because other interactions
+-- consumed their nodes, are dropped here exactly as 'reduce' drops them.
+-- 'Telomare.IC.Space' schedules through this too, so its walk fires pairs
+-- in the runtime's order by construction.
+nextPair :: ICM (Maybe Next)
+nextPair = State.gets icActive >>= \case
+  ((a, b) : _) -> livePair a b >>= \case
+    True  -> pure (Just (Eager a b))
+    False -> popNext (Eager a b) >> nextPair
   [] -> State.gets (Seq.viewl . icParked) >>= \case
-    Seq.EmptyL -> pure ()
-    (a, b) Seq.:< rest -> do
-      State.modify' $ \st -> popped st { icParked = rest }
-      withLivePair a b (fireParked a b)
-      reduce
+    Seq.EmptyL -> pure Nothing
+    (a, b) Seq.:< _ -> livePair a b >>= \case
+      True  -> pure (Just (Parked a b))
+      False -> popNext (Parked a b) >> nextPair
+
+-- | Take the chosen pair off the head of its queue.
+popNext :: Next -> ICM ()
+popNext = \case
+  Eager _ _ -> State.modify' $ \st -> popped st { icActive = drop 1 (icActive st) }
+  Parked _ _ -> State.modify' $ \st -> popped st { icParked = Seq.drop 1 (icParked st) }
   where popped = account (\r -> r { resWork = resWork r - 1 })
 
--- | Run the action only if both nodes still exist and still face each
--- other principally; queue entries go stale when other interactions
--- consume their nodes.
-withLivePair :: Int -> Int -> ICM () -> ICM ()
-withLivePair a b act = do
+fireNext :: Next -> ICM ()
+fireNext = \case
+  Eager a b  -> fire a b
+  Parked a b -> fireParked a b
+
+-- | Whether both nodes still exist and still face each other principally;
+-- queue entries go stale when other interactions consume their nodes.
+livePair :: Int -> Int -> ICM Bool
+livePair a b = do
   live <- State.gets $ \st ->
     IntMap.member a (icNodes st) && IntMap.member b (icNodes st)
-  when live $ do
+  if not live then pure False else do
     pa <- peer (Port a 0)
     pb <- peer (Port b 0)
-    when (pa == Port b 0 && pb == Port a 0) act
+    pure (pa == Port b 0 && pb == Port a 0)
 
 -- | Fire a parked instantiation. Parking exists to give erasure time to
 -- reach a dead application before its template is spliced in: by the
@@ -662,7 +700,54 @@ fireParked a b = do
     Nothing -> fire n m
 
 fire :: Int -> Int -> ICM ()
-fire a b = do
+fire a b = demandedData a b >>= \case
+  Just (n, DataKnown e) -> revealData n (knownParts e) >> fire a b
+  Just (_, DataPart p) -> throwError . ICInternal $
+    "a symbolic input part (path " <> show p <> ") reached a concrete run"
+  Nothing -> fireRule a b
+
+-- | The data node of this pair whose shape its consumer needs before the
+-- pair can fire. Erasing or copying data needs no shape.
+demandedData :: Int -> Int -> ICM (Maybe (Int, DataSrc))
+demandedData a b = do
+  ka <- kindOf a
+  kb <- kindOf b
+  pure $ case (ka, kb) of
+    (ICData s, k) | demandsShape k -> Just (a, s)
+    (k, ICData s) | demandsShape k -> Just (b, s)
+    _noDemand                      -> Nothing
+  where
+    demandsShape = \case
+      ICSetEnv     -> True
+      ICApply      -> True
+      ICScrut      -> True
+      ICScrutAbort -> True
+      ICLeft       -> True
+      ICRight      -> True
+      ICSplit      -> True
+      _noShape     -> False
+
+-- | The parts of a known data value: Nothing for Zero.
+knownParts :: BasicExpr -> Maybe (DataSrc, DataSrc)
+knownParts = \case
+  PairB a b -> Just (DataKnown a, DataKnown b)
+  _zero     -> Nothing
+
+-- | Take a data node apart one layer, in place: it becomes the Zero or the
+-- Pair it is, and a pair's parts become data nodes of their own. Its
+-- principal wire is untouched, so the consumer that demanded it then fires
+-- by the ordinary rules. Not an interaction: the rule that follows is.
+revealData :: Int -> Maybe (DataSrc, DataSrc) -> ICM ()
+revealData n parts = do
+  note "data-reveal"
+  State.modify' $ \st -> st { icNodes = IntMap.adjust
+    (\nd -> nd { nodeKind = maybe ICZero (const ICPair) parts }) n (icNodes st) }
+  forM_ parts $ \(l, r) -> forM_ [(1, l), (2, r)] $ \(slot, src) -> do
+    c <- newNode (ICData src)
+    connect (Port n slot) (Port c 0)
+
+fireRule :: Int -> Int -> ICM ()
+fireRule a b = do
   ka <- kindOf a
   kb <- kindOf b
   dbg $ "fire " <> show a <> ":" <> show ka <> " ~ " <> show b <> ":" <> show kb
@@ -682,6 +767,7 @@ valueKind = \case
   ICAbort   -> True
   ICAborted -> True
   ICStuckV _ -> True
+  ICData _  -> True
   _notValue -> False
 
 -- | An ill-shaped interaction: the consumer's result becomes a stuck value
@@ -1081,6 +1167,7 @@ describeValue depth n
         sb <- describeValue (depth - 1) (portNode b)
         pure $ "(" <> sa <> "," <> sb <> ")"
       ICRef t _ -> pure $ "ref" <> show t
+      ICData _ -> pure "data"
       ICDup l  -> do
         src <- peer (Port n 0)
         s <- describeValue (depth - 1) (portNode src)
@@ -1171,6 +1258,9 @@ readback (Port n _) = kindOf n >>= \case
   ICGate -> pure GateB
   ICAbort -> pure AbortB
   ICAborted -> AbortEE . AbortedF <$> (readbackData =<< peer (Port n 1))
+  ICData (DataKnown e) -> pure (cata dataTerm e)
+  ICData (DataPart p) -> throwError . ICInternal $
+    "readback: symbolic input part at path " <> show p
   -- a stuck value survived into demanded output: only now is it an error
   ICStuckV msg -> throwError $ ICStuck msg
   k -> throwError . ICStuck $ "result contains a non-value: " <> show k
@@ -1182,7 +1272,14 @@ readbackData (Port n _) = kindOf n >>= \case
   ICPair -> PairB <$> (readbackData =<< peer (Port n 1))
                   <*> (readbackData =<< peer (Port n 2))
   ICZero    -> pure ZeroB
+  ICData (DataKnown e) -> pure e
   _nonData  -> pure ZeroB
+
+-- | A data value as a term.
+dataTerm :: BasicExprF CompiledExpr -> CompiledExpr
+dataTerm = \case
+  ZeroSF     -> ZeroB
+  PairSF a b -> PairB a b
 
 -- * Entry points
 
@@ -1285,4 +1382,65 @@ icRunReport :: Map (Digest SHA256) CapShape -> Int -> CompiledExpr
             -> (Either RunTimeError CompiledExpr, ICCost)
 icRunReport guidance fuel term =
   let (r, st) = icRunState guidance fuel term
+  in (icOutcome r, icCost st)
+
+-- * Iterations: main applied to an input
+
+-- | Build the net of one driver iteration, @main@ applied to a data input
+-- ('Telomare.Machine.appB'), with the input as one node of the given kind;
+-- returns the root. The term is compiled with a Zero standing in for the
+-- input, and that node then takes the input's kind: a Zero, or the whole
+-- input held as one 'ICData' node. Either way the input is one node, so
+-- the net is built identically whatever the input is — which is what lets
+-- 'Telomare.IC.Space' run the same construction for every input at once.
+buildApplied :: CompiledExpr -> ICKind -> ICM Int
+buildApplied mainTerm kind = do
+  let term = appB mainTerm ZeroB
+  unless (Map.null (envUsage term)) . throwError $
+    ICStuck "unbound Env at top level"
+  setupSelectors
+  root <- newNode ICRoot
+  p <- compileTerm (keyDefers term)
+  connect (Port root 0) p
+  -- appB main i = SetEnv (SetEnv (Pair twiddle (Pair i main)))
+  outer <- expect ICSetEnv 1 =<< peer (Port root 0)
+  inner <- expect ICSetEnv 1 =<< peer (Port outer 0)
+  frame <- expect ICPair 0 =<< peer (Port inner 0)
+  args <- expect ICPair 0 =<< peer (Port frame 2)
+  slot <- expect ICZero 0 =<< peer (Port args 1)
+  State.modify' $ \st -> st { icNodes = IntMap.adjust
+    (\nd -> nd { nodeKind = kind }) slot (icNodes st) }
+  pure root
+  where
+    expect k s (Port n s') = kindOf n >>= \k' ->
+      if k' == k && s' == s then pure n else throwError . ICInternal $
+        "buildApplied: expected " <> show k <> " at slot " <> show s
+          <> ", found " <> show k' <> " at slot " <> show s'
+
+-- | How a concrete input enters the net: Zero as itself, anything else
+-- held whole until a consumer takes it apart.
+inputKind :: BasicExpr -> ICKind
+inputKind = \case
+  ZeroB -> ICZero
+  input -> ICData (DataKnown input)
+
+-- | Run @main@ on one input, the way the driver's loop runs an iteration:
+-- 'icRunState' of @appB main input@, except that the input is not built
+-- into the net node by node but enters as one node and is taken apart only
+-- as far as the program looks at it.
+icRunApplied :: Map (Digest SHA256) CapShape -> Int -> CompiledExpr -> BasicExpr
+             -> (Either ICError CompiledExpr, ICState)
+icRunApplied guidance fuel mainTerm input =
+  State.runState (runExceptT go) (emptyState guidance fuel)
+  where
+    go = do
+      root <- buildApplied mainTerm (inputKind input)
+      reduce
+      readback =<< peer (Port root 0)
+
+-- | 'icRunReport' for one iteration ('icRunApplied').
+icRunAppliedReport :: Map (Digest SHA256) CapShape -> Int -> CompiledExpr
+                   -> BasicExpr -> (Either RunTimeError CompiledExpr, ICCost)
+icRunAppliedReport guidance fuel mainTerm input =
+  let (r, st) = icRunApplied guidance fuel mainTerm input
   in (icOutcome r, icCost st)

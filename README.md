@@ -114,6 +114,32 @@ about 1.2TB for a run that fits in a few GB. An honest memory figure needs
 reachability over distinct nodes, which is not implemented; use `+RTS -s` for
 the real thing.
 
+On the interaction-net runtime (`--ic`) there is one: the net holds each node
+once, so `--ic --meter` counts the nodes, wire ends and waiting interactions it
+holds, exactly, and reports the most any iteration held. `--ic --certificate`
+works that figure out before running, for every input at once: it runs the
+net with an input whose shape is unknown, splitting the run in two wherever
+the program looks at a part of the input nobody has looked at yet, so each
+figure is the exact worst case and comes with an input that reaches it:
+
+```sh
+$ cabal run telomare -- tc_ultra_minimal.tel --ic --certificate
+IC storage certificate
+
+  Run this program on the interaction-net runtime (--ic), and on every
+  iteration, whatever its input, the net holds at most:
+
+    agents         561         reached by input 0
+    port entries   1,132       reached by input 0
+    pending pairs  8           reached by input 0
+...
+```
+
+A program that tells many input shapes apart can be too big to check: the
+check has a budget, and when it runs out it says that no limit was worked
+out instead of guessing. `simpleplus.tel` and `tictactoe.tel`, which read
+characters as unary numbers, are too big today.
+
 When sizing fails, the error names the recursion, where it is, and which of the
 two failures it is — a budget that was too small, or an input that nothing
 bounds. Only the first is fixable by raising the budget. See
@@ -381,7 +407,7 @@ pipeline. In pipeline order:
 | Resolve | `Telomare.Resolve` | resolves typed module imports, scope-checks only `DesugaredSurfaceTerm`, performs de Bruijn conversion and hash folding, and lowers core terms (`splitExpr`: `Term2 -> Term3`). |
 | Certify | `Telomare.EAL` | defer lifting and elementary-affine (EAL) certification of `Term3`; also publishes per-code guidance for the IC runtime. |
 | Size (totality) | `Telomare.Size`, `Telomare.Size.IR`, `Telomare.Machine` | telomare's distinguishing stage: `sizeTermM` abstractly interprets the program over symbolic input and infers a finite iteration count for every recursion site, then bakes the counts in (`Term3 -> CompiledExpr`). A program that cannot be sized does not compile. `Machine` is the shared step-algebra the sizing pass and the evaluators are assembled from. |
-| Evaluate | `Telomare.Eval.Reference`, `Telomare.Eval.Meter`, `Telomare.Fast` | the reference interpreter, the step-counting meter, and the fuel-based fast path (which skips sizing). |
+| Evaluate | `Telomare.Eval.Reference`, `Telomare.Eval.Meter`, `Telomare.Fast`, `Telomare.IC`, `Telomare.Eval.IC`, `Telomare.IC.Space` | the reference interpreter, the step-counting meter, the fuel-based fast path (which skips sizing), and the interaction-net runtime (`--ic`) with its admission gate, storage meter and storage certificate. |
 | Drive | `Telomare.Driver`, `Telomare.Artifact`, `Telomare.Certificate`, `Telomare.Levels` | orchestration (`compileModules`, `evalLoop`), `.telc` artifacts, and the static report. |
 
 The IR vocabulary shared by all stages lives under `Telomare.IR.*`

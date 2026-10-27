@@ -29,6 +29,7 @@ library
                      , Telomare.Error
                      , Telomare.Driver
                      , Telomare.IC
+                     , Telomare.IC.Space
                      , Telomare.Eval.IC
                      , Telomare.Eval.Reference
                      , Telomare.Fast

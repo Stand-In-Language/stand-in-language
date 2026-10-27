@@ -22,8 +22,9 @@ import Data.Ord (Down (..))
 import Telomare.EAL (CapShape, EALLiftedResult (..), ealCaptureLayouts,
                      inferEALCompiled, renderEALVerdict)
 import Telomare.Error (EALError (..), renderEALError)
-import Telomare.IC (ICCost (..), Resources (..), defaultFuel, icRunReport,
-                    maxResources, noResources)
+import Telomare.IC (ICCost (..), Resources (..), defaultFuel,
+                    icRunAppliedReport, maxResources, noResources)
+import Telomare.IR.Base (BasicExpr)
 import Telomare.IR.Core (CompiledExpr, RunTimeError)
 
 -- | What admission grants a session: the right to run on the net at all,
@@ -107,12 +108,15 @@ renderICMeter m = unlines $
     peak = icMeterPeak m
     tpl = icMeterTemplates m
 
--- | One iteration on the net under an admission's plan, measured. The
+-- | One iteration on the net under an admission's plan, measured: main
+-- applied to the iteration's input ('Telomare.IC.icRunApplied'). The
 -- outcome follows the reference evaluator's contract
 -- ('Telomare.IC.icOutcome'), so the loop treats both evaluators alike.
-evalIC :: ICPlan -> CompiledExpr -> (ICMeter, Either RunTimeError CompiledExpr)
-evalIC plan term =
-  let (outcome, cost) = icRunReport (icPlanLayouts plan) defaultFuel term
+evalIC :: ICPlan -> CompiledExpr -> BasicExpr
+       -> (ICMeter, Either RunTimeError CompiledExpr)
+evalIC plan mainTerm input =
+  let (outcome, cost) =
+        icRunAppliedReport (icPlanLayouts plan) defaultFuel mainTerm input
   in ( ICMeter (costInteractions cost) (costEvents cost)
          (costPeak cost) (costTemplates cost)
      , outcome )

@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase      #-}
 {-# LANGUAGE PatternSynonyms #-}
 module Main where
 
@@ -10,14 +11,15 @@ import Data.Maybe (catMaybes)
 import qualified Data.Set as Set
 import qualified System.IO.Strict as Strict
 import Telomare.Driver (CompiledProgram (..), SizingOption (..),
-                        compileMainReporting, compileUnitTest, evalLoopCore,
-                        keepAccum, plainEval, programPlan)
+                        compileMainReporting, compileUnitTest, evalLoopApplied,
+                        evalLoopCore, keepAccum, plainEval, programPlan)
 import Telomare.EAL (CodeGuidance (..), EALLiftedResult (..), Step (..),
                      deriveSizedGuidance, ealCaptureLayouts, envUsageL,
                      inferEALCompiled, inferEALFaithful, inferEALWithLifting)
 import Telomare.Eval.IC (ICMeter (..), ICPlan (..), admitIC, evalIC)
 import Telomare.Expand (expandModule, renderExpansionError)
 import Telomare.IC
+import Telomare.IC.Space
 import Telomare.IR.Base (AbortableF (..), BasicExpr, pattern AbortB,
                          pattern AbortEE, pattern EnvB, pattern GateB,
                          pattern GateSwitchEE, pattern LeftB, pattern PairB,
@@ -156,11 +158,55 @@ main = do
         Right cp -> case programPlan cp of
           Left refusal -> assertFailure $ "refused: " <> refusal
           Right plan   -> do
-            (_, viaIC) <- evalLoopCore (evalIC plan) (cpExpr cp)
+            (_, viaIC) <- evalLoopApplied (evalIC plan) (cpExpr cp)
                             keepAccum "" []
             (_, viaRef) <- evalLoopCore plainEval (cpExpr cp)
                              keepAccum "" []
             viaIC @?= viaRef
+    -- `--ic --certificate`: the walk must finish, each figure must be
+    -- exactly what a run on the input it names measures, and no input
+    -- may measure more. Every run on a lazily held input must also compute
+    -- what the reference evaluator computes on the built term.
+    spaceCertified :: String -> TestTree
+    spaceCertified src = testCase src $
+      case compileMainReporting MainSizing (parseAuxModule src : prelude)
+             "AuxModule" of
+        Left e   -> assertFailure $ "compilation failed: " <> show e
+        Right cp -> case programPlan cp of
+          Left refusal -> assertFailure $ "refused: " <> refusal
+          Right plan -> do
+            let layouts = icPlanLayouts plan
+                mainTerm = cpExpr cp
+                run = icRunApplied layouts defaultFuel mainTerm
+                measured i = icPeak (snd (run i))
+            case certifySpace defaultSpaceBudget layouts mainTerm of
+              SpaceUnknown why _ _ -> assertFailure $ "no certificate: " <> why
+              outcome@(SpaceBound c) -> do
+                resAgents (measured (peakInput (certAgents c)))
+                  @?= peakValue (certAgents c)
+                resPorts (measured (peakInput (certPorts c)))
+                  @?= peakValue (certPorts c)
+                resWork (measured (peakInput (certWork c)))
+                  @?= peakValue (certWork c)
+                forM_ sampleInputs $ \i -> do
+                  assertBool ("input " <> renderData i <> " measures "
+                                <> show (measured i) <> ", beyond the certificate")
+                    (certificateCovers (measured i) outcome)
+                  icOutcome (fst (run i))
+                    @?= icOutcome (fst (icRunState layouts defaultFuel
+                                          (appB mainTerm (dataTerm' i))))
+                  icOutcome (fst (run i)) @?= eval (appB mainTerm (dataTerm' i))
+    -- every data value with at most four pairs
+    sampleInputs :: [BasicExpr]
+    sampleInputs = concatMap trees [0 .. 4]
+      where
+        trees :: Int -> [BasicExpr]
+        trees 0 = [ZeroB]
+        trees n = [ PairB a b | k <- [0 .. n - 1], a <- trees k, b <- trees (n - 1 - k) ]
+    dataTerm' :: BasicExpr -> CompiledExpr
+    dataTerm' = \case
+      PairB a b -> p (dataTerm' a) (dataTerm' b)
+      _zero     -> z
     -- the driver's post-sizing guidance is derived from the unsized
     -- program's size-independent certificate, and it is the guidance
     -- inferring the sized program again gives: the same bodies, the same
@@ -386,8 +432,9 @@ main = do
                 Right plan -> do
                   -- the driver's shape: admit the program once, then
                   -- evaluate its applications under the granted plan
-                  let t = se (p (d 0 c) z)
-                      (m, r) = evalIC plan t
+                  let f = p (d 0 c) z
+                      t = appB f z
+                      (m, r) = evalIC plan f ZeroB
                   assertBool "layouts granted"
                     (not (Map.null (icPlanLayouts plan)))
                   r @?= eval t
@@ -578,6 +625,48 @@ main = do
         , driverAdmits ("validPlayer = \\x -> assert (not (toBool ($3 left x))) \"bad\"\n"
                      <> "main = \\input -> let p : validPlayer = left input\n"
                      <> "                 in (concat [concat [\"a\", \"b\"], (d2c p succ 0, 0)], 0)")
+        ]
+    , testGroup "storage certificate (--ic --certificate)"
+        [ spaceCertified "main = \\input -> (\"a\", 0)"
+        , spaceCertified "main = \\input -> (if left input then \"yes\" else \"no\", 0)"
+        , spaceCertified ("main = \\input -> (if left input then (if right input then \"ab\" else \"a\")"
+                       <> " else concat [\"b\", \"c\"], 0)")
+        , spaceCertified ("main = \\input -> (concat [succ (left input), \" is \"]"
+                       <> ", 0)")
+        , spaceCertified "main = \\input -> (d2c 1 (\\x -> d2c 1 succ x) 0, 0)"
+        , spaceCertified ("validPlayer = \\x -> assert (not (toBool ($3 left x))) \"bad\"\n"
+                       <> "main = \\input -> let p : validPlayer = left input\n"
+                       <> "                 in (concat [concat [\"a\", \"b\"], (d2c p succ 0, 0)], 0)")
+        , testCase "control that depends on the input splits the walk" $
+            case compileMainReporting MainSizing
+                   (parseAuxModule "main = \\input -> (if left input then \"yes\" else \"no\", 0)" : prelude)
+                   "AuxModule" of
+              Left e -> assertFailure $ "compilation failed: " <> show e
+              Right cp -> case certifySpace defaultSpaceBudget mempty (cpExpr cp) of
+                SpaceBound c -> assertBool ("worlds: " <> show (certWorlds c))
+                  (certWorlds c >= 3)
+                other -> assertFailure $ "expected a certificate, got " <> show other
+        , testCase "a spent budget claims nothing" $
+            case compileMainReporting MainSizing
+                   (parseAuxModule "main = \\input -> (concat [\"a\", \"b\"], 0)" : prelude)
+                   "AuxModule" of
+              Left e -> assertFailure $ "compilation failed: " <> show e
+              Right cp -> case certifySpace (SpaceBudget 10 100) mempty (cpExpr cp) of
+                SpaceUnknown {} -> pure ()
+                other -> assertFailure $ "expected no certificate, got " <> show other
+        , testCase "a lazily held input runs as the built one does" $
+            -- the same projections and copies, on the input held whole
+            -- and on the input built into the net node by node; main is a
+            -- closure whose body sees (input, captured env)
+            let body = p (d 300 (p (LeftB (LeftB EnvB))
+                                   (p (RightB (LeftB (LeftB EnvB))) (LeftB EnvB))))
+                         z
+                i = PairB (PairB ZeroB ZeroB) (PairB ZeroB (PairB ZeroB ZeroB))
+                lazy = fst (icRunApplied mempty defaultFuel body i)
+                built = fst (icRunState mempty defaultFuel (appB body (dataTerm' i)))
+            in do
+              lazy @?= built
+              icOutcome lazy @?= eval (appB body (dataTerm' i))
         ]
     , testGroup "post-sizing guidance derived from the unsized certificate"
         [ derivedAgrees "main = \\input -> (d2c 2 succ 0, 0)"
