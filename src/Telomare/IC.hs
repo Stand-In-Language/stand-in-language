@@ -90,11 +90,11 @@ import Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
 import Debug.Trace (trace)
 import Telomare.EAL (CapShape (..), Step (..), showSteps)
-import Telomare.IR.Base (AbortableF (..), BasicExpr, BasicExprF (..),
-                         FunctionIndex, StuckF (..), forget, pattern AbortB,
-                         pattern AbortEE, pattern AbortFW, pattern EnvB,
-                         pattern GateB, pattern PairB, pattern StuckEE,
-                         pattern StuckFW, pattern ZeroB)
+import Telomare.IR.Base (AbortOrigin, AbortableF (..), BasicExpr,
+                         BasicExprF (..), FunctionIndex, StuckF (..), forget,
+                         pattern AbortB, pattern AbortEE, pattern AbortFW,
+                         pattern EnvB, pattern GateB, pattern PairB,
+                         pattern StuckEE, pattern StuckFW, pattern ZeroB)
 import Telomare.IR.Core (CompiledExpr, CompiledExprF (..), RunTimeError (..))
 import Telomare.Machine (abortInd, deferB, doLeft, doRight, leftGateInd,
                          rightGateInd)
@@ -124,7 +124,8 @@ data ICKind
   | ICEra              -- ^ 1 port: eraser (affine discard)
   | ICZero             -- ^ 1 port
   | ICGate             -- ^ 1 port
-  | ICAbort            -- ^ 1 port
+  | ICAbort AbortOrigin
+                       -- ^ 1 port
   | ICRef TemplateId FunctionIndex
                        -- ^ 1 port: pointer into the template table, copied
                        --   freely by dups. Carries its own site's defer
@@ -132,7 +133,8 @@ data ICKind
                        --   bodies are equal, but defer equality is by
                        --   index, so readback needs the per-site identity
   | ICPair             -- ^ 3 ports: value, left component, right component
-  | ICAborted          -- ^ 2 ports: value, message
+  | ICAborted AbortOrigin
+                       -- ^ 2 ports: value, message
   | ICDup Label        -- ^ 3 ports: value to copy, copy, copy
   | ICSplit            -- ^ 3 ports: pair to take apart, left component,
                        --   right component — a projection pair fused into
@@ -141,7 +143,8 @@ data ICKind
   | ICSetEnv           -- ^ 2 ports: operand (awaits a pair), result
   | ICApply            -- ^ 3 ports: function head, env, result
   | ICScrut            -- ^ 2 ports: gate scrutinee, result
-  | ICScrutAbort       -- ^ 2 ports: abort message, result
+  | ICScrutAbort AbortOrigin
+                       -- ^ 2 ports: abort message, result
   | ICLeft             -- ^ 2 ports: projection target, result
   | ICRight            -- ^ 2 ports: projection target, result
   | ICStuckV String    -- ^ 1 port: an ill-shaped interaction's result. The
@@ -485,9 +488,9 @@ compileTerm t = case unwrap t of
   CompiledExprS (DeferSF _ _) -> do
     (tid, fi) <- compileDefer t
     value (ICRef tid fi)
-  CompiledExprA AbortF -> value ICAbort
-  CompiledExprA (AbortedF m) -> do
-    a <- newNode ICAborted
+  CompiledExprA (AbortF o) -> value (ICAbort o)
+  CompiledExprA (AbortedF o m) -> do
+    a <- newNode (ICAborted o)
     connect (Port a 1) =<< compileData m
     pure (Port a 0)
   where
@@ -623,8 +626,8 @@ valueKind = \case
   ICPair    -> True
   ICRef {}  -> True
   ICGate    -> True
-  ICAbort   -> True
-  ICAborted -> True
+  ICAbort _   -> True
+  ICAborted _ -> True
   ICStuckV _ -> True
   _notValue -> False
 
@@ -659,7 +662,7 @@ rule n nk m mk = case (nk, mk) of
     connect (Port ap 0) f
     connect (Port ap 1) e
     connect (Port ap 2) r
-  (ICSetEnv, ICAborted) -> Just $ passThrough "setenv-aborted" n 1 m
+  (ICSetEnv, ICAborted _) -> Just $ passThrough "setenv-aborted" n 1 m
   (ICSetEnv, ICStuckV _) -> Just $ passThrough "setenv-stuck" n 1 m
   (ICSetEnv, _) | valueKind mk -> Just $ do
     r <- peer (Port n 1)
@@ -674,8 +677,8 @@ rule n nk m mk = case (nk, mk) of
     deleteNode n >> deleteNode m
     instantiate tid e r
   (ICApply, ICGate) -> Just $ awaitShape "apply-gate" n m ICScrut
-  (ICApply, ICAbort) -> Just $ awaitShape "apply-abort" n m ICScrutAbort
-  (ICApply, ICAborted) -> Just $ do
+  (ICApply, ICAbort o) -> Just $ awaitShape "apply-abort" n m (ICScrutAbort o)
+  (ICApply, ICAborted _) -> Just $ do
     spend "apply-aborted"
     e <- peer (Port n 1)
     r <- peer (Port n 2)
@@ -721,7 +724,7 @@ rule n nk m mk = case (nk, mk) of
     connect (Port er 0) rb
     sel <- newNode (ICRef rightSelTpl rightSelFi)
     connect (Port sel 0) r
-  (ICScrut, ICAborted) -> Just $ passThrough "scrut-aborted" n 1 m
+  (ICScrut, ICAborted _) -> Just $ passThrough "scrut-aborted" n 1 m
   (ICScrut, ICStuckV _) -> Just $ passThrough "scrut-stuck" n 1 m
   (ICScrut, _) | valueKind mk -> Just $ do
     r <- peer (Port n 1)
@@ -729,22 +732,22 @@ rule n nk m mk = case (nk, mk) of
     stuckAt "scrut-nondata"
       ("gate scrutinee is " <> show mk <> ", not data") r []
   -- abort message arrived: Zero means carry on as the identity
-  (ICScrutAbort, ICZero) -> Just $ do
+  (ICScrutAbort _, ICZero) -> Just $ do
     spend "abort-zero"
     r <- peer (Port n 1)
     deleteNode n >> deleteNode m
     sel <- newNode (ICRef idSelTpl idSelFi)
     connect (Port sel 0) r
-  (ICScrutAbort, ICPair) -> Just $ do
+  (ICScrutAbort o, ICPair) -> Just $ do
     spend "abort-pair"
     r <- peer (Port n 1)
     deleteNode n
-    ab <- newNode ICAborted
+    ab <- newNode (ICAborted o)
     connect (Port ab 1) (Port m 0) -- the message pair survives underneath
     connect (Port ab 0) r
-  (ICScrutAbort, ICAborted) -> Just $ passThrough "abort-aborted" n 1 m
-  (ICScrutAbort, ICStuckV _) -> Just $ passThrough "abort-stuck" n 1 m
-  (ICScrutAbort, _) | valueKind mk -> Just $ do
+  (ICScrutAbort _, ICAborted _) -> Just $ passThrough "abort-aborted" n 1 m
+  (ICScrutAbort _, ICStuckV _) -> Just $ passThrough "abort-stuck" n 1 m
+  (ICScrutAbort _, _) | valueKind mk -> Just $ do
     r <- peer (Port n 1)
     deleteNode n >> deleteNode m
     stuckAt "abort-nondata"
@@ -752,7 +755,7 @@ rule n nk m mk = case (nk, mk) of
   -- projections
   (ICLeft, ICZero) -> Just $ passThrough "left-zero" n 1 m
   (ICLeft, ICPair) -> Just $ projectPair "left-pair" n m 1 2
-  (ICLeft, ICAborted) -> Just $ passThrough "left-aborted" n 1 m
+  (ICLeft, ICAborted _) -> Just $ passThrough "left-aborted" n 1 m
   (ICLeft, ICStuckV _) -> Just $ passThrough "left-stuck" n 1 m
   (ICLeft, _) | valueKind mk -> Just $ do
     r <- peer (Port n 1)
@@ -761,7 +764,7 @@ rule n nk m mk = case (nk, mk) of
       ("projection target is " <> show mk <> ", not a pair") r []
   (ICRight, ICZero) -> Just $ passThrough "right-zero" n 1 m
   (ICRight, ICPair) -> Just $ projectPair "right-pair" n m 2 1
-  (ICRight, ICAborted) -> Just $ passThrough "right-aborted" n 1 m
+  (ICRight, ICAborted _) -> Just $ passThrough "right-aborted" n 1 m
   (ICRight, ICStuckV _) -> Just $ passThrough "right-stuck" n 1 m
   (ICRight, _) | valueKind mk -> Just $ do
     r <- peer (Port n 1)
@@ -790,7 +793,7 @@ rule n nk m mk = case (nk, mk) of
       zv <- newNode ICZero
       connect (Port zv 0) c
   -- an aborted value passes through both projections, sharing its message
-  (ICSplit, ICAborted) -> Just $ do
+  (ICSplit, ICAborted o) -> Just $ do
     spend "split-aborted"
     cl <- peer (Port n 1)
     cr <- peer (Port n 2)
@@ -799,7 +802,7 @@ rule n nk m mk = case (nk, mk) of
     dm <- newNode . ICDup =<< freshLabel
     connect (Port dm 0) msg
     forM_ [(cl, 1), (cr, 2)] $ \(c, s) -> do
-      ab <- newNode ICAborted
+      ab <- newNode (ICAborted o)
       connect (Port ab 1) (Port dm s)
       connect (Port ab 0) c
   (ICSplit, ICStuckV msg) -> Just $ do
@@ -842,7 +845,7 @@ rule n nk m mk = case (nk, mk) of
         er <- newNode ICEra
         connect (Port el 0) la
         connect (Port er 0) rb
-  (ICEra, ICAborted) -> Just $ do
+  (ICEra, ICAborted _) -> Just $ do
     spend "era-aborted"
     msg <- peer (Port m 1)
     deleteNode n >> deleteNode m
@@ -892,14 +895,14 @@ rule n nk m mk = case (nk, mk) of
         connect (Port p2 2) (Port dr 2)
         connect (Port p1 0) c1
         connect (Port p2 0) c2
-  (ICDup l, ICAborted) -> Just $ do
+  (ICDup l, ICAborted o) -> Just $ do
     spend "dup-aborted"
     c1 <- peer (Port n 1)
     c2 <- peer (Port n 2)
     msg <- peer (Port m 1)
     deleteNode n >> deleteNode m
-    a1 <- newNode ICAborted
-    a2 <- newNode ICAborted
+    a1 <- newNode (ICAborted o)
+    a2 <- newNode (ICAborted o)
     dm <- newNode (ICDup l)
     connect (Port dm 0) msg
     connect (Port a1 1) (Port dm 1)
@@ -1111,8 +1114,8 @@ readback (Port n _) = kindOf n >>= \case
     Just tpl -> pure . StuckEE $ DeferSF fi (tplBody tpl)
     Nothing  -> throwError . ICInternal $ "readback: no template " <> show tid
   ICGate -> pure GateB
-  ICAbort -> pure AbortB
-  ICAborted -> AbortEE . AbortedF <$> (readbackData =<< peer (Port n 1))
+  ICAbort o -> pure (AbortB o)
+  ICAborted o -> AbortEE . AbortedF o <$> (readbackData =<< peer (Port n 1))
   -- a stuck value survived into demanded output: only now is it an error
   ICStuckV msg -> throwError $ ICStuck msg
   k -> throwError . ICStuck $ "result contains a non-value: " <> show k
@@ -1196,11 +1199,11 @@ icOutcome :: Either ICError CompiledExpr -> Either RunTimeError CompiledExpr
 icOutcome = \case
   Left e -> Left $ GenericRunTimeError ("IC runtime: " <> show e) ZeroB
   Right x -> case cata findError x of
-    Just msg -> Left $ AbortRunTime msg
-    Nothing  -> Right x
+    Just (o, msg) -> Left $ AbortRunTime o msg
+    Nothing       -> Right x
   where
     findError = \case
-      AbortFW (AbortedF e) -> Just e
+      AbortFW (AbortedF o e) -> Just (o, e)
       x                    -> asum x
 
 -- | Evaluate under the reference evaluator's contract ('icOutcome').

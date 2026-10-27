@@ -61,11 +61,11 @@ instance AbstractRunTime CompiledExpr where
     step = basicStep (stuckStep (abortStep unhandledError))
     unhandledError x = error $ "CompiledExpr eval unhandled case " <> prettyPrint x
     findError = \case
-      AbortFW (AbortedF e) -> Just e
+      AbortFW (AbortedF o e) -> Just (o, e)
       x -> asum x
     checkError x = case cata findError x of
-      Just e -> Left $ AbortRunTime e
-      _      -> pure x
+      Just (o, e) -> Left $ AbortRunTime o e
+      _           -> pure x
 
 evalPartial :: (Base g ~ f, Traversable f, BasicBase f, StuckBase f, DeferredEvalBase f, Recursive g, Corecursive g, PrettyPrintable g)
   => g -> g

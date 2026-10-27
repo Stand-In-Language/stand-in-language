@@ -83,7 +83,7 @@ freeVarsDeep = cata alg where
   alg (LamAFP _ n body)      = Set.delete (locatedNameText n) body
   alg (_ C.:< CaseUPF scrut alts) = scrut <> foldMap (\(p, body) -> patternRefs p <> body) alts <> caseRefs
     where
-      caseRefs = Set.fromList ["and", "listEqual", "foldl", "abort"]
+      caseRefs = Set.fromList ["and", "listEqual", "foldl"]
   alg e                    = F.fold e
 
   patternRefs :: PatternA -> Set String
@@ -97,8 +97,8 @@ freeVarsDeep = cata alg where
 -- when a snippet only uses a small slice of a large Prelude+UDT environment.
 --
 -- 'freeVarsDeep' also accounts for names that 'desugarTerm' injects into
--- case alternatives before 'process': @and@, @listEqual@,
--- @foldl@, @abort@. Without these the pruned LetUPF would fail with
+-- case alternatives before 'process': @and@, @listEqual@ and
+-- @foldl@. Without these the pruned LetUPF would fail with
 -- MissingDefinitions after case expansion.
 pruneBindings :: ExpandedSurfaceTerm
               -> [(String, ExpandedSurfaceTerm)]
@@ -208,8 +208,8 @@ splitExpr t2 = flip State.evalState (toEnum 0, toEnum 0) $
         LamF (Closed ()) (_, mkBody) -> closed $ clamS (mkBody id)
         LamF (LetBinding _ _) _ -> error "Telomare.Resolve.splitExpr: unexpected LetBinding"
       ParserTermH h -> case h of
-        CheckF tc c -> combine2 tc c $ \tc' c' ->
-          (\tc'' c'' -> anno :< Term3CheckingWrapper anno tc'' c'') <$> tc' <*> c'
+        CheckF kind tc c -> combine2 tc c $ \tc' c' ->
+          (\tc'' c'' -> anno :< Term3CheckingWrapper (AbortOrigin kind anno) tc'' c'') <$> tc' <*> c'
         ITEF i t e -> combine3 i t e $ \i' t' e' -> iteB_ <$> i' <*> t' <*> e'
         HLeftF x -> one x LeftB
         HRightF x -> one x RightB
@@ -450,7 +450,7 @@ data Term3LiftingF f
   | Term3LS (StuckF f)
   | Term3LA (AbortableF f)
   | Term3LUnsized UnsizedRecursionToken
-  | Term3LCheckingWrapper LocTag f f
+  | Term3LCheckingWrapper AbortOrigin f f
   | Term3LDeferRef (Digest SHA256)
   deriving (Eq, Show, Functor, Foldable, Traversable, Generic1)
   deriving Eq1 via (Generically1 Term3LiftingF)
@@ -475,7 +475,7 @@ instance Show1 Term3LiftingF where
     Term3LS x -> liftShowsPrec shwPrec shwList prec x
     Term3LA x -> liftShowsPrec shwPrec shwList prec x
     Term3LUnsized urt -> shows $ "Term3LUnsized" <> show urt
-    Term3LCheckingWrapper loc cf c -> shows "Term3LCheckingWrapper(" . shows loc . shows ", " . shwPrec 0 cf . shows ", " . shwPrec 0 c . shows ")"
+    Term3LCheckingWrapper o cf c -> shows "Term3LCheckingWrapper(" . shows o . shows ", " . shwPrec 0 cf . shows ", " . shwPrec 0 c . shows ")"
     Term3LDeferRef h -> shows "Term3LDeferRef " . shows h
 
 type Term3Lifting = Cofree Term3LiftingF LocTag
@@ -515,7 +515,7 @@ deferLift = cata hF where
     Term3S s -> (anno :<) . Term3LS <$> sequence s
     Term3A a -> (anno :<) . Term3LA <$> sequence a
     Term3Unsized urt -> pure $ anno :< Term3LUnsized urt
-    Term3CheckingWrapper loc cf f -> (anno :<) <$> (Term3LCheckingWrapper loc <$> cf <*> f)
+    Term3CheckingWrapper o cf f -> (anno :<) <$> (Term3LCheckingWrapper o <$> cf <*> f)
 
 -- | The key a lifted body is stored under in a 'DeferMap': a hash of the
 -- annotation-stripped body, in which nested defers appear as references.

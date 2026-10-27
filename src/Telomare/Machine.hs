@@ -146,7 +146,7 @@ gateSuperResult step handleOther = \case
 {-# INLINABLE gateAbortResult #-}
 gateAbortResult :: (Base g ~ f, AbortBase f, Recursive g, Corecursive g) => (g -> GateResult g) -> g -> GateResult g
 gateAbortResult handleOther = \case
-  a@(AbortEE (AbortedF _)) -> GateResult False False $ Just a
+  a@(AbortEE (AbortedF _ _)) -> GateResult False False $ Just a
   x -> handleOther x
 
 {-# INLINABLE gateIndexedResult #-}
@@ -236,8 +236,8 @@ superAbortStep :: (Base g ~ f, Traversable f, BasicBase f, StuckBase f, SuperBas
 superAbortStep step handleOther x = f x where
   pbStep bf = step . bf
   f = \case
-    FillFunction (AbortEE AbortF) (SuperEE (EitherPF n a b)) ->
-      mergeShallow n (pbStep (FillFunction (AbortEE AbortF)) a) (pbStep (FillFunction (AbortEE AbortF)) b)
+    FillFunction ab@(AbortEE (AbortF _)) (SuperEE (EitherPF n a b)) ->
+      mergeShallow n (pbStep (FillFunction ab) a) (pbStep (FillFunction ab) b)
     _ -> handleOther x
 
 {-# INLINABLE superAbortStepM #-}
@@ -246,21 +246,21 @@ superAbortStepM :: (Base g ~ f, Traversable f, BasicBase f, StuckBase f, SuperBa
 superAbortStepM step handleOther x = f x where
   pbStep bf = step . bf
   f = \case
-    FillFunction (AbortEE AbortF) (SuperEE (EitherPF n a b)) ->
-      liftM2 (mergeShallow n) (pbStep (FillFunction (AbortEE AbortF)) a) (pbStep (FillFunction (AbortEE AbortF)) b)
+    FillFunction ab@(AbortEE (AbortF _)) (SuperEE (EitherPF n a b)) ->
+      liftM2 (mergeShallow n) (pbStep (FillFunction ab) a) (pbStep (FillFunction ab) b)
     _ -> handleOther x
 
 indexedAbortStep :: (Base a ~ f, Traversable f, BasicBase f, StuckBase f, AbortBase f, IndexedInputBase f, Recursive a, Corecursive a, PrettyPrintable a)
   => (f a -> a) -> f a -> a
 indexedAbortStep handleOther = \case
-  FillFunction (AbortEE AbortF) (IndexedEE (IVarF _n)) -> AbortEE $ AbortedF AbortAny
+  FillFunction (AbortEE (AbortF o)) (IndexedEE (IVarF _n)) -> AbortEE $ AbortedF o AbortAny
   x -> handleOther x
 
 {-# INLINABLE indexedAbortStepM #-}
 indexedAbortStepM :: (Base a ~ f, Traversable f, BasicBase f, StuckBase f, AbortBase f, IndexedInputBase f, Recursive a, Corecursive a, PrettyPrintable a, Monad m)
   => (f a -> m a) -> f a -> m a
 indexedAbortStepM handleOther = \case
-  FillFunction (AbortEE AbortF) (IndexedEE (IVarF _n)) -> pure . AbortEE $ AbortedF AbortAny
+  FillFunction (AbortEE (AbortF o)) (IndexedEE (IVarF _n)) -> pure . AbortEE $ AbortedF o AbortAny
   x -> handleOther x
 
 indexedSuperStep :: (Base a ~ f, Traversable f, BasicBase f, StuckBase f, SuperBase f, IndexedInputBase f, Recursive a, Corecursive a, PrettyPrintable a)
@@ -280,22 +280,22 @@ indexedSuperStepM handleOther = \case
 abortStep :: (Base a ~ f, BasicBase f, StuckBase f, AbortBase f, Recursive a, Corecursive a, PrettyPrintable a) => (f a -> a) -> f a -> a
 abortStep handleOther =
   \case
-    StuckFW (LeftSF a@(AbortEE (AbortedF _))) -> a
-    StuckFW (RightSF a@(AbortEE (AbortedF _))) -> a
-    StuckFW (SetEnvSF a@(AbortEE (AbortedF _))) -> a
-    FillFunction a@(AbortEE (AbortedF _)) _ -> a
-    FillFunction GateB a@(AbortEE (AbortedF _)) -> a
-    FillFunction (AbortEE AbortF) a@(AbortEE (AbortedF _)) -> a
-    FillFunction (AbortEE AbortF) (BasicEE ZeroSF) -> deferB abortInd . StuckEE $ EnvSF
-    FillFunction (AbortEE AbortF) e@(BasicEE (PairSF _ _)) -> (\x -> debugTrace ("aborted with value: " <> prettyPrint x) x) . AbortEE $ AbortedF m where
+    StuckFW (LeftSF a@(AbortEE (AbortedF _ _))) -> a
+    StuckFW (RightSF a@(AbortEE (AbortedF _ _))) -> a
+    StuckFW (SetEnvSF a@(AbortEE (AbortedF _ _))) -> a
+    FillFunction a@(AbortEE (AbortedF _ _)) _ -> a
+    FillFunction GateB a@(AbortEE (AbortedF _ _)) -> a
+    FillFunction (AbortEE (AbortF _)) a@(AbortEE (AbortedF _ _)) -> a
+    FillFunction (AbortEE (AbortF _)) (BasicEE ZeroSF) -> deferB abortInd . StuckEE $ EnvSF
+    FillFunction (AbortEE (AbortF o)) e@(BasicEE (PairSF _ _)) -> (\x -> debugTrace ("aborted with value: " <> prettyPrint x) x) . AbortEE $ AbortedF o m where
       m = cata truncF e
       truncF = \case
         BasicFW ZeroSF       -> ZeroB
         BasicFW (PairSF a b) -> PairB a b
         _                    -> ZeroB -- consider generating a warning?
     -- stuck values
-    x@(AbortFW (AbortedF _)) -> embed x
-    x@(AbortFW AbortF) -> embed x
+    x@(AbortFW (AbortedF _ _)) -> embed x
+    x@(AbortFW (AbortF _)) -> embed x
     x -> handleOther x
 
 {-# INLINABLE abortStepM #-}
@@ -303,22 +303,22 @@ abortStepM :: (Base a ~ f, Traversable f, BasicBase f, StuckBase f, AbortBase f,
   => (f a -> m a) -> f a -> m a
 abortStepM handleOther x = f x where
   f = \case
-    StuckFW (LeftSF a@(AbortEE (AbortedF _))) -> pure a
-    StuckFW (RightSF a@(AbortEE (AbortedF _))) -> pure a
-    StuckFW (SetEnvSF a@(AbortEE (AbortedF _))) -> pure a
-    FillFunction a@(AbortEE (AbortedF _)) _ -> pure a
-    FillFunction GateB a@(AbortEE (AbortedF _)) -> pure a
-    FillFunction (AbortEE AbortF) a@(AbortEE (AbortedF _)) -> pure a
-    FillFunction (AbortEE AbortF) (BasicEE ZeroSF) -> pure . deferB abortInd . StuckEE $ EnvSF
-    FillFunction (AbortEE AbortF) e@(BasicEE (PairSF _ _)) -> pure . AbortEE $ AbortedF m where
+    StuckFW (LeftSF a@(AbortEE (AbortedF _ _))) -> pure a
+    StuckFW (RightSF a@(AbortEE (AbortedF _ _))) -> pure a
+    StuckFW (SetEnvSF a@(AbortEE (AbortedF _ _))) -> pure a
+    FillFunction a@(AbortEE (AbortedF _ _)) _ -> pure a
+    FillFunction GateB a@(AbortEE (AbortedF _ _)) -> pure a
+    FillFunction (AbortEE (AbortF _)) a@(AbortEE (AbortedF _ _)) -> pure a
+    FillFunction (AbortEE (AbortF _)) (BasicEE ZeroSF) -> pure . deferB abortInd . StuckEE $ EnvSF
+    FillFunction (AbortEE (AbortF o)) e@(BasicEE (PairSF _ _)) -> pure . AbortEE $ AbortedF o m where
       m = cata truncF e
       truncF = \case
         BasicFW ZeroSF       -> ZeroB
         BasicFW (PairSF a b) -> PairB a b
         _                    -> ZeroB -- consider generating a warning?
     -- stuck values
-    x'@(AbortFW (AbortedF _)) -> pure $ embed x'
-    x'@(AbortFW AbortF) -> pure $ embed x'
+    x'@(AbortFW (AbortedF _ _)) -> pure $ embed x'
+    x'@(AbortFW (AbortF _)) -> pure $ embed x'
     _ -> handleOther x
 
 -- list of defer indexes for functions generated during eval. Need to be unique (grammar under defer n should always be the same)
@@ -397,7 +397,7 @@ sizedRecursionChain tok n = iterate link base !! n where
   base = PairB (deferB unsizedStepMw abortBody)
                (PairB ZeroB (intB $ fromEnum tok))
   -- env: (i, (0, tok)); aborts with the AbortRecursion message (0, tok)
-  abortBody = SetEnvB (PairB (SetEnvB (PairB (AbortEE AbortF) (RightB EnvB)))
+  abortBody = SetEnvB (PairB (SetEnvB (PairB (AbortEE (AbortF recursionOrigin)) (RightB EnvB)))
                              (LeftB EnvB))
   link prev = PairB (deferB unsizedStepMrfb approxBody) (PairB prev trbE)
   -- env: (i, (recur, (tWrap, (r, (b, 0))))). The conditional is the STRICT
@@ -425,18 +425,23 @@ chainLinks (SizedRecursion sm) tok = case Map.lookup tok sm of
 -- | What a refinement wrapper around @c@ with check function @tc@ compiles
 -- to once sizing is done: apply @tc@ to @c@ and abort with the result as
 -- the message (a Zero result is the identity continuation), then yield @c@.
+--
+-- Every check shares the defer index 'removeRefinementWrappersTC', and its
+-- bodies differ only in the abort's origin. That is metadata: analyses
+-- keyed by index see the same structure for each, and those keyed by
+-- content keep them apart.
 refinementCheckB :: (Base g ~ f, BasicBase f, StuckBase f, AbortBase f, Recursive g, Corecursive g)
-  => g -> g -> g
-refinementCheckB tc c = SetEnvB $ PairB performTC (PairB tc c) where
+  => AbortOrigin -> g -> g -> g
+refinementCheckB o tc c = SetEnvB $ PairB performTC (PairB tc c) where
   innerTC = appB (LeftB EnvB) (RightB EnvB)
   performTC = deferB removeRefinementWrappersTC . SetEnvB $
-    PairB (SetEnvB $ PairB (AbortEE AbortF) innerTC) (RightB EnvB)
+    PairB (SetEnvB $ PairB (AbortB o) innerTC) (RightB EnvB)
 
 unsizedTestIndexed ::(Base g ~ f, BasicBase f, AbortBase f, IndexedInputBase f, Recursive g, Corecursive g)
   => Set Integer -> (UnsizedRecursionToken -> g -> g) -> UnsizedRecursionToken -> g -> g
 unsizedTestIndexed zeroes handleOther ri = \case
   iv@(IndexedEE (IVarF n)) -> debugTrace ("evalRecursionTest ivar " <> show n) $ if isUnbounded zeroes n
-    then debugTrace ("evalRecursion punted to abort on " <> show n) AbortEE . AbortedF . AbortUnsizeable . i2B . fromEnum $ ri
+    then debugTrace ("evalRecursion punted to abort on " <> show n) AbortEE . AbortedF sizingOrigin . AbortUnsizeable . i2B . fromEnum $ ri
     else if Set.member n zeroes
     then debugTrace ("unsizedTestIndexed resolved to zero for var " <> show n) ZeroB
     else iv
@@ -446,7 +451,7 @@ unsizedTestSuper :: (Base g ~ f, SuperBase f, AbortBase f, Recursive g, Corecurs
   => (g -> g) -> (UnsizedRecursionToken -> g -> g) -> UnsizedRecursionToken -> g -> g
 unsizedTestSuper reTest handleOther ri = \case
   SuperEE (EitherPF n a b) -> let getAU = \case
-                                    a'@(AbortEE (AbortedF (AbortUnsizeable _))) -> Just a'
+                                    a'@(AbortEE (AbortedF _ (AbortUnsizeable _))) -> Just a'
                                     _ -> Nothing
                                   na = reTest a
                                   nb = reTest b
@@ -511,7 +516,7 @@ unsizedStepM''' maxSize _zeros recursionTest handleOther x = f x where
     -- The payload names the recursion that ran out of budget. The depth
     -- reached is always `maxSize + 1`, so the caller reconstructs it from
     -- its settings.
-    UnsizedFW (SizeStepStubF tok n _) | n > maxSize -> pure . AbortEE . AbortedF . AbortRecursion . i2B $ fromEnum tok
+    UnsizedFW (SizeStepStubF tok n _) | n > maxSize -> pure . AbortEE . AbortedF sizingOrigin . AbortRecursion . i2B $ fromEnum tok
     UnsizedFW (SizeStepStubF tok n (BasicEE (PairSF _ trb))) ->
       pure $ PairB (deferB unsizedStepMrfa (unsizedStepBody tok (n + 1))) trb
     UnsizedFW (RecursionTestF ri x') -> pure . recursionTest ri $ x'
@@ -579,7 +584,7 @@ indexAbortIfUnboundStep :: (Base a ~ f, BasicBase f, StuckBase f, AbortBase f, I
 indexAbortIfUnboundStep zeroes handleOther =
   let res _s n = case (Set.member n zeroes, isUnbounded zeroes n) of
         (True, _) -> ZeroB
-        (_, True) -> AbortEE $ AbortedF AbortAny
+        (_, True) -> AbortEE $ AbortedF sizingOrigin AbortAny
         _ -> PairB (indexedEE . IVarF $ n * 2 + 1) (indexedEE . IVarF $ n * 2 + 2)
       leftI = \case
         BasicEE (PairSF l _) -> l
@@ -676,7 +681,7 @@ deferredEvalStep' handleOther = \case
 abortDeferredStep :: (Base a ~ f, BasicBase f, StuckBase f, AbortBase f, DeferredEvalBase f, Recursive a, Corecursive a)
   => (f a -> a) -> f a -> a
 abortDeferredStep handleOther = \case
-  FillFunction a@(AbortEE AbortF) (DeferredEE (BarrierF e)) -> deferredEE . BarrierF $ FillFunctionEE a e
+  FillFunction a@(AbortEE (AbortF _)) (DeferredEE (BarrierF e)) -> deferredEE . BarrierF $ FillFunctionEE a e
 
   x -> handleOther x
 

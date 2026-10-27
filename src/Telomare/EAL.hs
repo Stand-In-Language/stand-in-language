@@ -103,10 +103,10 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import qualified Data.Tree as Tree
 import Telomare.Error (Blame (..), EALError (..), pattern Blame, renderEALError)
-import Telomare.IR.Base (AbortableF (..), BasicExprF (..), FunctionIndex,
-                         StuckF (..), UnsizedRecursionToken, forget,
-                         pattern AbortFW, pattern BasicFW, pattern StuckFW,
-                         pattern ZeroB)
+import Telomare.IR.Base (AbortOrigin, AbortableF (..), BasicExprF (..),
+                         FunctionIndex, StuckF (..), UnsizedRecursionToken,
+                         forget, pattern AbortFW, pattern BasicFW,
+                         pattern StuckFW, pattern ZeroB)
 import Telomare.IR.Core (CompiledExpr, Term3, compiled2Term3)
 import Telomare.IR.Loc (LocTag (..))
 import Telomare.Machine (refinementCheckB, sizedRecursionChain, unsizedStepMrfb)
@@ -1017,11 +1017,11 @@ intrinsic ctx paths (anno :< t) = case t of
   StuckFW (RightSF x) -> case envPath x of
     Just steps -> envOccurrence ctx paths anno (steps <> [SR])
     Nothing    -> projection ctx paths anno x snd
-  AbortFW AbortF -> do
+  AbortFW (AbortF _) -> do
     recordLeaf ctx paths
     ct <- builtinCode TAbort
     plainSigma anno "abort is an unboxed value" ct
-  AbortFW (AbortedF _) -> recordLeaf ctx paths >> bottomSigma
+  AbortFW AbortedF {} -> recordLeaf ctx paths >> bottomSigma
   Term3LCheckingWrapper _ _ c -> intrinsic ctx paths c
 
 -- | The view of a pair's component. A closed data tree under a pair is
@@ -2365,7 +2365,7 @@ deriveSizedGuidance links unsized cert sized = do
       image (anno :< t) = case t of
         Term3LDeferRef h -> anno :< Term3LDeferRef (Map.findWithDefault h h images)
         Term3LUnsized tok -> snd (liftedChain tok (links tok))
-        Term3LCheckingWrapper _ tc c -> snd (refinementCheckL anno (image tc) (image c))
+        Term3LCheckingWrapper o tc c -> snd (refinementCheckL o anno (image tc) (image c))
         other -> anno :< fmap image other
       preimages = Map.fromListWith (<>) [ (h', [h]) | (h, h') <- Map.toList images ]
       solved h = case Map.lookup h (ealGuidance cert) of
@@ -2399,10 +2399,10 @@ faithfulProgram (DeferMap dm) mainTerm =
     rewrite :: Term3Lifting -> (DeferMap, Term3Lifting)
     rewrite (anno :< t) = case t of
       Term3LUnsized tok -> (anno <$) <$> liftedChain tok 2
-      Term3LCheckingWrapper _ tc c -> do
+      Term3LCheckingWrapper o tc c -> do
         tc' <- rewrite tc
         c' <- rewrite c
-        refinementCheckL anno tc' c'
+        refinementCheckL o anno tc' c'
       other -> (anno :<) <$> traverse rewrite other
 
 -- | A sized recursion chain of n links, lifted: its constant bodies (the
@@ -2413,16 +2413,16 @@ liftedChain tok n = deferLift . compiled2Term3 $ sizedRecursionChain tok n
 
 -- | The check a refinement wrapper compiles to, lifted, around lifted
 -- operands.
-refinementCheckL :: LocTag -> Term3Lifting -> Term3Lifting
+refinementCheckL :: AbortOrigin -> LocTag -> Term3Lifting -> Term3Lifting
                  -> (DeferMap, Term3Lifting)
-refinementCheckL anno tc c = case deferLift (compiled2Term3 template) of
+refinementCheckL o anno tc c = case deferLift (compiled2Term3 template) of
   (dm, _ :< Term3LS (SetEnvSF (_ :< Term3LB (PairSF perform _)))) ->
     (dm, anno :< Term3LS (SetEnvSF (anno :< Term3LB (PairSF (anno <$ perform)
       (anno :< Term3LB (PairSF tc c))))))
   _unexpected -> error "refinementCheckL: unexpected refinement check shape"
   where
     template :: CompiledExpr
-    template = refinementCheckB ZeroB ZeroB
+    template = refinementCheckB o ZeroB ZeroB
 
 -- | The compile gate: certify a whole program, additionally requiring
 -- that main is an appliable function. Certification itself tolerates a
@@ -2830,10 +2830,10 @@ codeOf (_ :< t) = case t of
 
 carriesCode :: Term3Lifting -> Bool
 carriesCode (_ :< t) = case t of
-  Term3LDeferRef _ -> True
-  StuckFW GateSF   -> True
-  AbortFW AbortF   -> True
-  other            -> any carriesCode other
+  Term3LDeferRef _   -> True
+  StuckFW GateSF     -> True
+  AbortFW (AbortF _) -> True
+  other              -> any carriesCode other
 
 -- | @SetEnv (SetEnv (Pair tw (Pair operand (Pair (DeferRef code) cap))))@:
 -- the shape 'Telomare.IR.Builder.appS' gives an application whose

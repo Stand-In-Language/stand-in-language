@@ -200,7 +200,8 @@ unitTests parse = do
       unitTest2 = unitTest2' parse
       unitTestStaticChecks = unitTestStaticChecks' parse
       buildMainTest s = case fmap (compileMain' (SizingSettings 255 True)) (parse s) of
-        Right (Right g) -> let evalMain = funWrap g appB
+        -- errors compare by their rendering, which carries the abort origin
+        Right (Right g) -> let evalMain = second (first show) . funWrap g appB
                            in pure $ \st i e -> it ("main input " <> i) $ evalMain (Just (i, st)) `shouldBe` e
         z -> pure $ \st _i _e -> runIO . expectationFailure $ "failed to compile main:\n" <> show st <> "\nbecause:\n" <> show z
   describe "EAL certification" $ do
@@ -271,11 +272,17 @@ unitTests parse = do
                                                   (pure (foldr (PairB . i2B) ZeroB [1,2,3]))
 
   describe "refinement" $ do
-    unitTestStaticChecks "main : (\\x -> assert (not x) \"fail\") = 1" (== Left (StaticCheckError "user abort: fail"))
+    unitTestStaticChecks "main : (\\x -> assert (not x) \"fail\") = 1" (== Left (StaticCheckError "user abort: fail (from refinement check at 2:6)"))
     unitTestStaticChecks "main : (\\x -> assert (not (left x)) \"fail\") = 1" (not . null)
     unitTestStaticChecks "main : (\\x -> assert 1 \"fail\") = 1" (not . null)
-    unitTestStaticChecks "main : (\\f -> assert (not (f 2)) \"boop\") = \\x -> left x" (== Left (StaticCheckError "user abort: boop"))
+    unitTestStaticChecks "main : (\\f -> assert (not (f 2)) \"boop\") = \\x -> left x" (== Left (StaticCheckError "user abort: boop (from refinement check at 2:6)"))
     unitTestStaticChecks "main : (\\f -> assert (not (f 2)) \"boop\") = \\x -> left (left x)" (not . null)
+
+  describe "abort origins" $ do
+    unitTestStaticChecks "main = abort \"boom\"" (== Left (StaticCheckError "user abort: boom (from abort at 2:8)"))
+    -- the location is the abort call's, not its caller's
+    unitTestStaticChecks "f = \\x -> abort x\nmain = f \"boom\"" (== Left (StaticCheckError "user abort: boom (from abort at 2:11)"))
+    unitTestStaticChecks "main = case 3 of\n  0 -> 1" (== Left (StaticCheckError "user abort: Non-exhaustive patterns in case (from pattern match at 2:8)"))
 
   describe "unitTest2" $ do
     unitTest2 "main = 0" "0"
@@ -330,7 +337,7 @@ unitTests parse = do
     unitTestMainPlus <- buildMainTest testMainPlus
     unitTestMainPlus ZeroB "0 0" ("0 plus 0 is 0", Right ZeroB)
     unitTestMainPlus ZeroB "9 9" ("9 plus 9 is 18", Right ZeroB)
-    unitTestMainPlus ZeroB "9 a" ("runtime error:\nAborted, user abort: invalid input", Left (AbortRunTime (AbortUser $ s2b "invalid input")))
+    unitTestMainPlus ZeroB "9 a" ("runtime error:\nAborted, user abort: invalid input (from refinement check at 15:31)", Left "Aborted, user abort: invalid input (from refinement check at 15:31)")
 
 
   {- TODO -- figure out why this broke

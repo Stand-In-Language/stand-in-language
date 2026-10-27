@@ -74,9 +74,9 @@ extractInputRestrictions = cleanup . f Nothing where
       Just False -> Just (StrictAccum (InputRestrictions (Set.singleton n) mempty) ZeroB)
       Just True  -> Just (StrictAccum (InputRestrictions mempty (Set.singleton n)) $ PairB ZeroB ZeroB)
       _          -> Just (StrictAccum mempty ZeroB) -- is this ok?
-    FillFunction (AbortEE AbortF) i -> f (Just False) i
+    FillFunction (AbortEE (AbortF _)) i -> f (Just False) i
     -- a value guarded by a nested refinement check (see 'GuardedEE')
-    FillFunction (FillFunctionEE (AbortEE AbortF) chk) v -> do
+    FillFunction (FillFunctionEE (AbortEE (AbortF _)) chk) v -> do
       StrictAccum sc _ <- f (Just False) chk
       StrictAccum sv v' <- f expected v
       pure $ StrictAccum (sc <> sv) v'
@@ -105,9 +105,9 @@ findInputLimitStepM :: (InputSizingExprF InputSizingExpr -> StrictAccum InputRes
   -> InputSizingExprF InputSizingExpr -> StrictAccum InputRestrictions InputSizingExpr
 findInputLimitStepM handleOther x = f x where
   f = \case
-    UnsizedFW (RefinementWrapperF _lt tc c) ->
+    UnsizedFW (RefinementWrapperF o tc c) ->
       let
-          performTC = SetEnvB $ PairB (AbortEE AbortF) (appB tc c)
+          performTC = SetEnvB $ PairB (AbortB o) (appB tc c)
           stripBarrier = \case
             DeferredFW (BarrierF inner) -> inner
             other -> embed other
@@ -118,13 +118,13 @@ findInputLimitStepM handleOther x = f x where
 -- |A value guarded by a refinement check that could not be decided against
 -- symbolic input: @abort chk v@ yields @v@ when @chk@ is zero, and aborts
 -- otherwise. Barrier-wrapped, since @chk@ is always a residual here.
-pattern GuardedEE :: InputSizingExpr -> InputSizingExpr -> InputSizingExpr
-pattern GuardedEE chk v <- DeferredEE (BarrierF (FillFunctionEE (FillFunctionEE (AbortEE AbortF) chk) v))
+pattern GuardedEE :: AbortOrigin -> InputSizingExpr -> InputSizingExpr -> InputSizingExpr
+pattern GuardedEE o chk v <- DeferredEE (BarrierF (FillFunctionEE (FillFunctionEE (AbortEE (AbortF o)) chk) v))
 
-guardedEE :: InputSizingExpr -> InputSizingExpr -> InputSizingExpr
-guardedEE chk = \case
-  a@(AbortEE (AbortedF _)) -> a
-  v -> deferredEE . BarrierF $ FillFunctionEE (FillFunctionEE (AbortEE AbortF) chk) v
+guardedEE :: AbortOrigin -> InputSizingExpr -> InputSizingExpr -> InputSizingExpr
+guardedEE o chk = \case
+  a@(AbortEE (AbortedF _ _)) -> a
+  v -> deferredEE . BarrierF $ FillFunctionEE (FillFunctionEE (AbortB o) chk) v
 
 -- |Evaluates a refinement check function against symbolic input, leaving
 -- input-dependent gates and aborts as barrier-wrapped residuals for
@@ -155,16 +155,16 @@ refinementCheckStep = basicStep (stuckStep (abortStep (guardStep (gateSwitchStep
   -- a guard wraps a value whose check always runs, so it can float out of
   -- any position that is always evaluated (but not out of gate branches)
   guardStep handleOther' = \case
-    StuckFW (LeftSF (GuardedEE chk v)) -> guardedEE chk . step . StuckFW $ LeftSF v
-    StuckFW (RightSF (GuardedEE chk v)) -> guardedEE chk . step . StuckFW $ RightSF v
-    StuckFW (SetEnvSF (GuardedEE chk v)) -> guardedEE chk . step . StuckFW $ SetEnvSF v
-    FillFunction GateB (GuardedEE chk v) -> guardedEE chk . step $ FillFunction GateB v
-    FillFunction (GuardedEE chk c) e -> guardedEE chk . step $ FillFunction c e
+    StuckFW (LeftSF (GuardedEE o chk v)) -> guardedEE o chk . step . StuckFW $ LeftSF v
+    StuckFW (RightSF (GuardedEE o chk v)) -> guardedEE o chk . step . StuckFW $ RightSF v
+    StuckFW (SetEnvSF (GuardedEE o chk v)) -> guardedEE o chk . step . StuckFW $ SetEnvSF v
+    FillFunction GateB (GuardedEE o chk v) -> guardedEE o chk . step $ FillFunction GateB v
+    FillFunction (GuardedEE o chk c) e -> guardedEE o chk . step $ FillFunction c e
     other -> handleOther' other
   handleOther = \case
     FillFunction GateB i@(IndexedEE _) -> deferredEE . BarrierF . embed $ FillFunction GateB i
-    FillFunction a@(AbortEE AbortF) i@(IndexedEE _) -> deferredEE . BarrierF . embed $ FillFunction a i
-    UnsizedFW (RefinementWrapperF _ tc c) -> step $ FillFunction (step $ FillFunction (AbortEE AbortF) (app tc c)) c
+    FillFunction a@(AbortEE (AbortF _)) i@(IndexedEE _) -> deferredEE . BarrierF . embed $ FillFunction a i
+    UnsizedFW (RefinementWrapperF o tc c) -> step $ FillFunction (step $ FillFunction (AbortB o) (app tc c)) c
     other -> error $ "refinementCheckStep eval unexpected:\n" <> prettyPrint other
   -- 'appB' over already-evaluated operands: tc is a closure, so twiddle it
   -- into (function, (input, env)) before applying
@@ -176,7 +176,7 @@ term3ToUnsizedExpr = runIdentity . cata conv where
   conv = convertBasic (convertStuck (convertAbort convertOther))
   convertOther (_ CofreeT.:< g) = case g of
     Term3Unsized urt -> pure . unsizedEE . UnsizedStubF urt $ EnvB
-    Term3CheckingWrapper loc tc c -> unsizedEE <$> (RefinementWrapperF loc <$> tc <*> c)
+    Term3CheckingWrapper o tc c -> unsizedEE <$> (RefinementWrapperF o <$> tc <*> c)
     _z -> error "term3ToUnsizedExpr could not convert"
 
 -- get simple input limits derived from refinements
@@ -263,11 +263,11 @@ sizeTermM sizingSettings x = tidyUp . transformNoDeferM evalStep $ mx where
     other -> embed other
   foldAborted = cata f where
     f = \case
-      AbortFW (AbortedF (AbortRecursion i)) -> case b2i i of
+      AbortFW (AbortedF _ (AbortRecursion i)) -> case b2i i of
         Just i' -> Just . OverfueledSR $ toEnum i'
         _ -> error $ "sizeTermM foldAborted unexpected AbortRecursion value:\n" <> prettyPrint i
-      AbortFW (AbortedF AbortAny) -> error "sizeTermM AbortAny hit"
-      AbortFW (AbortedF (AbortUnsizeable t)) -> case b2i t of
+      AbortFW (AbortedF _ AbortAny) -> error "sizeTermM AbortAny hit"
+      AbortFW (AbortedF _ (AbortUnsizeable t)) -> case b2i t of
         Just i' -> Just . UnsizableSR $ toEnum i'
         _ -> error $ "sizeTermM foldAborted unexpected AbortUnsizeable value:\n" <> prettyPrint t
       other                             -> Data.Foldable.fold other
@@ -282,10 +282,10 @@ sizeTermM sizingSettings x = tidyUp . transformNoDeferM evalStep $ mx where
 removeRefinementWrappers :: (Base g ~ f, BasicBase f, StuckBase f, AbortBase f, UnsizedBase f, Recursive g, Corecursive g) => g -> g
 removeRefinementWrappers = cata f where
   f = \case
-    UnsizedFW (RefinementWrapperF _lt tc c) -> refinementCheckB tc c
+    UnsizedFW (RefinementWrapperF o tc c) -> refinementCheckB o tc c
     x -> embed x
 
-evalStaticCheck :: Bool -> StaticCheckExpr -> Maybe BasicExpr
+evalStaticCheck :: Bool -> StaticCheckExpr -> Maybe (AbortOrigin, BasicExpr)
 evalStaticCheck shouldCap t =
   let unhandledError x = error ("evalA unhandled case " <> prettyPrint x)
       runResult = let aStep :: StaticCheckExprF StaticCheckExpr -> StaticCheckExpr
@@ -296,7 +296,7 @@ evalStaticCheck shouldCap t =
                       x = (\x' -> debugTrace ("evalA starting expr:\n" <> prettyPrint x') x') $ if shouldCap then capMain inp t else t
                   in eval' x
       getAborted = \case
-        AbortFW (AbortedF e) -> Just e
+        AbortFW (AbortedF o e) -> Just (o, e)
         DeferredFW (BarrierF _) -> Nothing
         x                    -> foldr (<|>) Nothing x
   in cata getAborted runResult

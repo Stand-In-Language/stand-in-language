@@ -28,10 +28,10 @@ import Data.Functor.Identity (Identity (..))
 import Data.List (intersperse)
 import Data.Void (Void)
 import GHC.Generics (Generic1, Generically1 (..))
-import Telomare.IR.Base (BasicBase (..), BasicExprF (..), CarryAnno (..),
-                         HighBase (..), HighTermF (..), LamBase (..),
-                         LamTermF (..))
-import Telomare.IR.Loc (LocTag, LocatedName, locatedNameText)
+import Telomare.IR.Base (AbortKind, BasicBase (..), BasicExprF (..),
+                         CarryAnno (..), HighBase (..), HighTermF (..),
+                         LamBase (..), LamTermF (..))
+import Telomare.IR.Loc (LocTag, LocatedName, locatedName, locatedNameText)
 
 -- |AST for patterns in `case` expressions
 data PatternF t f
@@ -252,6 +252,17 @@ type ExpandedSurfaceTerm = Cofree (UnprocessedParsedTermF () PatternA) LocTag
 type PatternA = Fix (PatternF AnnotatedEST)
 
 -- |Case-free surface term accepted by name resolution.
+-- | An abort with message @msg@: a check that always fails, with the
+-- message @(1, msg)@. Generated code and the @abort@ builtin build it in
+-- place rather than call a shared function, so each abort carries its own
+-- kind and location.
+abortTerm :: AbortKind -> LocTag -> Cofree (UnprocessedParsedTermF c p) LocTag
+          -> Cofree (UnprocessedParsedTermF c p) LocTag
+abortTerm kind loc msg = loc :< UnprocessedParsedTermH (CheckF kind check (loc :< IntUPF 1))
+  where
+    check = loc :< UnprocessedParsedTermL (LamF (locatedName loc "__abort_checked") message)
+    message = loc :< UnprocessedParsedTermB (PairSF (loc :< IntUPF 1) msg)
+
 type DesugaredSurfaceTermF = UnprocessedParsedTermF Void Void
 type DesugaredSurfaceTerm = Cofree DesugaredSurfaceTermF LocTag
 

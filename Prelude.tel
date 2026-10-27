@@ -122,8 +122,7 @@ quicksort = { \l -> right l
             , id
             }
 
-abort = \str -> let x : (\y -> (1, str)) = 1
-                in x
+-- abort is a builtin, so each call can report where it was made
 
 assert = \t s -> if not t then (1, s) else 0
 

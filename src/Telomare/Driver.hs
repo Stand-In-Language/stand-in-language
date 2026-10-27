@@ -57,8 +57,8 @@ convertPT ll = forget . flip State.evalState (toEnum 0, toEnum 0) . cata (f (con
   f convertOther (_ CofreeT.:< g)= case g of
     StuckFW (DeferSF _ x) -> x >>= deferS
     Term3Unsized urt -> pure $ iterate SetEnvB EnvB !! ll urt
-    Term3CheckingWrapper _ tc c ->
-      let performTC = (>>= deferS) ((\ia -> SetEnvB (PairB (SetEnvB (PairB (AbortEE AbortF) ia))
+    Term3CheckingWrapper o tc c ->
+      let performTC = (>>= deferS) ((\ia -> SetEnvB (PairB (SetEnvB (PairB (AbortB o) ia))
                                                      (RightB EnvB))) <$> appTC)
       in (\tc' c' ptc -> SetEnvB (PairB ptc (PairB  tc' c'))) <$> tc <*> c <*> performTC
     x -> convertOther x
@@ -100,8 +100,8 @@ runStaticChecks t =
   let result = evalStaticCheck False scTerm
       scTerm = runIdentity $ cata (convertBasic (convertStuck (convertAbort (\_ -> error "error converting for runStaticChecks")))) t
   in case debugTrace ("running static checks for:\n" <> prettyPrint t) result of
-    Nothing -> pure t
-    Just e  -> Left . StaticCheckError $ convertAbortMessage e
+    Nothing     -> pure t
+    Just (o, e) -> Left . StaticCheckError $ describeAbort o e
 
 compileMain :: ExpandedModules -> String -> Either EvalError CompiledExpr
 compileMain modules term = cpExpr <$> compileMainReporting MainSizing modules term
@@ -226,8 +226,8 @@ funWrapWith evaluator fun app inp =
       (measured, outcome) = evaluator (app fun $ fromTelomare iexpInp)
   in (,) measured $ case outcome of
     Right x -> case toTelomare x of
-      Nothing -> ("error converting iteration value:\n" <> show x, Left $ AbortRunTime ZeroB)
-      Just ZeroB -> ("aborted", Left $ AbortRunTime ZeroB)
+      Nothing -> ("error converting iteration value:\n" <> show x, Left $ AbortRunTime unknownOrigin ZeroB)
+      Just ZeroB -> ("aborted", Left $ AbortRunTime unknownOrigin ZeroB)
       -- Just (PairB disp newState) -> (b2s disp, pure $ fromTelomare newState)
       Just (PairB disp newState) -> case b2s disp of
         Just d -> (d, pure $ conv3 newState)

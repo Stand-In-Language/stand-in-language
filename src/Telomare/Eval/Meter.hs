@@ -96,8 +96,8 @@ runMeter env whole = case project whole of
   -- Already values.
   BasicFW ZeroSF       -> settled
   StuckFW DeferSF {}   -> settled
-  AbortFW AbortF       -> settled
-  AbortFW (AbortedF _) -> settled
+  AbortFW (AbortF _)   -> settled
+  AbortFW AbortedF {}  -> settled
   StuckFW GateSF       -> settled
 
   -- A gate switch. The branches sit in the application's argument pair and
@@ -114,10 +114,10 @@ runMeter env whole = case project whole of
     s' <- runMeter env s
     step
     case s' of
-      AbortEE (AbortedF _) -> pure s'
-      BasicEE ZeroSF       -> chose l
-      BasicEE PairSF {}    -> chose r
-      _                    -> unhandled "gate on a non-data scrutinee" s'
+      AbortEE AbortedF {} -> pure s'
+      BasicEE ZeroSF      -> chose l
+      BasicEE PairSF {}   -> chose r
+      _                   -> unhandled "gate on a non-data scrutinee" s'
 
   BasicFW (PairSF a b) -> do
     a' <- runMeter env a
@@ -138,7 +138,7 @@ runMeter env whole = case project whole of
   StuckFW (SetEnvSF x) -> do
     x' <- runMeter env x
     case x' of
-      AbortEE (AbortedF _) -> step >> pure x'
+      AbortEE AbortedF {}  -> step >> pure x'
       BasicEE (PairSF f e) -> apply f e
       _ -> unhandled "SetEnv of something that is not a pair" x'
 
@@ -157,20 +157,20 @@ runMeter env whole = case project whole of
       x' <- runMeter env x
       step
       case x' of
-        AbortEE (AbortedF _) -> pure x'
+        AbortEE AbortedF {} -> pure x'
         _ -> case pick x' of
           Just v  -> pure v
           Nothing -> unhandled "projection of something that is not a pair" x'
 
     apply f e = case (f, e) of
-      (AbortEE (AbortedF _), _) -> step >> pure f
-      (_, AbortEE (AbortedF _)) -> step >> pure e
+      (AbortEE AbortedF {}, _) -> step >> pure f
+      (_, AbortEE AbortedF {}) -> step >> pure e
       -- `assert` on a passing value yields the identity function.
-      (AbortEE AbortF, BasicEE ZeroSF) -> step >> pure identityFunction
-      (AbortEE AbortF, _) -> do
+      (AbortEE (AbortF _), BasicEE ZeroSF) -> step >> pure identityFunction
+      (AbortEE (AbortF o), _) -> do
         step
         built
-        pure . AbortEE . AbortedF $ cata truncateToData e
+        pure . AbortEE . AbortedF o $ cata truncateToData e
       -- A gate applied to its scrutinee alone yields the branch-selector
       -- function the evaluator would produce; the `GateSwitch` case above is
       -- the one that keeps the usual full shape lazy.
@@ -198,9 +198,9 @@ evalMeter :: CompiledExpr -> (Meter, Either RunTimeError CompiledExpr)
 evalMeter expr =
   let (result, measured) = runState (runMeter Nothing expr) mempty
   in (measured, case findAborted result of
-       Just e  -> Left $ AbortRunTime e
-       Nothing -> pure result)
+       Just (o, e) -> Left $ AbortRunTime o e
+       Nothing     -> pure result)
   where
     findAborted = cata $ \case
-      AbortFW (AbortedF e) -> Just e
+      AbortFW (AbortedF o e) -> Just (o, e)
       x                    -> asum x

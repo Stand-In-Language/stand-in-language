@@ -20,7 +20,8 @@ import Telomare.IC
 import Telomare.IR.Base (AbortableF (..), BasicExpr, pattern AbortB,
                          pattern AbortEE, pattern EnvB, pattern GateB,
                          pattern GateSwitchEE, pattern LeftB, pattern PairB,
-                         pattern RightB, pattern SetEnvB, pattern ZeroB, varB)
+                         pattern RightB, pattern SetEnvB, pattern ZeroB,
+                         unknownOrigin, varB)
 import Telomare.IR.Core (AbstractRunTime (..), CompiledExpr, RunTimeError (..),
                          Term3, compiled2Term3)
 import Telomare.Machine (abortInd, appB, chainLinks, deferB, iteB)
@@ -249,7 +250,7 @@ main = do
                 "expected a stuck report, got " <> show other
         , diffTest "projections of an aborted env"
             (se (p (d 2 (p (LeftB EnvB) (RightB EnvB)))
-                 (AbortEE (AbortedF msgPair))))
+                 (AbortEE (AbortedF unknownOrigin msgPair))))
         , testCase "wiring consumes exactly the guidance-published usage" $ do
             let body = p (LeftB EnvB) (p (RightB (RightB EnvB)) (LeftB EnvB))
                 lr = inferEALWithLifting (compiled2Term3 (d 2 body))
@@ -406,15 +407,15 @@ main = do
         ]
     , testGroup "abort"
         [ expectTest "abort of zero is the identity continuation"
-            (se (p AbortB z)) (Right (d abortInd EnvB))
+            (se (p (AbortB unknownOrigin) z)) (Right (d abortInd EnvB))
         , expectTest "the abort continuation passes its env through"
-            (se (p (se (p AbortB z)) (p z z))) (Right (p z z))
+            (se (p (se (p (AbortB unknownOrigin) z)) (p z z))) (Right (p z z))
         , expectTest "abort of a pair aborts with that message"
-            (se (p AbortB (p z z))) (Left (AbortRunTime msgPair))
+            (se (p (AbortB unknownOrigin) (p z z))) (Left (AbortRunTime unknownOrigin msgPair))
         , expectTest "aborted values poison projections"
-            (LeftB (se (p AbortB (p z z)))) (Left (AbortRunTime msgPair))
+            (LeftB (se (p (AbortB unknownOrigin) (p z z)))) (Left (AbortRunTime unknownOrigin msgPair))
         , expectTest "a discarded aborted value is no abort"
-            (GateSwitchEE z (LeftB (se (p AbortB (p z z)))) z) (Right z)
+            (GateSwitchEE z (LeftB (se (p (AbortB unknownOrigin) (p z z)))) z) (Right z)
         ]
     , testGroup "church numerals"
         [ expectTest "two applications of successor"

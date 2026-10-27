@@ -22,7 +22,6 @@ import Data.Bifunctor (first)
 import Debug.Trace
 import Telomare.IR.Base
 import Telomare.IR.Core
-import Telomare.IR.Loc
 import Telomare.PrettyPrint
 import Telomare.PrettyPrint.Indent (indentWithOneChild', indentWithTwoChildren')
 
@@ -167,17 +166,19 @@ instance ShallowEq1 StuckF where
   shallowEq1 a b = case (a,b) of
     (DeferSF fida _, DeferSF fidb _) -> fida == fidb
     _                                -> False
+-- | Origins are ignored: sizing only cares what an abort does, and merging
+-- branches that differ only in where their aborts came from keeps it small.
 instance ShallowEq1 AbortableF where
   shallowEq1 a b = case (a,b) of
-    (AbortedF a', AbortedF b') -> a' == b'
-    (AbortF, AbortF)           -> True
-    _                          -> False
+    (AbortedF _ a', AbortedF _ b') -> a' == b'
+    (AbortF _, AbortF _)           -> True
+    _                              -> False
 
 data UnsizedRecursionF f
   = RecursionTestF UnsizedRecursionToken f
   | UnsizedStubF UnsizedRecursionToken f
   | SizeStageF SizedRecursion f
-  | RefinementWrapperF LocTag f f
+  | RefinementWrapperF AbortOrigin f f
   | SizeStepStubF UnsizedRecursionToken Int f
   | TraceF String f
   deriving (Eq, Ord, Show, Functor, Foldable, Generic)
@@ -214,7 +215,7 @@ instance PrettyPrintable1 UnsizedRecursionF where
     RecursionTestF (UnsizedRecursionToken ind) x -> indentWithOneChild' ("T(" <> show ind <> ")") $ showP x
     UnsizedStubF (UnsizedRecursionToken ind) x -> indentWithOneChild' ("#" <> show ind) $ showP x
     SizeStageF _ x -> indentWithOneChild' "^" $ showP x
-    RefinementWrapperF l tc x -> indentWithTwoChildren' (":" <> show l) (showP tc) (showP x)
+    RefinementWrapperF o tc x -> indentWithTwoChildren' (":" <> renderAbortOrigin o) (showP tc) (showP x)
     SizeStepStubF _ _ x -> indentWithOneChild' "@" $ showP x
     TraceF _ x -> indentWithOneChild' "_" $ showP x
 

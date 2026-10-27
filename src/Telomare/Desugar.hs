@@ -63,10 +63,11 @@ patternToTerm anno = cata alg where
 -- alternative in order, aborting when none matches. A scrutinee that is not
 -- already a variable is bound once, to a name source code cannot write, so
 -- the checks and bindings refer to it rather than copying it.
-caseToNestedIfs :: DesugaredSurfaceTerm -- ^ Term to be pattern matched
+caseToNestedIfs :: LocTag -- ^ Where the case is, for its abort
+                -> DesugaredSurfaceTerm -- ^ Term to be pattern matched
                 -> [(PatternA, DesugaredSurfaceTerm)] -- ^ Alternatives
                 -> DesugaredSurfaceTerm
-caseToNestedIfs scrutinee@(anno :< _) alternatives = case scrutinee of
+caseToNestedIfs caseLoc scrutinee@(anno :< _) alternatives = case scrutinee of
   VarP _ -> lower scrutinee
   _      -> AppP (LamP (locatedName generated scrutineeName)
                        (lower (generated :< UnprocessedParsedTermL (VarF scrutineeName))))
@@ -77,7 +78,7 @@ caseToNestedIfs scrutinee@(anno :< _) alternatives = case scrutinee of
     lower x = foldr (alternative x) nonExhaustive alternatives
     nonExhaustive =
       ITEP (anno :< IntUPF 1)
-           (AppP (VarP "__case_abort") (anno :< StringUPF "Non-exhaustive patterns in case"))
+           (abortTerm CaseAbort caseLoc (caseLoc :< StringUPF "Non-exhaustive patterns in case"))
            (anno :< IntUPF 0)
     -- An alternative without checks always matches, so later ones are dropped.
     alternative x (p, result@(resultAnno :< _)) next =
@@ -131,7 +132,7 @@ desugarTerm = lowerCases
 lowerCases :: ExpandedSurfaceTerm -> DesugaredSurfaceTerm
 lowerCases = cata go where
   go = \case
-    _ C.:< CaseUPF x ls -> caseToNestedIfs x ls
+    anno C.:< CaseUPF x ls -> caseToNestedIfs anno x ls
     anno C.:< UnprocessedParsedTermH x -> anno :< UnprocessedParsedTermH x
     anno C.:< UnprocessedParsedTermL x -> anno :< UnprocessedParsedTermL x
     anno C.:< UnprocessedParsedTermB x -> anno :< UnprocessedParsedTermB x
@@ -155,7 +156,6 @@ addCaseHelperAliases _term@(loc :< LetUPF bindings body) =
                          , ("foldl", "__case_foldl")
                          , ("dEqual", "__case_dEqual")
                          , ("listEqual", "__case_listEqual")
-                         , ("abort", "__case_abort")
                          ]
       , name `elem` (letBindingName <$> bindings)
       ]
@@ -180,6 +180,7 @@ builtins =
   [ ("left",  Unary  $ \a x -> a :< UnprocessedParsedTermH (HLeftF x))
   , ("right", Unary  $ \a x -> a :< UnprocessedParsedTermH (HRightF x))
   , ("trace", Unary  $ \a x -> a :< UnprocessedParsedTermH (HTraceF x))
+  , ("abort", Unary  $ abortTerm UserAbort)
   , ("pair",  Binary $ \a x y -> a :< UnprocessedParsedTermB (PairSF x y))
   , ("app",   Binary $ \a x y -> a :< UnprocessedParsedTermL (AppF x y))
   ]

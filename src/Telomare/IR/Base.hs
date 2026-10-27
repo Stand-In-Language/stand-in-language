@@ -35,7 +35,7 @@ import qualified Data.Map as Map
 import qualified Data.Set as Set
 import Data.Validity (Validity)
 import GHC.Generics (Generic, Generic1, Generically1 (..))
-import Telomare.IR.Loc (LocTag (..))
+import Telomare.IR.Loc (LocTag (..), renderLocTagCompact)
 
 class BasicBase g where
   embedB :: BasicExprF x -> g x
@@ -90,8 +90,8 @@ pattern RightB :: (Recursive g, Corecursive g, Base g ~ f, StuckBase f) => g -> 
 pattern RightB x = StuckEE (RightSF x)
 pattern ZeroB :: (Recursive g, Corecursive g, Base g ~ f, BasicBase f) => g
 pattern ZeroB = BasicEE ZeroSF
-pattern AbortB :: (Recursive g, Corecursive g, Base g ~ f, AbortBase f) => g
-pattern AbortB = AbortEE AbortF
+pattern AbortB :: (Recursive g, Corecursive g, Base g ~ f, AbortBase f) => AbortOrigin -> g
+pattern AbortB o = AbortEE (AbortF o)
 -- note: only use this where annotations don't matter
 pattern PairB :: (Recursive g, Corecursive g, Base g ~ f, BasicBase f) => g -> g -> g
 pattern PairB a b = BasicEE (PairSF a b)
@@ -207,28 +207,81 @@ newtype FunctionIndex = FunctionIndex { unFunctionIndex :: Int } deriving (Eq, O
 
 instance Validity FunctionIndex
 
+-- | What kind of code an abort came from.
+data AbortKind
+  = RefinementAbort -- ^ a refinement check, @x : T@
+  | UserAbort       -- ^ a call of @abort@
+  | CaseAbort       -- ^ no case alternative (or lambda pattern) matched
+  | ValidatorAbort  -- ^ a generated UDT validator rejected its value
+  | RecursionAbort  -- ^ a sized recursion chain ran out of links
+  | SizingAbort     -- ^ produced by the sizing analysis, never by a program
+  | UnknownAbort
+  deriving (Eq, Ord, Show, Generic)
+  deriving anyclass (NFData)
+
+-- | Where an abort came from: compile-time metadata that travels with the
+-- abort into its 'AbortedF' value, so a runtime failure can say what
+-- raised it. The location is the call site for user aborts, the @case@ for
+-- case aborts, and the annotation for refinements.
+--
+-- An origin is part of the abort's identity (equality, 'Show' and so the
+-- defer hashes), so two bodies differing only in where their aborts came
+-- from are kept apart: sharing them would report one site's location for
+-- the other's failure.
+data AbortOrigin = AbortOrigin
+  { abortKind :: AbortKind
+  , abortLoc  :: LocTag
+  }
+  deriving (Eq, Ord, Show, Generic)
+  deriving anyclass (NFData)
+
+unknownOrigin :: AbortOrigin
+unknownOrigin = AbortOrigin UnknownAbort UnknownLoc
+
+-- | The origin of the abort at the bottom of every sized recursion chain.
+recursionOrigin :: AbortOrigin
+recursionOrigin = AbortOrigin RecursionAbort (GeneratedLoc "sized recursion chain" Nothing)
+
+-- | The origin of aborts the sizing analysis makes up.
+sizingOrigin :: AbortOrigin
+sizingOrigin = AbortOrigin SizingAbort (GeneratedLoc "sizing" Nothing)
+
+-- | What raised an abort, for error messages, e.g.
+-- @"refinement check at line 3, column 9"@.
+renderAbortOrigin :: AbortOrigin -> String
+renderAbortOrigin (AbortOrigin kind loc) = describe kind <> located where
+  describe = \case
+    RefinementAbort -> "refinement check"
+    UserAbort       -> "abort"
+    CaseAbort       -> "pattern match"
+    ValidatorAbort  -> "type validator"
+    RecursionAbort  -> "recursion limit"
+    SizingAbort     -> "sizing analysis"
+    UnknownAbort    -> "unknown source"
+  located = maybe "" (" at " <>) (renderLocTagCompact loc)
+
 -- TODO we can simplify abort semantics to (defer env), and then could do gate x (abort [message] x) for conditional abort
 data AbortableF f
-  = AbortF
-  | AbortedF BasicExpr
+  = AbortF AbortOrigin
+  | AbortedF AbortOrigin BasicExpr
   deriving (Eq, Show, Functor, Foldable, Generic)
 
 instance Traversable AbortableF where
   {-# INLINE traverse #-}
   traverse _ = \case
-    AbortF     -> pure AbortF
-    AbortedF x -> pure $ AbortedF x
+    AbortF o     -> pure $ AbortF o
+    AbortedF o x -> pure $ AbortedF o x
 
 instance Eq1 AbortableF  where
   liftEq _test a b = case (a,b) of
-    (AbortF, AbortF)                  -> True
-    (AbortedF x, AbortedF y) | x == y -> True
-    _                                 -> False
+    (AbortF o, AbortF o')                             -> o == o'
+    (AbortedF o x, AbortedF o' y) | o == o' && x == y -> True
+    _                                                 -> False
 
 instance Show1 AbortableF where
   liftShowsPrec _showsPrec _showList _prec = \case
-    AbortF     -> shows "AbortF"
-    AbortedF x -> shows "(AbortedF " . shows x . shows ")"
+    AbortF o     -> shows "AbortF" . showParen True (shows o)
+    AbortedF o x -> shows "(AbortedF " . showParen True (shows o) . shows x . shows ")"
 
 newtype UnsizedRecursionToken = UnsizedRecursionToken { unUnsizedRecursionToken :: Int }
   deriving (Eq, Ord, Show, Enum, Generic)
@@ -272,7 +325,7 @@ instance (Show l, Show v) => Show1 (LamTermF l v) where
 
 -- | High level grammar elements
 data HighTermF f
-  = CheckF f f
+  = CheckF AbortKind f f -- ^ what the check is for, check function, checked value
   | ITEF f f f
   | HLeftF f
   | HRightF f
@@ -294,8 +347,8 @@ instance Show1 HighTermF where
     HLeftF x -> showString "LeftUPF " . showsPrecFunc 11 x
     HRightF x -> showString "RightUPF " . showsPrecFunc 11 x
     HTraceF x -> showString "TraceUPF " . showsPrecFunc 11 x
-    CheckF a b -> showString "CheckUPF " . showsPrecFunc 11 a . showChar ' '
-                    . showsPrecFunc 11 b
+    CheckF k a b -> showString "CheckUPF " . showsPrec 11 k . showChar ' '
+                      . showsPrecFunc 11 a . showChar ' ' . showsPrecFunc 11 b
     HashF x -> showString "HashUPF " . showsPrecFunc 11 x
 
 -- NOTE placeholder design: these instances let the unannotated *B builder
@@ -374,6 +427,12 @@ convertAbortMessage = \case
     Just m  -> "user abort: " <> m
   AbortAny -> "user abort of all possible abort reasons (non-deterministic input)"
   x -> "unexpected abort: " <> show x
+
+-- | An abort's message together with what raised it.
+describeAbort :: AbortOrigin -> BasicExpr -> String
+describeAbort o m = convertAbortMessage m <> case abortKind o of
+  UnknownAbort -> ""
+  _known       -> " (from " <> renderAbortOrigin o <> ")"
 
 class CarryAnno g where
   type CarryWrap g :: Type -> Type

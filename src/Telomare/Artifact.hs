@@ -80,7 +80,7 @@ artifactMagic = BL.pack [0x54, 0x45, 0x4C, 0x43] -- "TELC"
 -- |Bumped whenever the encoding changes, which invalidates older files rather
 -- than misreading them.
 artifactVersion :: Int
-artifactVersion = 3
+artifactVersion = 4
 
 telcExtension :: String
 telcExtension = ".telc"
@@ -230,6 +230,29 @@ getLocTag = getWord8 >>= \case
   5 -> pure UnknownLoc
   n -> fail $ "unknown location tag " <> show n
 
+putOrigin :: AbortOrigin -> Put
+putOrigin (AbortOrigin kind loc) = putWord8 (kindTag kind) >> putLocTag loc where
+  kindTag = \case
+    RefinementAbort -> 0
+    UserAbort       -> 1
+    CaseAbort       -> 2
+    ValidatorAbort  -> 3
+    RecursionAbort  -> 4
+    SizingAbort     -> 5
+    UnknownAbort    -> 6
+
+getOrigin :: Get AbortOrigin
+getOrigin = AbortOrigin <$> (getWord8 >>= kind) <*> getLocTag where
+  kind = \case
+    0 -> pure RefinementAbort
+    1 -> pure UserAbort
+    2 -> pure CaseAbort
+    3 -> pure ValidatorAbort
+    4 -> pure RecursionAbort
+    5 -> pure SizingAbort
+    6 -> pure UnknownAbort
+    n -> fail $ "unknown abort kind " <> show n
+
 putToken :: UnsizedRecursionToken -> Put
 putToken = putInt' . unUnsizedRecursionToken
 
@@ -363,8 +386,8 @@ putCompiled e = case project e of
   StuckFW GateSF -> putWord8 5
   StuckFW (LeftSF x) -> putWord8 6 >> putCompiled x
   StuckFW (RightSF x) -> putWord8 7 >> putCompiled x
-  AbortFW AbortF -> putWord8 8
-  AbortFW (AbortedF b) -> putWord8 9 >> putBasic b
+  AbortFW (AbortF o) -> putWord8 8 >> putOrigin o
+  AbortFW (AbortedF o b) -> putWord8 9 >> putOrigin o >> putBasic b
   _ -> error "Telomare.Artifact: unreachable compiled node"
 
 getCompiled :: Get CompiledExpr
@@ -379,6 +402,6 @@ getCompiled = getWord8 >>= \case
   5 -> pure $ embed (StuckFW GateSF)
   6 -> embed . StuckFW . LeftSF <$> getCompiled
   7 -> embed . StuckFW . RightSF <$> getCompiled
-  8 -> pure $ embed (AbortFW AbortF)
-  9 -> embed . AbortFW . AbortedF <$> getBasic
+  8 -> embed . AbortFW . AbortF <$> getOrigin
+  9 -> (\o b -> embed (AbortFW (AbortedF o b))) <$> getOrigin <*> getBasic
   n -> fail $ "unknown compiled node tag " <> show n

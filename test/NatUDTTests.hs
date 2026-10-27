@@ -193,7 +193,7 @@ natUDTTests = testGroup "User-defined-type sugar (embedded Nat UDT)"
       , testCase "UDT validators unwrap branded values at runtime" $
           assertEvalEquals "fromNat (toNat 8)" "8"
       , testCase "UDT validators reject unbranded values at runtime" $
-          assertAborts "fromNat (0, 8)" "not Nat"
+          assertAborts "fromNat (0, 8)" "not Nat (from type validator at "
       ]
   -- NOTE: QuickCheck property tests for nPlus/nMinus were omitted
   -- because each evalUDTExpr call recompiles Prelude+the embedded UDT+the

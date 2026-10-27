@@ -108,7 +108,7 @@ data FastExpr
   | FGate
   | FLeft FastExpr
   | FRight FastExpr
-  | FAbort
+  | FAbort AbortOrigin
   | FUnbounded RecursionSite
   deriving (Eq, Show)
 
@@ -119,8 +119,8 @@ data Value
   | VPair Value Value
   | VDefer FastExpr
   | VGate
-  | VAbort
-  | VAborted BasicExpr
+  | VAbort AbortOrigin
+  | VAborted AbortOrigin BasicExpr
   -- ^An abort in flight: propagates, and may be discarded unused.
   | VRec RecursionSite Value
   -- ^@VRec site trb@ — the limit of the approximant chain @step^n(abort)@
@@ -314,9 +314,9 @@ truncateV = \case
 
 -- |The leftmost abort anywhere in a result. `VDefer` holds code, not a value,
 -- so there is nothing to look at inside one.
-findAbort :: Value -> Maybe BasicExpr
+findAbort :: Value -> Maybe (AbortOrigin, BasicExpr)
 findAbort = \case
-  VAborted e -> Just e
+  VAborted o e -> Just (o, e)
   VPair a b  -> firstJust (findAbort a) (findAbort b)
   _          -> Nothing
   where
@@ -328,7 +328,7 @@ evalFast :: FastExpr -> Value -> EvalM Value
 evalFast expr env = case expr of
   FZero -> pure VZero
   FEnv -> pure env
-  FAbort -> pure VAbort
+  FAbort o -> pure (VAbort o)
   FDefer d -> pure (VDefer d)
   FPair a b -> VPair <$> evalFast a env <*> evalFast b env
   FGate -> pure VGate
@@ -347,13 +347,13 @@ evalFast expr env = case expr of
     sv <- evalFast s env >>= forceValue
     tickGate
     case sv of
-      VZero          -> evalFast l env
-      VPair _ _      -> evalFast r env
-      a@(VAborted _) -> pure a
-      _              -> throwError $ FastStuck "gate on a non-data scrutinee"
+      VZero         -> evalFast l env
+      VPair _ _     -> evalFast r env
+      a@VAborted {} -> pure a
+      _             -> throwError $ FastStuck "gate on a non-data scrutinee"
   FSetEnv x -> evalFast x env >>= forceValue >>= \case
     VPair f e      -> applyRaw f e
-    a@(VAborted _) -> pure a
+    a@VAborted {}  -> pure a
     _              -> throwError $ FastStuck "setenv of something that is not a pair"
   -- The sizing oracle's hole: its defer is applied to the recursion's
   -- captured triple, and the unbounded approximant ladder stands in for
@@ -364,7 +364,7 @@ evalFast expr env = case expr of
       "unexpected environment at a recursion site (encoding drift?)"
   where
     project x why pick = evalFast x env >>= forceValue >>= \case
-      a@(VAborted _) -> pure a
+      a@VAborted {} -> pure a
       v -> case pick v of
         Just r  -> pure r
         Nothing -> throwError (FastStuck why)
@@ -373,19 +373,19 @@ evalFast expr env = case expr of
 applyRaw :: Value -> Value -> EvalM Value
 applyRaw fun arg = forceValue fun >>= \case
   VDefer d -> tickApply >> evalFast d arg
-  a@(VAborted _) -> pure a
+  a@VAborted {} -> pure a
   -- A gate applied to its scrutinee yields the branch-selector function,
   -- which the next application feeds the branch pair.
   VGate -> tickGate >> forceValue arg >>= \case
     VZero          -> pure (VDefer (FLeft FEnv))
     VPair _ _      -> pure (VDefer (FRight FEnv))
-    a@(VAborted _) -> pure a
+    a@VAborted {}  -> pure a
     _              -> throwError $ FastStuck "gate applied to non-data"
-  VAbort -> forceValue arg >>= \case
+  VAbort o -> forceValue arg >>= \case
     -- `assert` on a passing value yields the identity function.
     VZero          -> pure (VDefer FEnv)
-    p@(VPair _ _)  -> pure (VAborted (truncateV p))
-    a@(VAborted _) -> pure a
+    p@(VPair _ _)  -> pure (VAborted o (truncateV p))
+    a@VAborted {}  -> pure a
     _              -> throwError $ FastStuck "abort applied to non-data"
   _ -> throwError $ FastStuck "application of something that is not a function"
 
@@ -421,13 +421,13 @@ iterateMain :: Value -> Maybe (String, Value) -> EvalM (String, Either RunTimeEr
 iterateMain mainClosure inp = do
   result <- applyClosure mainClosure inputValue
   pure $ case findAbort result of
-    Just e -> ("runtime error:\n" <> show (AbortRunTime e), Left (AbortRunTime e))
+    Just (o, e) -> ("runtime error:\n" <> show (AbortRunTime o e), Left (AbortRunTime o e))
     Nothing -> case result of
-      VZero -> ("aborted", Left (AbortRunTime ZeroB))
+      VZero -> ("aborted", Left (AbortRunTime unknownOrigin ZeroB))
       VPair disp newState -> case v2s disp of
         Just d  -> (d, Right newState)
-        Nothing -> ("error converting display value", Left (AbortRunTime ZeroB))
-      _ -> ("error converting iteration value", Left (AbortRunTime ZeroB))
+        Nothing -> ("error converting display value", Left (AbortRunTime unknownOrigin ZeroB))
+      _ -> ("error converting iteration value", Left (AbortRunTime unknownOrigin ZeroB))
   where
     inputValue = case inp of
       Nothing               -> VZero
@@ -517,18 +517,18 @@ term3ToFast owners = cata go
       Term3S GateSF -> Right FGate
       Term3S (LeftSF x) -> FLeft <$> x
       Term3S (RightSF x) -> FRight <$> x
-      Term3A AbortF -> Right FAbort
-      Term3A (AbortedF _) -> Left "an already-aborted term in the source"
+      Term3A (AbortF o) -> Right (FAbort o)
+      Term3A AbortedF {} -> Left "an already-aborted term in the source"
       Term3Unsized tok ->
         Right . FUnbounded $ RecursionSite tok anno (locKey anno >>= (`Map.lookup` owners))
-      Term3CheckingWrapper _ tc c -> checkingWrapper <$> tc <*> c
+      Term3CheckingWrapper o tc c -> checkingWrapper o <$> tc <*> c
 
     -- Run the check on the value: a nonzero result aborts carrying it as the
     -- message, and zero yields the identity, applied to the value.
-    checkingWrapper tc c = FSetEnv (FPair performTC (FPair tc c))
+    checkingWrapper o tc c = FSetEnv (FPair performTC (FPair tc c))
       where
         performTC = FDefer
-          (FSetEnv (FPair (FSetEnv (FPair FAbort innerTC)) (FRight FEnv)))
+          (FSetEnv (FPair (FSetEnv (FPair (FAbort o) innerTC)) (FRight FEnv)))
         innerTC = app (FLeft FEnv) (FRight FEnv)
 
 -- |A source position, used to attribute a recursion site to the definition it

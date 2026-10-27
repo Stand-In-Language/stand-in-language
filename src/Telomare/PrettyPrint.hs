@@ -47,7 +47,7 @@ instance (Show l, Show v) => PrettyPrintable1 (LamTermF l v) where
 
 instance PrettyPrintable1 HighTermF where
   showP1 = \case
-      CheckF cf i             -> indentWithTwoChildren' ":" (showP cf)  (showP i)
+      CheckF _ cf i           -> indentWithTwoChildren' ":" (showP cf)  (showP i)
       ITEF i t e              -> indentWithChildren' "ITE" $ showP <$> [i,t,e]
       HLeftF x                 -> indentWithOneChild' "L" $ showP x
       HRightF x                -> indentWithOneChild' "R" $ showP x
@@ -139,7 +139,7 @@ instance Show MultiLineShowUPT where
                           "  " <> ind z
         (HashF x') -> "HashUP\n" <>
                         "  " <> ind x'
-        (CheckF x' y) -> "CheckUP\n" <>
+        (CheckF _ x' y) -> "CheckUP\n" <>
                           "  " <> ind x' <> "\n" <>
                           "  " <> ind y
       UnprocessedParsedTermL x -> case x of
@@ -196,7 +196,7 @@ instance Show PrettyUPT where
                                       ", " <> indentSansFirstLine 2 z <>
                                       "}"
         (HashF x') -> "# " <> indentSansFirstLine 2 x'
-        (CheckF x' y) -> if length (lines (x' <> y)) > 1
+        (CheckF _ x' y) -> if length (lines (x' <> y)) > 1
                             then "(" <> indentSansFirstLine 2 y <> " : " <> "\n" <>
                                 "    " <> indentSansFirstLine 4 y <> ")"
                             else "(" <> y <> " : " <> x' <> ")"
@@ -242,8 +242,8 @@ instance PrettyPrintable1 BasicExprF where
 
 instance PrettyPrintable1 AbortableF where
   showP1 = \case
-    AbortF      -> pure "!"
-    AbortedF am -> pure $ "(aborted - " <> convertAbortMessage am <> ")"
+    AbortF _     -> pure "!"
+    AbortedF o am -> pure $ "(aborted - " <> describeAbort o am <> ")"
 
 instance PrettyPrintable1 StuckExprF where
   showP1 = \case

@@ -180,7 +180,7 @@ expandDef :: DefinitionF ExpandedSurfaceTerm -> Either ExpansionError [(LocatedN
 expandDef = \case
   SingleDefF name Nothing body -> pure [(name, body)]
   SingleDefF name (Just (annotLoc, typeExpr)) body ->
-    pure [(name, annotLoc :< embedH (CheckF typeExpr body))]
+    pure [(name, annotLoc :< embedH (CheckF RefinementAbort typeExpr body))]
   ListDefF loc locatedNames body
     | isUDTAssignment names body -> expandUDTLocated loc locatedNames body
     | otherwise                  -> expandPlainListAssignment loc locatedNames body
@@ -226,13 +226,11 @@ buildMultiLambda lt patterns body =
   where
     applyDestructure ((loc, p), varName) inner =
       let bound = lt :< embedL (VarF varName)
-          abort = AppP
-                    (lt :< embedL (VarF "abort"))
-                    (lt :< StringUPF "buildMultiLambda: pattern not reached")
+          abort = abortTerm CaseAbort loc (loc :< StringUPF "buildMultiLambda: pattern not reached")
       in case project p of
            PatternVarF _ -> inner
            PatternAnnotatedF innerPat (AnnotatedEST typeExpr) ->
-             let checked = loc :< embedH (CheckF typeExpr bound)
+             let checked = loc :< embedH (CheckF RefinementAbort typeExpr bound)
              in case project innerPat of
                   PatternVarF name -> lt :< LetUPF [(name, checked)] inner
                   _ ->
@@ -386,6 +384,4 @@ autoValidator loc tname hParam =
              (loc :< embedH (HLeftF (loc :< embedL (VarF "__udt_v")))))
           (loc :< embedL (VarF hParam)))
        (loc :< embedH (HRightF (loc :< embedL (VarF "__udt_v"))))
-        (AppP
-           (loc :< embedL (VarF "abort"))
-           (loc :< StringUPF ("not " <> tname))))
+        (abortTerm ValidatorAbort loc (loc :< StringUPF ("not " <> tname))))

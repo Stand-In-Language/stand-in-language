@@ -44,7 +44,7 @@ expansionTests = testGroup "Expansion pass"
       case expandTerm raw of
         Right (_ :< UnprocessedParsedTermL (LamF binder
                 (_ :< LetUPF
-                  [(name, _ :< UnprocessedParsedTermH (CheckF
+                  [(name, _ :< UnprocessedParsedTermH (CheckF RefinementAbort
                     (_ :< UnprocessedParsedTermL (VarF "Bool"))
                     (_ :< UnprocessedParsedTermL (VarF bound))))]
                   (_ :< UnprocessedParsedTermL (VarF "v")))))
@@ -64,7 +64,7 @@ expansionTests = testGroup "Expansion pass"
   , testCase "refinement annotation folds into CheckF" $ do
       defs <- runTelomareParser parseDefinitions "main : T = 0\n"
       case expandDefs defs of
-        Right [(name, _ :< UnprocessedParsedTermH (CheckF
+        Right [(name, _ :< UnprocessedParsedTermH (CheckF RefinementAbort
                  (_ :< UnprocessedParsedTermL (VarF "T"))
                  (_ :< IntUPF 0)))] ->
           locatedNameText name @?= "main"

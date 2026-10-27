@@ -18,13 +18,12 @@ import Data.Fix (Fix (..))
 import Data.Functor.Classes (Eq1 (..), Show1 (..))
 import Data.Functor.Foldable (Recursive (cata))
 import GHC.Generics (Generic)
-import Telomare.IR.Base (AbortBase (..), AbortableF (..), BasicBase (..),
-                         BasicExpr, BasicExprF (..), CarryAnno (..),
-                         HighBase (..), HighTermF (..), LamBase (..),
-                         LamTermF (..), LamType (..), StuckBase (..),
-                         StuckF (..), UnsizedRecursionToken,
-                         convertAbortMessage, convertBasic, convertStuck,
-                         forget)
+import Telomare.IR.Base (AbortBase (..), AbortOrigin, AbortableF (..),
+                         BasicBase (..), BasicExpr, BasicExprF (..),
+                         CarryAnno (..), HighBase (..), HighTermF (..),
+                         LamBase (..), LamTermF (..), LamType (..),
+                         StuckBase (..), StuckF (..), UnsizedRecursionToken,
+                         convertBasic, convertStuck, describeAbort, forget)
 import Telomare.IR.Loc (LocTag (GeneratedLoc))
 
 data StuckExprF f
@@ -92,7 +91,7 @@ data Term3F f
   | Term3S (StuckF f)
   | Term3A (AbortableF f)
   | Term3Unsized UnsizedRecursionToken
-  | Term3CheckingWrapper LocTag f f
+  | Term3CheckingWrapper AbortOrigin f f
   deriving (Eq, Show, Functor, Foldable, Traversable, Generic)
 instance BasicBase Term3F where
   embedB = Term3B
@@ -115,7 +114,7 @@ instance Show1 Term3F where
     Term3S x -> liftShowsPrec showsPrec' showList' prec x
     Term3A x -> liftShowsPrec showsPrec' showList' prec x
     Term3Unsized urt -> shows $ "Term3Unsized" <> show urt
-    Term3CheckingWrapper loc cf c -> shows "Term3CheckingWrapper(" . shows loc . shows ", " . showsPrec' 0 cf . shows ", " . showsPrec' 0 c . shows ")"
+    Term3CheckingWrapper o cf c -> shows "Term3CheckingWrapper(" . shows o . shows ", " . showsPrec' 0 cf . shows ", " . showsPrec' 0 c . shows ")"
 
 -- | Parser AST
 data ParserTermF l v f
@@ -175,13 +174,13 @@ compiled2Term3 = cata f where
     CompiledExprA x -> anno :< Term3A x
 
 data RunTimeError
-  = AbortRunTime BasicExpr
+  = AbortRunTime AbortOrigin BasicExpr
   | GenericRunTimeError String CompiledExpr
   | ResultConversionError String
   deriving (Eq)
 
 instance Show RunTimeError where
-  show (AbortRunTime a) = "Aborted, " <> convertAbortMessage a
+  show (AbortRunTime o a) = "Aborted, " <> describeAbort o a
   show (GenericRunTimeError s i) = "Generic Runtime Error: " <> s <> " -- " <> show i
   show (ResultConversionError s) = "Couldn't convert runtime result to IExpr: " <> s
 

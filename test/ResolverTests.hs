@@ -231,7 +231,7 @@ containsTHash (_ :< termF) = case termF of
   ParserTermH (ITEF a b c)         -> containsTHash a || containsTHash b || containsTHash c
   ParserTermB (PairSF a b)         -> containsTHash a || containsTHash b
   ParserTermL (AppF a b)           -> containsTHash a || containsTHash b
-  ParserTermH (CheckF a b)         -> containsTHash a || containsTHash b
+  ParserTermH (CheckF _ a b)       -> containsTHash a || containsTHash b
   ParserTermL (LamF _ a)           -> containsTHash a
   ParserTermH (HLeftF a)           -> containsTHash a
   ParserTermH (HRightF a)          -> containsTHash a
@@ -266,7 +266,7 @@ allHashesToTerm2 term2 =
         (ParserTermH (RecursionF a b c), ParserTermH (RecursionF a' b' c')) -> interm (a, a') <> interm (b, b') <> interm (c, c')
         (ParserTermB (PairSF a b), ParserTermB (PairSF a' b')) -> interm (a, a') <> interm (b, b')
         (ParserTermL (AppF a b), ParserTermL (AppF a' b')) -> interm (a, a') <> interm (b, b')
-        (ParserTermH (CheckF a b), ParserTermH (CheckF a' b')) -> interm (a, a') <> interm (b, b')
+        (ParserTermH (CheckF _ a b), ParserTermH (CheckF _ a' b')) -> interm (a, a') <> interm (b, b')
         (ParserTermL (LamF _ a), ParserTermL (LamF _ a')) -> interm (a, a')
         (ParserTermH (HLeftF a), ParserTermH (HLeftF a')) -> interm (a, a')
         (ParserTermH (HRightF a), ParserTermH (HRightF a')) -> interm (a, a')
@@ -281,7 +281,7 @@ diffTerm2 (t1@(_ :< f1), t2@(_ :< f2)) = case (f1, f2) of
   (ParserTermH (RecursionF a b c), ParserTermH (RecursionF a' b' c')) -> diffTerm2 (a, a') <> diffTerm2 (b, b') <> diffTerm2 (c, c')
   (ParserTermB (PairSF a b), ParserTermB (PairSF a' b')) -> diffTerm2 (a, a') <> diffTerm2 (b, b')
   (ParserTermL (AppF a b), ParserTermL (AppF a' b')) -> diffTerm2 (a, a') <> diffTerm2 (b, b')
-  (ParserTermH (CheckF a b), ParserTermH (CheckF a' b')) -> diffTerm2 (a, a') <> diffTerm2 (b, b')
+  (ParserTermH (CheckF _ a b), ParserTermH (CheckF _ a' b')) -> diffTerm2 (a, a') <> diffTerm2 (b, b')
   (ParserTermL (LamF _ a), ParserTermL (LamF _ a')) -> diffTerm2 (a, a')
   (ParserTermH (HLeftF a), ParserTermH (HLeftF a')) -> diffTerm2 (a, a')
   (ParserTermH (HRightF a), ParserTermH (HRightF a')) -> diffTerm2 (a, a')
