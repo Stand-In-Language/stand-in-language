@@ -204,7 +204,7 @@ unitTests parse = do
       buildMainTest s = case fmap (compileMainProgram (DebugSizing (SizingSettings 255 True))) (parse s) of
         -- errors compare by their rendering, which carries the abort origin;
         -- an iteration runs main's input prologue first
-        Right (Right cp) -> let evalMain = second (first show) . snd . funWrapWith (\x -> ((), eval x)) (cpPrologue cp) (cpExpr cp) appB
+        Right (Right cp) -> let evalMain = second (first show) . snd . funWrapWith (\f i -> ((), eval (appB f (dataValue i)))) (cpPrologue cp) (cpExpr cp)
                            in pure $ \st i e -> it ("main input " <> i) $ evalMain (Just (i, st)) `shouldBe` e
         z -> pure $ \st _i _e -> runIO . expectationFailure $ "failed to compile main:\n" <> show st <> "\nbecause:\n" <> either show (either show (const "")) z
   describe "EAL certification" $ do

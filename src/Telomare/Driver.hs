@@ -235,30 +235,35 @@ compileReporting so staticCheck t = debugTrace ("compiling term3:\n" <> prettyPr
 
 -- converts between easily understood Haskell types and untyped IExprs around an iteration of a Telomare expression
 funWrap :: forall a. (Show a, AbstractRunTime a) => a -> (a -> a -> a) -> Maybe (String, BasicExpr) -> (String, Either RunTimeError BasicExpr)
-funWrap fun app inp = snd $ funWrapWith (\x -> ((), eval x)) Nothing fun app inp
+funWrap fun app inp = snd $ funWrapWith (\f i -> ((), eval (app f (dataValue i)))) Nothing fun inp
+
+-- |A data value in a runtime's term type.
+dataValue :: TelomareLike a => BasicExpr -> a
+dataValue = fromTelomare . conv where
+  conv :: BasicExpr -> StuckExpr
+  conv = runIdentity . cata (convertBasic (\_ -> error "funWrap conversion error"))
 
 -- |`funWrap` over an evaluator that also reports something about the run, so
--- the metered and plain loops share one conversion path. When main has an
--- input prologue it runs first, on the same input, and an abort there ends
--- the iteration before main starts; the first call, which has no input yet,
--- runs main alone.
+-- the metered and plain loops share one conversion path. The evaluator is
+-- handed main and the iteration's input separately, and applies one to the
+-- other itself. When main has an input prologue it runs first, on the same
+-- input, and an abort there ends the iteration before main starts; the
+-- first call, which has no input yet, runs main alone.
 funWrapWith :: forall a m. (Show a, TelomareLike a, Monoid m)
-            => (a -> (m, Either RunTimeError a))
-            -> Maybe a -> a -> (a -> a -> a) -> Maybe (String, BasicExpr)
+            => (a -> BasicExpr -> (m, Either RunTimeError a))
+            -> Maybe a -> a -> Maybe (String, BasicExpr)
             -> (m, (String, Either RunTimeError BasicExpr))
-funWrapWith evaluator prologue fun app inp =
-  let iexpInp = conv $ case inp of
+funWrapWith evaluator prologue fun inp =
+  let input = case inp of
         Nothing                  -> ZeroB
         Just (userInp, oldState) -> PairB (s2b userInp) oldState
-      input = fromTelomare iexpInp
-      conv = runIdentity . cata (convertBasic (\_ -> error "funWrap conversion error"))
       conv2 = runIdentity . cata (convertBasic (convertStuck (\_ -> error "funWrap conversion error2")))
       conv3 = runIdentity . cata (convertBasic (\_ -> error "funWrap conversion error3"))
       -- the first, input-less call runs main alone ('Telomare.Size.inputPrologue')
       (checked, verdict) = case prologue <* inp of
         Nothing -> (mempty, Right ())
-        Just p  -> void <$> evaluator (app p input)
-      (measured, outcome) = evaluator (app fun input)
+        Just p  -> void <$> evaluator p input
+      (measured, outcome) = evaluator fun input
   in case verdict of
     Left e -> (checked, ("runtime error:\n" <> show e, Left e))
     Right () -> (,) (checked <> measured) $ case outcome of
@@ -347,7 +352,8 @@ mainOnly = Iteration Nothing
 -- |The one iteration loop every eval entry point goes through. The evaluator
 -- reports a measurement per iteration (the unmetered wrappers use '()'), and
 -- each iteration's display goes through @accumFn@; the loop returns the summed
--- measurements alongside the final accumulator.
+-- measurements alongside the final accumulator. This form evaluates the
+-- closed term of each iteration, main applied to its input.
 evalLoopCore :: Monoid m
              => (CompiledExpr -> (m, Either RunTimeError CompiledExpr))
              -> Iteration
@@ -355,8 +361,21 @@ evalLoopCore :: Monoid m
              -> String
              -> [String]
              -> IO (m, String)
-evalLoopCore evaluator (Iteration prologue expr) accumFn initAcc manualInput =
-  let wrappedEval = funWrapWith evaluator prologue expr appB
+evalLoopCore evaluator =
+  evalLoopApplied (\fun input -> evaluator (appB fun (dataValue input)))
+
+-- |`evalLoopCore` for an evaluator that takes main and the iteration's input
+-- separately (the IC runtime, which keeps the input whole until the program
+-- takes it apart).
+evalLoopApplied :: Monoid m
+                => (CompiledExpr -> BasicExpr -> (m, Either RunTimeError CompiledExpr))
+                -> Iteration
+                -> (String -> String -> IO String)
+                -> String
+                -> [String]
+                -> IO (m, String)
+evalLoopApplied evaluator (Iteration prologue expr) accumFn initAcc manualInput =
+  let wrappedEval = funWrapWith evaluator prologue expr
       mainLoop measured acc strInput s = do
         let (m, (out, nextState)) = wrappedEval s
             measured' = measured <> m
@@ -400,7 +419,7 @@ evalLoopMetered manualInput expr = fst <$> evalLoopCore evalMeter expr printAccu
 -- program rather than once per iteration.
 evalLoopIC :: [String] -> ICPlan -> Iteration -> IO ICMeter
 evalLoopIC manualInput plan expr =
-  fst <$> evalLoopCore (evalIC plan) expr printAccum "" manualInput
+  fst <$> evalLoopApplied (evalIC plan) expr printAccum "" manualInput
 
 -- |Same as `evalLoop`, but keeping what was displayed.
 evalLoop_ :: Iteration -> IO String
