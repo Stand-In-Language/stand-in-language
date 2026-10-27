@@ -49,13 +49,12 @@
 module Telomare.Eval.Meter where
 
 import Control.Monad.State.Strict (State, modify', runState)
-import Data.Foldable (asum)
-import Data.Functor.Foldable (cata, project)
+import Data.Functor.Foldable (project)
 import Numeric.Natural (Natural)
 
 import Telomare.IR.Base
 import Telomare.IR.Core
-import Telomare.Machine (abortInd, deferB, doLeft, doRight)
+import Telomare.Machine (doLeft, doRight)
 
 -- |What a run cost.
 data Meter = Meter
@@ -96,9 +95,16 @@ runMeter env whole = case project whole of
   -- Already values.
   BasicFW ZeroSF       -> settled
   StuckFW DeferSF {}   -> settled
-  AbortFW (AbortF _)   -> settled
-  AbortFW AbortedF {}  -> settled
   StuckFW GateSF       -> settled
+
+  -- An abort evaluates its message and becomes an aborted value; an abort
+  -- in the message is the one that counts.
+  AbortFW (AbortF o m) -> do
+    m' <- runMeter env m
+    step
+    case m' of
+      AbortEE AbortF {} -> pure m'
+      _                 -> built >> pure (AbortB o m')
 
   -- A gate switch. The branches sit in the application's argument pair and
   -- stay unevaluated until the scrutinee picks one. The evaluator gets this
@@ -114,10 +120,10 @@ runMeter env whole = case project whole of
     s' <- runMeter env s
     step
     case s' of
-      AbortEE AbortedF {} -> pure s'
-      BasicEE ZeroSF      -> chose l
-      BasicEE PairSF {}   -> chose r
-      _                   -> unhandled "gate on a non-data scrutinee" s'
+      AbortEE AbortF {} -> pure s'
+      BasicEE ZeroSF    -> chose l
+      BasicEE PairSF {} -> chose r
+      _                 -> unhandled "gate on a non-data scrutinee" s'
 
   BasicFW (PairSF a b) -> do
     a' <- runMeter env a
@@ -138,7 +144,7 @@ runMeter env whole = case project whole of
   StuckFW (SetEnvSF x) -> do
     x' <- runMeter env x
     case x' of
-      AbortEE AbortedF {}  -> step >> pure x'
+      AbortEE AbortF {}    -> step >> pure x'
       BasicEE (PairSF f e) -> apply f e
       _ -> unhandled "SetEnv of something that is not a pair" x'
 
@@ -157,20 +163,14 @@ runMeter env whole = case project whole of
       x' <- runMeter env x
       step
       case x' of
-        AbortEE AbortedF {} -> pure x'
+        AbortEE AbortF {} -> pure x'
         _ -> case pick x' of
           Just v  -> pure v
           Nothing -> unhandled "projection of something that is not a pair" x'
 
     apply f e = case (f, e) of
-      (AbortEE AbortedF {}, _) -> step >> pure f
-      (_, AbortEE AbortedF {}) -> step >> pure e
-      -- `assert` on a passing value yields the identity function.
-      (AbortEE (AbortF _), BasicEE ZeroSF) -> step >> pure identityFunction
-      (AbortEE (AbortF o), _) -> do
-        step
-        built
-        pure . AbortEE . AbortedF o $ cata truncateToData e
+      (AbortEE AbortF {}, _) -> step >> pure f
+      (_, AbortEE AbortF {}) -> step >> pure e
       -- A gate applied to its scrutinee alone yields the branch-selector
       -- function the evaluator would produce; the `GateSwitch` case above is
       -- the one that keeps the usual full shape lazy.
@@ -180,27 +180,13 @@ runMeter env whole = case project whole of
       (StuckEE (DeferSF _ body), _) -> step >> runMeter (Just e) body
       _ -> unhandled "application of something that is not a function" f
 
-    truncateToData = \case
-      BasicFW ZeroSF       -> BasicEE ZeroSF
-      BasicFW (PairSF a b) -> PairB a b
-      _                    -> BasicEE ZeroSF
-
     unhandled why what = error $ "Telomare.Meter: " <> why <> ":\n" <> show what
-
--- |The identity function a passed assertion becomes, carrying the index the
--- evaluator gives it.
-identityFunction :: CompiledExpr
-identityFunction = deferB abortInd $ StuckEE EnvSF
 
 -- |Run a compiled program on an input, reporting what it cost. The result
 -- mirrors @eval@: an abort surfaces as a `RunTimeError`.
 evalMeter :: CompiledExpr -> (Meter, Either RunTimeError CompiledExpr)
 evalMeter expr =
   let (result, measured) = runState (runMeter Nothing expr) mempty
-  in (measured, case findAborted result of
+  in (measured, case firedAbort result of
        Just (o, e) -> Left $ AbortRunTime o e
        Nothing     -> pure result)
-  where
-    findAborted = cata $ \case
-      AbortFW (AbortedF o e) -> Just (o, e)
-      x                    -> asum x

@@ -242,8 +242,7 @@ instance PrettyPrintable1 BasicExprF where
 
 instance PrettyPrintable1 AbortableF where
   showP1 = \case
-    AbortF _     -> pure "!"
-    AbortedF o am -> pure $ "(aborted - " <> describeAbort o am <> ")"
+    AbortF o m -> indentWithOneChild' ("!" <> renderAbortOrigin o) (showP m)
 
 instance PrettyPrintable1 StuckExprF where
   showP1 = \case

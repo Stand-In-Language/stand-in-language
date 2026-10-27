@@ -2,7 +2,6 @@
 {-# LANGUAGE FlexibleContexts     #-}
 {-# LANGUAGE FlexibleInstances    #-}
 {-# LANGUAGE LambdaCase           #-}
-{-# LANGUAGE PatternSynonyms      #-}
 {-# LANGUAGE ScopedTypeVariables  #-}
 {-# LANGUAGE TypeFamilies         #-}
 {-# LANGUAGE TypeOperators        #-}
@@ -74,12 +73,6 @@ extractInputRestrictions = cleanup . f Nothing where
       Just False -> Just (StrictAccum (InputRestrictions (Set.singleton n) mempty) ZeroB)
       Just True  -> Just (StrictAccum (InputRestrictions mempty (Set.singleton n)) $ PairB ZeroB ZeroB)
       _          -> Just (StrictAccum mempty ZeroB) -- is this ok?
-    FillFunction (AbortEE (AbortF _)) i -> f (Just False) i
-    -- a value guarded by a nested refinement check (see 'GuardedEE')
-    FillFunction (FillFunctionEE (AbortEE (AbortF _)) chk) v -> do
-      StrictAccum sc _ <- f (Just False) chk
-      StrictAccum sv v' <- f expected v
-      pure $ StrictAccum (sc <> sv) v'
     -- a function value is neither impossible nor restricting
     d@(StuckFW (DeferSF _ _)) | isNothing expected -> pure . pure $ embed d
     GateSwitch l r s ->
@@ -96,6 +89,9 @@ extractInputRestrictions = cleanup . f Nothing where
         (_, Just (StrictAccum sta x)) -> case f (Just True) s of
           Nothing                  -> Nothing
           Just (StrictAccum stb _) -> pure $ StrictAccum (sta <> stb) x
+    -- an abort never yields a value, so a gate path ending in one is ruled
+    -- out: a refinement check @if r then abort r else c@ restricts @r@ to Zero
+    AbortFW _ -> Nothing
     _ -> Nothing
   cleanup = \case
     Just (StrictAccum s _) -> s
@@ -107,64 +103,64 @@ findInputLimitStepM handleOther x = f x where
   f = \case
     UnsizedFW (RefinementWrapperF o tc c) ->
       let
-          performTC = SetEnvB $ PairB (AbortB o) (appB tc c)
+          -- only whether the check passes matters here, not the value it guards
+          checked = refinementGate o (transformNoDefer refinementCheckStep $ appB tc c) ZeroB
           stripBarrier = \case
             DeferredFW (BarrierF inner) -> inner
             other -> embed other
-          s = extractInputRestrictions . cata stripBarrier . transformNoDefer refinementCheckStep $ performTC
+          s = extractInputRestrictions $ cata stripBarrier checked
       in StrictAccum s c
     _ -> handleOther x
 
--- |A value guarded by a refinement check that could not be decided against
--- symbolic input: @abort chk v@ yields @v@ when @chk@ is zero, and aborts
--- otherwise. Barrier-wrapped, since @chk@ is always a residual here.
-pattern GuardedEE :: AbortOrigin -> InputSizingExpr -> InputSizingExpr -> InputSizingExpr
-pattern GuardedEE o chk v <- DeferredEE (BarrierF (FillFunctionEE (FillFunctionEE (AbortEE (AbortF o)) chk) v))
-
-guardedEE :: AbortOrigin -> InputSizingExpr -> InputSizingExpr -> InputSizingExpr
-guardedEE o chk = \case
-  a@(AbortEE (AbortedF _ _)) -> a
-  v -> deferredEE . BarrierF $ FillFunctionEE (FillFunctionEE (AbortB o) chk) v
+-- |@if r then abort r else c@ over an evaluated check result @r@ and value
+-- @c@: what a refinement check reduces to once its check function has run.
+--
+-- An undecided @r@ leaves a barrier-wrapped gate switch with @r@ itself as
+-- the scrutinee. Gating on @r@ the usual way would push the gate into
+-- @r@'s own residual gates, copying @c@ onto every path that passes, and
+-- nested checks would multiply the copies. Left whole, @c@ appears once,
+-- and whatever is done to the guarded value later goes into just its two
+-- branches, one of which stays an abort.
+refinementGate :: AbortOrigin -> InputSizingExpr -> InputSizingExpr -> InputSizingExpr
+refinementGate o r c = case r of
+  BasicEE ZeroSF       -> c
+  a@(AbortEE _)        -> a
+  BasicEE (PairSF _ _) -> aborted
+  _                    -> deferredEE . BarrierF $ GateSwitchEE c aborted r
+  where aborted = refinementCheckStep . AbortFW $ AbortF o r
 
 -- |Evaluates a refinement check function against symbolic input, leaving
--- input-dependent gates and aborts as barrier-wrapped residuals for
+-- input-dependent gates as barrier-wrapped residuals for
 -- 'extractInputRestrictions'.
 --
 -- A refinement nested inside the check (e.g. a check calling a Prelude
--- function whose arguments are refined) is evaluated in place: decided
--- checks reduce to their value or abort, undecided ones become a
--- 'GuardedEE' residual, so their restrictions apply only on the gate paths
--- where the nested check actually runs.
+-- function whose arguments are refined) is evaluated in place: a decided
+-- check reduces to its value or an abort, an undecided one to a gate
+-- switch with an abort branch, so its restrictions apply only on the gate
+-- paths where the nested check actually runs.
 refinementCheckStep :: InputSizingExprF InputSizingExpr -> InputSizingExpr
-refinementCheckStep = basicStep (stuckStep (abortStep (guardStep (gateSwitchStep (deferredEvalStep (abortDeferredStep (indexedInputStep Set.empty handleOther))))))) where
+refinementCheckStep = basicStep (stuckStep (abortStep (gateSwitchStep (deferredEvalStep (indexedInputStep Set.empty handleOther))))) where
   step = refinementCheckStep
   barrier = deferredEE . BarrierF
   -- an undecided gate yields one of its branches, so anything always done to
   -- its result can be done to each branch instead, keeping the result
-  -- analyzable (e.g. Bool's @left vv@ when vv is @toBool x@)
+  -- analyzable (e.g. Bool's @left vv@ when vv is @toBool x@). An abort
+  -- branch stays an abort, since aborts propagate.
   gateSwitchStep handleOther' = \case
     StuckFW (LeftSF (DeferredEE (BarrierF (GateSwitchEE l r s)))) ->
       barrier $ GateSwitchEE (step . StuckFW $ LeftSF l) (step . StuckFW $ LeftSF r) s
     StuckFW (RightSF (DeferredEE (BarrierF (GateSwitchEE l r s)))) ->
       barrier $ GateSwitchEE (step . StuckFW $ RightSF l) (step . StuckFW $ RightSF r) s
+    StuckFW (SetEnvSF (DeferredEE (BarrierF (GateSwitchEE l r s)))) ->
+      barrier $ GateSwitchEE (step . StuckFW $ SetEnvSF l) (step . StuckFW $ SetEnvSF r) s
     FillFunction GateB (DeferredEE (BarrierF (GateSwitchEE l r s))) ->
       barrier $ GateSwitchEE (step $ FillFunction GateB l) (step $ FillFunction GateB r) s
     FillFunction (DeferredEE (BarrierF (GateSwitchEE l r s))) e ->
       barrier $ GateSwitchEE (step $ FillFunction l e) (step $ FillFunction r e) s
     other -> handleOther' other
-  -- a guard wraps a value whose check always runs, so it can float out of
-  -- any position that is always evaluated (but not out of gate branches)
-  guardStep handleOther' = \case
-    StuckFW (LeftSF (GuardedEE o chk v)) -> guardedEE o chk . step . StuckFW $ LeftSF v
-    StuckFW (RightSF (GuardedEE o chk v)) -> guardedEE o chk . step . StuckFW $ RightSF v
-    StuckFW (SetEnvSF (GuardedEE o chk v)) -> guardedEE o chk . step . StuckFW $ SetEnvSF v
-    FillFunction GateB (GuardedEE o chk v) -> guardedEE o chk . step $ FillFunction GateB v
-    FillFunction (GuardedEE o chk c) e -> guardedEE o chk . step $ FillFunction c e
-    other -> handleOther' other
   handleOther = \case
     FillFunction GateB i@(IndexedEE _) -> deferredEE . BarrierF . embed $ FillFunction GateB i
-    FillFunction a@(AbortEE (AbortF _)) i@(IndexedEE _) -> deferredEE . BarrierF . embed $ FillFunction a i
-    UnsizedFW (RefinementWrapperF o tc c) -> step $ FillFunction (step $ FillFunction (AbortB o) (app tc c)) c
+    UnsizedFW (RefinementWrapperF o tc c) -> refinementGate o (app tc c) c
     other -> error $ "refinementCheckStep eval unexpected:\n" <> prettyPrint other
   -- 'appB' over already-evaluated operands: tc is a closure, so twiddle it
   -- into (function, (input, env)) before applying
@@ -261,23 +257,27 @@ sizeTermM sizingSettings x = tidyUp . transformNoDeferM evalStep $ mx where
       in debugTrace ("sizeTermM setting size: " <> show (tok, n)) sizedRecursionChain tok n
     UnsizedFW (TraceF _ inner) -> inner
     other -> embed other
-  foldAborted = cata f where
+  -- only the sizing analysis's own aborts say anything about sizing; the
+  -- program's aborts are just one of the outcomes some inputs have
+  foldAborted = para f where
     f = \case
-      AbortFW (AbortedF _ (AbortRecursion i)) -> case b2i i of
-        Just i' -> Just . OverfueledSR $ toEnum i'
-        _ -> error $ "sizeTermM foldAborted unexpected AbortRecursion value:\n" <> prettyPrint i
-      AbortFW (AbortedF _ AbortAny) -> error "sizeTermM AbortAny hit"
-      AbortFW (AbortedF _ (AbortUnsizeable t)) -> case b2i t of
-        Just i' -> Just . UnsizableSR $ toEnum i'
-        _ -> error $ "sizeTermM foldAborted unexpected AbortUnsizeable value:\n" <> prettyPrint t
-      other                             -> Data.Foldable.fold other
+      AbortFW (AbortF o (m, _)) | abortKind o == SizingAbort -> case messageData m of
+        AbortRecursion i -> case b2i i of
+          Just i' -> Just . OverfueledSR $ toEnum i'
+          _ -> error $ "sizeTermM foldAborted unexpected AbortRecursion value:\n" <> prettyPrint i
+        AbortAny -> error "sizeTermM AbortAny hit"
+        AbortUnsizeable t -> case b2i t of
+          Just i' -> Just . UnsizableSR $ toEnum i'
+          _ -> error $ "sizeTermM foldAborted unexpected AbortUnsizeable value:\n" <> prettyPrint t
+        other -> error $ "sizeTermM foldAborted unexpected sizing abort:\n" <> prettyPrint other
+      other -> Data.Foldable.fold (snd <$> other)
   unhandledGate g = error ("sizeTermM unhandled gate input: " <> show g)
   gateResult = gateBasicResult (gateAbortResult (gateIndexedResult (gateSuperResult gateResult unhandledGate)))
   unsizedTest :: UnsizedRecursionToken -> UnsizedExpr -> UnsizedExpr
   unsizedTest ri = unsizedTestIndexed zeros (unsizedTestSuper (unsizedTest ri) (const id)) ri
   unsizedTest' ri = (\v -> debugTrace ("unsizedTest evaluated to value of\n" <> prettyPrint v) v) . unsizedTest ri
   unhandledError err = throw $ UGException ("sizeTermM unhandled case\n" <> prettyPrint err)
-  evalStep = basicStepM (stuckStepM (abortStepM (indexedAbortStepM (indexedInputStepM zeros (indexedSuperStepM (superStepM gateResult evalStep (superAbortStepM evalStep (unsizedStepM''' (maxSizingSize sizingSettings) zeros unsizedTest' unhandledError))))))))
+  evalStep = basicStepM (stuckStepM (abortStepM (indexedInputStepM zeros (indexedSuperStepM (superStepM gateResult evalStep (unsizedStepM''' (maxSizingSize sizingSettings) zeros unsizedTest' unhandledError))))))
 
 removeRefinementWrappers :: (Base g ~ f, BasicBase f, StuckBase f, AbortBase f, UnsizedBase f, Recursive g, Corecursive g) => g -> g
 removeRefinementWrappers = cata f where
@@ -295,11 +295,14 @@ evalStaticCheck shouldCap t =
                       inp = deferredEE $ BarrierF EnvB
                       x = (\x' -> debugTrace ("evalA starting expr:\n" <> prettyPrint x') x') $ if shouldCap then capMain inp t else t
                   in eval' x
+      -- a fired abort: not under a defer (code that has not run) or a
+      -- barrier (code waiting on input)
       getAborted = \case
-        AbortFW (AbortedF o e) -> Just (o, e)
-        DeferredFW (BarrierF _) -> Nothing
-        x                    -> foldr (<|>) Nothing x
-  in cata getAborted runResult
+        AbortFW (AbortF o (m, im)) -> im <|> Just (o, messageData m)
+        DeferredFW (BarrierF _)    -> Nothing
+        StuckFW (DeferSF _ _)      -> Nothing
+        x                          -> foldr ((<|>) . snd) Nothing x
+  in para getAborted runResult
 
 -- |What the sizing pass learned, kept rather than discarded. These iteration
 -- counts are the numbers the compiler already relies on to claim a program is

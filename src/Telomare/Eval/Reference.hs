@@ -21,7 +21,7 @@
 -- step counting; the sizing tests assert the two agree.
 module Telomare.Eval.Reference where
 
-import Control.Applicative
+
 import Data.Char (chr)
 import Data.Functor.Foldable
 import Telomare.IR.Base
@@ -60,10 +60,7 @@ instance AbstractRunTime CompiledExpr where
       z -> "unexpected eval state:\n" <> prettyPrint z
     step = basicStep (stuckStep (abortStep unhandledError))
     unhandledError x = error $ "CompiledExpr eval unhandled case " <> prettyPrint x
-    findError = \case
-      AbortFW (AbortedF o e) -> Just (o, e)
-      x -> asum x
-    checkError x = case cata findError x of
+    checkError x = case firedAbort x of
       Just (o, e) -> Left $ AbortRunTime o e
       _           -> pure x
 

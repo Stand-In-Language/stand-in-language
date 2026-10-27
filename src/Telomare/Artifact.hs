@@ -80,7 +80,7 @@ artifactMagic = BL.pack [0x54, 0x45, 0x4C, 0x43] -- "TELC"
 -- |Bumped whenever the encoding changes, which invalidates older files rather
 -- than misreading them.
 artifactVersion :: Int
-artifactVersion = 4
+artifactVersion = 5
 
 telcExtension :: String
 telcExtension = ".telc"
@@ -362,17 +362,6 @@ getVerdict = getWord8 >>= \case
 
 -- Terms.
 
-putBasic :: BasicExpr -> Put
-putBasic e = case project e of
-  ZeroSF     -> putWord8 0
-  PairSF a b -> putWord8 1 >> putBasic a >> putBasic b
-
-getBasic :: Get BasicExpr
-getBasic = getWord8 >>= \case
-  0 -> pure (embed ZeroSF)
-  1 -> (\a b -> embed (PairSF a b)) <$> getBasic <*> getBasic
-  n -> fail $ "unknown basic node tag " <> show n
-
 putCompiled :: CompiledExpr -> Put
 putCompiled e = case project e of
   BasicFW ZeroSF -> putWord8 0
@@ -386,8 +375,7 @@ putCompiled e = case project e of
   StuckFW GateSF -> putWord8 5
   StuckFW (LeftSF x) -> putWord8 6 >> putCompiled x
   StuckFW (RightSF x) -> putWord8 7 >> putCompiled x
-  AbortFW (AbortF o) -> putWord8 8 >> putOrigin o
-  AbortFW (AbortedF o b) -> putWord8 9 >> putOrigin o >> putBasic b
+  AbortFW (AbortF o m) -> putWord8 8 >> putOrigin o >> putCompiled m
   _ -> error "Telomare.Artifact: unreachable compiled node"
 
 getCompiled :: Get CompiledExpr
@@ -402,6 +390,5 @@ getCompiled = getWord8 >>= \case
   5 -> pure $ embed (StuckFW GateSF)
   6 -> embed . StuckFW . LeftSF <$> getCompiled
   7 -> embed . StuckFW . RightSF <$> getCompiled
-  8 -> embed . AbortFW . AbortF <$> getOrigin
-  9 -> (\o b -> embed (AbortFW (AbortedF o b))) <$> getOrigin <*> getBasic
+  8 -> (\o m -> embed (AbortFW (AbortF o m))) <$> getOrigin <*> getCompiled
   n -> fail $ "unknown compiled node tag " <> show n

@@ -108,7 +108,8 @@ data FastExpr
   | FGate
   | FLeft FastExpr
   | FRight FastExpr
-  | FAbort AbortOrigin
+  | FAbort AbortOrigin FastExpr
+  -- ^Evaluates its message and becomes an aborted value.
   | FUnbounded RecursionSite
   deriving (Eq, Show)
 
@@ -119,7 +120,6 @@ data Value
   | VPair Value Value
   | VDefer FastExpr
   | VGate
-  | VAbort AbortOrigin
   | VAborted AbortOrigin BasicExpr
   -- ^An abort in flight: propagates, and may be discarded unused.
   | VRec RecursionSite Value
@@ -328,7 +328,10 @@ evalFast :: FastExpr -> Value -> EvalM Value
 evalFast expr env = case expr of
   FZero -> pure VZero
   FEnv -> pure env
-  FAbort o -> pure (VAbort o)
+  FAbort o m -> evalFast m env >>= forceValue >>= \case
+    -- an abort in the message is the one that counts
+    a@VAborted {} -> pure a
+    v             -> pure (VAborted o (truncateV v))
   FDefer d -> pure (VDefer d)
   FPair a b -> VPair <$> evalFast a env <*> evalFast b env
   FGate -> pure VGate
@@ -381,12 +384,6 @@ applyRaw fun arg = forceValue fun >>= \case
     VPair _ _      -> pure (VDefer (FRight FEnv))
     a@VAborted {}  -> pure a
     _              -> throwError $ FastStuck "gate applied to non-data"
-  VAbort o -> forceValue arg >>= \case
-    -- `assert` on a passing value yields the identity function.
-    VZero          -> pure (VDefer FEnv)
-    p@(VPair _ _)  -> pure (VAborted o (truncateV p))
-    a@VAborted {}  -> pure a
-    _              -> throwError $ FastStuck "abort applied to non-data"
   _ -> throwError $ FastStuck "application of something that is not a function"
 
 -- |Apply the program's @main@ closure to one iteration's input.
@@ -517,19 +514,21 @@ term3ToFast owners = cata go
       Term3S GateSF -> Right FGate
       Term3S (LeftSF x) -> FLeft <$> x
       Term3S (RightSF x) -> FRight <$> x
-      Term3A (AbortF o) -> Right (FAbort o)
-      Term3A AbortedF {} -> Left "an already-aborted term in the source"
+      Term3A (AbortF o m) -> FAbort o <$> m
       Term3Unsized tok ->
         Right . FUnbounded $ RecursionSite tok anno (locKey anno >>= (`Map.lookup` owners))
       Term3CheckingWrapper o tc c -> checkingWrapper o <$> tc <*> c
 
-    -- Run the check on the value: a nonzero result aborts carrying it as the
-    -- message, and zero yields the identity, applied to the value.
+    -- @let r = tc c in (if r then abort r else id) c@, the shape
+    -- 'Telomare.Machine.refinementCheckB' gives a sized program: the outer
+    -- defer computes @r@ once and hands @(r, c)@ to the gate.
     checkingWrapper o tc c = FSetEnv (FPair performTC (FPair tc c))
       where
-        performTC = FDefer
-          (FSetEnv (FPair (FSetEnv (FPair (FAbort o) innerTC)) (FRight FEnv)))
+        performTC = FDefer (FSetEnv (FPair (FDefer gate) (FPair innerTC (FRight FEnv))))
         innerTC = app (FLeft FEnv) (FRight FEnv)
+        gate = FSetEnv (FPair pick (FRight FEnv))
+        pick = FSetEnv (FPair (FSetEnv (FPair FGate (FLeft FEnv)))
+                              (FPair (FDefer FEnv) (FAbort o (FLeft FEnv))))
 
 -- |A source position, used to attribute a recursion site to the definition it
 -- was written in.

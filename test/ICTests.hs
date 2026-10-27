@@ -17,14 +17,14 @@ import Telomare.EAL (CodeGuidance (..), EALLiftedResult (..),
 import Telomare.Eval.IC (ICMeter (..), ICPlan (..), admitIC, evalIC)
 import Telomare.Expand (expandModule, renderExpansionError)
 import Telomare.IC
-import Telomare.IR.Base (AbortableF (..), BasicExpr, pattern AbortB,
-                         pattern AbortEE, pattern EnvB, pattern GateB,
+import Telomare.IR.Base (AbortKind (..), AbortOrigin (..), BasicExpr,
+                         pattern AbortB, pattern EnvB, pattern GateB,
                          pattern GateSwitchEE, pattern LeftB, pattern PairB,
-                         pattern RightB, pattern SetEnvB, pattern ZeroB,
-                         unknownOrigin, varB)
+                         pattern RightB, pattern SetEnvB, pattern ZeroB, varB)
 import Telomare.IR.Core (AbstractRunTime (..), CompiledExpr, RunTimeError (..),
                          Term3, compiled2Term3)
-import Telomare.Machine (abortInd, appB, chainLinks, deferB, iteB)
+import Telomare.IR.Loc (LocTag (UnknownLoc))
+import Telomare.Machine (appB, chainLinks, deferB, iteB, refinementCheckB)
 import Telomare.Parse (runParseModule)
 import Telomare.Resolve (DeferKeys (..), DeferMap (..), deferLift, keyDefers,
                          main2Term3)
@@ -68,6 +68,11 @@ num n = p z (num (n - 1))
 -- | The abort message @(Zero, Zero)@ at the message type.
 msgPair :: BasicExpr
 msgPair = PairB ZeroB ZeroB
+
+-- | Two distinguishable abort origins.
+userO, caseO :: AbortOrigin
+userO = AbortOrigin UserAbort UnknownLoc
+caseO = AbortOrigin CaseAbort UnknownLoc
 
 -- | Unapplied self-application is a value; applied to itself its level
 -- equations demand an unbounded tower — EAL rejects it, and this runtime
@@ -181,13 +186,13 @@ main = do
             length keys @?= 4
         , testCase "equal bodies share one template (selectors included)" $ do
             -- both bodies equal doLeft's, so all three refs reuse the
-            -- selector template and only the three reserved templates are
+            -- selector template and only the two reserved templates are
             -- ever compiled
             let term = p (se (p (d 2 (LeftB EnvB)) (p z z)))
                          (se (p (d 3 (LeftB EnvB)) (p z z)))
                 (r, stats) = icEvalDetailed defaultFuel term
             r @?= Right (p z z)
-            Map.lookup "template-compiled" stats @?= Just 3
+            Map.lookup "template-compiled" stats @?= Just 2
             Map.lookup "template-reused" stats @?= Just 2
         , testCase "deduped defers read back with their own index" $ do
             -- the result contains both defer values; sharing a template
@@ -205,9 +210,9 @@ main = do
                 (r, stats) = icEvalDetailed defaultFuel term
             r @?= Right term
             icEval term @?= eval term
-            -- 3 selectors + 2 distinct outers; the nested bodies reuse
+            -- 2 selectors + 2 distinct outers; the nested bodies reuse
             -- the doLeft selector template
-            Map.lookup "template-compiled" stats @?= Just 5
+            Map.lookup "template-compiled" stats @?= Just 4
             Map.lookup "template-reused" stats @?= Just 2
         ]
     , testGroup "env splitting"
@@ -250,7 +255,7 @@ main = do
                 "expected a stuck report, got " <> show other
         , diffTest "projections of an aborted env"
             (se (p (d 2 (p (LeftB EnvB) (RightB EnvB)))
-                 (AbortEE (AbortedF unknownOrigin msgPair))))
+                 (AbortB userO (p z z))))
         , testCase "wiring consumes exactly the guidance-published usage" $ do
             let body = p (LeftB EnvB) (p (RightB (RightB EnvB)) (LeftB EnvB))
                 lr = inferEALWithLifting (compiled2Term3 (d 2 body))
@@ -406,16 +411,23 @@ main = do
             (GateSwitchEE z (p z z) (se (p (d 113 EnvB) (p z z))))
         ]
     , testGroup "abort"
-        [ expectTest "abort of zero is the identity continuation"
-            (se (p (AbortB unknownOrigin) z)) (Right (d abortInd EnvB))
-        , expectTest "the abort continuation passes its env through"
-            (se (p (se (p (AbortB unknownOrigin) z)) (p z z))) (Right (p z z))
-        , expectTest "abort of a pair aborts with that message"
-            (se (p (AbortB unknownOrigin) (p z z))) (Left (AbortRunTime unknownOrigin msgPair))
+        [ expectTest "an abort aborts with its message"
+            (AbortB userO (p z z)) (Left (AbortRunTime userO msgPair))
+        , expectTest "a Zero message still aborts"
+            (AbortB userO z) (Left (AbortRunTime userO ZeroB))
         , expectTest "aborted values poison projections"
-            (LeftB (se (p (AbortB unknownOrigin) (p z z)))) (Left (AbortRunTime unknownOrigin msgPair))
+            (LeftB (AbortB userO (p z z))) (Left (AbortRunTime userO msgPair))
         , expectTest "a discarded aborted value is no abort"
-            (GateSwitchEE z (LeftB (se (p (AbortB unknownOrigin) (p z z)))) z) (Right z)
+            (GateSwitchEE z (LeftB (AbortB userO (p z z))) z) (Right z)
+        , expectTest "an abort in the message is the one that counts"
+            (AbortB userO (AbortB caseO (p z z))) (Left (AbortRunTime caseO msgPair))
+        , expectTest "an abort under a defer has not fired"
+            (d 7 (AbortB userO (p z z))) (Right (d 7 (AbortB userO (p z z))))
+        , expectTest "a passing refinement check yields its value"
+            (refinementCheckB userO (p (d 31 z) z) (p z z)) (Right (p z z))
+        , expectTest "a failing refinement check aborts with the check's result"
+            (refinementCheckB userO (p (d 32 (LeftB EnvB)) z) (p z z))
+            (Left (AbortRunTime userO msgPair))
         ]
     , testGroup "church numerals"
         [ expectTest "two applications of successor"

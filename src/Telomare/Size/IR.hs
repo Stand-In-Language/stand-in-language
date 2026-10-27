@@ -166,13 +166,13 @@ instance ShallowEq1 StuckF where
   shallowEq1 a b = case (a,b) of
     (DeferSF fida _, DeferSF fidb _) -> fida == fidb
     _                                -> False
--- | Origins are ignored: sizing only cares what an abort does, and merging
--- branches that differ only in where their aborts came from keeps it small.
+-- | The program's own aborts are all alike to sizing, which only cares that
+-- a path aborts, so merging them keeps superpositions small. The sizing
+-- analysis's aborts carry its verdict in their messages, which a shallow
+-- comparison cannot see; 'Telomare.Machine.mergeShallow' compares those.
 instance ShallowEq1 AbortableF where
-  shallowEq1 a b = case (a,b) of
-    (AbortedF _ a', AbortedF _ b') -> a' == b'
-    (AbortF _, AbortF _)           -> True
-    _                              -> False
+  shallowEq1 (AbortF o _) (AbortF o' _) = not (sizing o || sizing o') where
+    sizing = (== SizingAbort) . abortKind
 
 data UnsizedRecursionF f
   = RecursionTestF UnsizedRecursionToken f

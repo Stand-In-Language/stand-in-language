@@ -19,6 +19,7 @@
 -- (e.g. 'PairB') works at every stage of the pipeline.
 module Telomare.IR.Base where
 
+import Control.Applicative ((<|>))
 import Control.Comonad.Cofree (Cofree ((:<)))
 import qualified Control.Comonad.Trans.Cofree as CofreeT (CofreeF (..))
 import Control.DeepSeq (NFData (..))
@@ -28,7 +29,7 @@ import Data.Char (chr, ord)
 import Data.Fix (Fix (..))
 import Data.Functor.Classes (Eq1 (..), Show1 (..))
 import Data.Functor.Foldable (Base, Corecursive (embed),
-                              Recursive (cata, project))
+                              Recursive (cata, para, project))
 import Data.Kind (Type)
 import Data.Map (Map)
 import qualified Data.Map as Map
@@ -90,8 +91,8 @@ pattern RightB :: (Recursive g, Corecursive g, Base g ~ f, StuckBase f) => g -> 
 pattern RightB x = StuckEE (RightSF x)
 pattern ZeroB :: (Recursive g, Corecursive g, Base g ~ f, BasicBase f) => g
 pattern ZeroB = BasicEE ZeroSF
-pattern AbortB :: (Recursive g, Corecursive g, Base g ~ f, AbortBase f) => AbortOrigin -> g
-pattern AbortB o = AbortEE (AbortF o)
+pattern AbortB :: (Recursive g, Corecursive g, Base g ~ f, AbortBase f) => AbortOrigin -> g -> g
+pattern AbortB o m = AbortEE (AbortF o m)
 -- note: only use this where annotations don't matter
 pattern PairB :: (Recursive g, Corecursive g, Base g ~ f, BasicBase f) => g -> g -> g
 pattern PairB a b = BasicEE (PairSF a b)
@@ -220,7 +221,7 @@ data AbortKind
   deriving anyclass (NFData)
 
 -- | Where an abort came from: compile-time metadata that travels with the
--- abort into its 'AbortedF' value, so a runtime failure can say what
+-- abort into the aborted value it becomes, so a runtime failure can say what
 -- raised it. The location is the call site for user aborts, the @case@ for
 -- case aborts, and the annotation for refinements.
 --
@@ -260,28 +261,27 @@ renderAbortOrigin (AbortOrigin kind loc) = describe kind <> located where
     UnknownAbort    -> "unknown source"
   located = maybe "" (" at " <>) (renderLocTagCompact loc)
 
--- TODO we can simplify abort semantics to (defer env), and then could do gate x (abort [message] x) for conditional abort
+-- | An abort. Evaluating @AbortF o m@ evaluates the message @m@ and gives an
+-- aborted value: it always aborts, whatever the message. A conditional
+-- abort is a gate with an abort in one branch.
+--
+-- The same node is both the code and the aborted value it evaluates to.
+-- Under a defer it is code that has not run; outside every defer, in an
+-- evaluated term, it has fired ('firedAbort'). An aborted value propagates
+-- through projections, 'SetEnvSF', gate scrutinees and function positions,
+-- and an abort in a message wins over the one carrying it. A pair holding
+-- an aborted value is not itself aborted, and an aborted value nothing
+-- uses is simply dropped.
 data AbortableF f
-  = AbortF AbortOrigin
-  | AbortedF AbortOrigin BasicExpr
-  deriving (Eq, Show, Functor, Foldable, Generic)
-
-instance Traversable AbortableF where
-  {-# INLINE traverse #-}
-  traverse _ = \case
-    AbortF o     -> pure $ AbortF o
-    AbortedF o x -> pure $ AbortedF o x
+  = AbortF AbortOrigin f
+  deriving (Eq, Show, Functor, Foldable, Traversable, Generic)
 
 instance Eq1 AbortableF  where
-  liftEq _test a b = case (a,b) of
-    (AbortF o, AbortF o')                             -> o == o'
-    (AbortedF o x, AbortedF o' y) | o == o' && x == y -> True
-    _                                                 -> False
+  liftEq test (AbortF o x) (AbortF o' y) = o == o' && test x y
 
 instance Show1 AbortableF where
-  liftShowsPrec _showsPrec _showList _prec = \case
-    AbortF o     -> shows "AbortF" . showParen True (shows o)
-    AbortedF o x -> shows "(AbortedF " . showParen True (shows o) . shows x . shows ")"
+  liftShowsPrec showsPrec' _showList prec (AbortF o x) = showParen (prec > 10) $
+    showString "AbortF " . showsPrec 11 o . showChar ' ' . showsPrec' 11 x
 
 newtype UnsizedRecursionToken = UnsizedRecursionToken { unUnsizedRecursionToken :: Int }
   deriving (Eq, Ord, Show, Enum, Generic)
@@ -427,6 +427,34 @@ convertAbortMessage = \case
     Just m  -> "user abort: " <> m
   AbortAny -> "user abort of all possible abort reasons (non-deterministic input)"
   x -> "unexpected abort: " <> show x
+
+-- | Data as a term of any IR.
+dataB :: (Base g ~ f, BasicBase f, Corecursive g) => BasicExpr -> g
+dataB = cata (embed . embedB)
+
+-- | Is the term nothing but pairs and Zero?
+isData :: (Base g ~ f, BasicBase f, Recursive g) => g -> Bool
+isData = cata $ \case
+  BasicFW ZeroSF       -> True
+  BasicFW (PairSF a b) -> a && b
+  _                    -> False
+
+-- | An abort message as data: anything that is neither Zero nor a pair (a
+-- closure, say) reads as Zero.
+messageData :: (Base g ~ f, BasicBase f, Recursive g) => g -> BasicExpr
+messageData = cata $ \case
+  BasicFW (PairSF a b) -> PairB a b
+  _                    -> ZeroB
+
+-- | The leftmost abort that has fired in an evaluated term: an 'AbortF'
+-- outside every defer (one under a defer is code that has not run). An
+-- abort inside another's message is the one that counts.
+firedAbort :: (Base g ~ f, BasicBase f, StuckBase f, AbortBase f, Foldable f, Recursive g)
+  => g -> Maybe (AbortOrigin, BasicExpr)
+firedAbort = para $ \case
+  StuckFW (DeferSF _ _)      -> Nothing
+  AbortFW (AbortF o (m, im)) -> im <|> Just (o, messageData m)
+  x                          -> foldr ((<|>) . snd) Nothing x
 
 -- | An abort's message together with what raised it.
 describeAbort :: AbortOrigin -> BasicExpr -> String

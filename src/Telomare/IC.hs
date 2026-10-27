@@ -38,10 +38,10 @@
 --   * A gate applied to a scrutinee yields one of the reserved selector
 --     defers ('doLeft'\/'doRight'); branch selection is then ordinary
 --     application of a projection body, and the unselected branch is erased.
---   * Abort applied to Zero yields the reserved identity defer; applied to
---     a pair it becomes an Aborted value that consumers propagate. Aborted
---     values surface as 'AbortRunTime' only if they survive into the
---     result, matching the reference checkError.
+--   * An abort becomes an Aborted value at once, carrying its message;
+--     consumers propagate it. Aborted values surface as 'AbortRunTime'
+--     only if they survive into the result (outside every defer),
+--     matching the reference checkError.
 --
 -- Interaction nets are confluent, so although this runtime fires redexes in
 -- worklist order rather than the reference's evaluation order, final
@@ -80,8 +80,7 @@ import Control.Monad.Except
 import Control.Monad.State.Strict (State)
 import qualified Control.Monad.State.Strict as State
 import Crypto.Hash (Digest, SHA256)
-import Data.Foldable (asum)
-import Data.Functor.Foldable (cata, project)
+import Data.Functor.Foldable (project)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
 import Data.Map (Map)
@@ -91,13 +90,12 @@ import qualified Data.Sequence as Seq
 import Debug.Trace (trace)
 import Telomare.EAL (CapShape (..), Step (..), showSteps)
 import Telomare.IR.Base (AbortOrigin, AbortableF (..), BasicExpr,
-                         BasicExprF (..), FunctionIndex, StuckF (..), forget,
-                         pattern AbortB, pattern AbortEE, pattern AbortFW,
-                         pattern EnvB, pattern GateB, pattern PairB,
-                         pattern StuckEE, pattern StuckFW, pattern ZeroB)
+                         BasicExprF (..), FunctionIndex, StuckF (..), dataB,
+                         firedAbort, forget, pattern AbortB, pattern GateB,
+                         pattern PairB, pattern StuckEE, pattern StuckFW,
+                         pattern ZeroB)
 import Telomare.IR.Core (CompiledExpr, CompiledExprF (..), RunTimeError (..))
-import Telomare.Machine (abortInd, deferB, doLeft, doRight, leftGateInd,
-                         rightGateInd)
+import Telomare.Machine (doLeft, doRight, leftGateInd, rightGateInd)
 import Telomare.Resolve (DeferKeys (..), KeyedExpr, keyDefers)
 
 -- | Temporary debugging switch: trace every interaction and instantiation.
@@ -124,8 +122,6 @@ data ICKind
   | ICEra              -- ^ 1 port: eraser (affine discard)
   | ICZero             -- ^ 1 port
   | ICGate             -- ^ 1 port
-  | ICAbort AbortOrigin
-                       -- ^ 1 port
   | ICRef TemplateId FunctionIndex
                        -- ^ 1 port: pointer into the template table, copied
                        --   freely by dups. Carries its own site's defer
@@ -143,8 +139,6 @@ data ICKind
   | ICSetEnv           -- ^ 2 ports: operand (awaits a pair), result
   | ICApply            -- ^ 3 ports: function head, env, result
   | ICScrut            -- ^ 2 ports: gate scrutinee, result
-  | ICScrutAbort AbortOrigin
-                       -- ^ 2 ports: abort message, result
   | ICLeft             -- ^ 2 ports: projection target, result
   | ICRight            -- ^ 2 ports: projection target, result
   | ICStuckV String    -- ^ 1 port: an ill-shaped interaction's result. The
@@ -488,10 +482,11 @@ compileTerm t = case unwrap t of
   CompiledExprS (DeferSF _ _) -> do
     (tid, fi) <- compileDefer t
     value (ICRef tid fi)
-  CompiledExprA (AbortF o) -> value (ICAbort o)
-  CompiledExprA (AbortedF o m) -> do
+  -- an abort becomes an aborted value at once, its message computed
+  -- underneath it
+  CompiledExprA (AbortF o m) -> do
     a <- newNode (ICAborted o)
-    connect (Port a 1) =<< compileData m
+    connect (Port a 1) =<< compileTerm m
     pure (Port a 0)
   where
     value k = (`Port` 0) <$> newNode k
@@ -499,15 +494,6 @@ compileTerm t = case unwrap t of
       n <- newNode k
       connect (Port n 0) =<< compileTerm x
       pure (Port n 1)
-
-compileData :: BasicExpr -> ICM Port
-compileData = cata $ \case
-  ZeroSF -> (`Port` 0) <$> newNode ICZero
-  PairSF ma mb -> do
-    p <- newNode ICPair
-    connect (Port p 1) =<< ma
-    connect (Port p 2) =<< mb
-    pure (Port p 0)
 
 -- | Splice a fresh copy of a template into the net: @envSrc@ produces the
 -- env value, @resultDst@ awaits the body's value. Dup labels are offset by
@@ -626,7 +612,6 @@ valueKind = \case
   ICPair    -> True
   ICRef {}  -> True
   ICGate    -> True
-  ICAbort _   -> True
   ICAborted _ -> True
   ICStuckV _ -> True
   _notValue -> False
@@ -677,7 +662,6 @@ rule n nk m mk = case (nk, mk) of
     deleteNode n >> deleteNode m
     instantiate tid e r
   (ICApply, ICGate) -> Just $ awaitShape "apply-gate" n m ICScrut
-  (ICApply, ICAbort o) -> Just $ awaitShape "apply-abort" n m (ICScrutAbort o)
   (ICApply, ICAborted _) -> Just $ do
     spend "apply-aborted"
     e <- peer (Port n 1)
@@ -731,27 +715,6 @@ rule n nk m mk = case (nk, mk) of
     deleteNode n >> deleteNode m
     stuckAt "scrut-nondata"
       ("gate scrutinee is " <> show mk <> ", not data") r []
-  -- abort message arrived: Zero means carry on as the identity
-  (ICScrutAbort _, ICZero) -> Just $ do
-    spend "abort-zero"
-    r <- peer (Port n 1)
-    deleteNode n >> deleteNode m
-    sel <- newNode (ICRef idSelTpl idSelFi)
-    connect (Port sel 0) r
-  (ICScrutAbort o, ICPair) -> Just $ do
-    spend "abort-pair"
-    r <- peer (Port n 1)
-    deleteNode n
-    ab <- newNode (ICAborted o)
-    connect (Port ab 1) (Port m 0) -- the message pair survives underneath
-    connect (Port ab 0) r
-  (ICScrutAbort _, ICAborted _) -> Just $ passThrough "abort-aborted" n 1 m
-  (ICScrutAbort _, ICStuckV _) -> Just $ passThrough "abort-stuck" n 1 m
-  (ICScrutAbort _, _) | valueKind mk -> Just $ do
-    r <- peer (Port n 1)
-    deleteNode n >> deleteNode m
-    stuckAt "abort-nondata"
-      ("abort message is " <> show mk <> ", not data") r []
   -- projections
   (ICLeft, ICZero) -> Just $ passThrough "left-zero" n 1 m
   (ICLeft, ICPair) -> Just $ projectPair "left-pair" n m 1 2
@@ -1114,8 +1077,10 @@ readback (Port n _) = kindOf n >>= \case
     Just tpl -> pure . StuckEE $ DeferSF fi (tplBody tpl)
     Nothing  -> throwError . ICInternal $ "readback: no template " <> show tid
   ICGate -> pure GateB
-  ICAbort o -> pure (AbortB o)
-  ICAborted o -> AbortEE . AbortedF o <$> (readbackData =<< peer (Port n 1))
+  -- an abort in the message is the one that counts
+  ICAborted o -> peer (Port n 1) >>= \msg -> kindOf (portNode msg) >>= \case
+    ICAborted _ -> readback msg
+    _           -> AbortB o . dataB <$> readbackData msg
   -- a stuck value survived into demanded output: only now is it an error
   ICStuckV msg -> throwError $ ICStuck msg
   k -> throwError . ICStuck $ "result contains a non-value: " <> show k
@@ -1132,25 +1097,22 @@ readbackData (Port n _) = kindOf n >>= \case
 -- * Entry points
 
 -- | Reserved templates for the values the runtime itself mints: the gate
--- selectors and the abort continuation. Registered first, in this order.
--- (A user body equal to a selector's shares its template; the per-site
--- index on the ref keeps them apart observationally.)
-leftSelTpl, rightSelTpl, idSelTpl :: TemplateId
+-- selectors. Registered first, in this order. (A user body equal to a
+-- selector's shares its template; the per-site index on the ref keeps them
+-- apart observationally.)
+leftSelTpl, rightSelTpl :: TemplateId
 leftSelTpl = 0
 rightSelTpl = 1
-idSelTpl = 2
 
-leftSelFi, rightSelFi, idSelFi :: FunctionIndex
+leftSelFi, rightSelFi :: FunctionIndex
 leftSelFi = toEnum leftGateInd
 rightSelFi = toEnum rightGateInd
-idSelFi = toEnum abortInd
 
 setupSelectors :: ICM ()
 setupSelectors = do
   (lt, _) <- compileDefer (keyDefers doLeft)
   (rt, _) <- compileDefer (keyDefers doRight)
-  (it, _) <- compileDefer (keyDefers (deferB abortInd EnvB))
-  unless ([lt, rt, it] == [leftSelTpl, rightSelTpl, idSelTpl])
+  unless ([lt, rt] == [leftSelTpl, rightSelTpl])
     . throwError $ ICInternal "selector templates got unexpected ids"
 
 defaultFuel :: Int
@@ -1198,13 +1160,9 @@ icEvalIC = fst . icEvalDetailed defaultFuel
 icOutcome :: Either ICError CompiledExpr -> Either RunTimeError CompiledExpr
 icOutcome = \case
   Left e -> Left $ GenericRunTimeError ("IC runtime: " <> show e) ZeroB
-  Right x -> case cata findError x of
+  Right x -> case firedAbort x of
     Just (o, msg) -> Left $ AbortRunTime o msg
     Nothing       -> Right x
-  where
-    findError = \case
-      AbortFW (AbortedF o e) -> Just (o, e)
-      x                    -> asum x
 
 -- | Evaluate under the reference evaluator's contract ('icOutcome').
 icEval :: CompiledExpr -> Either RunTimeError CompiledExpr

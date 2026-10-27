@@ -33,7 +33,7 @@ import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.IR.Surface
 import Telomare.IR.Types
-import Telomare.Machine (appB, chainLinks, deferB)
+import Telomare.Machine (appB, chainLinks, deferB, refinementCheckB)
 import Telomare.Parse (parseOneExprOrDefinitions, runParseModule)
 import Telomare.PrettyPrint
 import Telomare.Resolve (main2Term3, process, resolveAllImports)
@@ -52,16 +52,14 @@ debugTrace s x = if debug then trace s x else x
 convertPT :: (UnsizedRecursionToken -> Int) -> Term3 -> CompiledExpr
 convertPT ll = forget . flip State.evalState (toEnum 0, toEnum 0) . cata (f (convertBasic (convertAbort failConvert))) where
   failConvert = error "convertPT failed"
-  appTC :: Term3Builder (Cofree CompiledExprF LocTag)
-  appTC = appS (pure $ LeftB EnvB) (pure $ RightB EnvB)
+  f :: (Term3F (Term3Builder (Cofree CompiledExprF LocTag)) -> Term3Builder (Cofree CompiledExprF LocTag))
+    -> CofreeT.CofreeF Term3F LocTag (Term3Builder (Cofree CompiledExprF LocTag))
+    -> Term3Builder (Cofree CompiledExprF LocTag)
   f convertOther (_ CofreeT.:< g)= case g of
-    StuckFW (DeferSF _ x) -> x >>= deferS
-    Term3Unsized urt -> pure $ iterate SetEnvB EnvB !! ll urt
-    Term3CheckingWrapper o tc c ->
-      let performTC = (>>= deferS) ((\ia -> SetEnvB (PairB (SetEnvB (PairB (AbortB o) ia))
-                                                     (RightB EnvB))) <$> appTC)
-      in (\tc' c' ptc -> SetEnvB (PairB ptc (PairB  tc' c'))) <$> tc <*> c <*> performTC
-    x -> convertOther x
+    StuckFW (DeferSF _ x)       -> x >>= deferS
+    Term3Unsized urt            -> pure $ iterate SetEnvB EnvB !! ll urt
+    Term3CheckingWrapper o tc c -> refinementCheckB o <$> tc <*> c
+    x                           -> convertOther x
 
 data SizingOption
   = NoSizing -- deprecated

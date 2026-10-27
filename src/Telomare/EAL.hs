@@ -15,7 +15,7 @@
 --
 -- Appliable values are code tags with an interface. A defer reference is
 -- typed as a code constant carrying its content hash ('CodeT' over 'Tag'
--- sets), gates and aborts are built-in tags, and unification at code
+-- sets), gates are built-in tags, and unification at code
 -- positions takes the UNION of tags rather than equating anything — so a
 -- gate join of structurally different functions is a set union, not a
 -- unification failure. Every DeferRef OCCURRENCE instantiates the
@@ -125,8 +125,6 @@ data Tag
   = TCode (Digest SHA256) -- ^ a lifted defer body
   | TGate                 -- ^ the gate value
   | TGateFn               -- ^ a gate applied to its scrutinee
-  | TAbort                -- ^ the abort value
-  | TAbortCont            -- ^ abort applied to a Zero message (identity)
   deriving (Eq, Ord, Show)
 
 -- | The interface of one instance of a lifted body: the env it consumes
@@ -162,8 +160,7 @@ data Tau
                        --   dispatch resolves it per tag, so captures of
                        --   different tags never unify structurally
   | AbortedT           -- ^ a value that never exists: the result of an
-                       --   abort that really aborts (a pair message), or
-                       --   of applying such a result. Bottom of the type
+                       --   abort, or of applying such a result. Bottom of the type
                        --   lattice — it absorbs every unification without
                        --   binding anything, so the dead bottom of a sized
                        --   recursion chain joins with the live links
@@ -619,6 +616,8 @@ selfReferential r0 = classIfaces mempty r0 where
     VarT _ -> pure Nothing
     DataT -> pure Nothing
     CapT _ -> pure Nothing
+    -- a value that never exists holds nothing
+    AbortedT -> pure Nothing
     PairT (Sigma _ x) (Sigma _ y) ->
       tau vis x >>= maybe (tau vis y) (pure . Just)
     CodeT c -> do
@@ -1017,20 +1016,17 @@ intrinsic ctx paths (anno :< t) = case t of
   StuckFW (RightSF x) -> case envPath x of
     Just steps -> envOccurrence ctx paths anno (steps <> [SR])
     Nothing    -> projection ctx paths anno x snd
-  AbortFW (AbortF _) -> do
-    recordLeaf ctx paths
-    ct <- builtinCode TAbort
-    plainSigma anno "abort is an unboxed value" ct
-  AbortFW AbortedF {} -> recordLeaf ctx paths >> bottomSigma
+  -- an abort evaluates its message (whose env uses count like any other
+  -- code's) and yields a value that never exists
+  AbortFW (AbortF _ m) -> viewNode ctx paths m >> bottomSigma
   Term3LCheckingWrapper _ _ c -> intrinsic ctx paths c
 
 -- | The view of a pair's component. A closed data tree under a pair is
 -- not walked node by node: its internal edges would carry no constraint,
 -- and its type would carry a view bang per component that every instance
 -- copies. It becomes one leaf: data with a free bang (data is
--- level-free), keeping one level of pair structure so that an abort
--- message @(0, token)@ still reads as a pair and a capture layout still
--- says pair-of-data.
+-- level-free), keeping one level of pair structure so that a capture
+-- layout still says pair-of-data.
 pairChild :: DeferCtx -> Paths -> Term3Lifting -> EALM Sigma
 pairChild ctx paths c
   | dataLiteral c = do
@@ -1339,37 +1335,22 @@ instantiateTemplate newBase t = do
 -- tolerated without constraints — input is data by the runtime contract,
 -- and applying data sticks only when demanded.
 resolveApplies :: EALM ()
-resolveApplies = resolveAppliesWith True
-
--- | 'resolveApplies', optionally stopping at the first fixpoint instead
--- of forcing deferred abort readings: code not yet connected to its
--- operands (the body under main's input lambda, before
--- 'virtualMainApply') must not have its aborts read before their
--- messages can arrive — a sized chain's abort base, whose message rides
--- in the link captures, would be read as the identity continuation.
-resolveAppliesWith :: Bool -> EALM ()
-resolveAppliesWith allowForce = do
-  changed <- dispatchRound False
-  if changed
-    then resolveAppliesWith allowForce
-    else do
-      -- at a fixpoint some abort sites may still be waiting to learn
-      -- their message's shape; read those conservatively and go on
-      committed <- if allowForce then dispatchRound True else pure False
-      when committed resolveApplies
+resolveApplies = do
+  changed <- dispatchRound
+  when changed resolveApplies
   where
-  dispatchRound force = do
+  dispatchRound = do
     keys <- State.gets (Map.keys . esApplies)
-    foldM (\acc k -> (acc ||) <$> resolveSite force k) False keys
-  resolveSite force k = State.gets (Map.lookup k . esApplies) >>= \case
+    foldM (\acc k -> (acc ||) <$> resolveSite k) False keys
+  resolveSite k = State.gets (Map.lookup k . esApplies) >>= \case
     Nothing -> pure False
     Just site -> walkTau (apFn site) >>= \case
       VarT _ -> pure False
-      CodeT i -> dispatchNew force k site =<< capturesOf i
+      CodeT i -> dispatchNew k site =<< capturesOf i
       -- a capture selection applied directly: any code its package's
       -- captures can hold may run here
       CapT i ->
-        dispatchNew force k site =<< codeInfosOfCaptures (apLoc site) i
+        dispatchNew k site =<< codeInfosOfCaptures (apLoc site) i
       -- applying data sticks immediately at runtime, and stuckness is a
       -- value until demanded — bounded work, so nothing for the
       -- certificate to reject. (Shape errors are the language checker's
@@ -1390,7 +1371,7 @@ resolveAppliesWith allowForce = do
         throwError . EALTypeMismatch (apLoc site) $
           "applied value is " <> describeTau other <> ", not code: "
             <> fnShape <> " applied to " <> envShape
-  dispatchNew force k site infos = do
+  dispatchNew k site infos = do
     let new = Map.withoutKeys infos (apDispatched site)
     if Map.null new
       then pure False
@@ -1398,12 +1379,8 @@ resolveAppliesWith allowForce = do
         -- mark first: dispatch can grow this very set, and the next
         -- round picks up only what is genuinely new
         adjustDispatched k (Set.union (Map.keysSet new))
-        deferred <- fmap concat . forM (Map.toList new) $ \ti@(t, _) -> do
-          done <- dispatchTag force site ti
-          pure [t | not done]
-        unless (null deferred) $
-          adjustDispatched k (`Set.difference` Set.fromList deferred)
-        pure (length deferred < Map.size new)
+        mapM_ (dispatchTag site) (Map.toList new)
+        pure True
   adjustDispatched k f = State.modify $ \st -> st
     { esApplies = Map.adjust
         (\s -> s { apDispatched = f (apDispatched s) }) k (esApplies st) }
@@ -1433,11 +1410,9 @@ codeInfosOfCaptures loc = go mempty where
       unifyTagInfo loc a b
     pure (Map.unionWith mergeTagInfo acc m)
 
--- | Emit the constraints of applying one tag at one site. False means
--- the dispatch is deferred: an abort whose message shape is not known
--- yet (unless forced, which reads it as the identity continuation).
-dispatchTag :: Bool -> ApplySite -> (Tag, TagInfo) -> EALM Bool
-dispatchTag force site (tag, info) = case tag of
+-- | Emit the constraints of applying one tag at one site.
+dispatchTag :: ApplySite -> (Tag, TagInfo) -> EALM ()
+dispatchTag site (tag, info) = case tag of
   TCode h -> do
     Iface envS resS _ <- case tiIface info of
       Just i  -> pure i
@@ -1447,7 +1422,6 @@ dispatchTag force site (tag, info) = case tag of
     -- capture selections inside it resolve to THIS tag's capture
     unifySigmaAt mempty (Just tag) (apLoc site) (apEnv site) envS
     unifySigma (apLoc site) (apRes site) resS
-    pure True
   TGate -> do
     -- data is level-free, so the scrutinee may sit under any boxes
     scrB <- freshB
@@ -1455,7 +1429,6 @@ dispatchTag force site (tag, info) = case tag of
     gfn <- plainSigma loc "gate switch function is locally unboxed"
       =<< builtinCode TGateFn
     unifySigma loc (apRes site) gfn
-    pure True
   TGateFn -> do
     sbE@(Sigma bE tE) <- freshSigma
     sbT@(Sigma bT tT) <- freshSigma
@@ -1471,60 +1444,12 @@ dispatchTag force site (tag, info) = case tag of
     rT <- freshB
     addSumEq (Blame loc "taken branch boxes = branch pair boxes + its own") [branchesB, bT] rT
     unifySigma loc (apRes site) (Sigma rT tT)
-    pure True
-  -- abort messages need no shape or bang constraint: the runtime
-  -- truncates non-data message components to Zero. A message that is
-  -- statically a pair really aborts, and the result never exists; a Zero
-  -- (or unresolved) message yields the identity continuation.
-  TAbort -> do
-    let Sigma _ msgT = apEnv site
-    messageAborts mempty msgT >>= \case
-      Just True -> do
-        bottomSigma >>= unifySigma loc (apRes site)
-        pure True
-      Nothing | not force -> pure False
-      _zeroOrUnknown -> do
-        cont <- plainSigma loc "abort continuation is locally unboxed"
-          =<< builtinCode TAbortCont
-        unifySigma loc (apRes site) cont
-        pure True
-  TAbortCont -> do
-    unifySigma loc (apEnv site) (apRes site)
-    pure True
   where loc = apLoc site
 
 -- | The sigma of a value that never exists; its bang is free, since no
 -- box discipline applies to a value nothing ever consumes.
 bottomSigma :: EALM Sigma
 bottomSigma = flip Sigma AbortedT <$> freshB
-
--- | Does an abort message of this type really abort? A pair message
--- does (Just True), Zero does not (Just False: the identity
--- continuation), and a message whose shape is still unknown cannot be
--- read yet (Nothing). A capture selection is read through its captures:
--- it aborts if every capture it may stand for does. Non-data components
--- are truncated to Zero by the runtime, so code and captureless tags
--- read as Zero.
-messageAborts :: Set Int -> Tau -> EALM (Maybe Bool)
-messageAborts vis t = walkTau t >>= \case
-  PairT _ _ -> pure (Just True)
-  DataT -> pure (Just False)
-  CodeT _ -> pure (Just False)
-  AbortedT -> pure (Just True)
-  VarT _ -> pure Nothing
-  CapT i -> do
-    r <- findTag i
-    if Set.member r vis
-      then pure (Just True)
-      else do
-        caps <- capturesOf r
-        verdicts <- forM (Map.elems caps) $ \case
-          TagInfo (Just (Sigma _ ct)) _ -> messageAborts (Set.insert r vis) ct
-          TagInfo Nothing _ -> pure (Just False)
-        pure $ if null verdicts then Just False else foldr1 both verdicts
-  where
-    both (Just a) (Just b) = Just (a && b)
-    both _ _               = Nothing
 
 -- * Constraint solving
 
@@ -2058,7 +1983,7 @@ walkTop applyToInput what term = do
   rootBase <- forcedZeroB $
     Blame (GeneratedLoc "EAL root" Nothing) "the program's root sits at depth zero"
   sRes <- viewNode ctx (Paths Nothing rootBase) term
-  resolveAppliesWith (not applyToInput)
+  resolveApplies
   when applyToInput $ virtualMainApply sRes >> resolveApplies
   presolve
   pure (bEnv, tEnv, sRes)
@@ -2830,10 +2755,9 @@ codeOf (_ :< t) = case t of
 
 carriesCode :: Term3Lifting -> Bool
 carriesCode (_ :< t) = case t of
-  Term3LDeferRef _   -> True
-  StuckFW GateSF     -> True
-  AbortFW (AbortF _) -> True
-  other              -> any carriesCode other
+  Term3LDeferRef _ -> True
+  StuckFW GateSF   -> True
+  other            -> any carriesCode other
 
 -- | @SetEnv (SetEnv (Pair tw (Pair operand (Pair (DeferRef code) cap))))@:
 -- the shape 'Telomare.IR.Builder.appS' gives an application whose
