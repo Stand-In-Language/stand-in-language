@@ -40,6 +40,8 @@ storedSpace = SpaceBound SpaceCertificate
   , certWorlds = 6
   , certErrorWorlds = 1
   , certInteractions = 7890
+  , certStates = 12
+  , certMerged = 34
   }
 
 runModeSpec :: Spec

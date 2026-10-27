@@ -355,7 +355,8 @@ putSpace = \case
     putWord8 0
     mapM_ putPeak [certAgents c, certPorts c, certWork c]
     putResources (certTemplates c)
-    mapM_ putInt' [certWorlds c, certErrorWorlds c, certInteractions c]
+    mapM_ putInt' [ certWorlds c, certErrorWorlds c, certInteractions c
+                  , certStates c, certMerged c ]
   SpaceUnknown why worlds interactions -> do
     putWord8 1
     putString why
@@ -370,7 +371,7 @@ getSpace = getWord8 >>= \case
   0 -> fmap SpaceBound $ SpaceCertificate
     <$> getPeak <*> getPeak <*> getPeak
     <*> (Resources <$> getInt' <*> getInt' <*> getInt')
-    <*> getInt' <*> getInt' <*> getInt'
+    <*> getInt' <*> getInt' <*> getInt' <*> getInt' <*> getInt'
   1 -> SpaceUnknown <$> getString <*> getInt' <*> getInt'
   n -> fail $ "unknown IC storage certificate tag " <> show n
   where getPeak = Peak <$> getInt' <*> getBasic

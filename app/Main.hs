@@ -3,7 +3,7 @@
 
 module Main where
 
-import Control.Monad (unless, void, when)
+import Control.Monad (unless, void, when, (>=>))
 import Data.Maybe (fromMaybe)
 import qualified Options.Applicative as O
 import System.Directory (doesFileExist)
@@ -21,8 +21,8 @@ import Telomare.Eval.IC (ICPlan (..), renderICMeter)
 import Telomare.Eval.Meter (renderMeter)
 import Telomare.Fast (compileFast, defaultFastFuel, renderFastMeter,
                       runFastLoop)
-import Telomare.IC.Space (SpaceOutcome, certifySpace, defaultSpaceBudget,
-                          renderSpace)
+import Telomare.IC.Space (SpaceOutcome, SpaceScope (..), certifySpace,
+                          defaultSpaceBudget, renderSpace)
 import Telomare.IR.Loc (locatedNameText)
 import Telomare.IR.Surface (ImportDecl (parsedImportModule), ModuleItem (..))
 import Telomare.Levels (levelsInfo)
@@ -188,7 +188,7 @@ runArtifact path action mode = do
         (Compile _, _) -> die $ path <> " is already compiled"
         (Certificate, ICNet) -> case artifactICSpace artifact of
           Just stored -> putStr (renderSpace stored)
-          Nothing     -> withICPlan cp (putStr . renderSpace . icSpace cp)
+          Nothing     -> withICPlan cp (fmap renderSpace . icSpace cp >=> putStr)
         (Certificate, Reference) -> putStr $ artifactCertificate artifact
         (Run, _) -> runCompiled (runtimeOf mode) Run cp
         (Meter, _) -> runCompiled (runtimeOf mode) Meter cp
@@ -209,10 +209,12 @@ warnIfStale artifactPath artifact = do
         "note: the sources have changed since this program was compiled; \
         \recompile it to pick the changes up"
 
--- |The most storage an iteration's net can reach on any input, under the
--- guidance a session would run with ('Telomare.IC.Space').
-icSpace :: CompiledProgram -> ICPlan -> SpaceOutcome
-icSpace cp plan = certifySpace defaultSpaceBudget (icPlanLayouts plan) (cpExpr cp)
+-- |The most storage an iteration's net can reach in any session, whatever
+-- the user types, under the guidance a session would run with
+-- ('Telomare.IC.Space').
+icSpace :: CompiledProgram -> ICPlan -> IO SpaceOutcome
+icSpace cp plan =
+  certifySpace defaultSpaceBudget Sessions (icPlanLayouts plan) (cpExpr cp)
 
 -- |Gate a session on the carried verdict: a refusal is a user-facing
 -- report, not a crash, and nothing runs on the net without admission.
@@ -244,7 +246,7 @@ runSized runtime file action = do
     Right cp -> case action of
       Run -> runCompiled runtime Run cp
       Certificate -> case runtime of
-        ICNet -> withICPlan cp (putStr . renderSpace . icSpace cp)
+        ICNet -> withICPlan cp (fmap renderSpace . icSpace cp >=> putStr)
         Reference ->
           putStr $ staticReport Nothing (Just (cpSizing cp)) allModules entryModule
       Meter -> runCompiled runtime Meter cp
@@ -252,7 +254,7 @@ runSized runtime file action = do
         -- with --ic, the storage certificate is worked out now and kept,
         -- so `--ic --certificate` on the artifact prints it at once
         space <- case (runtime, programPlan cp) of
-          (ICNet, Right plan) -> pure (Just (icSpace cp plan))
+          (ICNet, Right plan) -> Just <$> icSpace cp plan
           (ICNet, Left refusal) -> do
             hPutStrLn stderr $ "note: no IC storage certificate: " <> refusal
             pure Nothing

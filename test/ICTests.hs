@@ -179,7 +179,7 @@ main = do
                 mainTerm = cpExpr cp
                 run = icRunApplied layouts defaultFuel mainTerm
                 measured i = icPeak (snd (run i))
-            case certifySpace defaultSpaceBudget layouts mainTerm of
+            certifySpace defaultSpaceBudget EveryInput layouts mainTerm >>= \case
               SpaceUnknown why _ _ -> assertFailure $ "no certificate: " <> why
               outcome@(SpaceBound c) -> do
                 resAgents (measured (peakInput (certAgents c)))
@@ -189,7 +189,7 @@ main = do
                 resWork (measured (peakInput (certWork c)))
                   @?= peakValue (certWork c)
                 forM_ sampleInputs $ \i -> do
-                  assertBool ("input " <> renderData i <> " measures "
+                  assertBool (renderData i <> " measures "
                                 <> show (measured i) <> ", beyond the certificate")
                     (certificateCovers (measured i) outcome)
                   icOutcome (fst (run i))
@@ -670,7 +670,7 @@ main = do
                    (parseAuxModule "main = \\input -> (if left input then \"yes\" else \"no\", 0)" : prelude)
                    "AuxModule" of
               Left e -> assertFailure $ "compilation failed: " <> show e
-              Right cp -> case certifySpace defaultSpaceBudget mempty (cpExpr cp) of
+              Right cp -> certifySpace defaultSpaceBudget EveryInput mempty (cpExpr cp) >>= \case
                 SpaceBound c -> assertBool ("worlds: " <> show (certWorlds c))
                   (certWorlds c >= 3)
                 other -> assertFailure $ "expected a certificate, got " <> show other
@@ -679,9 +679,19 @@ main = do
                    (parseAuxModule "main = \\input -> (concat [\"a\", \"b\"], 0)" : prelude)
                    "AuxModule" of
               Left e -> assertFailure $ "compilation failed: " <> show e
-              Right cp -> case certifySpace (SpaceBudget 10 100) mempty (cpExpr cp) of
+              Right cp -> certifySpace defaultSpaceBudget { budgetInteractions = 10
+                                                          , budgetWorlds = 100 }
+                            EveryInput mempty (cpExpr cp) >>= \case
                 SpaceUnknown {} -> pure ()
                 other -> assertFailure $ "expected no certificate, got " <> show other
+        , testCase "a session that ends on its first turn carries no state" $
+            case compileMainReporting MainSizing
+                   (parseAuxModule "main = \\input -> (\"ab\", 0)" : prelude)
+                   "AuxModule" of
+              Left e -> assertFailure $ "compilation failed: " <> show e
+              Right cp -> certifySpace defaultSpaceBudget Sessions mempty (cpExpr cp) >>= \case
+                SpaceBound c -> certStates c @?= 0
+                other -> assertFailure $ "expected a certificate, got " <> show other
         , testCase "a lazily held input runs as the built one does" $
             -- the same projections and copies, on the input held whole
             -- and on the input built into the net node by node; main is a
