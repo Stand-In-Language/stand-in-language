@@ -186,7 +186,9 @@ runArtifact path action mode = do
             }
       case (action, runtimeOf mode) of
         (Compile _, _) -> die $ path <> " is already compiled"
-        (Certificate, ICNet) -> withICPlan cp (putStr . renderSpace . icSpace cp)
+        (Certificate, ICNet) -> case artifactICSpace artifact of
+          Just stored -> putStr (renderSpace stored)
+          Nothing     -> withICPlan cp (putStr . renderSpace . icSpace cp)
         (Certificate, Reference) -> putStr $ artifactCertificate artifact
         (Run, _) -> runCompiled (runtimeOf mode) Run cp
         (Meter, _) -> runCompiled (runtimeOf mode) Meter cp
@@ -247,6 +249,14 @@ runSized runtime file action = do
           putStr $ staticReport Nothing (Just (cpSizing cp)) allModules entryModule
       Meter -> runCompiled runtime Meter cp
       Compile output -> do
+        -- with --ic, the storage certificate is worked out now and kept,
+        -- so `--ic --certificate` on the artifact prints it at once
+        space <- case (runtime, programPlan cp) of
+          (ICNet, Right plan) -> pure (Just (icSpace cp plan))
+          (ICNet, Left refusal) -> do
+            hPutStrLn stderr $ "note: no IC storage certificate: " <> refusal
+            pure Nothing
+          (Reference, _) -> pure Nothing
         let path = fromMaybe (replaceExtension file telcExtension) output
             certificate =
               staticReport Nothing (Just (cpSizing cp)) allModules entryModule
@@ -258,6 +268,7 @@ runSized runtime file action = do
               , artifactExpr = cpExpr cp
               , artifactGuidance = cpGuidance cp
               , artifactVerdict = cpVerdict cp
+              , artifactICSpace = space
               }
         writeArtifact path artifact
         hPutStrLn stderr $ "wrote " <> path

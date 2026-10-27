@@ -660,7 +660,9 @@ on EAL polyvariance being strong enough.
 Nothing here is a commitment; these are the current means of delivering C3.
 
 **[decision] Compile once: `.telc`.** An artifact stores the sized expression, the
-sizing report, the *rendered* certificate text, the entry module, and a source hash —
+sizing report, the *rendered* certificate text, the EAL guidance and verdict, the IC
+storage certificate when compiled with `--ic` (format version 4), the entry module,
+and a source hash —
 so running it skips parse/certify/size entirely and `--certificate` prints instantly
 with no sources present.
 - Serves: C3 (the bounds are a durable output), and the pay-once sizing decision (§4).

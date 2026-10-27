@@ -20,6 +20,8 @@ import Telomare.Driver (CompiledProgram (..), compileModules, programPlan)
 import qualified Telomare.Fast as Fast
 import Telomare.Fast (FastError (..), FastMeter (..), compileFast,
                       runFastWithInput)
+import Telomare.IC (Resources (..))
+import Telomare.IC.Space (Peak (..), SpaceCertificate (..), SpaceOutcome (..))
 import Telomare.IR.Base
 import Telomare.IR.Core
 import Telomare.IR.Loc (LocTag (..))
@@ -27,6 +29,18 @@ import Telomare.Levels (LevelsInfo (..), levelsInfo)
 import Telomare.Machine (appB)
 import Telomare.Size (SizingReport (..))
 import Telomare.Size.IR (SizedRecursion (..))
+
+-- |A storage certificate to round-trip: every field distinct.
+storedSpace :: SpaceOutcome
+storedSpace = SpaceBound SpaceCertificate
+  { certAgents = Peak 101 (PairB ZeroB (PairB ZeroB ZeroB))
+  , certPorts = Peak 202 ZeroB
+  , certWork = Peak 3 (PairB ZeroB ZeroB)
+  , certTemplates = Resources 40 50 0
+  , certWorlds = 6
+  , certErrorWorlds = 1
+  , certInteractions = 7890
+  }
 
 runModeSpec :: Spec
 runModeSpec = do
@@ -45,6 +59,7 @@ runModeSpec = do
                 , artifactExpr = cpExpr cp
                 , artifactGuidance = cpGuidance cp
                 , artifactVerdict = cpVerdict cp
+                , artifactICSpace = Just storedSpace
                 }
           case decodeArtifact (encodeArtifact artifact) of
             Left err -> expectationFailure $ "failed to decode:\n" <> err
@@ -64,6 +79,9 @@ runModeSpec = do
               -- runtime from an artifact must not need a second inference.
               artifactGuidance back `shouldBe` cpGuidance cp
               artifactVerdict back `shouldBe` cpVerdict cp
+              -- And the IC storage certificate, worked out once at
+              -- compile time.
+              artifactICSpace back `shouldBe` Just storedSpace
 
     it "evaluates to what the program it came from evaluates to" $ do
       modules <- loadWith "tc_ultra_minimal.tel" "tc_ultra_minimal"
@@ -72,6 +90,7 @@ runModeSpec = do
         Right cp -> do
           let artifact = Artifact "tc_ultra_minimal" (sourcesHash modules)
                 (cpSizing cp) "" (cpExpr cp) (cpGuidance cp) (cpVerdict cp)
+                (Just (SpaceUnknown "the world budget ran out" 7 1234))
           case decodeArtifact (encodeArtifact artifact) of
             Left err -> expectationFailure $ "failed to decode:\n" <> err
             Right back -> do
