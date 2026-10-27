@@ -228,11 +228,13 @@ main = do
             Map.lookup "era-pair" stats @?= Nothing
         , testCase "whole-and-part use duplicates exactly once" $ do
             -- the whole env is copied (the analyzer's contraction), then
-            -- one copy is split for the component
+            -- one copy is split for the component. The env is literal data, so
+            -- it is a constant: copied as one leaf, opened by the split
             let term = se (p (d 2 (p EnvB (LeftB EnvB))) (p z z))
                 (r, stats) = icEvalDetailed defaultFuel term
             r @?= Right (p (p z z) z)
-            Map.lookup "dup-pair" stats @?= Just 1
+            Map.lookup "dup-leaf" stats @?= Just 1
+            Map.lookup "dup-pair" stats @?= Nothing
             Map.lookup "split-pair" stats @?= Just 1
         , expectTest "unused env component is erased, not projected"
             (se (p (d 2 (LeftB EnvB)) (p z (p z z)))) (Right z)
@@ -409,6 +411,29 @@ main = do
             (GateSwitchEE (d 105 EnvB) z (p z z)) (Right z)
         , diffTest "scrutinee is computed"
             (GateSwitchEE z (p z z) (se (p (d 113 EnvB) (p z z))))
+        ]
+    , testGroup "constants"
+        [ testCase "literal data in an untaken branch is never built" $ do
+            -- the branch pair is itself closed data: one constant, opened once
+            -- by the selection, its untaken side dropped as a single leaf
+            let term = GateSwitchEE z (num 40) z
+                (r, stats) = icEvalDetailed defaultFuel term
+            r @?= Right z
+            Map.lookup "const-open" stats @?= Just 1
+            Map.lookup "era-pair" stats @?= Nothing
+        , testCase "a constant opens one layer per use" $ do
+            let term = RightB (num 40)
+                (r, stats) = icEvalDetailed defaultFuel term
+            r @?= Right (num 39)
+            Map.lookup "const-open" stats @?= Just 1
+        , testCase "a copied constant is copied whole" $ do
+            let term = se (p (d 2 (p EnvB EnvB)) (num 40))
+                (r, stats) = icEvalDetailed defaultFuel term
+            r @?= Right (p (num 40) (num 40))
+            Map.lookup "dup-leaf" stats @?= Just 1
+            Map.lookup "dup-pair" stats @?= Nothing
+        , expectTest "a constant reads back as its data"
+            (p (num 3) (d 5 (num 2))) (Right (p (num 3) (d 5 (num 2))))
         ]
     , testGroup "abort"
         [ expectTest "an abort aborts with its message"

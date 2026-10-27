@@ -39,6 +39,14 @@
 -- evaluator does not do, and inflated the step count for `simpleplus.tel` from
 -- 46 thousand to 17 million.
 --
+-- == Refinement checks
+--
+-- A check compiles to a defer with the reserved index
+-- 'Telomare.Machine.removeRefinementWrappersTC', so the meter recognises
+-- one when it applies it and charges the steps spent inside to the check's
+-- origin, less those of the checks nested in it. The per-origin costs
+-- therefore add up to the checks' share of 'meterSteps'.
+--
 -- `evalMeter` mirrors `Telomare.Eval.Reference`'s
 -- @instance AbstractRunTime CompiledExpr@. Being a second interpreter, it can
 -- drift; `test/SizingTests.hs` asserts it still computes the same value, which
@@ -48,43 +56,106 @@
 -- the `GateSwitch` case.
 module Telomare.Eval.Meter where
 
-import Control.Monad.State.Strict (State, modify', runState)
-import Data.Functor.Foldable (project)
+import Control.Applicative ((<|>))
+import Control.Monad.State.Strict (State, get, modify', put, runState)
+import Data.Functor.Foldable (cata, project)
+import Data.List (sortOn)
+import Data.Map (Map)
+import qualified Data.Map as Map
+import Data.Ord (Down (..))
 import Numeric.Natural (Natural)
 
 import Telomare.IR.Base
 import Telomare.IR.Core
-import Telomare.Machine (doLeft, doRight)
+import Telomare.Machine (doLeft, doRight, removeRefinementWrappersTC)
 
 -- |What a run cost.
 data Meter = Meter
-  { meterSteps :: !Natural
+  { meterSteps  :: !Natural
   -- ^Evaluation steps taken.
-  , meterBuilt :: !Natural
+  , meterBuilt  :: !Natural
   -- ^Term nodes constructed. Not a memory figure — see the module header.
+  , meterChecks :: !(Map AbortOrigin CheckCost)
+  -- ^What the refinement checks cost, by where each was written.
   }
   deriving (Eq, Show)
 
--- |Across a session both totals accumulate.
+-- |What one refinement check (one origin) cost over a run.
+data CheckCost = CheckCost
+  { checkRuns  :: !Natural
+  -- ^How many times it ran.
+  , checkSteps :: !Natural
+  -- ^Steps spent running it, less those of the checks nested in it, so the
+  -- costs of all checks add up to their share of 'meterSteps'.
+  }
+  deriving (Eq, Show)
+
+instance Semigroup CheckCost where
+  a <> b = CheckCost (checkRuns a + checkRuns b) (checkSteps a + checkSteps b)
+
+instance Monoid CheckCost where
+  mempty = CheckCost 0 0
+
+-- |Across a session all the totals accumulate.
 instance Semigroup Meter where
   a <> b = Meter (meterSteps a + meterSteps b) (meterBuilt a + meterBuilt b)
+    (Map.unionWith (<>) (meterChecks a) (meterChecks b))
 
 instance Monoid Meter where
-  mempty = Meter 0 0
+  mempty = Meter 0 0 Map.empty
 
 -- |What to print for a measured run.
 renderMeter :: Meter -> String
 renderMeter m = "steps (measured): " <> show (meterSteps m)
   <> "\nnodes built (measured): " <> show (meterBuilt m)
+  <> checks
+  where
+    costs = sortOn (Down . checkSteps . snd) . Map.toList $ meterChecks m
+    total = foldMap snd costs
+    checks
+      | null costs = ""
+      | otherwise = "\nrefinement checks (measured): " <> show (checkRuns total)
+          <> " runs, " <> show (checkSteps total) <> " steps ("
+          <> percent (checkSteps total) <> " of all steps)"
+          <> concatMap line costs
+    line (o, c) = "\n  " <> renderAbortOrigin o <> ": " <> show (checkRuns c)
+      <> " runs, " <> show (checkSteps c) <> " steps"
+    percent n
+      | meterSteps m == 0 = "-"
+      | otherwise = show (n * 100 `div` meterSteps m) <> "%"
 
-type M = State Meter
+-- |The meter, and the steps of the checks finished inside the check
+-- currently running (for charging each check only its own steps).
+data MeterState = MeterState !Meter !Natural
+
+type M = State MeterState
 
 step :: M ()
-step = modify' $ \m -> m { meterSteps = meterSteps m + 1 }
+step = modify' $ \(MeterState m n) -> MeterState m { meterSteps = meterSteps m + 1 } n
 
 built :: M ()
-built = modify' $ \m -> m { meterBuilt = meterBuilt m + 1 }
+built = modify' $ \(MeterState m n) -> MeterState m { meterBuilt = meterBuilt m + 1 } n
 
+-- |Run a refinement check, charging its origin the steps it takes less
+-- those of the checks nested in it.
+checking :: AbortOrigin -> M a -> M a
+checking o act = do
+  MeterState m0 outer <- get
+  put (MeterState m0 0)
+  r <- act
+  MeterState m1 nested <- get
+  let inclusive = meterSteps m1 - meterSteps m0
+      cost = CheckCost 1 (inclusive - nested)
+  put $ MeterState m1 { meterChecks = Map.insertWith (<>) o cost (meterChecks m1) }
+    (outer + inclusive)
+  pure r
+
+-- |The origin of a refinement check's outer body ('Telomare.Machine.refinementCheckB'):
+-- the one abort in it.
+checkOrigin :: CompiledExpr -> Maybe AbortOrigin
+checkOrigin = cata $ \case
+  AbortFW (AbortF o _) -> Just o
+  x                    -> foldr (<|>) Nothing x
 -- |The value `EnvSF` stands for while a function body is being evaluated.
 -- Nothing at the top level, where an `EnvSF` would be a bug.
 type Env = Maybe CompiledExpr
@@ -177,6 +248,10 @@ runMeter env whole = case project whole of
       (StuckEE GateSF, BasicEE ZeroSF) -> step >> pure doLeft
       (StuckEE GateSF, BasicEE PairSF {}) -> step >> pure doRight
       -- The body's environment is now `e`; nothing is substituted or built.
+      -- A refinement check charges its steps to where it was written.
+      (StuckEE (DeferSF fi body), _)
+        | fi == toEnum removeRefinementWrappersTC, Just o <- checkOrigin body ->
+            step >> checking o (runMeter (Just e) body)
       (StuckEE (DeferSF _ body), _) -> step >> runMeter (Just e) body
       _ -> unhandled "application of something that is not a function" f
 
@@ -186,7 +261,7 @@ runMeter env whole = case project whole of
 -- mirrors @eval@: an abort surfaces as a `RunTimeError`.
 evalMeter :: CompiledExpr -> (Meter, Either RunTimeError CompiledExpr)
 evalMeter expr =
-  let (result, measured) = runState (runMeter Nothing expr) mempty
+  let (result, MeterState measured _) = runState (runMeter Nothing expr) (MeterState mempty 0)
   in (measured, case firedAbort result of
        Just (o, e) -> Left $ AbortRunTime o e
        Nothing     -> pure result)

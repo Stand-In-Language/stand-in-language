@@ -42,6 +42,11 @@
 --     consumers propagate it. Aborted values surface as 'AbortRunTime'
 --     only if they survive into the result (outside every defer),
 --     matching the reference checkError.
+--   * Closed data compiles to one 'ICConst' node rather than a tree of
+--     pairs: copying or erasing it is a single interaction, and it opens
+--     one layer at a time when a consumer needs its shape. A strict gate
+--     (user @if@) evaluates both branches, so literal data in the untaken
+--     one would otherwise be built and erased node by node.
 --
 -- Interaction nets are confluent, so although this runtime fires redexes in
 -- worklist order rather than the reference's evaluation order, final
@@ -91,9 +96,9 @@ import Debug.Trace (trace)
 import Telomare.EAL (CapShape (..), Step (..), showSteps)
 import Telomare.IR.Base (AbortOrigin, AbortableF (..), BasicExpr,
                          BasicExprF (..), FunctionIndex, StuckF (..), dataB,
-                         firedAbort, forget, pattern AbortB, pattern GateB,
-                         pattern PairB, pattern StuckEE, pattern StuckFW,
-                         pattern ZeroB)
+                         firedAbort, forget, isData, messageData,
+                         pattern AbortB, pattern GateB, pattern PairB,
+                         pattern StuckEE, pattern StuckFW, pattern ZeroB)
 import Telomare.IR.Core (CompiledExpr, CompiledExprF (..), RunTimeError (..))
 import Telomare.Machine (doLeft, doRight, leftGateInd, rightGateInd)
 import Telomare.Resolve (DeferKeys (..), KeyedExpr, keyDefers)
@@ -129,6 +134,12 @@ data ICKind
                        --   bodies are equal, but defer equality is by
                        --   index, so readback needs the per-site identity
   | ICPair             -- ^ 3 ports: value, left component, right component
+  | ICConst BasicExpr  -- ^ 1 port: closed data held whole, so copying and
+                       --   erasing it are single interactions; it opens one
+                       --   layer at a time when a consumer needs its shape
+                       --   ('openConst'). Literal data in a strict gate's
+                       --   untaken branch is then dropped without ever being
+                       --   built.
   | ICAborted AbortOrigin
                        -- ^ 2 ports: value, message
   | ICDup Label        -- ^ 3 ports: value to copy, copy, copy
@@ -465,11 +476,13 @@ takeEnvWire path = State.gets (Map.lookup path . icEnvQueue) >>= \case
 compileTerm :: KeyedExpr -> ICM Port
 compileTerm t = case unwrap t of
   CompiledExprB ZeroSF -> value ICZero
-  CompiledExprB (PairSF a b) -> do
-    p <- newNode ICPair
-    connect (Port p 1) =<< compileTerm a
-    connect (Port p 2) =<< compileTerm b
-    pure (Port p 0)
+  CompiledExprB (PairSF a b)
+    | isData plain -> value (ICConst (messageData plain))
+    | otherwise -> do
+        p <- newNode ICPair
+        connect (Port p 1) =<< compileTerm a
+        connect (Port p 2) =<< compileTerm b
+        pure (Port p 0)
   CompiledExprS EnvSF -> takeEnvWire []
   CompiledExprS (SetEnvSF x) -> consumer ICSetEnv x
   CompiledExprS (LeftSF x) -> case envPathOf (forget t) of
@@ -490,6 +503,7 @@ compileTerm t = case unwrap t of
     pure (Port a 0)
   where
     value k = (`Port` 0) <$> newNode k
+    plain = forget t :: CompiledExpr
     consumer k x = do
       n <- newNode k
       connect (Port n 0) =<< compileTerm x
@@ -610,12 +624,44 @@ valueKind :: ICKind -> Bool
 valueKind = \case
   ICZero    -> True
   ICPair    -> True
+  ICConst _ -> True
   ICRef {}  -> True
   ICGate    -> True
   ICAborted _ -> True
   ICStuckV _ -> True
   _notValue -> False
 
+
+-- | The kinds that copy or erase a value without looking inside it.
+copiesOrErases :: ICKind -> Bool
+copiesOrErases = \case
+  ICDup _ -> True
+  ICEra   -> True
+  _other  -> False
+
+-- | The node for closed data: Zero as itself, a pair as a constant.
+constNode :: BasicExpr -> ICM Int
+constNode d = case project d of
+  ZeroSF     -> newNode ICZero
+  PairSF _ _ -> newNode (ICConst d)
+
+-- | Replace the constant @m@ by its outermost constructor, its components
+-- left as constants, facing whatever @m@ faced.
+openConst :: Int -> BasicExpr -> ICM ()
+openConst m d = do
+  spend "const-open"
+  facing <- peer (Port m 0)
+  deleteNode m
+  v <- case project d of
+    ZeroSF -> newNode ICZero
+    PairSF a b -> do
+      v <- newNode ICPair
+      ca <- constNode a
+      cb <- constNode b
+      connect (Port v 1) (Port ca 0)
+      connect (Port v 2) (Port cb 0)
+      pure v
+  connect (Port v 0) facing
 -- | An ill-shaped interaction: the consumer's result becomes a stuck value
 -- and the listed leftover operands are erased. Stuckness must be a value
 -- rather than a thrown error because the reference evaluator is lazy — a
@@ -636,6 +682,9 @@ stuckAt name msg r extras = do
 -- before deleting or rewiring anything.
 rule :: Int -> ICKind -> Int -> ICKind -> Maybe (ICM ())
 rule n nk m mk = case (nk, mk) of
+  -- a constant meeting anything but a copier or an eraser (which treat it
+  -- as a leaf, below) is asked for its shape: open one layer
+  (_, ICConst d) | not (copiesOrErases nk) -> Just (openConst m d)
   -- SetEnv x: x has become a (function, env) pair; go apply the function
   (ICSetEnv, ICPair) -> Just $ do
     spend "setenv-pair"
@@ -948,6 +997,7 @@ dupRegion l shape p = materialValue p >>= \mk -> case (shape, mk) of
   (CapData, Just ICZero)       -> copyLeaf
   (CapData, Just ICPair)       -> copyPair CapData CapData
   (CapCode, Just (ICRef _ _))  -> copyLeaf
+  (_, Just (ICConst _))        -> copyLeaf
   (CapPair s1 s2, Just ICPair) -> copyPair s1 s2
   _frontier -> do
     d <- newNode (ICDup l)
@@ -990,6 +1040,7 @@ eraRegion shape p = materialValue p >>= \mk -> case (shape, mk) of
   (CapData, Just ICZero)       -> dropLeaf
   (CapData, Just ICPair)       -> dropPair CapData CapData
   (CapCode, Just (ICRef _ _))  -> dropLeaf
+  (_, Just (ICConst _))        -> dropLeaf
   (CapPair s1 s2, Just ICPair) -> dropPair s1 s2
   _frontier -> do
     e <- newNode ICEra
@@ -1077,6 +1128,7 @@ readback (Port n _) = kindOf n >>= \case
     Just tpl -> pure . StuckEE $ DeferSF fi (tplBody tpl)
     Nothing  -> throwError . ICInternal $ "readback: no template " <> show tid
   ICGate -> pure GateB
+  ICConst d -> pure (dataB d)
   -- an abort in the message is the one that counts
   ICAborted o -> peer (Port n 1) >>= \msg -> kindOf (portNode msg) >>= \case
     ICAborted _ -> readback msg
@@ -1092,6 +1144,7 @@ readbackData (Port n _) = kindOf n >>= \case
   ICPair -> PairB <$> (readbackData =<< peer (Port n 1))
                   <*> (readbackData =<< peer (Port n 2))
   ICZero    -> pure ZeroB
+  ICConst d -> pure d
   _nonData  -> pure ZeroB
 
 -- * Entry points
