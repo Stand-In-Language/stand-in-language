@@ -16,7 +16,8 @@ import Telomare.Artifact (Artifact (..), isArtifactPath, nodeCount,
                           writeArtifact)
 import Telomare.Certificate (renderStaticReport)
 import Telomare.Driver (CompiledProgram (..), compileModules, evalLoop,
-                        evalLoopIC, evalLoopMetered, programPlan)
+                        evalLoopIC, evalLoopMetered, programIteration,
+                        programPlan)
 import Telomare.Eval.IC (ICPlan, renderICMeter)
 import Telomare.Eval.Meter (renderMeter)
 import Telomare.Fast (compileFast, defaultFastFuel, renderFastMeter,
@@ -177,6 +178,7 @@ runArtifact path action mode = do
       let cp = CompiledProgram
             { cpSizing = artifactReport artifact
             , cpExpr = artifactExpr artifact
+            , cpPrologue = artifactPrologue artifact
             , cpGuidance = artifactGuidance artifact
             , cpVerdict = artifactVerdict artifact
             }
@@ -211,13 +213,13 @@ withICPlan cp k = either die k (programPlan cp)
 -- artifact and fresh-compile routes share this.
 runCompiled :: Runtime -> Action -> CompiledProgram -> IO ()
 runCompiled runtime action cp = case (action, runtime) of
-  (Run, Reference) -> evalLoop (cpExpr cp)
-  (Run, ICNet) -> withICPlan cp $ \plan -> void (evalLoopIC [] plan (cpExpr cp))
+  (Run, Reference) -> evalLoop (programIteration cp)
+  (Run, ICNet) -> withICPlan cp $ \plan -> void (evalLoopIC [] plan (programIteration cp))
   (Meter, Reference) -> do
-    measured <- evalLoopMetered [] (cpExpr cp)
+    measured <- evalLoopMetered [] (programIteration cp)
     reportMeter $ renderMeter measured <> "\n"
   (Meter, ICNet) -> withICPlan cp $ \plan -> do
-    measured <- evalLoopIC [] plan (cpExpr cp)
+    measured <- evalLoopIC [] plan (programIteration cp)
     reportMeter $ renderICMeter measured
   _notARun -> die "runCompiled: only Run and Meter reach here"
 
@@ -244,6 +246,7 @@ runSized runtime file action = do
               , artifactReport = cpSizing cp
               , artifactCertificate = certificate
               , artifactExpr = cpExpr cp
+              , artifactPrologue = cpPrologue cp
               , artifactGuidance = cpGuidance cp
               , artifactVerdict = cpVerdict cp
               }

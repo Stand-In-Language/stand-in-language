@@ -41,6 +41,7 @@ runModeSpec = do
                 , artifactReport = report
                 , artifactCertificate = "the certificate text"
                 , artifactExpr = cpExpr cp
+                , artifactPrologue = cpPrologue cp
                 , artifactGuidance = cpGuidance cp
                 , artifactVerdict = cpVerdict cp
                 }
@@ -49,6 +50,7 @@ runModeSpec = do
             Right back -> do
               -- The program itself must survive exactly: this is what will run.
               artifactExpr back `shouldBe` cpExpr cp
+              artifactPrologue back `shouldBe` cpPrologue cp
               artifactEntry back `shouldBe` "simpleplus"
               artifactSourceHash back `shouldBe` sourcesHash modules
               artifactCertificate back `shouldBe` "the certificate text"
@@ -69,7 +71,7 @@ runModeSpec = do
         Left err -> expectationFailure $ "failed to compile:\n" <> err
         Right cp -> do
           let artifact = Artifact "tc_ultra_minimal" (sourcesHash modules)
-                (cpSizing cp) "" (cpExpr cp) (cpGuidance cp) (cpVerdict cp)
+                (cpSizing cp) "" (cpExpr cp) (cpPrologue cp) (cpGuidance cp) (cpVerdict cp)
           case decodeArtifact (encodeArtifact artifact) of
             Left err -> expectationFailure $ "failed to decode:\n" <> err
             Right back -> do
@@ -78,7 +80,7 @@ runModeSpec = do
               -- The stored verdict decides IC admission exactly as the
               -- fresh compile's does.
               let backProgram = CompiledProgram (artifactReport back)
-                    (artifactExpr back) (artifactGuidance back)
+                    (artifactExpr back) (artifactPrologue back) (artifactGuidance back)
                     (artifactVerdict back)
               void (programPlan backProgram)
                 `shouldBe` void (programPlan cp)

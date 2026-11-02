@@ -66,6 +66,8 @@ data Artifact = Artifact
   -- ^The static report as it was rendered at compile time.
   , artifactExpr        :: CompiledExpr
   -- ^The sized program.
+  , artifactPrologue    :: Maybe CompiledExpr
+  -- ^main's input prologue, run before main each iteration.
   , artifactGuidance    :: Map (Digest SHA256) CodeGuidance
   -- ^Per-hash guidance from the post-sizing EAL inference, so a guided
   -- runtime needs no inference at load.
@@ -80,7 +82,7 @@ artifactMagic = BL.pack [0x54, 0x45, 0x4C, 0x43] -- "TELC"
 -- |Bumped whenever the encoding changes, which invalidates older files rather
 -- than misreading them.
 artifactVersion :: Int
-artifactVersion = 6
+artifactVersion = 8
 
 telcExtension :: String
 telcExtension = ".telc"
@@ -114,6 +116,7 @@ encodeArtifact a = runPut $ do
   putString (artifactCertificate a)
   putReport (artifactReport a)
   putCompiled (artifactExpr a)
+  putMaybe putCompiled (artifactPrologue a)
   putMap putDigest putGuidance (artifactGuidance a)
   putVerdict (artifactVerdict a)
 
@@ -139,10 +142,11 @@ getArtifact = do
           certificate <- getString
           report <- getReport
           expr <- getCompiled
+          prologue <- getMaybe getCompiled
           guidance <- getMap getDigest getGuidance
           verdict <- getVerdict
           pure . Right $
-            Artifact entry sourceHash report certificate expr guidance verdict
+            Artifact entry sourceHash report certificate expr prologue guidance verdict
 
 writeArtifact :: FilePath -> Artifact -> IO ()
 writeArtifact path = BL.writeFile path . encodeArtifact

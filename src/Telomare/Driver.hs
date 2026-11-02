@@ -10,6 +10,7 @@ import Control.Monad (void, (>=>))
 import qualified Control.Monad.State as State
 import Crypto.Hash (Digest, SHA256)
 import Data.Bifunctor (first)
+import Data.Foldable (traverse_)
 import Data.Map (Map)
 import qualified Data.Map as Map
 
@@ -33,13 +34,14 @@ import Telomare.IR.Core
 import Telomare.IR.Loc
 import Telomare.IR.Surface
 import Telomare.IR.Types
-import Telomare.Machine (appB, chainLinks, deferB, refinementCheckB)
+import Telomare.Machine (appB, chainLinks, deferB, eraseChecks,
+                         refinementCheckB)
 import Telomare.Parse (parseOneExprOrDefinitions, runParseModule)
 import Telomare.PrettyPrint
 import Telomare.Resolve (main2Term3, process, resolveAllImports)
 import Telomare.Size (SizingReport (..), SizingSettings (..),
                       buildUnsizedLocMap, evalStaticCheck, locateSizingFailure,
-                      sizeTermM, term3ToUnsizedExpr)
+                      neverFailingChecks, sizeTermM, term3ToUnsizedExpr)
 import Text.Megaparsec (errorBundlePretty, runParser)
 
 debug :: Bool
@@ -118,6 +120,10 @@ data CompiledProgram = CompiledProgram
     -- ^ What sizing found, so reporting it never needs a second sizing run.
   , cpExpr     :: CompiledExpr
     -- ^ The sized program.
+  , cpPrologue :: Maybe CompiledExpr
+    -- ^ main's input prologue, run on the input before main each
+    -- iteration ('Telomare.Size.inputPrologue'); main itself no longer
+    -- makes the checks it makes. Nothing when no check is hoisted.
   , cpGuidance :: Map (Digest SHA256) CodeGuidance
     -- ^ Per-hash guidance for every body (all of them, when the program certified),
     -- post-sizing — the map runtime strategies draw on.
@@ -131,28 +137,38 @@ data CompiledProgram = CompiledProgram
 -- |Package a sized program with its post-sizing EAL product, inferred
 -- over the sized program.
 certifiedProgram :: SizingReport -> CompiledExpr -> CompiledProgram
-certifiedProgram report sized = programWith report sized (inferEALCompiled sized)
+certifiedProgram report sized = programWith report Nothing sized (inferEALCompiled sized)
 
 -- |Package a sized program with its post-sizing EAL product, derived from
 -- the size-independent certificate of the program it was sized from
 -- (`Telomare.EAL.inferEALFaithful`) when that certifies — a derivation is
 -- a relabelling, where inferring the sized program again costs most of a
--- compile — and inferred over the sized program otherwise.
-certifiedProgramFrom :: Term3 -> SizingReport -> CompiledExpr -> CompiledProgram
-certifiedProgramFrom t3 report sized = programWith report sized $
-  case deriveSizedGuidance (chainLinks (sizingReportCounts report)) t3
+-- compile — and inferred over the sized program otherwise. The input
+-- prologue is a program of its own, certified on its own.
+certifiedProgramFrom :: (AbortOrigin -> Bool) -> Term3 -> SizingReport
+                     -> Maybe CompiledExpr -> CompiledExpr -> CompiledProgram
+certifiedProgramFrom erased t3 report prologue sized = programWith report prologue sized $
+  case deriveSizedGuidance (chainLinks (sizingReportCounts report)) erased t3
          (inferEALFaithful t3) sized of
     Right lr         -> lr
     Left _notCovered -> inferEALCompiled sized
 
-programWith :: SizingReport -> CompiledExpr -> EALLiftedResult -> CompiledProgram
-programWith report sized lr = CompiledProgram
+programWith :: SizingReport -> Maybe CompiledExpr -> CompiledExpr -> EALLiftedResult
+            -> CompiledProgram
+programWith report prologue sized lr = CompiledProgram
   { cpSizing = report
   , cpExpr = sized
-  , cpGuidance = Map.fromList
-      [ (h, g) | (h, Right g) <- Map.toList (ealGuidance lr) ]
-  , cpVerdict = first (const (renderRefusal lr)) (ealLiftedMain lr)
+  , cpPrologue = prologue
+  , cpGuidance = guidanceOf lr <> foldMap guidanceOf prologueCert
+  , cpVerdict = do
+      r <- verdictOf lr
+      traverse_ (first ("input prologue: " <>) . verdictOf) prologueCert
+      pure r
   }
+  where
+    prologueCert = inferEALCompiled <$> prologue
+    guidanceOf l = Map.fromList [ (h, g) | (h, Right g) <- Map.toList (ealGuidance l) ]
+    verdictOf l = first (const (renderRefusal l)) (ealLiftedMain l)
 
 -- |IC admission, read off the carried verdict: the plan when the program
 -- certified post-sizing, the rendered refusal when it did not. Unlike
@@ -172,11 +188,25 @@ compileMainReporting :: SizingOption
                      -> ExpandedModules
                      -> String
                      -> Either EvalError CompiledProgram
-compileMainReporting so modules term = do
-  t3 <- first RE $ main2Term3 modules term
+compileMainReporting so modules term =
+  first RE (main2Term3 modules term) >>= compileMainProgram so
+
+-- |`compileMainReporting` from main's resolved term.
+compileMainProgram :: SizingOption -> Term3 -> Either EvalError CompiledProgram
+compileMainProgram so t3 = do
   _ <- first CertificationError $ certifyMain t3
   (report, sized) <- compileReporting so pure t3
-  pure $ certifiedProgramFrom t3 report sized
+  -- the checks that can never fail are erased from main, and main's
+  -- certificate derived for the program without them. No check is hoisted
+  -- into an input prologue ('Telomare.Size.inputPrologue') yet: that waits
+  -- on an analysis finding the checks on the input alone.
+  let erased = erasedChecks sized
+  pure $ certifiedProgramFrom erased t3 report Nothing (eraseChecks erased sized)
+
+-- |The checks the compiler erases from a sized main: those that can never
+-- fail ('Telomare.Size.neverFailingChecks').
+erasedChecks :: CompiledExpr -> AbortOrigin -> Bool
+erasedChecks = neverFailingChecks
 
 -- for testing
 compileMain' :: SizingSettings -> Term3 -> Either EvalError CompiledExpr
@@ -206,32 +236,41 @@ compileReporting so staticCheck t = debugTrace ("compiling term3:\n" <> prettyPr
 
 -- converts between easily understood Haskell types and untyped IExprs around an iteration of a Telomare expression
 funWrap :: forall a. (Show a, AbstractRunTime a) => a -> (a -> a -> a) -> Maybe (String, BasicExpr) -> (String, Either RunTimeError BasicExpr)
-funWrap fun app inp = snd $ funWrapWith (\x -> ((), eval x)) fun app inp
+funWrap fun app inp = snd $ funWrapWith (\x -> ((), eval x)) Nothing fun app inp
 
 -- |`funWrap` over an evaluator that also reports something about the run, so
--- the metered and plain loops share one conversion path.
+-- the metered and plain loops share one conversion path. When main has an
+-- input prologue it runs first, on the same input, and an abort there ends
+-- the iteration before main starts; the first call, which has no input yet,
+-- runs main alone.
 funWrapWith :: forall a m. (Show a, TelomareLike a, Monoid m)
             => (a -> (m, Either RunTimeError a))
-            -> a -> (a -> a -> a) -> Maybe (String, BasicExpr)
+            -> Maybe a -> a -> (a -> a -> a) -> Maybe (String, BasicExpr)
             -> (m, (String, Either RunTimeError BasicExpr))
-funWrapWith evaluator fun app inp =
+funWrapWith evaluator prologue fun app inp =
   let iexpInp = conv $ case inp of
         Nothing                  -> ZeroB
         Just (userInp, oldState) -> PairB (s2b userInp) oldState
+      input = fromTelomare iexpInp
       conv = runIdentity . cata (convertBasic (\_ -> error "funWrap conversion error"))
       conv2 = runIdentity . cata (convertBasic (convertStuck (\_ -> error "funWrap conversion error2")))
       conv3 = runIdentity . cata (convertBasic (\_ -> error "funWrap conversion error3"))
-      (measured, outcome) = evaluator (app fun $ fromTelomare iexpInp)
-  in (,) measured $ case outcome of
-    Right x -> case toTelomare x of
-      Nothing -> ("error converting iteration value:\n" <> show x, Left $ AbortRunTime unknownOrigin ZeroB)
-      Just ZeroB -> ("aborted", Left $ AbortRunTime unknownOrigin ZeroB)
-      -- Just (PairB disp newState) -> (b2s disp, pure $ fromTelomare newState)
-      Just (PairB disp newState) -> case b2s disp of
-        Just d -> (d, pure $ conv3 newState)
-        _ -> ("error converting display value:\n" <> prettyPrint disp, Left . GenericRunTimeError "" $ conv2 disp)
-      Just _ -> error "Telomare.Driver.funWrapWith: unexpected iteration value"
-    Left e -> ("runtime error:\n" <> show e, Left e)
+      -- the first, input-less call runs main alone ('Telomare.Size.inputPrologue')
+      (checked, verdict) = case prologue <* inp of
+        Nothing -> (mempty, Right ())
+        Just p  -> void <$> evaluator (app p input)
+      (measured, outcome) = evaluator (app fun input)
+  in case verdict of
+    Left e -> (checked, ("runtime error:\n" <> show e, Left e))
+    Right () -> (,) (checked <> measured) $ case outcome of
+      Right x -> case toTelomare x of
+        Nothing -> ("error converting iteration value:\n" <> show x, Left $ AbortRunTime unknownOrigin ZeroB)
+        Just ZeroB -> ("aborted", Left $ AbortRunTime unknownOrigin ZeroB)
+        Just (PairB disp newState) -> case b2s disp of
+          Just d -> (d, pure $ conv3 newState)
+          _ -> ("error converting display value:\n" <> prettyPrint disp, Left . GenericRunTimeError "" $ conv2 disp)
+        Just _ -> error "Telomare.Driver.funWrapWith: unexpected iteration value"
+      Left e -> ("runtime error:\n" <> show e, Left e)
 
 -- |Parse and compile a module set into the full compilation product. Every
 -- problem comes back as text a user can act on rather than as an exception,
@@ -266,13 +305,13 @@ compileModulesWith so modulesStrings s =
 
 runMainCore :: [(String, String)] -- ^All modules as (Module_Name, Module_Content)
             -> String -- ^Module's name with `main` function
-            -> (CompiledExpr -> IO a)
+            -> (Iteration -> IO a)
             -> IO a
 runMainCore modulesStrings s e = case compileModules modulesStrings s of
   -- Still an exception, since callers depend on that; the CLI takes the
   -- `compileModules` route instead so a user never sees this framing.
   Left err -> error $ "runMainCore failed: " <> err
-  Right cp -> e (cpExpr cp)
+  Right cp -> e (programIteration cp)
 
 runMain_ :: [(String, String)] -- ^All modules as (Module_Name, Module_Content)
          -> String -- ^Module's name with `main` function
@@ -290,19 +329,35 @@ runMainWithInput :: [String] -- ^Inputs
                  -> IO String
 runMainWithInput inputList modulesStrings s = runMainCore modulesStrings s (evalLoopWithInput inputList)
 
+-- |What one iteration runs: main's input prologue, when it has one, then
+-- main ('funWrapWith').
+data Iteration = Iteration
+  { itPrologue :: Maybe CompiledExpr
+  , itMain     :: CompiledExpr
+  }
+
+-- |A compiled program's iteration.
+programIteration :: CompiledProgram -> Iteration
+programIteration cp = Iteration (cpPrologue cp) (cpExpr cp)
+
+-- |An iteration of main alone, for a main that was not compiled with its
+-- prologue.
+mainOnly :: CompiledExpr -> Iteration
+mainOnly = Iteration Nothing
+
 -- |The one iteration loop every eval entry point goes through. The evaluator
 -- reports a measurement per iteration (the unmetered wrappers use '()'), and
 -- each iteration's display goes through @accumFn@; the loop returns the summed
 -- measurements alongside the final accumulator.
 evalLoopCore :: Monoid m
              => (CompiledExpr -> (m, Either RunTimeError CompiledExpr))
-             -> CompiledExpr
+             -> Iteration
              -> (String -> String -> IO String)
              -> String
              -> [String]
              -> IO (m, String)
-evalLoopCore evaluator expr accumFn initAcc manualInput =
-  let wrappedEval = funWrapWith evaluator expr appB
+evalLoopCore evaluator (Iteration prologue expr) accumFn initAcc manualInput =
+  let wrappedEval = funWrapWith evaluator prologue expr appB
       mainLoop measured acc strInput s = do
         let (m, (out, nextState)) = wrappedEval s
             measured' = measured <> m
@@ -329,27 +384,27 @@ printAccum _ out = putStrLn out >> pure ""
 keepAccum :: String -> String -> IO String
 keepAccum acc out = pure $ if acc == "" then out else acc <> "\n" <> out
 
-evalLoop :: CompiledExpr -> IO ()
+evalLoop :: Iteration -> IO ()
 evalLoop iexpr = void $ evalLoopCore plainEval iexpr printAccum "" []
 
-evalLoopWithInput :: [String] -> CompiledExpr -> IO String
+evalLoopWithInput :: [String] -> Iteration -> IO String
 evalLoopWithInput inputList iexpr = snd <$> evalLoopCore plainEval iexpr keepAccum "" inputList
 
 -- |`evalLoop`, measuring what the session costs. Prints exactly what
 -- `evalLoop` prints; the caller decides what to do with the measurement.
-evalLoopMetered :: [String] -> CompiledExpr -> IO Meter
+evalLoopMetered :: [String] -> Iteration -> IO Meter
 evalLoopMetered manualInput expr = fst <$> evalLoopCore evalMeter expr printAccum "" manualInput
 
 -- |`evalLoop` on the interaction-combinator runtime, measuring what the
 -- session cost in interactions. The caller comes by the plan through
 -- `Telomare.Eval.IC.admitIC`, so the certificate is computed once per
 -- program rather than once per iteration.
-evalLoopIC :: [String] -> ICPlan -> CompiledExpr -> IO ICMeter
+evalLoopIC :: [String] -> ICPlan -> Iteration -> IO ICMeter
 evalLoopIC manualInput plan expr =
   fst <$> evalLoopCore (evalIC plan) expr printAccum "" manualInput
 
 -- |Same as `evalLoop`, but keeping what was displayed.
-evalLoop_ :: CompiledExpr -> IO String
+evalLoop_ :: Iteration -> IO String
 evalLoop_ iexpr = snd <$> evalLoopCore plainEval iexpr keepAccum "" []
 
 eval2IExpr :: ExpandedModules -> String -> Either String CompiledExpr

@@ -25,6 +25,10 @@ import Data.Maybe (isNothing)
 -- import Data.SBV ((.<), (.>))
 import Control.Exception (Exception)
 import Control.Exception.Base (throw)
+import Control.Monad (when)
+import Control.Monad.Except (ExceptT, runExceptT, throwError)
+import Control.Monad.Reader (ReaderT, ask, runReaderT)
+import qualified Control.Monad.State.Strict as State
 import Data.Functor.Identity (Identity, runIdentity)
 import Data.Set (Set)
 import qualified Data.Set as Set
@@ -97,20 +101,29 @@ extractInputRestrictions = cleanup . f Nothing where
     Just (StrictAccum s _) -> s
     _ -> mempty
 
-findInputLimitStepM :: (InputSizingExprF InputSizingExpr -> StrictAccum InputRestrictions InputSizingExpr)
-  -> InputSizingExprF InputSizingExpr -> StrictAccum InputRestrictions InputSizingExpr
-findInputLimitStepM handleOther x = f x where
+-- |At each refinement check met during a symbolic run, run its check
+-- function over the symbolic values and report the result: a residual
+-- over the input, Zero where the check passes. The check's value goes on
+-- unchanged.
+checkResultStepM :: Monoid w => (AbortOrigin -> InputSizingExpr -> w)
+  -> (InputSizingExprF InputSizingExpr -> StrictAccum w InputSizingExpr)
+  -> InputSizingExprF InputSizingExpr -> StrictAccum w InputSizingExpr
+checkResultStepM report handleOther x = f x where
   f = \case
     UnsizedFW (RefinementWrapperF o tc c) ->
-      let
-          -- only whether the check passes matters here, not the value it guards
-          checked = refinementGate o (transformNoDefer refinementCheckStep $ appB tc c) ZeroB
-          stripBarrier = \case
-            DeferredFW (BarrierF inner) -> inner
-            other -> embed other
-          s = extractInputRestrictions $ cata stripBarrier checked
-      in StrictAccum s c
+      StrictAccum (report o (transformNoDefer refinementCheckStep $ appB tc c)) c
     _ -> handleOther x
+
+-- |What a check result says about the input: the zeros and pairs it
+-- needs in order to pass.
+checkRestrictions :: AbortOrigin -> InputSizingExpr -> InputRestrictions
+checkRestrictions o r = extractInputRestrictions . cata stripBarrier
+  -- only whether the check passes matters here, not the value it guards
+  $ refinementGate o r ZeroB
+  where
+    stripBarrier = \case
+      DeferredFW (BarrierF inner) -> inner
+      other -> embed other
 
 -- |@if r then abort r else c@ over an evaluated check result @r@ and value
 -- @c@: what a refinement check reduces to once its check function has run.
@@ -139,7 +152,7 @@ refinementGate o r c = case r of
 -- switch with an abort branch, so its restrictions apply only on the gate
 -- paths where the nested check actually runs.
 refinementCheckStep :: InputSizingExprF InputSizingExpr -> InputSizingExpr
-refinementCheckStep = basicStep (stuckStep (abortStep (gateSwitchStep (deferredEvalStep (indexedInputStep Set.empty handleOther))))) where
+refinementCheckStep = basicStep (stuckStep (abortStep (gateSwitchStep (sameBranchStep (deferredEvalStep (indexedInputStep Set.empty handleOther)))))) where
   step = refinementCheckStep
   barrier = deferredEE . BarrierF
   -- an undecided gate yields one of its branches, so anything always done to
@@ -148,15 +161,28 @@ refinementCheckStep = basicStep (stuckStep (abortStep (gateSwitchStep (deferredE
   -- branch stays an abort, since aborts propagate.
   gateSwitchStep handleOther' = \case
     StuckFW (LeftSF (DeferredEE (BarrierF (GateSwitchEE l r s)))) ->
-      barrier $ GateSwitchEE (step . StuckFW $ LeftSF l) (step . StuckFW $ LeftSF r) s
+      switch (step . StuckFW $ LeftSF l) (step . StuckFW $ LeftSF r) s
     StuckFW (RightSF (DeferredEE (BarrierF (GateSwitchEE l r s)))) ->
-      barrier $ GateSwitchEE (step . StuckFW $ RightSF l) (step . StuckFW $ RightSF r) s
+      switch (step . StuckFW $ RightSF l) (step . StuckFW $ RightSF r) s
     StuckFW (SetEnvSF (DeferredEE (BarrierF (GateSwitchEE l r s)))) ->
-      barrier $ GateSwitchEE (step . StuckFW $ SetEnvSF l) (step . StuckFW $ SetEnvSF r) s
+      switch (step . StuckFW $ SetEnvSF l) (step . StuckFW $ SetEnvSF r) s
     FillFunction GateB (DeferredEE (BarrierF (GateSwitchEE l r s))) ->
-      barrier $ GateSwitchEE (step $ FillFunction GateB l) (step $ FillFunction GateB r) s
+      switch (step $ FillFunction GateB l) (step $ FillFunction GateB r) s
     FillFunction (DeferredEE (BarrierF (GateSwitchEE l r s))) e ->
-      barrier $ GateSwitchEE (step $ FillFunction l e) (step $ FillFunction r e) s
+      switch (step $ FillFunction l e) (step $ FillFunction r e) s
+    other -> handleOther' other
+  -- a gate whose branches are the same is that branch, unless its
+  -- scrutinee can abort: a nested check that passes whichever way an
+  -- input bit goes then reduces to Zero rather than staying a residual
+  switch l r s
+    | l == r && abortFree s = l
+    | otherwise             = barrier $ GateSwitchEE l r s
+  abortFree = cata $ \case
+    AbortFW _ -> False
+    x         -> and x
+  sameBranchStep handleOther' = \case
+    FillFunction (DeferredEE (BarrierF (FillFunctionEE GateB s))) (PairB l r)
+      | l == r && abortFree s -> l
     other -> handleOther' other
   handleOther = \case
     FillFunction GateB i@(IndexedEE _) -> deferredEE . BarrierF . embed $ FillFunction GateB i
@@ -178,16 +204,23 @@ term3ToUnsizedExpr = runIdentity . cata conv where
 -- get simple input limits derived from refinements
 -- returns a set of guaranteed Zeros, where the Integer is the encoded path from root of intput
 getInputLimits :: UnsizedExpr -> InputRestrictions
-getInputLimits = getAccum . transformNoDeferM evalStep . convertIS where
+getInputLimits = symbolicChecks checkRestrictions
+
+-- |Run a term over a symbolic input, reporting the result of every
+-- refinement check it meets ('checkResultStepM'). A gate on the input
+-- itself is not split, but read as an unknown value, as is an unsized
+-- recursion.
+symbolicChecks :: Monoid w => (AbortOrigin -> InputSizingExpr -> w) -> UnsizedExpr -> w
+symbolicChecks report = getAccum . transformNoDeferM evalStep . convertIS where
   convertU = \case
     UnsizedFW (UnsizedStubF _ _) -> pure $ indexedEE AnyF
     UnsizedFW (RecursionTestF _ x) -> x
     UnsizedFW rw@(RefinementWrapperF _ _ _) -> unsizedEE <$> sequence rw
-    x -> error $ "getInputLimits convert, unhandled:\n" <> prettyPrint (runIdentity $ sequence x)
+    x -> error $ "symbolicChecks convert, unhandled:\n" <> prettyPrint (runIdentity $ sequence x)
   convertIS :: UnsizedExpr -> InputSizingExpr
   convertIS = runIdentity . cata (convertBasic (convertStuck (convertAbort (convertIndexed convertU))))
-  unexpectedI x = error $ "getInputLimits eval, unexpected:\n" <> prettyPrint x
-  evalStep = basicStepM (stuckStepM (abortStepM (indexedInputStepM Set.empty (indexedInputIgnoreSwitchStepM (findInputLimitStepM unexpectedI)))))
+  unexpectedI x = error $ "symbolicChecks eval, unexpected:\n" <> prettyPrint x
+  evalStep = basicStepM (stuckStepM (abortStepM (indexedInputStepM Set.empty (indexedInputIgnoreSwitchStepM (checkResultStepM report unexpectedI)))))
 
 capMain :: (Base g ~ f, BasicBase f, StuckBase f, Recursive g, Corecursive g) => g -> g -> g
 capMain i c = appB c i
@@ -250,13 +283,6 @@ sizeTermM sizingSettings x = tidyUp . transformNoDeferM evalStep $ mx where
   verify = \case
     Left e -> error e
     Right converted -> converted
-  setSizes :: Map UnsizedRecursionToken (Maybe Int) -> UnsizedExpr -> UnsizedExpr
-  setSizes sizeMap = cata $ \case
-    UnsizedFW _us@(UnsizedStubF tok _) ->
-      let n = chainLinks (SizedRecursion sizeMap) tok
-      in debugTrace ("sizeTermM setting size: " <> show (tok, n)) sizedRecursionChain n
-    UnsizedFW (TraceF _ inner) -> inner
-    other -> embed other
   -- only the sizing analysis's own aborts say anything about sizing; the
   -- program's aborts are just one of the outcomes some inputs have
   foldAborted = para f where
@@ -284,6 +310,131 @@ removeRefinementWrappers = cata f where
   f = \case
     UnsizedFW (RefinementWrapperF o tc c) -> refinementCheckB o tc c
     x -> embed x
+
+-- |The refinement checks of a sized main that may fail on some run, by
+-- origin, or Nothing when deciding that would take more than the budget
+-- of evaluation steps. The program is evaluated once over a symbolic input
+-- (every input and state at once, through exact superpositions that keep
+-- each path apart, 'exactSuperStepM'; sized chains
+-- make it finite), which runs every check with every value that can reach
+-- it. A check's abort branch carries the check's result as its message
+-- ('refinementCheckB'), so an abort that fires with anything but Zero is
+-- a check that may fail; one firing with Zero is the speculative branch of
+-- a check that passed.
+--
+-- The input covers only what the restrictions admit. For the answer to
+-- hold of every run, an input they rule out must abort the iteration
+-- whatever the program does with it: restrictions from main's input
+-- prologue ('Telomare.Size.inputPrologue'), or none at all. What the
+-- abstract run cannot follow (data applied as a function, a stuck
+-- projection) becomes an unknown value, which reaching a check makes it
+-- one that may fail.
+mayFailChecks :: Int -> UnsizedExpr -> Set Integer -> CompiledExpr -> Maybe (Set AbortOrigin)
+mayFailChecks budget input zeros prog =
+  case State.runState (runExceptT (runReaderT run (zeroPath zeros))) (0, Set.empty) of
+    (Left (), _)      -> Nothing
+    (Right _, (_, s)) -> Just s
+  where
+  run = transformNoDeferM evalStep . capMain input $ toUnsized prog
+  toUnsized :: CompiledExpr -> UnsizedExpr
+  toUnsized = runIdentity . cata (convertBasic (convertStuck (convertAbort (error "mayFailChecks: unexpected node"))))
+  evalStep :: UnsizedExprF UnsizedExpr -> ReaderT InputPath (ExceptT () (State.State (Int, Set AbortOrigin))) UnsizedExpr
+  evalStep = basicStepM (stuckStepM (record (abortStepM (indexedInputStepM zeros
+    (exactSuperStepM evalStep unknown)))))
+  -- every step that is not plain data or code movement is counted
+  record handleOther x = do
+    (n, s) <- State.get
+    when (n >= budget) $ throwError ()
+    -- a check's result as the path that reached it knows it
+    path <- ask
+    let s' = case x of
+          AbortFW (AbortF o m) | not (isZero (resolvePath path m)) -> Set.insert o s
+          _                                                        -> s
+    let n' = n + 1
+    n' `seq` State.put (n', s')
+    handleOther x
+  isZero = \case
+    ZeroB -> True
+    _     -> False
+  unknown _ = pure (indexedEE AnyF)
+
+-- |How many abstract evaluation steps deciding a program's checks may take
+-- before the compiler gives up and keeps them all.
+checkDecisionBudget :: Int
+checkDecisionBudget = 10000000
+
+-- |Substitute sized chains for a term's recursion holes.
+setSizes :: Map UnsizedRecursionToken (Maybe Int) -> UnsizedExpr -> UnsizedExpr
+setSizes sizeMap = cata $ \case
+  UnsizedFW _us@(UnsizedStubF tok _) ->
+    let n = chainLinks (SizedRecursion sizeMap) tok
+    in debugTrace ("sizeTermM setting size: " <> show (tok, n)) sizedRecursionChain n
+  UnsizedFW (TraceF _ inner) -> inner
+  other -> embed other
+
+-- |main's input prologue: a function run on main's input before main,
+-- giving Zero when every hoisted check passes and the first one's abort,
+-- in the order they were written, when one does not. Nothing when no check
+-- is hoisted. Which checks are hoisted is the caller's choice: checks on
+-- the input alone, demanded under conditions on the input's shape. The
+-- first call of main, made before there is any input, runs without the
+-- prologue ('Telomare.Driver.funWrapWith').
+--
+-- A check on the input alone, run in the sized main over a symbolic input,
+-- runs on its exact value as a function of the input ('symbolicChecks'),
+-- and what its check function gives is a residual over input positions:
+-- the check's decision and nothing else. The prologue is those residuals,
+-- input positions read as paths into the input. A residual the run could
+-- not follow (it reached a value it had to treat as unknown) is an error
+-- naming the check.
+inputPrologue :: (AbortOrigin -> Bool) -> SizedRecursion -> UnsizedExpr -> Either String (Maybe CompiledExpr)
+inputPrologue hoisted (SizedRecursion sm) mainTerm =
+  case Map.toAscList residuals of
+    [] -> pure Nothing
+    checks -> do
+      coded <- traverse code [ (o, r) | (o, rs) <- checks, r <- rs ]
+      pure . Just $ PairB (deferB inputPrologueInd (foldr guard ZeroB coded)) ZeroB
+  where
+    residuals = symbolicChecks report . capMain (indexedEE $ IVarF 0) $ setSizes sm mainTerm
+    report o r
+      | hoisted o = Map.singleton o [r]
+      | otherwise = Map.empty
+    -- the first failing check wins: the strict gate shape, like the checks
+    -- themselves ('refinementCheckB')
+    guard (o, r) rest = GateSwitchEE rest (AbortB o r) r
+    code (o, r) = (,) o <$> residualCode r `orFail` o
+    orFail (Right x) _ = Right x
+    orFail (Left why) o = Left $ renderAbortOrigin o
+      <> " cannot run before main: over a symbolic input it " <> why
+
+-- |A residual over input positions as code whose env is (input, _): an
+-- input position becomes its path into the input.
+residualCode :: InputSizingExpr -> Either String CompiledExpr
+residualCode = cata $ \case
+  BasicFW x               -> BasicEE <$> sequence x
+  StuckFW x               -> StuckEE <$> sequence x
+  AbortFW x               -> AbortEE <$> sequence x
+  DeferredFW (BarrierF x) -> x
+  IndexedFW (IVarF n)     -> pure (inputPath n)
+  IndexedFW AnyF          -> Left "depends on a value it cannot follow"
+  _other                  -> Left "is left unevaluated"
+  where
+    -- position 0 is the input; 2n + 1 and 2n + 2 are n's left and right
+    inputPath :: Integer -> CompiledExpr
+    inputPath = \case
+      0 -> LeftB EnvB
+      n | odd n     -> LeftB (inputPath ((n - 1) `div` 2))
+        | otherwise -> RightB (inputPath ((n - 2) `div` 2))
+
+-- |The checks of a sized main that can never fail, so that the compiler
+-- may erase them ('Telomare.Machine.eraseChecks'): those 'mayFailChecks'
+-- clears over every input, the input-less first call's Zero among them.
+-- When deciding is over budget, none.
+neverFailingChecks :: CompiledExpr -> AbortOrigin -> Bool
+neverFailingChecks sized =
+  case mayFailChecks checkDecisionBudget (indexedEE $ IVarF 0) Set.empty sized of
+    Nothing  -> const False
+    Just may -> not . (`Set.member` may)
 
 evalStaticCheck :: Bool -> StaticCheckExpr -> Maybe (AbortOrigin, BasicExpr)
 evalStaticCheck shouldCap t =

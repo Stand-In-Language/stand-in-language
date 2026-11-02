@@ -1,0 +1,10 @@
+import Prelude
+
+isZero = \x -> assert (not (toBool x)) "not zero"
+
+-- f checks its argument only where left input is Zero, which is exactly
+-- where y is Zero, so the check can never fail
+main = \input -> let y = if left input then 1 else 0
+                     x = if left input then 0 else 1
+                     f = if x then (\v -> let z : isZero = v in z) else (\v -> v)
+                 in (f y, 0)

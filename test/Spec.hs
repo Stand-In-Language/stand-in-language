@@ -199,11 +199,12 @@ unitTests parse = do
       unitTestRejected = unitTestRejected' parse
       unitTest2 = unitTest2' parse
       unitTestStaticChecks = unitTestStaticChecks' parse
-      buildMainTest s = case fmap (compileMain' (SizingSettings 255 True)) (parse s) of
-        -- errors compare by their rendering, which carries the abort origin
-        Right (Right g) -> let evalMain = second (first show) . funWrap g appB
+      buildMainTest s = case fmap (compileMainProgram (DebugSizing (SizingSettings 255 True))) (parse s) of
+        -- errors compare by their rendering, which carries the abort origin;
+        -- an iteration runs main's input prologue first
+        Right (Right cp) -> let evalMain = second (first show) . snd . funWrapWith (\x -> ((), eval x)) (cpPrologue cp) (cpExpr cp) appB
                            in pure $ \st i e -> it ("main input " <> i) $ evalMain (Just (i, st)) `shouldBe` e
-        z -> pure $ \st _i _e -> runIO . expectationFailure $ "failed to compile main:\n" <> show st <> "\nbecause:\n" <> show z
+        z -> pure $ \st _i _e -> runIO . expectationFailure $ "failed to compile main:\n" <> show st <> "\nbecause:\n" <> either show (either show (const "")) z
   describe "EAL certification" $ do
     -- programs the compile gate must accept
     unitTestCertifies "main = \\x -> (x,0)"
@@ -337,7 +338,11 @@ unitTests parse = do
     unitTestMainPlus <- buildMainTest testMainPlus
     unitTestMainPlus ZeroB "0 0" ("0 plus 0 is 0", Right ZeroB)
     unitTestMainPlus ZeroB "9 9" ("9 plus 9 is 18", Right ZeroB)
-    unitTestMainPlus ZeroB "9 a" ("runtime error:\nAborted, user abort: invalid input (from refinement check at 15:31)", Left "Aborted, user abort: invalid input (from refinement check at 15:31)")
+    unitTestMainPlus ZeroB "9 a" ("runtime error:\nAborted, user abort: invalid input (from refinement check at 17:38)", Left "Aborted, user abort: invalid input (from refinement check at 17:38)")
+    -- a check is lazy: one whose value is never used does not abort
+    unitTestUnused <- buildMainTest "main = \\input -> let x : (\\v -> assert (not (toBool (left v))) \"bad\") = left input\n                 in (\"ok\", 0)"
+    unitTestUnused ZeroB "" ("ok", Right ZeroB)
+    unitTestUnused ZeroB "a" ("ok", Right ZeroB)
 
 
   {- TODO -- figure out why this broke

@@ -56,9 +56,8 @@
 -- the `GateSwitch` case.
 module Telomare.Eval.Meter where
 
-import Control.Applicative ((<|>))
 import Control.Monad.State.Strict (State, get, modify', put, runState)
-import Data.Functor.Foldable (cata, project)
+import Data.Functor.Foldable (project)
 import Data.List (sortOn)
 import Data.Map (Map)
 import qualified Data.Map as Map
@@ -67,7 +66,8 @@ import Numeric.Natural (Natural)
 
 import Telomare.IR.Base
 import Telomare.IR.Core
-import Telomare.Machine (doLeft, doRight, removeRefinementWrappersTC)
+import Telomare.Machine (doLeft, doRight, refinementCheckOrigin,
+                         removeRefinementWrappersTC)
 
 -- |What a run cost.
 data Meter = Meter
@@ -150,12 +150,7 @@ checking o act = do
     (outer + inclusive)
   pure r
 
--- |The origin of a refinement check's outer body ('Telomare.Machine.refinementCheckB'):
--- the one abort in it.
-checkOrigin :: CompiledExpr -> Maybe AbortOrigin
-checkOrigin = cata $ \case
-  AbortFW (AbortF o _) -> Just o
-  x                    -> foldr (<|>) Nothing x
+
 -- |The value `EnvSF` stands for while a function body is being evaluated.
 -- Nothing at the top level, where an `EnvSF` would be a bug.
 type Env = Maybe CompiledExpr
@@ -250,7 +245,7 @@ runMeter env whole = case project whole of
       -- The body's environment is now `e`; nothing is substituted or built.
       -- A refinement check charges its steps to where it was written.
       (StuckEE (DeferSF fi body), _)
-        | fi == toEnum removeRefinementWrappersTC, Just o <- checkOrigin body ->
+        | fi == toEnum removeRefinementWrappersTC, Just o <- refinementCheckOrigin body ->
             step >> checking o (runMeter (Just e) body)
       (StuckEE (DeferSF _ body), _) -> step >> runMeter (Just e) body
       _ -> unhandled "application of something that is not a function" f

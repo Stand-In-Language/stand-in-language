@@ -1,13 +1,21 @@
+{-# LANGUAGE LambdaCase      #-}
+{-# LANGUAGE PatternSynonyms #-}
+
 module SizingTests where
 
+import Data.Foldable (fold)
+import Data.Functor.Foldable (cata)
 import Data.List (isInfixOf)
 import qualified Data.Map as Map
 import Data.Maybe (isJust)
+import qualified Data.Set as Set
 import qualified System.IO.Strict as Strict
 import Test.Hspec
 
 import Telomare.Driver (CompiledProgram (..), SizingOption (DebugSizing),
                         compileModulesWith)
+import Telomare.IR.Base (AbortKind (..), AbortOrigin (..), AbortableF (..),
+                         pattern AbortFW)
 import Telomare.IR.Loc
 import Telomare.Size (SizingReport (..), SizingSettings (SizingSettings),
                       renderSizingCertificate)
@@ -98,3 +106,39 @@ sizingSpec = do
         Right report -> do
           sizingReportBudget report `shouldBe` 65536
           renderSizingCertificate report `shouldSatisfy` isInfixOf "65536"
+
+  describe "checks that can never fail are erased" $ do
+    it "keeps simpleplus.tel's input check, and erases the Prelude's" $ do
+      -- the Prelude's Bool checks always pass where simpleplus calls them;
+      -- its input check is made inside the case on the input, so it is not
+      -- hoisted into a prologue, and the input can be anything
+      kinds <- remainingChecks "test/programs/simpleplus.tel" "simpleplus"
+      kinds `shouldBe` Right ([RefinementAbort], [])
+
+    it "erases a check that holds because two uses of one input agree" $ do
+      -- deciding it means remembering, in the branch that runs the check,
+      -- which way the input went for the value checked
+      kinds <- remainingChecks "test/programs/correlated-check.tel" "correlated-check"
+      kinds `shouldBe` Right ([], [])
+
+    it "keeps a check that fails because two uses of one input agree" $ do
+      -- the same shape, with the check reversed: it fails wherever it runs
+      kinds <- remainingChecks "test/programs/anticorrelated-check.tel" "anticorrelated-check"
+      kinds `shouldBe` Right ([RefinementAbort], [])
+
+    it "keeps a check that can fail" $ do
+      -- `not` refines its argument as a Bool, and the input can be anything
+      kinds <- remainingChecks "test/programs/notinput.tel" "notinput"
+      kinds `shouldBe` Right ([RefinementAbort], [])
+
+-- |The kinds of the refinement checks a compiled program's main still
+-- makes, and those its input prologue makes.
+remainingChecks :: FilePath -> String -> IO (Either String ([AbortKind], [AbortKind]))
+remainingChecks path moduleName = do
+  modules <- loadWith path moduleName
+  pure $ (\cp -> (kindsIn (cpExpr cp), foldMap kindsIn (cpPrologue cp)))
+    <$> compileModulesWith (DebugSizing (SizingSettings 65536 True)) modules moduleName
+  where
+    kindsIn = Set.toList . Set.map abortKind . cata (\case
+      AbortFW (AbortF o s) -> Set.insert o s
+      x                    -> fold x)

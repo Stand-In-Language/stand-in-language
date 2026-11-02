@@ -2,6 +2,7 @@
 {-# LANGUAGE FlexibleContexts     #-}
 {-# LANGUAGE FlexibleInstances    #-}
 {-# LANGUAGE LambdaCase           #-}
+{-# LANGUAGE MagicHash            #-}
 {-# LANGUAGE ScopedTypeVariables  #-}
 {-# LANGUAGE TypeFamilies         #-}
 {-# LANGUAGE TypeOperators        #-}
@@ -17,12 +18,15 @@ module Telomare.Machine where
 
 import Control.Applicative
 import Control.Monad
+import Control.Monad.Reader (MonadReader, asks, local)
+import Data.Functor.Classes (Eq1 (..))
 import Data.Functor.Foldable
 import qualified Data.Map.Strict as Map
 -- import Data.SBV ((.<), (.>))
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Debug.Trace
+import GHC.Exts (isTrue#, reallyUnsafePtrEquality#)
 import Telomare.IR.Base
 import Telomare.PrettyPrint
 import Telomare.Size.IR
@@ -239,6 +243,114 @@ superStepM gateResult step handleOther x = f x where
 
     _ -> handleOther x
 
+-- |What a branch of an exact run knows of the input: positions known to
+-- be Zero (with everything below them), and positions known to be pairs
+-- (kept with every position above them, which are pairs too).
+data InputPath = InputPath
+  { knownZero :: Set Integer
+  , knownPair :: Set Integer
+  }
+
+-- |A path knowing only that the given positions are Zero.
+zeroPath :: Set Integer -> InputPath
+zeroPath zeros = InputPath zeros Set.empty
+
+-- |Just True when the path says position @m@ is Zero, Just False when a
+-- pair.
+pathDecides :: InputPath -> Integer -> Maybe Bool
+pathDecides (InputPath zs ps) m
+  | Set.member m ps                    = Just False
+  | any (`Set.member` zs) (ancestry m) = Just True
+  | otherwise                          = Nothing
+  where
+    ancestry x = x : if x <= 0 then [] else ancestry ((x - 1) `div` 2)
+
+-- |The path extended with position @n@ being Zero (True) or a pair.
+withLiteral :: Bool -> Integer -> InputPath -> InputPath
+withLiteral isZero n (InputPath zs ps)
+  | isZero    = InputPath (Set.insert n zs) ps
+  | otherwise = InputPath zs (ps <> Set.fromList (ancestry n))
+  where
+    ancestry x = x : if x <= 0 then [] else ancestry ((x - 1) `div` 2)
+
+-- |'superStepM' where a superposition is exact: @EitherPF (Just n) a b@ is
+-- @a@ when input position @n@ is Zero and @b@ when it is a pair, and
+-- @EitherPF Nothing a b@ is an unknown choice between the two. Each branch
+-- remembers the path that led to it, the 'InputPath' its code runs under
+-- ('local'), and a superposition or input gate it uses is decided by that
+-- path when the path knows its position. So two uses of one superposed
+-- value pick matching branches rather than every combination of them, and
+-- what the branches build stays shared, since nothing is rewritten until
+-- it is used. A gate on a superposition is a superposition of gates,
+-- never a flattening of their results.
+--
+-- This step decides gates on the input itself, so it goes in place of
+-- 'indexedSuperStepM'. Branches merge only when equal ('mergeExact'), which
+-- costs size, so this is for the analyses that need the precision rather
+-- than for sizing.
+{-# INLINABLE exactSuperStepM #-}
+exactSuperStepM :: forall a f m. (Base a ~ f, Traversable f, Eq1 f, BasicBase f, StuckBase f, SuperBase f, IndexedInputBase f, Recursive a, Corecursive a, MonadReader InputPath m)
+  => (f a -> m a) -> (f a -> m a) -> f a -> m a
+exactSuperStepM step handleOther x = f x where
+  pbStep bf = step . embedS . bf
+  -- run each side under what it knows, unless the path already decides
+  branch n onZero onPair = do
+    known <- asks (\p -> n >>= pathDecides p)
+    case known of
+      Just True  -> onZero
+      Just False -> onPair
+      Nothing    -> case n of
+        Just n' -> mergeExact n <$> local (withLiteral True n') onZero
+                                <*> local (withLiteral False n') onPair
+        Nothing -> mergeExact n <$> onZero <*> onPair
+  f = \case
+    FillFunction GateB (IndexedEE (IVarF n)) -> asks (`pathDecides` n) >>= \case
+      Just True  -> pure doLeft
+      Just False -> pure doRight
+      Nothing    -> pure . superEE $ EitherPF (pure n) doLeft doRight
+    StuckFW (LeftSF (SuperEE (EitherPF n a b))) -> branch n (pbStep LeftSF a) (pbStep LeftSF b)
+    StuckFW (RightSF (SuperEE (EitherPF n a b))) -> branch n (pbStep RightSF a) (pbStep RightSF b)
+    StuckFW (SetEnvSF (SuperEE (EitherPF n a b))) -> branch n (pbStep SetEnvSF a) (pbStep SetEnvSF b)
+    FillFunction GateB (SuperEE (EitherPF n a b)) ->
+      branch n (step $ FillFunction GateB a) (step $ FillFunction GateB b)
+    FillFunction (SuperEE (EitherPF n sca scb)) e ->
+      branch n (pbStep SetEnvSF . BasicEE $ PairSF sca e) (pbStep SetEnvSF . BasicEE $ PairSF scb e)
+    -- stuck values
+    x'@(SuperFW (EitherPF _ _ _)) -> pure $ embed x'
+    _ -> handleOther x
+
+-- |@EitherPF n a b@, with what @n@ decides of the branches' own top
+-- superpositions taken, and one branch when the two are the same.
+mergeExact :: (Base g ~ f, Eq1 f, StuckBase f, SuperBase f, Recursive g, Corecursive g) => Maybe Integer -> g -> g -> g
+mergeExact n a b =
+  let a' = maybe a (\n' -> peel (withLiteral True n' emptyPath) a) n
+      b' = maybe b (\n' -> peel (withLiteral False n' emptyPath) b) n
+  in if exactEq a' b' then a' else superEE $ EitherPF n a' b'
+  where
+    emptyPath = InputPath Set.empty Set.empty
+    peel p v = case v of
+      SuperEE (EitherPF (Just m) l r) | Just pick <- pathDecides p m ->
+        peel p (if pick then l else r)
+      _ -> v
+
+-- |A value as its path knows it: every superposition the path decides is
+-- resolved, and every input position it knows to be Zero is Zero. For
+-- what leaves the run, such as a check's result, rather than for values
+-- still being computed with.
+resolvePath :: (Base g ~ f, SuperBase f, BasicBase f, IndexedInputBase f, Recursive g, Corecursive g) => InputPath -> g -> g
+resolvePath p = cata $ \case
+  SuperFW (EitherPF (Just m) l r) | Just pick <- pathDecides p m -> if pick then l else r
+  IndexedFW (IVarF m) | pathDecides p m == Just True -> ZeroB
+  x -> embed x
+
+-- |Structural equality that, unlike '==', compares code by its body and
+-- not only its function index. Branches share what they did not change,
+-- so the same node is recognized without a walk.
+exactEq :: (Base g ~ f, Eq1 f, StuckBase f, Recursive g) => g -> g -> Bool
+exactEq a b = isTrue# (reallyUnsafePtrEquality# a b) || case (project a, project b) of
+  (StuckFW (DeferSF i x), StuckFW (DeferSF j y)) -> i == j && exactEq x y
+  (fa, fb)                                       -> liftEq exactEq fa fb
+
 indexedSuperStep :: (Base a ~ f, Traversable f, BasicBase f, StuckBase f, SuperBase f, IndexedInputBase f, Recursive a, Corecursive a, PrettyPrintable a)
   => (f a -> a) -> f a -> a
 indexedSuperStep handleOther = \case
@@ -288,7 +400,7 @@ abortStepM handleOther x = f x where
     _ -> handleOther x
 
 -- list of defer indexes for functions generated during eval. Need to be unique (grammar under defer n should always be the same)
-twiddleInd, leftGateInd, rightGateInd, unsizedStepMEInd, unsizedStepMTInd, unsizedStepMa, unsizedStepMrfa, unsizedStepMrfb, unsizedStepMw, removeRefinementWrappersTC, refinementGateInd, refinementPassInd :: Int
+twiddleInd, leftGateInd, rightGateInd, unsizedStepMEInd, unsizedStepMTInd, unsizedStepMa, unsizedStepMrfa, unsizedStepMrfb, unsizedStepMw, removeRefinementWrappersTC, refinementGateInd, refinementPassInd, inputPrologueInd :: Int
 twiddleInd = -1
 leftGateInd = -2
 rightGateInd = -3
@@ -301,6 +413,7 @@ unsizedStepMw = -9
 removeRefinementWrappersTC = -10
 refinementGateInd = -11
 refinementPassInd = -12
+inputPrologueInd = -13
 
 deferB :: (Base g ~ f, StuckBase f, Recursive g, Corecursive g) => Int -> g -> g
 deferB n = StuckEE . DeferSF (toEnum n)
@@ -426,6 +539,24 @@ refinementCheckB o tc c = SetEnvB $ PairB performTC (PairB tc c) where
   gate = SetEnvB $ PairB
     (GateSwitchEE (deferB refinementPassInd EnvB) (AbortB o (LeftB EnvB)) (LeftB EnvB))
     (RightB EnvB)
+
+-- | The origin of a compiled refinement check's outer body
+-- ('refinementCheckB'): the one abort in it.
+refinementCheckOrigin :: (Base g ~ f, AbortBase f, Foldable f, Recursive g) => g -> Maybe AbortOrigin
+refinementCheckOrigin = cata $ \case
+  AbortFW (AbortF o _) -> Just o
+  x                    -> foldr (<|>) Nothing x
+
+-- | Remove the compiled refinement checks whose origins pass the test:
+-- each becomes the value it guards.
+eraseChecks :: (Base g ~ f, BasicBase f, StuckBase f, AbortBase f, Foldable f, Recursive g, Corecursive g)
+  => (AbortOrigin -> Bool) -> g -> g
+eraseChecks erase = cata $ \case
+  StuckFW (SetEnvSF (PairB (StuckEE (DeferSF fi body)) (PairB _ c)))
+    | fi == toEnum removeRefinementWrappersTC
+    , Just o <- refinementCheckOrigin body
+    , erase o -> c
+  x -> embed x
 
 unsizedTestIndexed ::(Base g ~ f, BasicBase f, AbortBase f, IndexedInputBase f, Recursive g, Corecursive g)
   => Set Integer -> (UnsizedRecursionToken -> g -> g) -> UnsizedRecursionToken -> g -> g

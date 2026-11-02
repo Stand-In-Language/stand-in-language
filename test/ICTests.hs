@@ -9,8 +9,9 @@ import Data.Maybe (catMaybes)
 import qualified Data.Set as Set
 import qualified System.IO.Strict as Strict
 import Telomare.Driver (CompiledProgram (..), SizingOption (..),
-                        compileMainReporting, compileUnitTest, evalLoopCore,
-                        keepAccum, plainEval, programPlan)
+                        compileMainReporting, compileUnitTest, erasedChecks,
+                        evalLoopCore, keepAccum, plainEval, programIteration,
+                        programPlan)
 import Telomare.EAL (CodeGuidance (..), EALLiftedResult (..),
                      deriveSizedGuidance, ealCaptureLayouts, inferEALCompiled,
                      inferEALFaithful, inferEALWithLifting)
@@ -142,9 +143,9 @@ main = do
         Right cp -> case programPlan cp of
           Left refusal -> assertFailure $ "refused: " <> refusal
           Right plan   -> do
-            (_, viaIC) <- evalLoopCore (evalIC plan) (cpExpr cp)
+            (_, viaIC) <- evalLoopCore (evalIC plan) (programIteration cp)
                             keepAccum "" []
-            (_, viaRef) <- evalLoopCore plainEval (cpExpr cp)
+            (_, viaRef) <- evalLoopCore plainEval (programIteration cp)
                              keepAccum "" []
             viaIC @?= viaRef
     -- the driver's post-sizing guidance is derived from the unsized
@@ -161,11 +162,14 @@ main = do
           let links = chainLinks (sizingReportCounts (cpSizing cp))
               full = inferEALCompiled (cpExpr cp)
           derived <- either (assertFailure . ("not derived: " <>)) pure $
-            deriveSizedGuidance links t3 (inferEALFaithful t3) (cpExpr cp)
+            deriveSizedGuidance links (erasedChecks (cpExpr cp)) t3
+              (inferEALFaithful t3) (cpExpr cp)
           either (assertFailure . show) (const (pure ())) (ealLiftedMain full)
           Map.keysSet (ealGuidance derived) @?= Map.keysSet (ealGuidance full)
           ealCaptureLayouts derived @?= ealCaptureLayouts full
+          -- the program's guidance is main's and its input prologue's
           Map.keysSet (cpGuidance cp) @?= Map.keysSet (ealGuidance full)
+            <> foldMap (Map.keysSet . ealGuidance . inferEALCompiled) (cpPrologue cp)
   defaultMain $ testGroup "IC runtime"
     [ testGroup "template namespace"
         [ testCase "deferHash agrees with the DeferMap key" $ do
@@ -570,7 +574,7 @@ main = do
                      (parseAuxModule "main = \\input -> (d2c 3 succ 0, 0)" : prelude)
                      "AuxModule" ) of
               (Right t3, Right other) ->
-                case deriveSizedGuidance (chainLinks (sizingReportCounts (cpSizing other)))
+                case deriveSizedGuidance (chainLinks (sizingReportCounts (cpSizing other))) (const False)
                        t3 (inferEALFaithful t3) (cpExpr other) of
                   Left _  -> pure ()
                   Right _ -> assertFailure "derived guidance for another program"

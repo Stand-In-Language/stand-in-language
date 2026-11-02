@@ -189,6 +189,7 @@ test-suite telomare-sizing-test
                      , bytestring
                      , containers
                      , hspec
+                     , recursion-schemes
                      , telomare
                      , strict
   ghc-options:         -Wall -Wunused-packages -threaded -rtsopts -with-rtsopts=-N

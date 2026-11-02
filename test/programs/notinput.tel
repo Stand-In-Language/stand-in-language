@@ -1,0 +1,3 @@
+import Prelude
+
+main = \input -> (not (left input), 0)

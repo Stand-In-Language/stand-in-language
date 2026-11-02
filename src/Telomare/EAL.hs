@@ -2279,10 +2279,14 @@ inferEALFaithful = uncurry (inferEALLiftedWith True) . uncurry faithfulProgram .
 -- not the image of the unsized one (the substitution this assumes is not
 -- the one sizing made): the image of main must be the sized main, which,
 -- bodies being keyed by content, makes every body the image of one.
-deriveSizedGuidance :: (UnsizedRecursionToken -> Int) -> Term3
+--
+-- The checks sizing found can never fail are erased from the sized program
+-- ('Telomare.Machine.eraseChecks'); the image erases the same ones, so
+-- the bodies they sat in take their guidance from the bodies with them.
+deriveSizedGuidance :: (UnsizedRecursionToken -> Int) -> (AbortOrigin -> Bool) -> Term3
                     -> EALLiftedResult -> CompiledExpr
                     -> Either String EALLiftedResult
-deriveSizedGuidance links unsized cert sized = do
+deriveSizedGuidance links erased unsized cert sized = do
   r <- first renderEALError (ealLiftedMain cert)
   let (DeferMap pre, preMain) = deferLift unsized
       (DeferMap post, postMain) = deferLift (compiled2Term3 sized)
@@ -2290,7 +2294,9 @@ deriveSizedGuidance links unsized cert sized = do
       image (anno :< t) = case t of
         Term3LDeferRef h -> anno :< Term3LDeferRef (Map.findWithDefault h h images)
         Term3LUnsized tok -> snd (liftedChain (links tok))
-        Term3LCheckingWrapper o tc c -> snd (refinementCheckL o anno (image tc) (image c))
+        Term3LCheckingWrapper o tc c
+          | erased o  -> image c
+          | otherwise -> snd (refinementCheckL o anno (image tc) (image c))
         other -> anno :< fmap image other
       preimages = Map.fromListWith (<>) [ (h', [h]) | (h, h') <- Map.toList images ]
       solved h = case Map.lookup h (ealGuidance cert) of

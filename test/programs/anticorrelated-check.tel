@@ -1,0 +1,10 @@
+import Prelude
+
+isPair = \x -> assert (toBool x) "zero"
+
+-- f checks its argument only where left input is Zero, which is exactly
+-- where y is Zero, so the check fails whenever it runs
+main = \input -> let y = if left input then 1 else 0
+                     x = if left input then 0 else 1
+                     f = if x then (\v -> let z : isPair = v in z) else (\v -> v)
+                 in (f y, 0)
