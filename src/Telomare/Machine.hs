@@ -81,6 +81,16 @@ isGateSelector x = case project x of
   StuckFW (DeferSF fi _) -> fi == toEnum leftGateInd || fi == toEnum rightGateInd
   _ -> False
 
+-- | A gate's result once gates distribute over superpositions: a branch
+-- selector, or a superposition of them (an aborted gate stays aborted).
+-- Choosing a branch with one runs no code, so it needs no environment
+-- restricted to the inputs that make each choice.
+isSelectorTree :: (Base g ~ f, StuckBase f, SuperBase f, AbortBase f, Recursive g, Corecursive g) => g -> Bool
+isSelectorTree x = case x of
+  SuperEE (EitherPF _ a b) -> isSelectorTree a && isSelectorTree b
+  AbortEE _                -> True
+  _                        -> isGateSelector x
+
 stuckStep :: (Base a ~ f, StuckBase f, BasicBase f, Recursive a, Corecursive a, PrettyPrintable a)
   => (f a -> a) -> f a -> a
 stuckStep handleOther = \case
@@ -162,9 +172,13 @@ gateIndexedResult handleOther = \case
 
 {-# INLINABLE mergeShallow #-}
 mergeShallow :: (Base g ~ f, BasicBase f, SuperBase f, AbortBase f, ShallowEq1 f, Recursive g, Corecursive g, PrettyPrintable g) => Maybe Integer -> g -> g -> g
-mergeShallow n a b = if same
-  then debugTrace ("mergeShallow found same pair\n" <> prettyPrint a <> "\nand\n" <> prettyPrint b) a
-  else superEE $ EitherPF n a b
+mergeShallow n a b
+  -- a stuck path has no value to contribute: it does not exist, or the run
+  -- stops there ('stuckSizingStepM')
+  | stuck a   = b
+  | stuck b   = a
+  | same      = debugTrace ("mergeShallow found same pair\n" <> prettyPrint a <> "\nand\n" <> prettyPrint b) a
+  | otherwise = superEE $ EitherPF n a b
   where
     -- the sizing analysis's aborts carry its verdict in their messages, so
     -- two of them are the same only when the messages are
@@ -173,6 +187,9 @@ mergeShallow n a b = if same
         | sizing o || sizing o' -> sizing o && sizing o' && messageData m == messageData m'
       _ -> shallowEq1 (project a) (project b)
     sizing = (== SizingAbort) . abortKind
+    stuck = \case
+      AbortEE (AbortF o m) | sizing o, AbortStuck <- messageData m -> True
+      _                                                            -> False
 
 {-# INLINABLE foldGateResult #-}
 foldGateResult :: forall g f. (Base g ~ f, SuperBase f, BasicBase f, StuckBase f, Recursive g, Corecursive g) => Maybe Integer -> GateResult g -> g
@@ -187,6 +204,24 @@ foldGateResult n (GateResult doL doR o) =
     (Just x, _)        -> x
     (_, Just x)        -> x
     _                  -> error "foldGateResult: no results"
+
+-- |A gate on @EitherPF n a b@: the gate on @a@ where position @n@ is
+-- Zero, and the gate on @b@ where it is a pair. Each side's own result is
+-- flattened to the choices it can make (a branch selector, an abort, or an
+-- unknown choice between them), so a gate's result is never more than two
+-- levels deep however deep its scrutinee.
+--
+-- Flattening a whole superposition into one choice tagged @n@, as this
+-- once did, says the left branch is taken where @n@ is Zero, which is
+-- wrong when @a@ goes right or both ways. A branch's code then saw its
+-- environment restricted the wrong way and missed values it meets
+-- (test/programs/mislabeled-size.tel). A side's unknown choice is sound,
+-- and the combinations that never happen that it lets through end in
+-- 'AbortStuck' ('stuckSizingStepM').
+gateSuper :: (Base g ~ f, SuperBase f, BasicBase f, StuckBase f, AbortBase f, ShallowEq1 f, Recursive g, Corecursive g, PrettyPrintable g)
+  => (g -> GateResult g) -> Maybe Integer -> g -> g -> g
+gateSuper gateResult n a b = mergeShallow n (side a) (side b) where
+  side = foldGateResult Nothing . gateResult
 
 superStep :: forall a f. (Base a ~ f, BasicBase f, StuckBase f, SuperBase f, AbortBase f, ShallowEq1 f, Recursive a, Corecursive a, PrettyPrintable a)
   => (a -> GateResult a) -> (f a -> a) -> (f a -> a) -> f a -> a
@@ -203,8 +238,8 @@ superStep gateResult step handleOther =
     StuckFW (LeftSF (SuperEE (EitherPF n a b))) -> mergeShallow n (step . embedS . LeftSF $ a) (step . embedS . LeftSF $ b)
     StuckFW (RightSF (SuperEE (EitherPF n a b))) -> mergeShallow n (step . embedS . RightSF $ a) (step . embedS . RightSF $ b)
     StuckFW (SetEnvSF (SuperEE (EitherPF n a b))) -> mergeShallow n (step . embedS . SetEnvSF $ a) (step . embedS . SetEnvSF $ b)
-    FillFunction GateB x@(SuperEE (EitherPF n _ _)) -> foldGateResult n $ gateResult x
-    FillFunction (SuperEE (EitherPF n sca scb)) e | isGateSelector sca && isGateSelector scb -> mergeShallow n
+    FillFunction GateB (SuperEE (EitherPF n a b)) -> gateSuper gateResult n a b
+    FillFunction (SuperEE (EitherPF n sca scb)) e | isSelectorTree sca && isSelectorTree scb -> mergeShallow n
       (step . embedS . SetEnvSF . BasicEE $ PairSF sca e)
       (step . embedS . SetEnvSF . BasicEE $ PairSF scb e)
     (FillFunction (SuperEE (EitherPF n sca scb)) e) -> mergeShallow n
@@ -231,10 +266,10 @@ superStepM gateResult step handleOther x = f x where
     StuckFW (LeftSF (SuperEE (EitherPF n a b))) ->  mergeShallow n <$> pbStep LeftSF a <*> pbStep LeftSF b
     StuckFW (RightSF (SuperEE (EitherPF n a b))) ->  mergeShallow n <$> pbStep RightSF a <*> pbStep RightSF b
     StuckFW (SetEnvSF (SuperEE (EitherPF n a b))) -> mergeShallow n <$> pbStep SetEnvSF a <*> pbStep SetEnvSF b
-    FillFunction GateB x'@(SuperEE (EitherPF n _ _)) -> pure . foldGateResult n $ gateResult x'
+    FillFunction GateB (SuperEE (EitherPF n a b)) -> pure $ gateSuper gateResult n a b
     FillFunction (SuperEE (EitherPF n sca scb)) e ->
-      let fl = if null n || isGateSelector sca then id else cata (filterLeft n)
-          fr = if null n || isGateSelector scb then id else cata (filterRight n)
+      let fl = if null n || isSelectorTree sca then id else cata (filterLeft n)
+          fr = if null n || isSelectorTree scb then id else cata (filterRight n)
       in mergeShallow n
        <$> (pbStep SetEnvSF . BasicEE . PairSF sca $ fl e)
        <*> (pbStep SetEnvSF . BasicEE . PairSF scb $ fr e)
@@ -289,7 +324,7 @@ withLiteral isZero n (InputPath zs ps)
 -- costs size, so this is for the analyses that need the precision rather
 -- than for sizing.
 {-# INLINABLE exactSuperStepM #-}
-exactSuperStepM :: forall a f m. (Base a ~ f, Traversable f, Eq1 f, BasicBase f, StuckBase f, SuperBase f, IndexedInputBase f, Recursive a, Corecursive a, MonadReader InputPath m)
+exactSuperStepM :: forall a f m. (Base a ~ f, Traversable f, Eq1 f, BasicBase f, StuckBase f, SuperBase f, AbortBase f, IndexedInputBase f, Recursive a, Corecursive a, MonadReader InputPath m)
   => (f a -> m a) -> (f a -> m a) -> f a -> m a
 exactSuperStepM step handleOther x = f x where
   pbStep bf = step . embedS . bf
@@ -319,19 +354,43 @@ exactSuperStepM step handleOther x = f x where
     x'@(SuperFW (EitherPF _ _ _)) -> pure $ embed x'
     _ -> handleOther x
 
--- |@EitherPF n a b@, with what @n@ decides of the branches' own top
--- superpositions taken, and one branch when the two are the same.
-mergeExact :: (Base g ~ f, Eq1 f, StuckBase f, SuperBase f, Recursive g, Corecursive g) => Maybe Integer -> g -> g -> g
-mergeExact n a b =
-  let a' = maybe a (\n' -> peel (withLiteral True n' emptyPath) a) n
-      b' = maybe b (\n' -> peel (withLiteral False n' emptyPath) b) n
-  in if exactEq a' b' then a' else superEE $ EitherPF n a' b'
+-- |@EitherPF n a b@, kept as small as exactness allows. What @n@ decides
+-- of the branches' own superpositions is taken, and the choice is pushed
+-- down past the structure the branches share: choosing by an input
+-- position commutes with pairing, so @EitherPF n (a, b) (c, d)@ is
+-- @(EitherPF n a c, EitherPF n b d)@, and a superposition is left only
+-- where the branches differ in shape. A closure merged so stays one
+-- closure, with its environment superposed, and applying it runs its code
+-- once. An unknown choice (@Nothing@) is not pushed down, since its two
+-- uses would no longer be the same choice.
+mergeExact :: (Base g ~ f, Eq1 f, BasicBase f, StuckBase f, SuperBase f, AbortBase f, Recursive g, Corecursive g) => Maybe Integer -> g -> g -> g
+mergeExact n a b = case n of
+  Nothing -> if exactEq a b then a else superEE $ EitherPF n a b
+  Just n' -> go n' a b
   where
-    emptyPath = InputPath Set.empty Set.empty
-    peel p v = case v of
-      SuperEE (EitherPF (Just m) l r) | Just pick <- pathDecides p m ->
-        peel p (if pick then l else r)
+    -- what is known on each side is the one literal, so it is tested
+    -- directly rather than through an 'InputPath'
+    go n' x y =
+      let x' = peel True n' x
+          y' = peel False n' y
+      in if isTrue# (reallyUnsafePtrEquality# x' y') then x' else case (x', y') of
+        (PairB xl xr, PairB yl yr) -> PairB (go n' xl yl) (go n' xr yr)
+        (AbortEE (AbortF o xm), AbortEE (AbortF o' ym)) | o == o' -> AbortB o (go n' xm ym)
+        _ | exactEq x' y' -> x'
+          | otherwise     -> superEE $ EitherPF n x' y'
+    peel isZero n' v = case v of
+      SuperEE (EitherPF (Just m) l r) | Just pick <- literalDecides isZero n' m ->
+        peel isZero n' (if pick then l else r)
       _ -> v
+
+-- |What knowing input position @n@ to be Zero (True) or a pair says of
+-- position @m@: Just True when @m@ is Zero, Just False when a pair. Below
+-- a Zero is all Zero; above a pair is all pairs.
+literalDecides :: Bool -> Integer -> Integer -> Maybe Bool
+literalDecides isZero n m
+  | isZero && decendant m n     = Just True
+  | not isZero && decendant n m = Just False
+  | otherwise                   = Nothing
 
 -- |A value as its path knows it: every superposition the path decides is
 -- resolved, and every input position it knows to be Zero is Zero. For
@@ -617,11 +676,43 @@ unsizedStep _maxSize recursionTest fullStep handleOther =
     t@(UnsizedFW (RecursionTestF _ _)) -> embed t
     x -> handleOther x
 
+-- |The steps the real evaluator is stuck on ('Telomare.Fast' fails them
+-- with 'FastStuck'), as the sizing analysis's 'AbortStuck': data applied
+-- as a function, setenv of something that is not a pair, a gate on a
+-- function, a projection out of one. A lossy superposition can bring
+-- together values from different inputs that no real run combines; the
+-- path through such a step does not exist, and one that does exist stops
+-- there. Either way it needs no recursion counted after it. Anything else
+-- unhandled is left to the caller, since it may be a step the analysis is
+-- missing on a path that does exist.
+{-# INLINABLE stuckSizingStepM #-}
+stuckSizingStepM :: (Base a ~ f, BasicBase f, StuckBase f, AbortBase f, IndexedInputBase f, Recursive a, Corecursive a, Monad m)
+  => (f a -> m a) -> f a -> m a
+stuckSizingStepM handleOther x = case x of
+  FillFunction c _ | dataValue c             -> stuck
+  StuckFW (SetEnvSF v) | notPair v           -> stuck
+  FillFunction GateB (StuckEE (DeferSF _ _)) -> stuck
+  StuckFW (LeftSF (StuckEE (DeferSF _ _)))   -> stuck
+  StuckFW (RightSF (StuckEE (DeferSF _ _)))  -> stuck
+  _                                          -> handleOther x
+  where
+    stuck = pure . AbortB sizingOrigin $ dataB AbortStuck
+    -- the input is data too
+    dataValue = \case
+      ZeroB                -> True
+      PairB _ _            -> True
+      IndexedEE (IVarF _)  -> True
+      _                    -> False
+    notPair = \case
+      ZeroB                  -> True
+      StuckEE (DeferSF _ _)  -> True
+      _                      -> False
+
 {-# INLINABLE unsizedStepM''' #-}
 unsizedStepM''' :: forall a f m. (Base a ~ f, Traversable f, BasicBase f, StuckBase f, AbortBase f, UnsizedBase f, Recursive a, Corecursive a
-                                   , Eq a, PrettyPrintable a, m ~ StrictAccum SizedRecursion)
-  => Int -> Set Integer -> (UnsizedRecursionToken -> a -> a) -> (f a -> m a) -> f a -> m a
-unsizedStepM''' maxSize _zeros recursionTest handleOther x = f x where
+                                   , Eq a, PrettyPrintable a, Monad m)
+  => Int -> Set Integer -> (UnsizedRecursionToken -> a -> m a) -> (SizedRecursion -> m ()) -> (f a -> m a) -> f a -> m a
+unsizedStepM''' maxSize _zeros recursionTest recordSizes handleOther x = f x where
   f = \case
     -- the oracle applied to trb = (tWrap, (r, (b, 0))): wrap the test thunk
     -- so its applications reach the input-boundedness machinery, and emit
@@ -640,8 +731,8 @@ unsizedStepM''' maxSize _zeros recursionTest handleOther x = f x where
     UnsizedFW (SizeStepStubF tok n _) | n > maxSize -> pure . AbortB sizingOrigin . dataB . AbortRecursion . i2B $ fromEnum tok
     UnsizedFW (SizeStepStubF tok n (BasicEE (PairSF _ trb))) ->
       pure $ PairB (deferB unsizedStepMrfa (unsizedStepBody tok (n + 1))) trb
-    UnsizedFW (RecursionTestF ri x') -> pure . recursionTest ri $ x'
-    UnsizedFW (SizeStageF sr x') -> debugTrace ("Hit SizeStage: " <> show sr) $ StrictAccum sr x'
+    UnsizedFW (RecursionTestF ri x') -> recursionTest ri x'
+    UnsizedFW (SizeStageF sr x') -> debugTrace ("Hit SizeStage: " <> show sr) $ x' <$ recordSizes sr
     UnsizedFW (TraceF s x') -> pure $ debugTrace ("Hit TraceF: " <> s <> "\n" <> prettyPrint x') x'
     _ -> handleOther x
 

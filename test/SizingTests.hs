@@ -99,6 +99,17 @@ sizingSpec = do
           (snd <$> Map.toAscList (unSizedRecursion (sizingReportCounts report)))
             `shouldBe` [Just 11, Just 7, Just 10, Just 10]
 
+    it "sizes a recursion past a gate on a superposition whose sides go opposite ways" $ do
+      -- y is 8 exactly where the gate on x picks the recursion, so 8
+      -- iterations are needed; a gate that flattened x's superposition
+      -- under the wrong input once sized it for y = 3
+      result <- compileAtFullBudget "test/programs/mislabeled-size.tel" "mislabeled-size"
+      case result of
+        Left err -> expectationFailure $ "failed to compile mislabeled-size.tel:\n" <> err
+        Right report ->
+          (snd <$> Map.toAscList (unSizedRecursion (sizingReportCounts report)))
+            `shouldSatisfy` all (maybe False (>= 9))
+
     it "names the budget it searched under" $ do
       result <- compileAtFullBudget "test/programs/simpleplus.tel" "simpleplus"
       case result of

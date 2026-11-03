@@ -343,6 +343,11 @@ unitTests parse = do
     unitTestUnused <- buildMainTest "main = \\input -> let x : (\\v -> assert (not (toBool (left v))) \"bad\") = left input\n                 in (\"ok\", 0)"
     unitTestUnused ZeroB "" ("ok", Right ZeroB)
     unitTestUnused ZeroB "a" ("ok", Right ZeroB)
+    -- sizing must count the recursion for the input that runs it 8 times
+    -- (test/programs/mislabeled-size.tel)
+    testMislabeled <- runIO $ Strict.readFile "test/programs/mislabeled-size.tel"
+    unitTestMislabeled <- buildMainTest testMislabeled
+    unitTestMislabeled ZeroB "" ("aaaaaaaa", Right ZeroB)
 
 
   {- TODO -- figure out why this broke

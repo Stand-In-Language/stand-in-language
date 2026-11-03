@@ -412,6 +412,12 @@ pattern AbortAny :: (Base g ~ f, CarryWrap g ~ f, BasicBase f, CarryAnno g, Recu
 pattern AbortAny = PairP (PairP (PairP ZeroB ZeroB) ZeroB) ZeroB
 pattern AbortUnsizeable :: (Base g ~ f, CarryWrap g ~ f, BasicBase f, CarryAnno g, Recursive g, Corecursive g) => g -> g
 pattern AbortUnsizeable t = PairP (PairP (PairP (PairP ZeroB ZeroB) ZeroB) ZeroB) t
+-- | A sizing run reached a step the real evaluator would be stuck on, such
+-- as data applied as a function. Either the step's values never meet on a
+-- real run (the sizing analysis merged them from different inputs), or the
+-- run stops there; either way no recursion after it needs a count.
+pattern AbortStuck :: (Base g ~ f, CarryWrap g ~ f, BasicBase f, CarryAnno g, Recursive g, Corecursive g) => g
+pattern AbortStuck = PairP (PairP (PairP (PairP (PairP ZeroB ZeroB) ZeroB) ZeroB) ZeroB) ZeroB
 
 convertAbortMessage :: (Base g ~ f, CarryWrap g ~ f, BasicBase f, Recursive g, Corecursive g, CarryAnno g, Show g) => g -> String
 convertAbortMessage = \case
@@ -420,6 +426,7 @@ convertAbortMessage = \case
     Nothing -> "user abort invalid data: " <> show s
     Just m  -> "user abort: " <> m
   AbortAny -> "user abort of all possible abort reasons (non-deterministic input)"
+  AbortStuck -> "a step the evaluator would be stuck on"
   x -> "unexpected abort: " <> show x
 
 -- | Data as a term of any IR.

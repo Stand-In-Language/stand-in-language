@@ -15,6 +15,7 @@ import Data.Functor.Classes (Eq1 (..), Show1 (liftShowsPrec))
 import Data.Functor.Foldable
 import Data.Map (Map)
 import qualified Data.Map as Map
+import qualified Data.Map.Strict as Map.Strict
 import Data.Validity (Validity (..), trivialValidation)
 import GHC.Generics (Generic)
 
@@ -93,7 +94,11 @@ instance Semigroup SizedRecursion where
   (<>) sa@(SizedRecursion a) sb@(SizedRecursion b)
     | Map.null a = sb
     | Map.null b = sa
-    | otherwise = SizedRecursion . tr $ Map.unionWith (liftM2 max) a b where
+    | otherwise = SizedRecursion . tr $ Map.Strict.unionWith maxCount a b where
+        -- strict all the way down: sizing combines these at every merge
+        maxCount x y = case liftM2 max x y of
+          Just m  -> m `seq` Just m
+          Nothing -> Nothing
         tr x = debugTrace' ("sizedrecursion merge result: " <> show (first fromEnum <$> Map.toAscList x)) x
 
 instance Monoid SizedRecursion where

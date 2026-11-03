@@ -292,6 +292,8 @@ sizeTermM sizingSettings x = tidyUp . transformNoDeferM evalStep $ mx where
           Just i' -> Just . OverfueledSR $ toEnum i'
           _ -> error $ "sizeTermM foldAborted unexpected AbortRecursion value:\n" <> prettyPrint i
         AbortAny -> error "sizeTermM AbortAny hit"
+        -- a path that does not exist, or ends there: no verdict
+        AbortStuck -> Nothing
         AbortUnsizeable t -> case b2i t of
           Just i' -> Just . UnsizableSR $ toEnum i'
           _ -> error $ "sizeTermM foldAborted unexpected AbortUnsizeable value:\n" <> prettyPrint t
@@ -303,7 +305,7 @@ sizeTermM sizingSettings x = tidyUp . transformNoDeferM evalStep $ mx where
   unsizedTest ri = unsizedTestIndexed zeros (unsizedTestSuper (unsizedTest ri) (const id)) ri
   unsizedTest' ri = (\v -> debugTrace ("unsizedTest evaluated to value of\n" <> prettyPrint v) v) . unsizedTest ri
   unhandledError err = throw $ UGException ("sizeTermM unhandled case\n" <> prettyPrint err)
-  evalStep = basicStepM (stuckStepM (abortStepM (indexedInputStepM zeros (indexedSuperStepM (superStepM gateResult evalStep (unsizedStepM''' (maxSizingSize sizingSettings) zeros unsizedTest' unhandledError))))))
+  evalStep = basicStepM (stuckStepM (abortStepM (indexedInputStepM zeros (indexedSuperStepM (superStepM gateResult evalStep (unsizedStepM''' (maxSizingSize sizingSettings) zeros (\ri -> pure . unsizedTest' ri) (`StrictAccum` ()) (stuckSizingStepM unhandledError)))))))
 
 removeRefinementWrappers :: (Base g ~ f, BasicBase f, StuckBase f, AbortBase f, UnsizedBase f, Recursive g, Corecursive g) => g -> g
 removeRefinementWrappers = cata f where
@@ -328,7 +330,9 @@ removeRefinementWrappers = cata f where
 -- prologue ('Telomare.Size.inputPrologue'), or none at all. What the
 -- abstract run cannot follow (data applied as a function, a stuck
 -- projection) becomes an unknown value, which reaching a check makes it
--- one that may fail.
+-- one that may fail. A fired abort is recorded and then forgotten: every
+-- aborted value is the same one, so that runs differing only in which
+-- check stopped them merge.
 mayFailChecks :: Int -> UnsizedExpr -> Set Integer -> CompiledExpr -> Maybe (Set AbortOrigin)
 mayFailChecks budget input zeros prog =
   case State.runState (runExceptT (runReaderT run (zeroPath zeros))) (0, Set.empty) of
@@ -348,15 +352,29 @@ mayFailChecks budget input zeros prog =
     -- a check's result as the path that reached it knows it
     path <- ask
     let s' = case x of
-          AbortFW (AbortF o m) | not (isZero (resolvePath path m)) -> Set.insert o s
-          _                                                        -> s
+          AbortFW (AbortF o m) | mayBeNonZero path m -> Set.insert o s
+          _                                          -> s
     let n' = n + 1
-    n' `seq` State.put (n', s')
-    handleOther x
-  isZero = \case
-    ZeroB -> True
-    _     -> False
+    n' `seq` s' `seq` State.put (n', s')
+    case x of
+      -- once recorded, which check fired no longer matters: an aborted value
+      -- only propagates, and one of them for all lets outcomes merge
+      AbortFW _ -> pure firedAbort'
+      _         -> handleOther x
+  -- whether a check's result is something other than Zero on some path
+  -- consistent with the one that reached it: its superpositions are walked
+  -- under what each branch knows, without building anything
+  mayBeNonZero path = \case
+    ZeroB -> False
+    IndexedEE (IVarF v) -> pathDecides path v /= Just True
+    SuperEE (EitherPF n l r) -> case n >>= pathDecides path of
+      Just True  -> mayBeNonZero path l
+      Just False -> mayBeNonZero path r
+      Nothing    -> mayBeNonZero (maybe path (\v -> withLiteral True v path) n) l
+                    || mayBeNonZero (maybe path (\v -> withLiteral False v path) n) r
+    _ -> True
   unknown _ = pure (indexedEE AnyF)
+  firedAbort' = AbortB unknownOrigin ZeroB
 
 -- |How many abstract evaluation steps deciding a program's checks may take
 -- before the compiler gives up and keeps them all.

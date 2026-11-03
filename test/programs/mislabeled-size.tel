@@ -1,0 +1,8 @@
+import Prelude
+
+-- y is 8 exactly where x is 1 (left input is Zero), so f runs its
+-- recursion 8 times on that input, and is constant elsewhere
+main = \input -> let y = if left input then 3 else 8
+                     x = if left input then 0 else 1
+                     f = if x then (\v -> d2c v (\s -> (left "a", s)) 0) else (\v -> "none")
+                 in (f y, 0)
