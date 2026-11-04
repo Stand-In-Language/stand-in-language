@@ -40,8 +40,8 @@ import Telomare.Parse (parseOneExprOrDefinitions, runParseModule)
 import Telomare.PrettyPrint
 import Telomare.Resolve (main2Term3, process, resolveAllImports)
 import Telomare.Size (SizingReport (..), SizingSettings (..),
-                      buildUnsizedLocMap, evalStaticCheck, locateSizingFailure,
-                      neverFailingChecks, sizeTermM, term3ToUnsizedExpr)
+                      buildUnsizedLocMap, checkPlan, evalStaticCheck,
+                      locateSizingFailure, sizeTermM, term3ToUnsizedExpr)
 import Text.Megaparsec (errorBundlePretty, runParser)
 
 debug :: Bool
@@ -196,17 +196,16 @@ compileMainProgram :: SizingOption -> Term3 -> Either EvalError CompiledProgram
 compileMainProgram so t3 = do
   _ <- first CertificationError $ certifyMain t3
   (report, sized) <- compileReporting so pure t3
-  -- the checks that can never fail are erased from main, and main's
-  -- certificate derived for the program without them. No check is hoisted
-  -- into an input prologue ('Telomare.Size.inputPrologue') yet: that waits
-  -- on an analysis finding the checks on the input alone.
-  let erased = erasedChecks sized
-  pure $ certifiedProgramFrom erased t3 report Nothing (eraseChecks erased sized)
+  -- the checks on main's input alone move into the prologue, which runs
+  -- before main; they and the checks that can never fail are erased from
+  -- main, and main's certificate derived for the program without them
+  let (erased, prologue) = checkPlan sized
+  pure $ certifiedProgramFrom erased t3 report prologue (eraseChecks erased sized)
 
 -- |The checks the compiler erases from a sized main: those that can never
--- fail ('Telomare.Size.neverFailingChecks').
+-- fail, and those its input prologue makes ('Telomare.Size.checkPlan').
 erasedChecks :: CompiledExpr -> AbortOrigin -> Bool
-erasedChecks = neverFailingChecks
+erasedChecks = fst . checkPlan
 
 -- for testing
 compileMain' :: SizingSettings -> Term3 -> Either EvalError CompiledExpr

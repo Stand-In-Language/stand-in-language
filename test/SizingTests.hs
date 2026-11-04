@@ -118,13 +118,14 @@ sizingSpec = do
           sizingReportBudget report `shouldBe` 65536
           renderSizingCertificate report `shouldSatisfy` isInfixOf "65536"
 
-  describe "checks that can never fail are erased" $ do
-    it "keeps simpleplus.tel's input check, and erases the Prelude's" $ do
+  describe "where refinement checks go" $ do
+    it "runs simpleplus.tel's input check before main, and erases the Prelude's" $ do
       -- the Prelude's Bool checks always pass where simpleplus calls them;
-      -- its input check is made inside the case on the input, so it is not
-      -- hoisted into a prologue, and the input can be anything
+      -- its input check depends on the input alone, matters wherever it
+      -- fails (its value is in the output), and the case on the input means
+      -- it cannot fail on the input-less first call
       kinds <- remainingChecks "test/programs/simpleplus.tel" "simpleplus"
-      kinds `shouldBe` Right ([RefinementAbort], [])
+      kinds `shouldBe` Right ([], [RefinementAbort])
 
     it "erases a check that holds because two uses of one input agree" $ do
       -- deciding it means remembering, in the branch that runs the check,
@@ -137,10 +138,11 @@ sizingSpec = do
       kinds <- remainingChecks "test/programs/anticorrelated-check.tel" "anticorrelated-check"
       kinds `shouldBe` Right ([RefinementAbort], [])
 
-    it "keeps a check that can fail" $ do
-      -- `not` refines its argument as a Bool, and the input can be anything
+    it "runs a check on the input alone before main" $ do
+      -- `not` refines its argument as a Bool, which fails only when the
+      -- input's left is a pair, so never on the input-less first call
       kinds <- remainingChecks "test/programs/notinput.tel" "notinput"
-      kinds `shouldBe` Right ([RefinementAbort], [])
+      kinds `shouldBe` Right ([], [RefinementAbort])
 
 -- |The kinds of the refinement checks a compiled program's main still
 -- makes, and those its input prologue makes.

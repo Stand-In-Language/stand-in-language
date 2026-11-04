@@ -17,6 +17,7 @@ module Telomare.Size where
 
 import Control.Applicative
 import qualified Control.Comonad.Trans.Cofree as CofreeT (CofreeF (..))
+import Data.Either (isLeft, rights)
 import Data.Foldable
 import Data.Functor.Foldable
 import Data.Map.Strict (Map)
@@ -313,73 +314,304 @@ removeRefinementWrappers = cata f where
     UnsizedFW (RefinementWrapperF o tc c) -> refinementCheckB o tc c
     x -> embed x
 
--- |The refinement checks of a sized main that may fail on some run, by
--- origin, or Nothing when deciding that would take more than the budget
--- of evaluation steps. The program is evaluated once over a symbolic input
--- (every input and state at once, through exact superpositions that keep
--- each path apart, 'exactSuperStepM'; sized chains
--- make it finite), which runs every check with every value that can reach
--- it. A check's abort branch carries the check's result as its message
--- ('refinementCheckB'), so an abort that fires with anything but Zero is
--- a check that may fail; one firing with Zero is the speculative branch of
--- a check that passed.
+-- |One run of a refinement check that may fail, as the exact analysis
+-- ('analyzeChecks') saw it.
+data CheckFire = CheckFire
+  { firePath   :: InputPath
+    -- ^ What the run knew of the input when the check ran.
+  , fireResult :: UnsizedExpr
+    -- ^ The check's result there: Zero where it passes, a decision over
+    -- input positions where that depends on the input.
+  }
+
+-- |What one exact run of a sized main over a symbolic input says about its
+-- refinement checks.
+data CheckAnalysis = CheckAnalysis
+  { checkFires  :: Map AbortOrigin [CheckFire]
+    -- ^ Every run of each check that may fail. A check missing here can
+    -- never fail.
+  , checkResult :: UnsizedExpr
+    -- ^ main's result over the symbolic input, with every fired abort's
+    -- place in it holding the same aborted value.
+  }
+
+-- |Run a sized main once over a symbolic input, through exact
+-- superpositions that keep each path apart ('exactSuperStepM'; sized chains
+-- make it finite), recording every run of a refinement check that may
+-- fail. Nothing when that would take more than the budget of evaluation
+-- steps.
 --
--- The input covers only what the restrictions admit. For the answer to
--- hold of every run, an input they rule out must abort the iteration
--- whatever the program does with it: restrictions from main's input
--- prologue ('Telomare.Size.inputPrologue'), or none at all. What the
--- abstract run cannot follow (data applied as a function, a stuck
--- projection) becomes an unknown value, which reaching a check makes it
--- one that may fail. A fired abort is recorded and then forgotten: every
--- aborted value is the same one, so that runs differing only in which
--- check stopped them merge.
-mayFailChecks :: Int -> UnsizedExpr -> Set Integer -> CompiledExpr -> Maybe (Set AbortOrigin)
-mayFailChecks budget input zeros prog =
-  case State.runState (runExceptT (runReaderT run (zeroPath zeros))) (0, Set.empty) of
-    (Left (), _)      -> Nothing
-    (Right _, (_, s)) -> Just s
+-- Running every check with every value that can reach it, the run sees
+-- each check's result: a check's abort branch carries it as its message
+-- ('refinementCheckB'), so an abort that fires with something other than
+-- Zero on some path ('mayBeNonZero') is a check that may fail there.
+--
+-- The input covers only what the zeros admit. For an answer to hold of
+-- every run, an input they rule out must never reach main, or there must
+-- be none. What the abstract run cannot follow (data applied as a
+-- function, a stuck projection) becomes an unknown value, and a check
+-- reaching one may fail. A fired abort is recorded and then forgotten:
+-- every aborted value is the same one, so that runs differing only in
+-- which check stopped them merge.
+analyzeChecks :: Int -> UnsizedExpr -> Set Integer -> CompiledExpr -> Maybe CheckAnalysis
+analyzeChecks budget input zeros prog =
+  case State.runState (runExceptT (runReaderT run (zeroPath zeros))) (0, Map.empty) of
+    (Left (), _)            -> Nothing
+    (Right result, (_, fs)) -> Just (CheckAnalysis (reverse <$> fs) result)
   where
   run = transformNoDeferM evalStep . capMain input $ toUnsized prog
   toUnsized :: CompiledExpr -> UnsizedExpr
-  toUnsized = runIdentity . cata (convertBasic (convertStuck (convertAbort (error "mayFailChecks: unexpected node"))))
-  evalStep :: UnsizedExprF UnsizedExpr -> ReaderT InputPath (ExceptT () (State.State (Int, Set AbortOrigin))) UnsizedExpr
+  toUnsized = runIdentity . cata (convertBasic (convertStuck (convertAbort (error "analyzeChecks: unexpected node"))))
+  evalStep :: UnsizedExprF UnsizedExpr
+    -> ReaderT InputPath (ExceptT () (State.State (Int, Map AbortOrigin [CheckFire]))) UnsizedExpr
   evalStep = basicStepM (stuckStepM (record (abortStepM (indexedInputStepM zeros
     (exactSuperStepM evalStep unknown)))))
   -- every step that is not plain data or code movement is counted
   record handleOther x = do
-    (n, s) <- State.get
+    (n, fs) <- State.get
     when (n >= budget) $ throwError ()
-    -- a check's result as the path that reached it knows it
     path <- ask
-    let s' = case x of
-          AbortFW (AbortF o m) | mayBeNonZero path m -> Set.insert o s
-          _                                          -> s
+    let fs' = case x of
+          AbortFW (AbortF o m) | mayBeNonZero path m -> Map.insertWith (<>) o [CheckFire path m] fs
+          _                                          -> fs
     let n' = n + 1
-    n' `seq` s' `seq` State.put (n', s')
+    n' `seq` fs' `seq` State.put (n', fs')
     case x of
       -- once recorded, which check fired no longer matters: an aborted value
       -- only propagates, and one of them for all lets outcomes merge
       AbortFW _ -> pure firedAbort'
       _         -> handleOther x
-  -- whether a check's result is something other than Zero on some path
-  -- consistent with the one that reached it: its superpositions are walked
-  -- under what each branch knows, without building anything
-  mayBeNonZero path = \case
-    ZeroB -> False
-    IndexedEE (IVarF v) -> pathDecides path v /= Just True
-    SuperEE (EitherPF n l r) -> case n >>= pathDecides path of
-      Just True  -> mayBeNonZero path l
-      Just False -> mayBeNonZero path r
-      Nothing    -> mayBeNonZero (maybe path (\v -> withLiteral True v path) n) l
-                    || mayBeNonZero (maybe path (\v -> withLiteral False v path) n) r
-    _ -> True
   unknown _ = pure (indexedEE AnyF)
   firedAbort' = AbortB unknownOrigin ZeroB
 
+-- |The refinement checks of a sized main that may fail on some run
+-- ('analyzeChecks').
+mayFailChecks :: Int -> UnsizedExpr -> Set Integer -> CompiledExpr -> Maybe (Set AbortOrigin)
+mayFailChecks budget input zeros prog = Map.keysSet . checkFires <$> analyzeChecks budget input zeros prog
+
+-- |Whether a check's result is something other than Zero on some path
+-- consistent with the given one: its superpositions are walked under what
+-- each branch knows, without building anything.
+mayBeNonZero :: InputPath -> UnsizedExpr -> Bool
+mayBeNonZero path = \case
+  ZeroB -> False
+  IndexedEE (IVarF v) -> pathDecides path v /= Just True
+  SuperEE (EitherPF n l r) -> case n >>= pathDecides path of
+    Just True  -> mayBeNonZero path l
+    Just False -> mayBeNonZero path r
+    Nothing    -> mayBeNonZero (maybe path (\v -> withLiteral True v path) n) l
+                  || mayBeNonZero (maybe path (\v -> withLiteral False v path) n) r
+  _ -> True
+
+-- |What a value says, on the paths consistent with a given one, of whether
+-- a run aborts: an aborted value outside code on every one of them, on
+-- none, or on some, with the first undecided superposition in a part that
+-- may abort, to tell them apart by.
+data AbortStatus = SurelyAborted | AbortFree | MayAbort (Maybe Integer)
+
+-- |One walk of a value for its 'AbortStatus'. Sound but not complete: a
+-- pair aborting on every path only because its two sides abort on
+-- complementary ones is a 'MayAbort'.
+abortStatus :: InputPath -> UnsizedExpr -> AbortStatus
+abortStatus path = \case
+  AbortEE _ -> SurelyAborted
+  PairB a b -> case abortStatus path a of
+    SurelyAborted -> SurelyAborted
+    sa -> case (sa, abortStatus path b) of
+      (_, SurelyAborted)     -> SurelyAborted
+      (AbortFree, AbortFree) -> AbortFree
+      (MayAbort n, _)        -> MayAbort n
+      (_, sb)                -> sb
+  SuperEE (EitherPF n a b) -> case n >>= pathDecides path of
+    Just True  -> abortStatus path a
+    Just False -> abortStatus path b
+    Nothing    ->
+      case (abortStatus (maybe path (\v -> withLiteral True v path) n) a,
+            abortStatus (maybe path (\v -> withLiteral False v path) n) b) of
+        (SurelyAborted, SurelyAborted) -> SurelyAborted
+        (AbortFree, AbortFree)         -> AbortFree
+        (sa, sb)                       -> MayAbort (n <|> tagOf sa <|> tagOf sb)
+  _ -> AbortFree
+  where
+    tagOf = \case
+      MayAbort t -> t
+      _          -> Nothing
+
+-- |How many times 'runTree' may split a path on main's result before
+-- leaving the rest undecided.
+demandSplits :: Int
+demandSplits = 12
+
+-- |The input positions a run of a check depends on, through the path that
+-- reached it or through its result; Nothing when it depends on something
+-- the analysis could not follow, or its result is not a decision over the
+-- input (an aborted value, code).
+fireReads :: CheckFire -> Maybe (Set Integer)
+fireReads (CheckFire path r) = ((knownZero path <> knownPair path) <>) <$> reads r where
+  reads = \case
+    ZeroB                          -> Just mempty
+    PairB a b                      -> (<>) <$> reads a <*> reads b
+    IndexedEE (IVarF m)            -> Just (Set.singleton m)
+    SuperEE (EitherPF (Just n) a b) -> Set.insert n <$> ((<>) <$> reads a <*> reads b)
+    _                              -> Nothing
+
+-- |What one run of a check comes to, as a decision over input positions.
+data CheckTree
+  = Passes
+    -- ^ It passes, or its failing is never seen.
+  | Fails UnsizedExpr
+    -- ^ It fails and the run surely aborts, with this result as the
+    -- message, and that is decided before main.
+  | Undecided
+    -- ^ Main must make it here.
+  | Split Integer CheckTree CheckTree
+    -- ^ As input position n is Zero or a pair.
+  deriving Eq
+
+-- |A 'Split' that does not merely repeat one tree.
+split :: Integer -> CheckTree -> CheckTree -> CheckTree
+split n a b
+  | a == b    = a
+  | otherwise = Split n a b
+
+-- |Whether main must make a check somewhere in a tree.
+undecidedIn :: CheckTree -> Bool
+undecidedIn = \case
+  Undecided   -> True
+  Split _ a b -> undecidedIn a || undecidedIn b
+  _           -> False
+
+-- |One run of a check that depends on the input alone, as a decision: its
+-- result's own decisions over the input, down to where it fails, and
+-- there what main's result does. A user @if@ or @case@ computes both its
+-- branches, so a check in one runs whichever is taken, and the condition
+-- under which its abort matters is in main's result: the path is split on
+-- the result's own superpositions until it is decided, or the splits run
+-- out ('demandSplits').
+--
+-- Where the run surely aborts, the failure is decided before main, unless
+-- it can happen on the input-less first call, which runs without the
+-- prologue (the path does not say the input is a pair), or the path has
+-- come to depend on the state (main's input is (input, state): the input
+-- is under position 1; position 0 says whether there is any). Failing
+-- before main then aborts exactly the runs main would have aborted. Where
+-- the run aborts in no case, the failure is never seen.
+runTree :: UnsizedExpr -> CheckFire -> CheckTree
+runTree result (CheckFire path0 r0) = fails path0 r0 where
+  fails path = \case
+    ZeroB -> Passes
+    IndexedEE (IVarF v) -> case pathDecides path v of
+      Just True  -> Passes
+      Just False -> demand demandSplits path (indexedEE (IVarF v))
+      Nothing    -> split v Passes (demand demandSplits (withLiteral False v path) (indexedEE (IVarF v)))
+    SuperEE (EitherPF (Just n) a b) -> case pathDecides path n of
+      Just True  -> fails path a
+      Just False -> fails path b
+      Nothing    -> split n (fails (withLiteral True n path) a) (fails (withLiteral False n path) b)
+    SuperEE (EitherPF Nothing _ _) -> Undecided
+    other -> demand demandSplits path other
+  demand :: Int -> InputPath -> UnsizedExpr -> CheckTree
+  demand k path msg = case abortStatus path result of
+    SurelyAborted
+      | all onInput (knownZero path <> knownPair path) && not (Set.null (knownPair path)) -> Fails msg
+      | otherwise -> Undecided
+    AbortFree -> Passes
+    MayAbort (Just n) | k > 0 ->
+      split n (demand (k - 1) (withLiteral True n path) msg) (demand (k - 1) (withLiteral False n path) msg)
+    MayAbort _ -> Undecided
+
+-- |Whether an input position is in the input, not the state: main's input
+-- is (input, state), so under 1, or 0 itself, whether there is any.
+onInput :: Integer -> Bool
+onInput m = m == 0 || decendant m 1
+
+-- |Where a check that may fail goes.
+data CheckVerdict = CheckVerdict
+  { hoistedRuns :: [(InputPath, CheckTree)]
+    -- ^ How it is decided before main ('inputPrologue'): each run, the
+    -- path that reached it and what it comes to there. Empty when main
+    -- keeps it.
+  , keptInMain  :: Bool
+    -- ^ Whether main must still make it, because some failure of it
+    -- matters that is not decided before main.
+  }
+
+-- |Where each check that may fail goes. A check whose every run depends
+-- on the input alone ('fireReads', 'onInput') is decided run by run
+-- ('runTree'). It stays in main if any part of any run is undecided, and
+-- then entirely: deciding its other failures before main as well would
+-- only make them twice. Any other check stays in main.
+checkVerdicts :: CheckAnalysis -> Map AbortOrigin CheckVerdict
+checkVerdicts (CheckAnalysis fires result) = verdict <$> fires where
+  verdict fs
+    | all (maybe False (all onInput) . fireReads) fs
+    , let runs = [ (firePath f, runTree result f) | f <- fs ]
+    , not (any (undecidedIn . snd) runs) = CheckVerdict runs False
+    | otherwise = CheckVerdict [] True
+
+-- |main's input prologue: a function run on main's input before main,
+-- giving Zero when every hoisted check passes and, when one does not, the
+-- abort of the first in the order they were written. Nothing when no check
+-- is hoisted. The first call of main, made before there is any input, runs
+-- without it ('Telomare.Driver.funWrapWith').
+--
+-- Each run of a check decided before main becomes its tree ('runTree') as
+-- gates on input positions, under gates testing the path that reached it:
+-- Zero where it passes, its abort where it fails. Of what the path knows,
+-- only the deepest of its pairs and the shallowest of its Zeros are
+-- tested, since the rest follows. The verdicts are chained through gates,
+-- which an aborted verdict ends.
+inputPrologue :: Map AbortOrigin CheckVerdict -> Maybe CompiledExpr
+inputPrologue verdicts = case runs of
+  [] -> Nothing
+  vs -> Just $ PairB (deferB inputPrologueInd (foldr chain ZeroB vs)) ZeroB
+  where
+    runs = [ onPath (knownZero p) (knownPair p) (treeCode o t)
+           | (o, v) <- Map.toAscList verdicts, (p, t) <- hoistedRuns v, t /= Passes ]
+    chain v rest = GateSwitchEE rest ZeroB v
+    onPath zs ps code =
+      foldr (\n c -> GateSwitchEE c ZeroB (inputPath n))
+        (foldr (\n c -> GateSwitchEE ZeroB c (inputPath n)) code (deepest ps)) (shallowest zs)
+    deepest ps = [ n | n <- Set.toList ps, not (any (\m -> m /= n && decendant m n) (Set.toList ps)) ]
+    shallowest zs = [ n | n <- Set.toList zs, not (any (\m -> m /= n && decendant n m) (Set.toList zs)) ]
+    treeCode o = \case
+      Passes      -> ZeroB
+      Fails msg   -> AbortB o (resultCode msg)
+      Undecided   -> error "inputPrologue: a check main keeps was hoisted"
+      Split n a b -> GateSwitchEE (treeCode o a) (treeCode o b) (inputPath n)
+    resultCode :: UnsizedExpr -> CompiledExpr
+    resultCode = \case
+      ZeroB -> ZeroB
+      PairB a b -> PairB (resultCode a) (resultCode b)
+      IndexedEE (IVarF m) -> inputPath m
+      SuperEE (EitherPF (Just n) a b) -> GateSwitchEE (resultCode a) (resultCode b) (inputPath n)
+      other -> error $ "inputPrologue: a hoisted check's result is not a decision over the input:\n"
+        <> prettyPrint other
+
+-- |An input position as code whose env is (input, _): position 0 is the
+-- input, and 2n + 1 and 2n + 2 are n's left and right.
+inputPath :: Integer -> CompiledExpr
+inputPath = \case
+  0 -> LeftB EnvB
+  n | odd n     -> LeftB (inputPath ((n - 1) `div` 2))
+    | otherwise -> RightB (inputPath ((n - 2) `div` 2))
+
 -- |How many abstract evaluation steps deciding a program's checks may take
--- before the compiler gives up and keeps them all.
+-- before the compiler gives up and keeps them all where they are.
 checkDecisionBudget :: Int
-checkDecisionBudget = 10000000
+checkDecisionBudget = 100000000
+
+-- |Where a sized main's refinement checks go ('checkVerdicts'): those
+-- erased from main, because they can never fail, or every failure of
+-- them that matters is decided before main, and main's input prologue.
+-- When analyzing the checks is over budget, every check stays in main.
+checkPlan :: CompiledExpr -> (AbortOrigin -> Bool, Maybe CompiledExpr)
+checkPlan sized = case analyzeChecks checkDecisionBudget (indexedEE $ IVarF 0) Set.empty sized of
+  Nothing -> (const False, Nothing)
+  Just analysis ->
+    let verdicts = checkVerdicts analysis
+        erased o = maybe True (not . keptInMain) (Map.lookup o verdicts)
+    in (erased, inputPrologue verdicts)
 
 -- |Substitute sized chains for a term's recursion holes.
 setSizes :: Map UnsizedRecursionToken (Maybe Int) -> UnsizedExpr -> UnsizedExpr
@@ -389,70 +621,6 @@ setSizes sizeMap = cata $ \case
     in debugTrace ("sizeTermM setting size: " <> show (tok, n)) sizedRecursionChain n
   UnsizedFW (TraceF _ inner) -> inner
   other -> embed other
-
--- |main's input prologue: a function run on main's input before main,
--- giving Zero when every hoisted check passes and the first one's abort,
--- in the order they were written, when one does not. Nothing when no check
--- is hoisted. Which checks are hoisted is the caller's choice: checks on
--- the input alone, demanded under conditions on the input's shape. The
--- first call of main, made before there is any input, runs without the
--- prologue ('Telomare.Driver.funWrapWith').
---
--- A check on the input alone, run in the sized main over a symbolic input,
--- runs on its exact value as a function of the input ('symbolicChecks'),
--- and what its check function gives is a residual over input positions:
--- the check's decision and nothing else. The prologue is those residuals,
--- input positions read as paths into the input. A residual the run could
--- not follow (it reached a value it had to treat as unknown) is an error
--- naming the check.
-inputPrologue :: (AbortOrigin -> Bool) -> SizedRecursion -> UnsizedExpr -> Either String (Maybe CompiledExpr)
-inputPrologue hoisted (SizedRecursion sm) mainTerm =
-  case Map.toAscList residuals of
-    [] -> pure Nothing
-    checks -> do
-      coded <- traverse code [ (o, r) | (o, rs) <- checks, r <- rs ]
-      pure . Just $ PairB (deferB inputPrologueInd (foldr guard ZeroB coded)) ZeroB
-  where
-    residuals = symbolicChecks report . capMain (indexedEE $ IVarF 0) $ setSizes sm mainTerm
-    report o r
-      | hoisted o = Map.singleton o [r]
-      | otherwise = Map.empty
-    -- the first failing check wins: the strict gate shape, like the checks
-    -- themselves ('refinementCheckB')
-    guard (o, r) rest = GateSwitchEE rest (AbortB o r) r
-    code (o, r) = (,) o <$> residualCode r `orFail` o
-    orFail (Right x) _ = Right x
-    orFail (Left why) o = Left $ renderAbortOrigin o
-      <> " cannot run before main: over a symbolic input it " <> why
-
--- |A residual over input positions as code whose env is (input, _): an
--- input position becomes its path into the input.
-residualCode :: InputSizingExpr -> Either String CompiledExpr
-residualCode = cata $ \case
-  BasicFW x               -> BasicEE <$> sequence x
-  StuckFW x               -> StuckEE <$> sequence x
-  AbortFW x               -> AbortEE <$> sequence x
-  DeferredFW (BarrierF x) -> x
-  IndexedFW (IVarF n)     -> pure (inputPath n)
-  IndexedFW AnyF          -> Left "depends on a value it cannot follow"
-  _other                  -> Left "is left unevaluated"
-  where
-    -- position 0 is the input; 2n + 1 and 2n + 2 are n's left and right
-    inputPath :: Integer -> CompiledExpr
-    inputPath = \case
-      0 -> LeftB EnvB
-      n | odd n     -> LeftB (inputPath ((n - 1) `div` 2))
-        | otherwise -> RightB (inputPath ((n - 2) `div` 2))
-
--- |The checks of a sized main that can never fail, so that the compiler
--- may erase them ('Telomare.Machine.eraseChecks'): those 'mayFailChecks'
--- clears over every input, the input-less first call's Zero among them.
--- When deciding is over budget, none.
-neverFailingChecks :: CompiledExpr -> AbortOrigin -> Bool
-neverFailingChecks sized =
-  case mayFailChecks checkDecisionBudget (indexedEE $ IVarF 0) Set.empty sized of
-    Nothing  -> const False
-    Just may -> not . (`Set.member` may)
 
 evalStaticCheck :: Bool -> StaticCheckExpr -> Maybe (AbortOrigin, BasicExpr)
 evalStaticCheck shouldCap t =
