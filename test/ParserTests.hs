@@ -74,21 +74,6 @@ expansionTests = testGroup "Expansion pass"
       case expandDefs defs of
         Left (ListArityMismatch _ 2 3) -> pure ()
         other -> assertFailure $ "expected ListArityMismatch: " <> show other
-  , testCase "UDT declaration whose body is not a list is an ExpansionError" $ do
-      defs <- runTelomareParser parseDefinitions "[T, mk] = \\h -> 0\n"
-      case expandDefs defs of
-        Left (UDTBodyNotList _ "T" _) -> pure ()
-        other -> assertFailure $ "expected UDTBodyNotList: " <> show other
-  , testCase "UDT declaration validates names against body slots" $ do
-      defs <- runTelomareParser parseDefinitions "[T, mk] = \\h -> [0, 1]\n"
-      case expandDefs defs of
-        Left (UDTArityMismatch _ "T" 2 2) -> pure ()
-        other -> assertFailure $ "expected UDTArityMismatch: " <> show other
-  , testCase "UDT with only its validator and no slots is valid" $ do
-      defs <- runTelomareParser parseDefinitions "[T] = \\h -> []\n"
-      case expandDefs defs of
-        Right bindings | any ((== "T") . locatedNameText . fst) bindings -> pure ()
-        other -> assertFailure $ "unexpected empty UDT expansion: " <> show other
   , testCase "repeated literal patterns get distinct lambda binders" $ do
       raw <- runTelomareParser parseExpression "\\0 0 -> 1"
       case expandTerm raw of
@@ -99,9 +84,9 @@ expansionTests = testGroup "Expansion pass"
         other -> assertFailure $ "unexpected pattern lambda expansion: " <> show other
   , testCase "case expansion errors follow pattern-before-body source order" $ do
       raw <- runTelomareParser parseExpression
-        "case 0 of (x : let [T, mk] = \\h -> 0 in T) -> let [a, b] = [1] in x"
+        "case 0 of (x : let [p] = [1, 2] in p) -> let [a, b] = [1] in x"
       case expandTerm raw of
-        Left UDTBodyNotList{} -> pure ()
+        Left (ListArityMismatch _ 1 2) -> pure ()
         other -> assertFailure $ "expected pattern annotation error first: " <> show other
   , testCase "module expansion retains typed import and binding locations" $ do
       raw <- either assertFailure pure $
@@ -123,12 +108,9 @@ expansionTests = testGroup "Expansion pass"
 
 unitTests :: TestTree
 unitTests = testGroup "Unit tests"
-  [ testCase "parse uniqueUP" $ do
-      res <- parseSuccessful parseHash "# (\\x -> x)"
-      res @?= True
     -- Keep structured Megaparsec errors available for LSP ranges while
     -- preserving pretty text for CLI-style diagnostics.
-  , testCase "runParseModuleDetailed exposes parse error offsets for diagnostics" $ do
+  [ testCase "runParseModuleDetailed exposes parse error offsets for diagnostics" $ do
       case runParseModuleDetailed "" "main = if 0 then 1" of
         Left bundle -> do
           errorOffset (NE.head $ bundleErrors bundle) >= 0 @?= True

@@ -56,8 +56,8 @@ instance Show o => Show1 (PatternF o) where
 -- |One top-level or let-level definition exactly as written in the source,
 -- before desugaring. @SingleDefF name annotation body@ is
 -- @name (: check)? = body@, where the annotation's 'LocTag' is captured at
--- the @:@. @ListDefF loc names body@ is @[n1, n2, ...] = body@ (a plain
--- list assignment or a UDT declaration; 'Telomare.Expand' decides which).
+-- the @:@. @ListDefF loc names body@ is the list assignment
+-- @[n1, n2, ...] = body@.
 data DefinitionF f
   = SingleDefF LocatedName (Maybe (LocTag, f)) f
   | ListDefF LocTag [LocatedName] f

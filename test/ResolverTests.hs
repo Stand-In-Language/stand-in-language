@@ -53,28 +53,28 @@ qcProps = testGroup "Property tests (QuickCheck)"
       . QC.forAll genRecursiveLet $ \assignments -> QC.idempotentIOProperty $ do
         let dummymodule = wrapRecursiveBackwardLet assignments
             expectedValue = recursiveLetResult assignments <> "\ndone"
-        result <- testUserDefAdHocTypes dummymodule
+        result <- runDummyModule dummymodule
         pure . QC.counterexample dummymodule $ result === expectedValue
   , QC.testProperty "Check recursive let work forward"
       . withMaxSuccess 16
       . QC.forAll genRecursiveLet $ \assignments -> QC.idempotentIOProperty $ do
         let dummymodule = wrapRecursiveForwardLet assignments
             expectedValue = recursiveLetResult assignments <> "\ndone"
-        result <- testUserDefAdHocTypes dummymodule
+        result <- runDummyModule dummymodule
         pure . QC.counterexample dummymodule $ result === expectedValue
   , QC.testProperty "Check recursive let work"
       . withMaxSuccess 16
       . QC.forAll genRecursiveLet $ \assignments -> QC.forAll genInt $ \shuffleInt -> QC.idempotentIOProperty $ do
         let dummymodule   = wrapRecursiveRandomLet assignments shuffleInt
             expectedValue = recursiveLetResult assignments <> "\ndone"
-        result <- testUserDefAdHocTypes dummymodule
+        result <- runDummyModule dummymodule
         pure . QC.counterexample dummymodule $ result === expectedValue
   , QC.testProperty "Cyclic let backward are stopped to avoid loops"
       . withMaxSuccess 16
       . QC.forAll genRecursiveLetWithCycle $ \assignments -> QC.idempotentIOProperty $ do
         let dummymodule   = wrapRecursiveBackwardLet assignments
             expectedError = "failed: RE (DefinitionCycle"
-        result <- try (testUserDefAdHocTypes dummymodule) :: IO (Either SomeException String)
+        result <- try (runDummyModule dummymodule) :: IO (Either SomeException String)
         pure . QC.counterexample dummymodule $ case result of
           Left err  -> expectedError `isInfixOf` show err
           Right res -> expectedError `isInfixOf` show res
@@ -83,7 +83,7 @@ qcProps = testGroup "Property tests (QuickCheck)"
       . QC.forAll genRecursiveLetWithCycle $ \assignments -> QC.idempotentIOProperty $ do
         let dummymodule = wrapRecursiveForwardLet assignments
             expectedError = "failed: RE (DefinitionCycle"
-        result <- try (testUserDefAdHocTypes dummymodule) :: IO (Either SomeException String)
+        result <- try (runDummyModule dummymodule) :: IO (Either SomeException String)
         pure . QC.counterexample dummymodule $ case result of
           Left err  -> expectedError `isInfixOf` show err
           Right res -> expectedError `isInfixOf` show res
@@ -92,16 +92,10 @@ qcProps = testGroup "Property tests (QuickCheck)"
       . QC.forAll genRecursiveLetWithCycle $ \assignments -> QC.forAll genInt $ \shuffleInt -> QC.idempotentIOProperty $ do
         let dummymodule = wrapRecursiveRandomLet assignments shuffleInt
             expectedError = "failed: RE (DefinitionCycle"
-        result <- try (testUserDefAdHocTypes dummymodule) :: IO (Either SomeException String)
+        result <- try (runDummyModule dummymodule) :: IO (Either SomeException String)
         pure . QC.counterexample dummymodule $ case result of
           Left err  -> expectedError `isInfixOf` show err
           Right res -> expectedError `isInfixOf` show res
-  , QC.testProperty "Arbitrary UnprocessedParsedTerm to test hash uniqueness of HashUP's" $
-      \x' -> withMaxSuccess 16 $
-        containsTHash x' QC.==> checkAllHashes . generateAllHashes $ x'
-  , QC.testProperty "See that generateAllHashes only changes HashUP to ListUP" $
-      \(x' :: Term2) -> withMaxSuccess 16 $
-        containsTHash x' QC.==> onlyHashUPsChanged x'
   , QC.testProperty "Check recursive imports work"
       . withMaxSuccess 16
       . QC.forAll genRecursiveImports $ \modules -> QC.idempotentIOProperty $ do
@@ -224,71 +218,6 @@ aux222 =
   , ("Ghi", "xyz = \"whattt\"")
   ]
 
-containsTHash :: Term2' -> Bool
-containsTHash (_ :< termF) = case termF of
-  ParserTermH (HashF _)            -> True
-  ParserTermH (RecursionF a b c)   -> containsTHash a || containsTHash b || containsTHash c
-  ParserTermH (ITEF a b c)         -> containsTHash a || containsTHash b || containsTHash c
-  ParserTermB (PairSF a b)         -> containsTHash a || containsTHash b
-  ParserTermL (AppF a b)           -> containsTHash a || containsTHash b
-  ParserTermH (CheckF _ a b)       -> containsTHash a || containsTHash b
-  ParserTermL (LamF _ a)           -> containsTHash a
-  ParserTermH (HLeftF a)           -> containsTHash a
-  ParserTermH (HRightF a)          -> containsTHash a
-  ParserTermH (HTraceF a)          -> containsTHash a
-  _                                -> False
-
-onlyHashUPsChanged :: Term2' -> Bool
-onlyHashUPsChanged term2 = all (isHash . fst) diffList where
-  diffList :: [(Term2', Term2')]
-  diffList = diffTerm2 (term2, generateAllHashes term2)
-  isHash :: Term2' -> Bool
-  isHash (_ :< termF) = case termF of
-    ParserTermH (HashF _) -> True
-    _                     -> False
-
-checkAllHashes :: Term2' -> Bool
-checkAllHashes = noDups . allHashesToTerm2
-
-noDups :: [Term2'] -> Bool
-noDups = not . f []
-  where
-    f seen (x:xs) = x `elem` seen || f (x:seen) xs
-    f _seen []    = False
-
-allHashesToTerm2 :: Term2' -> [Term2']
-allHashesToTerm2 term2 =
-  let term2WithoutTHash = generateAllHashes term2
-      interm :: (Term2', Term2') -> [Term2']
-      interm (t1@(_ :< f1), t2@(_ :< f2)) = case (f1, f2) of
-        (ParserTermH (HashF _),  _) -> [t2]
-        (ParserTermH (ITEF a b c), ParserTermH (ITEF a' b' c')) -> interm (a, a') <> interm (b, b') <> interm (c, c')
-        (ParserTermH (RecursionF a b c), ParserTermH (RecursionF a' b' c')) -> interm (a, a') <> interm (b, b') <> interm (c, c')
-        (ParserTermB (PairSF a b), ParserTermB (PairSF a' b')) -> interm (a, a') <> interm (b, b')
-        (ParserTermL (AppF a b), ParserTermL (AppF a' b')) -> interm (a, a') <> interm (b, b')
-        (ParserTermH (CheckF _ a b), ParserTermH (CheckF _ a' b')) -> interm (a, a') <> interm (b, b')
-        (ParserTermL (LamF _ a), ParserTermL (LamF _ a')) -> interm (a, a')
-        (ParserTermH (HLeftF a), ParserTermH (HLeftF a')) -> interm (a, a')
-        (ParserTermH (HRightF a), ParserTermH (HRightF a')) -> interm (a, a')
-        (ParserTermH (HTraceF a), ParserTermH (HTraceF a')) -> interm (a, a')
-        _ | t1 /= t2 -> error "t1 and t2 should be the same (inside of allHashesToTerm2, within interm)"
-        _ -> []
-  in interm (term2, term2WithoutTHash)
-
-diffTerm2 :: (Term2', Term2') -> [(Term2', Term2')]
-diffTerm2 (t1@(_ :< f1), t2@(_ :< f2)) = case (f1, f2) of
-  (ParserTermH (ITEF a b c), ParserTermH (ITEF a' b' c')) -> diffTerm2 (a, a') <> diffTerm2 (b, b') <> diffTerm2 (c, c')
-  (ParserTermH (RecursionF a b c), ParserTermH (RecursionF a' b' c')) -> diffTerm2 (a, a') <> diffTerm2 (b, b') <> diffTerm2 (c, c')
-  (ParserTermB (PairSF a b), ParserTermB (PairSF a' b')) -> diffTerm2 (a, a') <> diffTerm2 (b, b')
-  (ParserTermL (AppF a b), ParserTermL (AppF a' b')) -> diffTerm2 (a, a') <> diffTerm2 (b, b')
-  (ParserTermH (CheckF _ a b), ParserTermH (CheckF _ a' b')) -> diffTerm2 (a, a') <> diffTerm2 (b, b')
-  (ParserTermL (LamF _ a), ParserTermL (LamF _ a')) -> diffTerm2 (a, a')
-  (ParserTermH (HLeftF a), ParserTermH (HLeftF a')) -> diffTerm2 (a, a')
-  (ParserTermH (HRightF a), ParserTermH (HRightF a')) -> diffTerm2 (a, a')
-  (ParserTermH (HTraceF a), ParserTermH (HTraceF a')) -> diffTerm2 (a, a')
-  _ | t1 /= t2 -> [(t1, t2)]
-  _ -> []
-
 -----------------
 ------ Unit Tests
 -----------------
@@ -297,16 +226,16 @@ unitTests :: TestTree
 unitTests = testGroup "Unit tests"
   [ testCase "test recursive backward let" $ do
       let recursiveBackwardLet = wrapRecursiveBackwardLet recursiveLet
-      res <- testUserDefAdHocTypes recursiveBackwardLet
+      res <- runDummyModule recursiveBackwardLet
       res @?= "whattt\ndone"
   , testCase "test recursive forward let" $ do
       let recursiveForwardLet = wrapRecursiveForwardLet recursiveLet
-      res <- testUserDefAdHocTypes recursiveForwardLet
+      res <- runDummyModule recursiveForwardLet
       res @?= "whattt\ndone"
   , testCase "test recursive let" $ do
       shuffleInt <- generate genInt
       let recursiveRandomLet = wrapRecursiveRandomLet recursiveLet shuffleInt
-      res <- testUserDefAdHocTypes recursiveRandomLet
+      res <- runDummyModule recursiveRandomLet
       res @?= "whattt\ndone"
     -- Missing definitions should point at the unresolved variable so CLI
     -- messages and LSP diagnostics can direct users to the real source site.
@@ -373,7 +302,7 @@ unitTests = testGroup "Unit tests"
             , "  in (case 1 of"
             , "        1 -> \"ok\", 0)"
             ]
-      result <- testUserDefAdHocTypes source
+      result <- runDummyModule source
       result @?= "ok\ndone"
   , testCase "missing imported module is a resolver error" $ do
       let a = UnknownLoc
@@ -414,35 +343,21 @@ unitTests = testGroup "Unit tests"
         other -> assertFailure $ "transitive qualified import failed: " <> show other
   , testCase "test backward cycle let" $ do
       let backwardCycleLet = wrapRecursiveBackwardLet cycleLet
-      result <- try ( testUserDefAdHocTypes backwardCycleLet ) :: IO (Either SomeException String)
+      result <- try ( runDummyModule backwardCycleLet ) :: IO (Either SomeException String)
       case result of
         Left err -> trimEnd (removeCallStack (show err)) @?= trimEnd runBackwardCycleLet
         Right res -> trimEnd res @?= trimEnd runBackwardCycleLet
   , testCase "test forward cycle let" $ do
       let forwardCycleLet = wrapRecursiveForwardLet cycleLet
-      result <- try ( testUserDefAdHocTypes forwardCycleLet ) :: IO (Either SomeException String)
+      result <- try ( runDummyModule forwardCycleLet ) :: IO (Either SomeException String)
       case result of
         Left err -> trimEnd (removeCallStack (show err)) @?= trimEnd runForwardCycleLet
         Right res -> trimEnd res @?= trimEnd runForwardCycleLet
-  , testCase "different values get different hashes" $ do
-      let res1 = generateAllHashes <$> runTelomareParser2Term2 parseLet hashtest0
-          res2 = generateAllHashes <$> runTelomareParser2Term2 parseLet hashtest1
-      (res1 == res2) `compare` False @?= EQ
-  , testCase "same functions have the same hash even with different variable names" $ do
-     let res1 = generateAllHashes <$> runTelomareParser2Term2 parseLet hashtest2
-         res2 = generateAllHashes <$> runTelomareParser2Term2 parseLet hashtest3
-     res1 @?= res2
-  , testCase "Ad hoc user defined types success" $ do
-      res <- testUserDefAdHocTypes userDefAdHocTypesSuccess
-      res @?= "\a\ndone"
-  , testCase "Ad hoc user defined types failure" $ do
-      res <- testUserDefAdHocTypes userDefAdHocTypesFailure
-      res @?= "MyInt must not be 0\ndone"
   , testCase "plain top-level list assignment" $ do
-      res <- testUserDefAdHocTypes topLevelListAssignment
+      res <- runDummyModule topLevelListAssignment
       res @?= "right\ndone"
-  , testCase "lowercase lambda list assignment is not a UDT" $ do
-      res <- testUserDefAdHocTypes lambdaListAssignment
+  , testCase "lambda list assignment binds each slot" $ do
+      res <- runDummyModule lambdaListAssignment
       res @?= "kept\ndone"
   , testCase "test tictactoe.tel" $ do
       res <- tictactoe
@@ -559,34 +474,10 @@ fullRunTicTacToeString = init . unlines $
   , "done"
   ]
 
-testUserDefAdHocTypes :: String -> IO String
-testUserDefAdHocTypes input = do
+runDummyModule :: String -> IO String
+runDummyModule input = do
   modules <- modulesWithPrelude "DummyModule" input
   runMain_ modules "DummyModule"
-
-userDefAdHocTypesSuccess :: String
-userDefAdHocTypesSuccess = unlines
-  [ "import Prelude"
-  , "[MyInt, mkMyInt, unMyInt] = \\h ->"
-  , "  [ \\i -> if not (toBool i)"
-  , "          then \"MyInt must not be 0\""
-  , "          else (h, i)"
-  , "  , \\i -> MyInt i"
-  , "  ]"
-  , "main = \\i -> (unMyInt (mkMyInt 8), 0)"
-  ]
-
-userDefAdHocTypesFailure :: String
-userDefAdHocTypesFailure = unlines
-  [ "import Prelude"
-  , "[MyInt, mkMyInt, unMyInt] = \\h ->"
-  , "  [ \\i -> if not (toBool i)"
-  , "          then \"MyInt must not be 0\""
-  , "          else (h, i)"
-  , "  , \\i -> MyInt i"
-  , "  ]"
-  , "main = \\i -> (mkMyInt 0, 0)"
-  ]
 
 topLevelListAssignment :: String
 topLevelListAssignment = unlines
@@ -601,22 +492,6 @@ lambdaListAssignment = unlines
   , "[f, g] = \\x -> [\\y -> x, \\z -> z]"
   , "main = \\i -> (f \"kept\" 0, 0)"
   ]
-
-hashtest0 :: String
-hashtest0 = unlines ["let wrapper = 2",
-                "  in (# wrapper)"]
-
-hashtest1 :: String
-hashtest1 = unlines ["let var = 3",
-                "  in (# var)"]
-hashtest2 :: String
-hashtest2 = unlines [ "let a = \\y -> y"
-               , "in (# a)"
-               ]
-hashtest3 :: String
-hashtest3 = unlines [ "let b = \\x -> x"
-               , "in (# b)"
-               ]
 
 -- |Parse and expand a whole program (definitions ending in @main@),
 -- with extra module bindings in scope. Local successor of the old

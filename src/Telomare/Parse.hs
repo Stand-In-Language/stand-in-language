@@ -206,11 +206,6 @@ parseITE = do
     pure (cond, thenExpr, elseExpr)
   pure $ x :< embedH (ITEF cond thenExpr elseExpr)
 
-parseHash :: TelomareParser ParsedSurfaceTerm
-parseHash = do
-  (x, upt) <- captureSourceSpan $ symbol "#" <* scn *> parseSingleExpr
-  pure $ x :< embedH (HashF upt)
-
 parseListDefinition :: TelomareParser (DefinitionF ParsedSurfaceTerm)
 parseListDefinition = do
   x <- getSourceLoc
@@ -316,8 +311,7 @@ parsePatternAnnotated = parens body <?> "annotated pattern"
 
 -- |Parse an atomic expression.
 parseSingleExpr :: TelomareParser ParsedSurfaceTerm
-parseSingleExpr = choice $ try <$> [ parseHash
-                                   , parseString
+parseSingleExpr = choice $ try <$> [ parseString
                                    , parseNumber
                                    , parsePair
                                    , parseUnsizedRecursion
@@ -363,7 +357,7 @@ parseSameLvl pos parser = do
 
 -- |Parse let expression. Accepts both plain @name = value@ assignments
 -- and list assignments @[n1, n2, ...] = value@. Entries are kept raw;
--- 'Telomare.Expand' expands list assignments and UDT declarations into
+-- 'Telomare.Expand' expands list assignments into
 -- their per-slot bindings.
 parseLet :: TelomareParser ParsedSurfaceTerm
 parseLet = do
@@ -423,8 +417,7 @@ parseImportDecl = do
   pure $ ImportDecl loc moduleName qualifier
 
 -- |A single definition is either a name=value assignment or a list
--- assignment `[n1, n2, …] = expr` (UDTs are a specialized list-assignment
--- convention that 'Telomare.Expand' recognizes during expansion).
+-- assignment `[n1, n2, …] = expr`.
 parseDefinition :: TelomareParser (DefinitionF ParsedSurfaceTerm)
 parseDefinition = parseSingleDefinition <|> parseListDefinition
 

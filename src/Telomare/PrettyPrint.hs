@@ -52,7 +52,6 @@ instance PrettyPrintable1 HighTermF where
       HLeftF x                 -> indentWithOneChild' "L" $ showP x
       HRightF x                -> indentWithOneChild' "R" $ showP x
       HTraceF x                -> indentWithOneChild' "T" $ showP x
-      HashF x                 -> indentWithOneChild' "#" $ showP x
       ChurchF n               -> pure $ "$" <> show n
       RecursionF t r b -> indentWithChildren' "TRB" $ showP <$> [t,r,b]
 
@@ -137,8 +136,6 @@ instance Show MultiLineShowUPT where
                           "  " <> ind x' <> "\n" <>
                           "  " <> ind y <> "\n" <>
                           "  " <> ind z
-        (HashF x') -> "HashUP\n" <>
-                        "  " <> ind x'
         (CheckF _ x' y) -> "CheckUP\n" <>
                           "  " <> ind x' <> "\n" <>
                           "  " <> ind y
@@ -195,7 +192,6 @@ instance Show PrettyUPT where
                                       ", " <> indentSansFirstLine 2 y <>
                                       ", " <> indentSansFirstLine 2 z <>
                                       "}"
-        (HashF x') -> "# " <> indentSansFirstLine 2 x'
         (CheckF _ x' y) -> if length (lines (x' <> y)) > 1
                             then "(" <> indentSansFirstLine 2 y <> " : " <> "\n" <>
                                 "    " <> indentSansFirstLine 4 y <> ")"

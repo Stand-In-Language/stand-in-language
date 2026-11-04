@@ -240,7 +240,7 @@ putOrigin (AbortOrigin kind loc) = putWord8 (kindTag kind) >> putLocTag loc wher
     RefinementAbort -> 0
     UserAbort       -> 1
     CaseAbort       -> 2
-    ValidatorAbort  -> 3
+    -- 3 was the UDT validator abort, retired with UDTs
     SizingAbort     -> 4
     UnknownAbort    -> 5
 
@@ -250,7 +250,6 @@ getOrigin = AbortOrigin <$> (getWord8 >>= kind) <*> getLocTag where
     0 -> pure RefinementAbort
     1 -> pure UserAbort
     2 -> pure CaseAbort
-    3 -> pure ValidatorAbort
     4 -> pure SizingAbort
     5 -> pure UnknownAbort
     n -> fail $ "unknown abort kind " <> show n

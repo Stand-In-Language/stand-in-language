@@ -36,7 +36,6 @@ instance Arbitrary Term1 where
                                  0 -> leaves varList
                                  _x -> oneof
                                    [ leaves varList
-                                   , (UnknownLoc :<) . ParserTermH . HashF <$> recur (i - 1)
                                    , (UnknownLoc :<) . ParserTermH . HLeftF <$> recur (i - 1)
                                    , (UnknownLoc :<) . ParserTermH . HRightF <$> recur (i - 1)
                                    , (UnknownLoc :<) . ParserTermH . HTraceF <$> recur (i - 1)
@@ -50,7 +49,6 @@ instance Arbitrary Term1 where
     _ :< ParserTermB ZeroSF -> []
     anno :< ParserTermH (RecursionF t r b) -> t : r : b : [anno :< ParserTermH (RecursionF nt nr nb) | (nt, nr, nb) <- shrink (t,r,b)]
     _ :< ParserTermL (VarF _) -> []
-    anno :< ParserTermH (HashF x) -> x : fmap ((anno :<) . ParserTermH . HashF) (shrink x)
     anno :< ParserTermH (HLeftF x) -> x : fmap ((anno :<) . ParserTermH . HLeftF) (shrink x)
     anno :< ParserTermH (HRightF x) -> x : fmap ((anno :<) . ParserTermH . HRightF) (shrink x)
     anno :< ParserTermH (HTraceF x) -> x : fmap ((anno :<) . ParserTermH . HTraceF) (shrink x)
@@ -76,7 +74,6 @@ instance Arbitrary Term2 where
     _ :< ParserTermB ZeroSF -> []
     anno :< ParserTermH (RecursionF t r b) -> t : r : b : [anno :< ParserTermH (RecursionF nt nr nb) | (nt, nr, nb) <- shrink (t,r,b)]
     _ :< ParserTermL (VarF _) -> []
-    anno :< ParserTermH (HashF x) -> x : fmap ((anno :<) . ParserTermH . HashF) (shrink x)
     anno :< ParserTermH (HLeftF x) -> x : fmap ((anno :<) . ParserTermH . HLeftF) (shrink x)
     anno :< ParserTermH (HRightF x) -> x : fmap ((anno :<) . ParserTermH . HRightF) (shrink x)
     anno :< ParserTermH (HTraceF x) -> x : fmap ((anno :<) . ParserTermH . HTraceF) (shrink x)

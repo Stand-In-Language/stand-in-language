@@ -222,11 +222,11 @@ test-suite telomare-ic-test
   ghc-options:         -Wall -Wunused-packages -threaded -rtsopts -with-rtsopts=-N
   default-language:    Haskell2010
 
-test-suite telomare-udt-test
+test-suite telomare-prelude-test
   type:                exitcode-stdio-1.0
   hs-source-dirs:      test
-  main-is:             UDTTests.hs
-  other-modules:       NatUDTTests
+  main-is:             PreludeTests.hs
+  other-modules:       RefinementTests
   build-depends:       base
                      , free
                      , megaparsec

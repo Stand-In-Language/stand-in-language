@@ -28,10 +28,8 @@ module Telomare.Expand
 import Control.Comonad.Cofree (Cofree (..))
 import Control.Monad (when, (>=>))
 import Data.Bifunctor (first)
-import Data.Char (isUpper)
 import Data.Fix (Fix (..))
 import Data.Foldable (traverse_)
-import Data.Functor (void)
 import Data.Functor.Foldable (cata, embed, project)
 import Telomare.IR.Base
 import Telomare.IR.Loc
@@ -45,13 +43,6 @@ data ExpansionError
     -- ^ @[a, b] = expr@ where @expr@'s final list literal has a different
     -- number of slots than there are names. Fields: location of the list
     -- assignment, number of names, number of value slots.
-  | UDTBodyNotList LocTag String String
-    -- ^ A UDT declaration whose lambda body does not reduce to a list
-    -- literal. Fields: location, type name, description of the offending
-    -- node.
-  | UDTArityMismatch LocTag String Int Int
-    -- ^ A UDT declaration with a different number of exported names and
-    -- body slots. Fields: location, type name, number of names, body slots.
   | MisplacedPatternAnnotation LocTag
     -- ^ A refinement annotation @(p : T)@ somewhere other than the top of
     -- a lambda parameter, e.g. inside a pair pattern or in a @case@
@@ -65,13 +56,6 @@ renderExpansionError = \case
   ListArityMismatch loc nNames nSlots ->
     "list assignment arity mismatch: " <> show nNames <> " names for "
     <> show nSlots <> " values" <> atLoc loc
-  UDTBodyNotList loc tname desc ->
-    "UDT body for [" <> tname <> "] must reduce to a list literal; got: "
-    <> desc <> atLoc loc
-  UDTArityMismatch loc tname nNames nSlots ->
-    "UDT declaration for [" <> tname <> "] has " <> show nNames
-    <> " names for " <> show nSlots <> " value slots; expected one type name "
-    <> "plus one name per slot" <> atLoc loc
   MisplacedPatternAnnotation loc ->
     "refinement annotations (p : T) are only supported at the top of a "
     <> "lambda parameter" <> atLoc loc
@@ -84,8 +68,6 @@ renderExpansionError = \case
 expansionErrorLoc :: ExpansionError -> Maybe LocTag
 expansionErrorLoc = \case
   ListArityMismatch loc _ _ -> Just loc
-  UDTBodyNotList loc _ _   -> Just loc
-  UDTArityMismatch loc _ _ _ -> Just loc
   MisplacedPatternAnnotation loc -> Just loc
   MissingMain              -> Nothing
 
@@ -181,11 +163,7 @@ expandDef = \case
   SingleDefF name Nothing body -> pure [(name, body)]
   SingleDefF name (Just (annotLoc, typeExpr)) body ->
     pure [(name, annotLoc :< embedH (CheckF RefinementAbort typeExpr body))]
-  ListDefF loc locatedNames body
-    | isUDTAssignment names body -> expandUDTLocated loc locatedNames body
-    | otherwise                  -> expandPlainListAssignment loc locatedNames body
-    where
-      names = locatedNameText <$> locatedNames
+  ListDefF loc locatedNames body -> expandPlainListAssignment loc locatedNames body
 
 -- |Pick lambda-bound names for patterns. Generated names begin with an
 -- underscore, which source identifiers cannot do, and the parameter index
@@ -244,13 +222,6 @@ buildMultiLambda lt patterns body =
                , (embed PatternIgnoreF, abort)
                ]
 
--- TODO rethink this
-isUDTAssignment :: [String] -> ExpandedSurfaceTerm -> Bool
-isUDTAssignment (name:_) (LamP _ _) = case name of
-  firstChar:_ -> isUpper firstChar
-  _           -> False
-isUDTAssignment _ _ = False
-
 expandPlainListAssignment :: LocTag -> [LocatedName] -> ExpandedSurfaceTerm -> Either ExpansionError [(LocatedName, ExpandedSurfaceTerm)]
 expandPlainListAssignment loc locatedNames body =
   case listAssignmentSlots body of
@@ -288,100 +259,3 @@ listAssignmentIntermediate loc = case locStartLineColumn loc of
 accessAt :: LocTag -> Int -> ExpandedSurfaceTerm -> ExpandedSurfaceTerm
 accessAt loc 0 e = loc :< embedH (HLeftF e)
 accessAt loc n e = loc :< embedH (HLeftF (iterate (\x -> loc :< embedH (HRightF x)) e !! n))
-
--- |Expand a UDT declaration into a list of top-level bindings.
---
--- If the UDT body is a lambda @\\h -> ...@ (the canonical UDT idiom),
--- the expansion automatically wraps the core type representation with
--- the hash-tag mechanism (@wrapper (# wrapper)@). The shared core tuple
--- contains only the generated hash, the auto-generated validator, and
--- the first two user slots (constructor/extractor by convention).
--- Remaining slots are hoisted to normal top-level bindings so using a
--- constructor or extractor does not force every operation through sizing.
---
--- > [T, mk, unT, op1, ...] = \\h -> [ mkBody, unTBody, op1Body, ... ]
---
--- becomes (conceptually):
---
--- > __udt_T = wrapper (# wrapper)
--- >   where wrapper = \\h -> let T = validatorFor T h in [h, T, mkBody, unTBody]
--- > __udt_T_hash = left __udt_T
--- > T   = left (right __udt_T)   -- validator, callable as `T x` outside
--- > mk  = left (right (right __udt_T))
--- > unT = left (right (right (right __udt_T)))
--- > op1 = let h = __udt_T_hash; T = validatorFor T h in op1Body
-expandUDTLocated :: LocTag -> [LocatedName] -> ExpandedSurfaceTerm -> Either ExpansionError [(LocatedName, ExpandedSurfaceTerm)]
-expandUDTLocated loc locatedNames body =
-  case names of
-    tname:_ -> expandUDTLocated' loc locatedNames tname body
-    _       -> Right []
-  where
-    names = locatedNameText <$> locatedNames
-
-expandUDTLocated' :: LocTag -> [LocatedName] -> String -> ExpandedSurfaceTerm -> Either ExpansionError [(LocatedName, ExpandedSurfaceTerm)]
-expandUDTLocated' loc locatedNames tname body =
-  case body of
-    (LamP hParam inner) -> do
-      (slots, wrapBody) <- udtSlots loc tname inner
-      let nameCount = length locatedNames
-          slotCount = length slots
-      when (nameCount /= slotCount + 1)
-        (Left $ UDTArityMismatch loc tname nameCount slotCount)
-      let hParamName = locatedNameText hParam
-          (coreSlots, hoistedSlots) = splitAt 2 slots
-          coreNames = take (1 + length coreSlots) locatedNames
-          hoistedNames = drop (1 + length coreSlots) locatedNames
-          validator    = autoValidator loc tname hParamName
-          intermediate = "__udt_" <> tname
-          hashName     = intermediate <> "_hash"
-          hashVar      = loc :< embedL (VarF hashName)
-          coreList     = loc :< ListUPF ((loc :< embedL (VarF hParamName))
-                                      : (loc :< embedL (VarF tname))
-                                      : coreSlots)
-          wrappedInner = loc :< LetUPF [(locatedName loc tname, validator)] (wrapBody coreList)
-          wrapper      = LamP hParam wrappedInner
-          udtTuple     = AppP wrapper (loc :< embedH (HashF wrapper))
-          generated parent name = locatedName (GeneratedLoc name (Just parent)) name
-          hashBinding  = (generated loc hashName, accessAt loc 0 (loc :< embedL (VarF intermediate)))
-          mkAccessorBinding idx name =
-            (name, accessAt loc idx (loc :< embedL (VarF intermediate)))
-          mkHoistedBinding name slot =
-            ( name
-            , loc :< LetUPF [ (locatedName (locatedNameLoc hParam) hParamName, hashVar)
-                            , (locatedName loc tname, validator)
-                            ]
-                (wrapBody slot)
-            )
-          intermediateName = generated loc intermediate
-      pure $ (intermediateName, udtTuple)
-           : hashBinding
-           : zipWith mkAccessorBinding [1 ..] coreNames
-           <> zipWith mkHoistedBinding hoistedNames hoistedSlots
-    _ ->
-      Right $ zipWith (\name idx -> (name, accessAt loc idx body)) locatedNames [0 ..]
-
--- |Find the final list literal in a UDT body and return a wrapper that
--- reapplies any surrounding lets. Hoisted methods get the same let
--- context as the core tuple, but not the sibling method bodies.
-udtSlots :: LocTag -> String -> ExpandedSurfaceTerm -> Either ExpansionError ([ExpandedSurfaceTerm], ExpandedSurfaceTerm -> ExpandedSurfaceTerm)
-udtSlots loc tname = go where
-  go (_l :< ListUPF xs) = Right (xs, id)
-  go (l :< LetUPF binds inner) = do
-    (xs, wrapBody) <- go inner
-    pure (xs, \expr -> l :< LetUPF binds (wrapBody expr))
-  go (_ :< other) = Left $ UDTBodyNotList loc tname (show (void other))
-
--- |Auto-generated validator: @\\v -> if dEqual (left v) <h> then right v else abort \"not <T>\"@.
--- Returns the validated payload on success; aborts on failure.
--- Call it directly (@\\v -> let x = T v in ...@) to unwrap a branded value.
-autoValidator :: LocTag -> String -> String -> ExpandedSurfaceTerm
-autoValidator loc tname hParam =
-  LamP (locatedName (GeneratedLoc "UDT validator" (Just loc)) "__udt_v")
-    (ITEP
-       (AppP
-          (AppP
-             (loc :< embedL (VarF "dEqual"))
-             (loc :< embedH (HLeftF (loc :< embedL (VarF "__udt_v")))))
-          (loc :< embedL (VarF hParam)))
-       (loc :< embedH (HRightF (loc :< embedL (VarF "__udt_v"))))
-        (abortTerm ValidatorAbort loc (loc :< StringUPF ("not " <> tname))))

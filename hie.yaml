@@ -45,8 +45,8 @@ cradle:
     - path: "test/ICTests.hs"
       component: "telomare:test:telomare-ic-test"
 
-    - path: "test/UDTTests.hs"
-      component: "telomare:test:telomare-udt-test"
+    - path: "test/PreludeTests.hs"
+      component: "telomare:test:telomare-prelude-test"
 
-    - path: "test/NatUDTTests.hs"
-      component: "telomare:test:telomare-udt-test"
+    - path: "test/RefinementTests.hs"
+      component: "telomare:test:telomare-prelude-test"

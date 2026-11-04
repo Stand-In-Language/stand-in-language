@@ -154,21 +154,3 @@ gcd = \a b ->
   } (a,b)
 
 lcm = \a b -> dDiv (dTimes a b) (gcd a b)
-
-[Rational, fromRational, toRational, rPlus, rTimes, rMinus, rDiv] = \h ->
-  let rNum = \x -> left (right x)
-      rDen = \x -> right (right x)
-  in [ \n d -> if dEqual d 0
-               then abort "Denominator cannot be zero"
-               else let g = gcd n d
-                    in (h, (dDiv n g, dDiv d g))
-     , Rational
-     , \a b -> fromRational (dPlus (dTimes (rNum a) (rDen b)) (dTimes (rNum b) (rDen a)))
-                            (dTimes (rDen a) (rDen b))
-     , \a b -> fromRational (dTimes (rNum a) (rNum b))
-                            (dTimes (rDen a) (rDen b))
-     , \a b -> fromRational (dMinus (dTimes (rNum a) (rDen b)) (dTimes (rNum b) (rDen a)))
-                            (dTimes (rDen a) (rDen b))
-     , \a b -> fromRational (dTimes (rNum a) (rDen b))
-                            (dTimes (rDen a) (rNum b))
-     ]

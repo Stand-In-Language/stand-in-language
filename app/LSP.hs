@@ -884,10 +884,6 @@ lexTelomare text = concat $ lexLines 0 (zip [0..] (T.lines text))
           | c == '-' && startsWith (== '>') cs =
               emit (Token lineNum col 2 tokKeyword) $ go (col + 2) (drop 1 cs)
 
-          -- Hash syntax for HashUP
-          | c == '#' =
-              emit (Token lineNum col 1 tokOperator) $ go (col + 1) cs
-
           -- Identifiers and keywords
           | identifierStart c =
               let (ident, rest) = spanIdent (c:cs)

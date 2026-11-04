@@ -213,7 +213,6 @@ data AbortKind
   = RefinementAbort -- ^ a refinement check, @x : T@
   | UserAbort       -- ^ a call of @abort@
   | CaseAbort       -- ^ no case alternative (or lambda pattern) matched
-  | ValidatorAbort  -- ^ a generated UDT validator rejected its value
   | SizingAbort     -- ^ produced by the sizing analysis, never by a program
   | UnknownAbort
   deriving (Eq, Ord, Show, Generic)
@@ -250,7 +249,6 @@ renderAbortOrigin (AbortOrigin kind loc) = describe kind <> located where
     RefinementAbort -> "refinement check"
     UserAbort       -> "abort"
     CaseAbort       -> "pattern match"
-    ValidatorAbort  -> "type validator"
     SizingAbort     -> "sizing analysis"
     UnknownAbort    -> "unknown source"
   located = maybe "" (" at " <>) (renderLocTagCompact loc)
@@ -324,7 +322,6 @@ data HighTermF f
   | HLeftF f
   | HRightF f
   | HTraceF f
-  | HashF f -- ^ On ad hoc user defined types, this term will be substitued to a unique Int.
   | ChurchF Int
   | RecursionF f f f
   deriving (Eq, Show, Functor, Foldable, Traversable, Generic1)
@@ -343,7 +340,6 @@ instance Show1 HighTermF where
     HTraceF x -> showString "TraceUPF " . showsPrecFunc 11 x
     CheckF k a b -> showString "CheckUPF " . showsPrec 11 k . showChar ' '
                       . showsPrecFunc 11 a . showChar ' ' . showsPrecFunc 11 b
-    HashF x -> showString "HashUPF " . showsPrecFunc 11 x
 
 -- NOTE placeholder design: these instances let the unannotated *B builder
 -- patterns construct annotated terms, but every node they build gets the

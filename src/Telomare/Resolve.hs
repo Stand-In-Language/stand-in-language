@@ -9,8 +9,7 @@
 -- ('resolveMain'), let bindings become lambda applications with
 -- @TUnsizedRepeaterF@ threaded to recursive references and names are
 -- scope-checked ('letsToApps'), lambdas get de Bruijn indices
--- ('debruijinize'), @HashF@ nodes are folded to constants
--- ('generateAllHashes'), and the result is lowered to core
+-- ('debruijinize'), and the result is lowered to core
 -- ('splitExpr': 'Term2' -> 'Term3'). One 'Term3' serves EAL
 -- certification, sizing and execution alike; sizing depends on the shape
 -- 'letsToApps' produces, as do the regression constants in the sizing
@@ -20,7 +19,6 @@ module Telomare.Resolve where
 import Codec.Binary.UTF8.String (encode)
 import Control.Comonad.Cofree (Cofree (..), unwrap)
 import qualified Control.Comonad.Trans.Cofree as C
-import Control.Lens.Combinators (transform)
 import Control.Monad ((<=<))
 import Control.Monad.Identity (Identity (..))
 import Control.Monad.Reader (MonadReader (ask), runReaderT)
@@ -31,7 +29,6 @@ import Control.Monad.Trans.Reader (local)
 import Control.Monad.Trans.Writer.Strict (WriterT (..), writer)
 import Crypto.Hash (Digest, SHA256, hash)
 import Data.Bifunctor (Bifunctor (first, second))
-import qualified Data.ByteArray as BA
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
 import Data.Char (ord)
@@ -216,7 +213,6 @@ splitExpr t2 = flip State.evalState (toEnum 0, toEnum 0) $
         HTraceF x -> one x id -- TODO add trace back in, or rethink
         ChurchF n -> closed $ i2CB anno n
         RecursionF t r b -> combine3 t r b (unsizedRecursionWrapper anno)
-        HashF _ -> error "Telomare.Resolve.splitExpr: unexpected HashF"
       TUnsizedRepeaterF -> closed $ do
         urt <- State.gets snd
         State.modify (\(fi, _) -> (fi, succ urt))
@@ -340,21 +336,6 @@ letsToApps term =
         f ((a,_c) C.:< x) = a :< x
   in cleanup . runWriterT . cata buildRefs $ annotateUnsizedCount term
 
--- |Process an `Term2` to have all `HashUP` replaced by a unique number.
--- The unique number is constructed by doing a SHA1 hash of the Term2 and
--- adding one for all consecutive HashUP's.
-generateAllHashes :: Term2 -> Term2
-generateAllHashes x@(anno :< _) = transform interm x where
-  hash' :: ByteString -> Digest SHA256
-  hash' = hash
-  term2Hash :: Term2 -> ByteString
-  term2Hash = BS.pack . BA.unpack . hash' . BS.pack . encode . show . (forget :: Cofree (ParserTermF (LamType ()) Int) LocTag -> Fix (ParserTermF (LamType ()) Int))
-  bs2Term2 :: ByteString -> Term2
-  bs2Term2 bs = ints2t anno . drop 24 $ fromInteger . toInteger <$> BS.unpack bs
-  interm :: Term2 -> Term2
-  interm = \case
-    (_anno :< ParserTermH (HashF term1)) -> bs2Term2 . term2Hash $ term1
-    other                  -> other
 
 -- |Process a fully desugared surface term to 'Term3'.
 process :: DesugaredSurfaceTerm -> Either ResolverError Term3
@@ -364,8 +345,7 @@ process = fmap (splitExpr . (\dt -> debugTrace ("Resolver process before split:\
   fg = forget
 
 process2Term2 :: DesugaredSurfaceTerm -> Either ResolverError Term2
-process2Term2 = fmap generateAllHashes
-                  . debruijinize <=< fmap tf . letsToApps
+process2Term2 = debruijinize <=< fmap tf . letsToApps
                   where tf x = debugTrace ("wLet Term1:\n" <> prettyPrint x) x
 
 resolveAllImports :: ExpandedModules -- ^All modules
@@ -502,7 +482,7 @@ makeDM k fi e = DeferMap $ Map.singleton k (fi, e)
 -- because Defer bodies are closed (their only free variable is their own
 -- Env). Nested defers are lifted first, so bodies in the map contain only
 -- references and the map is a DAG. Identical bodies (up to annotations)
--- dedupe to one entry. Hashing mirrors 'generateAllHashes': the hash is
+-- dedupe to one entry: the hash is
 -- taken over the annotation-stripped body.
 deferLift :: Term3 -> (DeferMap, Term3Lifting)
 deferLift = cata hF where

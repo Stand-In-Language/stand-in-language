@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+* User-defined types are removed: the `[T, ctor, …] = \h -> [ … ]` convention,
+  the `#` hash form, the generated validators and their abort kind, and the
+  Prelude's `Rational`. An uppercase list assignment is now an ordinary list
+  assignment. Artifacts keep their abort-kind numbering, with 3 retired. The
+  `telomare-udt-test` suite is now `telomare-prelude-test`.
 * EAL certification now terminates by construction in every phase: each
   DeferRef occurrence instantiates its body once (let-polymorphism over the
   DeferMap DAG) and carries the instance's interface with its tag, so dispatch

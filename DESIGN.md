@@ -126,7 +126,7 @@ answer to C1's demand and may be replaced by a better one.
 - The surface grammar is documented in README.md.
 
 **[decision] No native numeric representation in the core.** There is one atom (`Zero`)
-and one constructor (`Pair`); numbers, lists, strings, booleans, and user-defined types
+and one constructor (`Pair`); numbers, lists, strings, booleans, and every other data type
 are all encodings.
 - Serves: C1.
 - Rationale: one atom and one constructor is the smallest data vocabulary that still
@@ -208,7 +208,7 @@ Stage-by-stage, what each type guarantees (this is H1 applied):
 | stage | output | eliminated by construction |
 |---|---|---|
 | Parse | `ParsedSurfaceTerm` | — (raw sugar present) |
-| Expand | `ExpandedSurfaceTerm` | multi-pattern lambdas, let-sugar, list definitions, UDT sugar |
+| Expand | `ExpandedSurfaceTerm` | multi-pattern lambdas, let-sugar, list definitions |
 | Desugar | `DesugaredSurfaceTerm` | `case` (lowered to nested conditionals), unbound builtins |
 | Resolve | `Term1` → `Term2` → `Term3` | names (de Bruijn), then all lambda-calculus structure |
 | Size | `CompiledExpr` | sizing holes and refinement wrappers — the runnable core |
@@ -221,19 +221,12 @@ the whole ambient env.
   charged only for genuinely duplicated variables. Capturing the whole env would make
   every closure a duplication of everything in scope.
 
-**[decision] UDT identity is a structural hash.** `# expr` hashes the de Bruijn-ized,
-location-stripped subterm (SHA-256, truncated); the UDT expansion applies the type's
-wrapper to the hash *of that wrapper*, and the generated validator checks the tag.
-- Serves: C1, C5.
-- Rationale: nominal typing with no nominal machinery in the core; α-equivalent
-  definitions get equal tags, stable across reformatting. The validator is an abort-
-  based invariant check in the sense of C5.
-
-**[decision] UDT surface convention:** `[T, ctor, …] = \h -> [ … ]` is recognized as a
-UDT definition when the first name is uppercase and the body is a lambda, with exactly
-one more name than body slot (the extra name is the generated validator). This is an
-elaboration-level convention, not parser behavior.
-- Serves: C1 (keeps UDTs out of the core entirely).
+**[direction] Light-weight nominal typing.** Refinement annotations are the
+light-weight structural typing; a nominal counterpart is wanted but not designed.
+An earlier attempt (UDTs: `[T, ctor, …] = \h -> [ … ]`, branded with a structural
+hash of the definition through a `#` form, unwrapped by a generated validator that
+aborted on a wrong tag) was incomplete and was removed in November 2026, along with
+the `#` form and the validator abort kind.
 
 **[open] The certified term is not always the executed term.** One `let`-as-application
 build (`main2Term3`) is certified, sized and run. But a program that certifies only
@@ -667,7 +660,6 @@ the manner of refinement typing. This section records how far the code is from t
 **Where abort appears today.**
 - User aborts: `x : v` refinements and `assert`-style checks lower to `Abort` applied
   to a validator's result (§4).
-- UDT validators: the generated tag check is an abort (§3).
 - Recursion-budget aborts: the approximant chain's bottom link (§4).
 - Unsizeable aborts: sizing's own failure signalling.
 - `Abort` is a core machine form (§2), and every runtime (reference, fast, meter, IC)

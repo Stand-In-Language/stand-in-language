@@ -5,8 +5,7 @@
 
 module Main where
 
-import Data.Ratio
-import NatUDTTests (assertExprWith, evalWithBindings, loadBindings, natUDTTests)
+import RefinementTests (assertExprWith, evalWithBindings, loadBindings, refinementTests)
 
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -17,12 +16,10 @@ main :: IO ()
 main = defaultMain tests
 
 tests :: TestTree
-tests = testGroup "UDT Tests" [ unitTestsNatArithmetic
-                              , unitTestsRatArithmetic
-                              , qcPropsNatArithmetic
-                              , qcPropsRatArithmetic
-                              , natUDTTests
-                              ]
+tests = testGroup "Prelude Tests" [ unitTestsNatArithmetic
+                                 , qcPropsNatArithmetic
+                                 , refinementTests
+                                 ]
 
 -- |Evaluate @expr@ in the scope of @Prelude.tel@ alone.
 evalExprString :: String -> IO (Either String String)
@@ -32,9 +29,6 @@ evalExprString input = do
 
 assertExpr :: String -> String -> Assertion
 assertExpr = assertExprWith evalExprString
-
-rationalToString :: Ratio Integer -> String
-rationalToString r = "(" <> show (numerator r) <> "," <> show (denominator r) <> ")"
 
 genInt :: Gen Int
 genInt = choose (0, 100)
@@ -69,23 +63,6 @@ unitTestsNatArithmetic = testGroup "Unit tests on natural arithmetic expresions"
   , testCase "test exponentiation with zero exponent" $ assertExpr "dPow 5 0" "1"
   , testCase "test raise zero to the zero power" $ assertExpr "dPow 0 0" "1"
   , testCase "test factorial" $ assertExpr "dFactorial 5" (show (product [1..5] :: Integer))
-  ]
-
-unitTestsRatArithmetic :: TestTree
-unitTestsRatArithmetic = testGroup "Unit tests on rational arithmetic expresions"
-  [ testCase "test addition" $ do
-      let expected = rationalToString (1 % 2 + 1 % 2)
-      assertExpr "right (rPlus (fromRational 1 2) (fromRational 1 2))" expected
-  , testCase "test subtraction" $ do
-      let expected = rationalToString (1 % 2 - 1 % 2)
-      assertExpr "right (rMinus (fromRational 1 2) (fromRational 1 2))" expected
-  , testCase "test multiplication" $ do
-      let expected = rationalToString ((1 % 2) * (1 % 2))
-      assertExpr "right (rTimes (fromRational 1 2) (fromRational 1 2))" expected
-  , testCase "test division" $ do
-      let expected = rationalToString ((1 % 2) / (1 % 2))
-      assertExpr "right (rDiv (fromRational 1 2) (fromRational 1 2))" expected
-  , testCase "test division by zero" $ assertExpr "rDiv (fromRational 1 2) (fromRational 0 1)" "abort:"
   ]
 
 ---------------------
@@ -154,5 +131,3 @@ qcPropsNatArithmetic = testGroup "Property tests on natural arithmetic expressio
           Right val -> val === show x
   ]
 
-qcPropsRatArithmetic :: TestTree
-qcPropsRatArithmetic = testGroup "Property tests on rational arithmetic expressions (QuickCheck)" []
