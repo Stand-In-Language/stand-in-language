@@ -5,7 +5,8 @@
 
 module Main where
 
-import RefinementTests (assertExprWith, evalWithBindings, loadBindings, refinementTests)
+import RefinementTests (assertExprWith, evalWithBindings, loadBindings,
+                        refinementTests)
 
 import Test.Tasty
 import Test.Tasty.HUnit
