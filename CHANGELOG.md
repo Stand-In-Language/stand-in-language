@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+* Refinements and case guards share one meaning: `(p : P)` holds where `P`
+  gives anything but Zero. A failing guard in a `case` falls through to the next
+  alternative; a failing definition or lambda parameter refinement aborts with
+  `(1, value)`. Annotations are allowed anywhere in a pattern. Validators move
+  to the new polarity: `assert` and `userAbort` are gone from the Prelude, and
+  `Bool` is a predicate. Patterns may not bind a name twice, and a guard may not
+  mention a name its own pattern binds.
 * User-defined types are removed: the `[T, ctor, …] = \h -> [ … ]` convention,
   the `#` hash form, the generated validators and their abort kind, and the
   Prelude's `Rational`. An uppercase list assignment is now an ordinary list

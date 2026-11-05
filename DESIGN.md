@@ -272,18 +272,36 @@ paths becomes the site's count. A program whose counts cannot be found does not 
 **[decision] Sizing failures split into exactly two kinds because the advice differs:**
 `FuelExhausted` (the unrolling budget — default 65536 — was too small; raising it may
 help) and `UnboundedInput` (no budget can help; the fix is to bound the input with a
-refinement or `assert` before recursing). Errors name the recursion site and which kind
+refinement before recursing). Errors name the recursion site and which kind
 occurred.
 - Serves: C2 (usability of the totality discipline).
 
 **[decision] Unbounded input is tamed at the boundary by refinements.** `x : v`
-annotations are checks (`v` applied to the value; a pair result aborts with that
-message), and the sizing pass additionally *reads* refinements on the input to learn
+annotations are checks (`v` applied to the value; Zero fails, aborting with the value),
+and the sizing pass additionally *reads* refinements on the input to learn
 which input paths are bounded. This is the idiom that makes interactive programs
 (tictactoe) sizeable.
 - Serves: C2, C5.
 - Rationale: this is the C5 mechanism doing its intended job — an abort-based
   invariant that the static pipeline can consume.
+
+**[decision] Refinements and guards are one construct: a predicate on a pattern.**
+`(p : P)` holds where `P` applied to what `p` matches gives anything but Zero. In a
+`case` alternative a failing predicate falls through to the next alternative; a
+definition refinement `x : P = e` and a lambda parameter refinement are matches with
+no alternative to fall to, so they abort. Every program abort is then a match with
+nothing left, `abort msg` included (a check of `msg` whose predicate never holds), and
+a failing check aborts with `(1, value)`: the value that failed it, or the message.
+- Serves: C1, C5.
+- Rationale: one meaning for `:` everywhere, predicates that read the way `if` does,
+  and every abort an exhaustiveness obligation for the check analysis to discharge.
+  Nonzero rather than exactly 1 passes because checking that a predicate returned a
+  proper Bool would itself be a refinement, and so on.
+- Alternatives: the earlier validator convention (Zero passes, anything else is the
+  failure message) gave hand-written messages but read backwards in a guard.
+- A pattern may not bind a name twice, and a guard may not mention a name its own
+  pattern binds: guards run before the pattern binds, and both rules keep room for
+  deciding sibling scoping (and equality patterns) later.
 
 **[decision] One sizing oracle per recursion *use site*.** Each syntactic use of a
 recursive binding gets its own token, so the same function sizes independently at each
@@ -658,8 +676,8 @@ C5 says what abort is *for*: stating invariants that can be validated statically
 the manner of refinement typing. This section records how far the code is from that.
 
 **Where abort appears today.**
-- User aborts: `x : v` refinements and `assert`-style checks lower to `Abort` applied
-  to a validator's result (§4).
+- Refinement checks: `x : v` refinements, lambda parameter refinements, failed
+  matches and `abort` all lower to a check, which aborts with `(1, value)` (§4).
 - Recursion-budget aborts: the approximant chain's bottom link (§4).
 - Unsizeable aborts: sizing's own failure signalling.
 - `Abort` is a core machine form (§2), and every runtime (reference, fast, meter, IC)
@@ -741,7 +759,7 @@ Collected here so contributors see it in one place.
    should grow toward soundness or stay a cheap heuristic is open.
 9. **Guidance for data** — hash-keyed layouts cannot help discarded data values (§7);
    would need branch-shape guidance.
-10. **`main` input validation** relies on the refinement idiom (`truncate`, validators)
+10. **`main` input validation** relies on the refinement idiom (`truncate`, predicates)
     by convention; there is no enforced boundary discipline. Under C5 this is the
     intended mechanism, but nothing makes it mandatory.
 11. **When does the transitional multi-runtime arrangement end?** (§6, C4). No

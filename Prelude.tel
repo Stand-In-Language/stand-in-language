@@ -1,14 +1,12 @@
 id = \x -> x
 
-userAbort = \x -> (1,x)
-
+-- a refinement predicate: anything but Zero means the value is a Bool,
+-- Zero or (0, 0)
 Bool = \vv -> if vv
               then if (left vv)
-                   then userAbort "Bool cannot have non-zero val in left of pair"
-                   else if (right vv)
-                        then userAbort "Bool cannot have non-zero val in right of pair"
-                        else 0
-              else 0
+                   then 0
+                   else if (right vv) then 0 else 1
+              else 1
 
 toBool = \b -> if b then 1 else 0
 
@@ -123,8 +121,6 @@ quicksort = { \l -> right l
             }
 
 -- abort is a builtin, so each call can report where it was made
-
-assert = \t s -> if not t then (1, s) else 0
 
 -- useful for making sure main input isn't unbounded
 truncate = \n ->

@@ -95,25 +95,23 @@ assertStaticCheckError input msgFragment = do
         <> "' but evaluation succeeded with: " <> val
 
 refinementTests :: TestTree
-refinementTests = testGroup "Refinement annotations and list assignments"
+refinementTests = testGroup "Refinement annotations, guards and list assignments"
   [ testCase "plain list assignment works inside let" $
       assertEvalEquals
         "let [a, b, c] = [1, 2, 3] in b"
         "2"
-  -- Refinement annotations, both @x : validator = value@ and lambda
-  -- parameters @\(x : validator) -> ...@, lower to @CheckUPF@. The
-  -- compiler's static refinement pass runs that validator symbolically
-  -- and rejects values that can be proven to abort.
-  , testCase "plain refinement annotations use static CheckUPF" $
+  -- An annotation @(p : P)@ is a predicate on what @p@ matches: anything
+  -- but Zero passes. In a definition or at the top of a lambda parameter
+  -- it is a refinement, a match with no alternative to fall to, which the
+  -- static checks reject when they can prove it fails.
+  , testCase "a definition refinement that fails is rejected statically" $
       assertStaticCheckError
-        ( "let x : (\\v -> assert (not v) "
-          <> "\"plain refinement uses CheckUPF\") = 1 in x" )
-        "plain refinement uses CheckUPF"
-  , testCase "lambda parameter refinements use static CheckUPF" $
+        "let x : (\\v -> not v) = 1 in x"
+        "check failed on 1"
+  , testCase "a lambda parameter refinement that fails is rejected statically" $
       assertStaticCheckError
-        ( "(\\(x : \\v -> assert (not v) "
-          <> "\"lambda refinement uses CheckUPF\") -> x) 1" )
-        "lambda refinement uses CheckUPF"
+        "(\\(x : \\v -> not v) -> x) 1"
+        "check failed on 1"
   , testCase "lambda parameter refinements bind the checked value" $
       assertEvalEquals
         "(\\(x : Bool) y (z : Bool) -> if x then y else z) 1 7 0"
@@ -121,9 +119,35 @@ refinementTests = testGroup "Refinement annotations and list assignments"
   , testCase "lambda refinements reject values statically" $
       assertStaticCheckError
         "(\\(x : Bool) -> x) 2"
-        "user abort: Bool cannot have non-zero val in left of pair"
+        "check failed on 2"
   , testCase "refined lambda parameters can still be destructured" $
       assertEvalEquals
-        "(\\((a, b) : \\v -> 0) -> b) (1, 2)"
+        "(\\((a, b) : \\v -> 1) -> b) (1, 2)"
         "2"
+  -- In a case alternative the same annotation is a guard: where it fails,
+  -- matching goes on to the next alternative.
+  , testCase "a case guard that holds selects its alternative" $
+      assertEvalEquals
+        "case 3 of\n  (x : \\v -> dEqual v 3) -> 30\n  _ -> 40"
+        "30"
+  , testCase "a case guard that fails falls through" $
+      assertEvalEquals
+        "case 4 of\n  (x : \\v -> dEqual v 3) -> 30\n  _ -> 40"
+        "40"
+  , testCase "a guard nested in a pair pattern runs on its part" $
+      assertEvalEquals
+        "case (1, 5) of\n  (a, (b : \\v -> dEqual v 4)) -> b\n  (a, b) -> a"
+        "1"
+  , testCase "a guard bound variable gets the matched value" $
+      assertEvalEquals
+        "case (1, 4) of\n  (a, (b : \\v -> dEqual v 4)) -> b\n  (a, b) -> a"
+        "4"
+  , testCase "a case whose guards all fail aborts" $
+      assertStaticCheckError
+        "case 4 of\n  (x : \\v -> dEqual v 3) -> \"three\""
+        "Non-exhaustive patterns in case"
+  , testCase "a guard nested in a lambda parameter aborts as a mismatch" $
+      assertStaticCheckError
+        "(\\((a : Bool), b) -> b) (2, 3)"
+        "lambda argument does not match its pattern"
   ]

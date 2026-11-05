@@ -51,16 +51,27 @@ expansionTests = testGroup "Expansion pass"
           | locatedNameText name == "v" ->
           bound @?= locatedNameText binder
         other -> assertFailure $ "unexpected expansion: " <> show other
-  , testCase "annotation nested inside a lambda pair pattern is an ExpansionError" $ do
-      raw <- runTelomareParser parseLongExpr "\\((a : Bool), b) -> a"
+  , testCase "annotations are accepted anywhere in a pattern" $ do
+      raw <- runTelomareParser parseLongExpr
+        "\\((a : Bool), b) -> case b of\n  (x, (y : Bool)) -> y\n  _ -> a\n"
       case expandTerm raw of
-        Left (MisplacedPatternAnnotation _) -> pure ()
-        other -> assertFailure $ "expected MisplacedPatternAnnotation: " <> show other
-  , testCase "annotation in a case alternative is an ExpansionError" $ do
-      raw <- runTelomareParser parseLongExpr "case 0 of\n  (x : Bool) -> x\n"
+        Right _ -> pure ()
+        Left err -> assertFailure $ "unexpected expansion error: " <> renderExpansionError err
+  , testCase "a pattern binding a name twice is an ExpansionError" $ do
+      raw <- runTelomareParser parseLongExpr "case 0 of\n  (x, x) -> x\n"
       case expandTerm raw of
-        Left (MisplacedPatternAnnotation _) -> pure ()
-        other -> assertFailure $ "expected MisplacedPatternAnnotation: " <> show other
+        Left (DuplicatePatternVariable _ "x") -> pure ()
+        other -> assertFailure $ "expected DuplicatePatternVariable: " <> show other
+  , testCase "a guard mentioning its own pattern's names is an ExpansionError" $ do
+      raw <- runTelomareParser parseLongExpr "case 0 of\n  (x, (y : \\v -> x)) -> y\n"
+      case expandTerm raw of
+        Left (GuardUsesOwnBinder _ "x") -> pure ()
+        other -> assertFailure $ "expected GuardUsesOwnBinder: " <> show other
+  , testCase "a guard may bind and use its own names" $ do
+      raw <- runTelomareParser parseLongExpr "case 0 of\n  (y : \\y -> let x = y in x) -> y\n"
+      case expandTerm raw of
+        Right _ -> pure ()
+        Left err -> assertFailure $ "unexpected expansion error: " <> renderExpansionError err
   , testCase "refinement annotation folds into CheckF" $ do
       defs <- runTelomareParser parseDefinitions "main : T = 0\n"
       case expandDefs defs of

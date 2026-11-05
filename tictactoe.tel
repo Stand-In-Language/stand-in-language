@@ -33,11 +33,11 @@ fullBoard
 
 emptyBoard = [0,0,0,0,0,0,0,0,0]
 
--- validInput = \x -> assert (and x (and (not (right x)) (not ($127 left x)))) "invalid input"
--- validInput = \x -> assert (not ($127 left x)) "invalid input"
-validInput = \x -> assert (and (not (toBool ($127 left x))) (not (toBool (right x)))) "invalid input"
-validPlayer = \x -> assert (not (toBool ($3 left x))) "invalid player state"
-validBoard = \x -> assert (not (toBool ($9 right x))) "invalid board state"
+-- validInput = \x -> and x (and (not (right x)) (not ($127 left x)))
+-- validInput = \x -> not ($127 left x)
+validInput = \x -> and (not (toBool ($127 left x))) (not (toBool (right x)))
+validPlayer = \x -> not (toBool ($3 left x))
+validBoard = \x -> not (toBool ($9 right x))
 
 processInput
  = \string -> let num = dMinus (left string) (left "0")

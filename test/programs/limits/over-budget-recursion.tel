@@ -17,8 +17,8 @@ import Prelude
 -- WORKAROUND: bound the recursion more tightly, so it needs fewer levels --
 --   see the commented refinement below, which peels 3 layers instead of 33.
 
-valid = \x -> assert (not ($33 left x)) "input too large"
--- WORKAROUND (sizes within a small budget): -- valid = \x -> assert (not ($3 left x)) "input too large"
+valid = \x -> not ($33 left x)
+-- WORKAROUND (sizes within a small budget): -- valid = \x -> not ($3 left x)
 
 countDown = { \i -> i
             , \recur i -> recur (left i)

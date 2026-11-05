@@ -31,9 +31,11 @@ data PatternNode
   | IntNode Int
   | StringNode String
   | VarNode LocatedName
+  | GuardNode ExpandedSurfaceTerm -- ^ The predicate must hold of the term here
 
--- |Every pair, literal and variable of a pattern, in left-to-right
--- preorder, with the path to it from the root.
+-- |Every pair, literal, variable and guard of a pattern, in left-to-right
+-- preorder, with the path to it from the root. A guard comes after the
+-- nodes of the pattern it annotates.
 -- e.g. PatternPair (PatternVar "x") (PatternPair (PatternInt 0) PatternIgnore)
 --      will return [(id, PairNode), (HLeft, VarNode "x"), (HRight, PairNode), (HLeft . HRight, IntNode 0)]
 patternNodes :: PatternA -> [(Path, PatternNode)]
@@ -44,7 +46,7 @@ patternNodes = cata alg where
     PatternStringF str    -> [(id, StringNode str)]
     PatternVarF name      -> [(id, VarNode name)]
     PatternIgnoreF        -> []
-    PatternAnnotatedF x _ -> x
+    PatternAnnotatedF x (AnnotatedEST g) -> x <> [(id, GuardNode g)]
 
 -- |Realize a pattern's literal skeleton as a term, with variables and
 -- ignores as zeroes. Polymorphic in the case witness and pattern parameter
@@ -89,16 +91,20 @@ caseToNestedIfs caseLoc scrutinee@(anno :< _) alternatives = case scrutinee of
         checks -> ITEP (allOf resultAnno checks) bound next
 
 -- |Bool-valued checks that the term has the pattern's pair structure and
--- literals. Pair nodes are arbitrary values, so each is coerced to a Bool
+-- literals, and that its guards hold. Pair nodes and guard results are
+-- arbitrary values, so each is coerced to a Bool
 -- before it reaches @and@, whose arguments are refined to Bool. Integers are
 -- compared with @dEqual@ and strings, whole, with @listEqual@.
 matchChecks :: LocTag -> DesugaredSurfaceTerm -> [(Path, PatternNode)] -> [DesugaredSurfaceTerm]
 matchChecks anno x = concatMap check where
   check (path, node) = case node of
-    PairNode       -> [ITEP (path x) (anno :< IntUPF 1) (anno :< IntUPF 0)]
+    PairNode       -> [truthy (path x)]
     IntNode i      -> [equal "__case_dEqual" (path x) (anno :< IntUPF i)]
     StringNode str -> [equal "__case_listEqual" (path x) (anno :< StringUPF str)]
     VarNode _      -> []
+    GuardNode g    -> [truthy (AppP (lowerCases g) (path x))]
+  truthy :: DesugaredSurfaceTerm -> DesugaredSurfaceTerm
+  truthy t = ITEP t (anno :< IntUPF 1) (anno :< IntUPF 0)
   equal :: String -> DesugaredSurfaceTerm -> DesugaredSurfaceTerm -> DesugaredSurfaceTerm
   equal helper a = AppP (AppP (VarP helper) a)
 

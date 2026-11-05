@@ -455,9 +455,19 @@ firedAbort = para $ \case
 
 -- | An abort's message together with what raised it.
 describeAbort :: AbortOrigin -> BasicExpr -> String
-describeAbort o m = convertAbortMessage m <> case abortKind o of
+describeAbort o m = message <> case abortKind o of
   UnknownAbort -> ""
   _known       -> " (from " <> renderAbortOrigin o <> ")"
+  where
+    -- a failing check aborts with the value that failed it
+    message = case (abortKind o, m) of
+      (RefinementAbort, AbortUser v) -> "check failed on " <> renderValue v
+      _                              -> convertAbortMessage m
+    renderValue :: BasicExpr -> String
+    renderValue v = case (b2i v, b2s v) of
+      (Just i, _)        -> show i
+      (_, Just s)        -> show s
+      (Nothing, Nothing) -> show v
 
 class CarryAnno g where
   type CarryWrap g :: Type -> Type

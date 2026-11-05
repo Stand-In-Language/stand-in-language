@@ -519,7 +519,7 @@ term3ToFast owners = cata go
         Right . FUnbounded $ RecursionSite tok anno (locKey anno >>= (`Map.lookup` owners))
       Term3CheckingWrapper o tc c -> checkingWrapper o <$> tc <*> c
 
-    -- @let r = tc c in (if r then abort r else id) c@, the shape
+    -- @let r = tc c in (if r then id else abort (1, c)) c@, the shape
     -- 'Telomare.Machine.refinementCheckB' gives a sized program: the outer
     -- defer computes @r@ once and hands @(r, c)@ to the gate.
     checkingWrapper o tc c = FSetEnv (FPair performTC (FPair tc c))
@@ -528,7 +528,7 @@ term3ToFast owners = cata go
         innerTC = app (FLeft FEnv) (FRight FEnv)
         gate = FSetEnv (FPair pick (FRight FEnv))
         pick = FSetEnv (FPair (FSetEnv (FPair FGate (FLeft FEnv)))
-                              (FPair (FDefer FEnv) (FAbort o (FLeft FEnv))))
+                              (FPair (FAbort o (FPair (FPair FZero FZero) (FRight FEnv))) (FDefer FEnv)))
 
 -- |A source position, used to attribute a recursion site to the definition it
 -- was written in.

@@ -3,7 +3,7 @@ isEven = \n -> { \i -> left i
                , \i -> right i
                } (n, 1)
 
-validAscii = \x -> assert (not (toBool ($127 left x))) "invalid character"
+validAscii = \x -> not (toBool ($127 left x))
 
 main = \input -> let userInput = left input
                      firstChar = left userInput

@@ -26,11 +26,13 @@ module Telomare.Expand
   ) where
 
 import Control.Comonad.Cofree (Cofree (..))
-import Control.Monad (when, (>=>))
+import Control.Monad ((>=>))
 import Data.Bifunctor (first)
 import Data.Fix (Fix (..))
 import Data.Foldable (traverse_)
 import Data.Functor.Foldable (cata, embed, project)
+import Data.Set (Set)
+import qualified Data.Set as Set
 import Telomare.IR.Base
 import Telomare.IR.Loc
 import Telomare.IR.Surface
@@ -43,10 +45,12 @@ data ExpansionError
     -- ^ @[a, b] = expr@ where @expr@'s final list literal has a different
     -- number of slots than there are names. Fields: location of the list
     -- assignment, number of names, number of value slots.
-  | MisplacedPatternAnnotation LocTag
-    -- ^ A refinement annotation @(p : T)@ somewhere other than the top of
-    -- a lambda parameter, e.g. inside a pair pattern or in a @case@
-    -- alternative. Field: location of the enclosing lambda or case.
+  | DuplicatePatternVariable LocTag String
+    -- ^ A pattern binds the same name twice. Fields: location of the
+    -- enclosing lambda or case, the name.
+  | GuardUsesOwnBinder LocTag String
+    -- ^ A guard @(p : T)@ mentions a name its own pattern binds. Fields:
+    -- location of the enclosing lambda or case, the name.
   | MissingMain
     -- ^ 'wrapMain' found no @main@ among the top-level definitions.
   deriving (Eq, Show)
@@ -56,9 +60,10 @@ renderExpansionError = \case
   ListArityMismatch loc nNames nSlots ->
     "list assignment arity mismatch: " <> show nNames <> " names for "
     <> show nSlots <> " values" <> atLoc loc
-  MisplacedPatternAnnotation loc ->
-    "refinement annotations (p : T) are only supported at the top of a "
-    <> "lambda parameter" <> atLoc loc
+  DuplicatePatternVariable loc name ->
+    "pattern binds " <> name <> " more than once" <> atLoc loc
+  GuardUsesOwnBinder loc name ->
+    "a guard mentions " <> name <> ", which its own pattern binds" <> atLoc loc
   MissingMain -> "missing 'main' definition"
   where
     atLoc loc = maybe "" (" at " <>) (renderLocTag loc)
@@ -68,7 +73,8 @@ renderExpansionError = \case
 expansionErrorLoc :: ExpansionError -> Maybe LocTag
 expansionErrorLoc = \case
   ListArityMismatch loc _ _ -> Just loc
-  MisplacedPatternAnnotation loc -> Just loc
+  DuplicatePatternVariable loc _ -> Just loc
+  GuardUsesOwnBinder loc _ -> Just loc
   MissingMain              -> Nothing
 
 -- |Remove the sugar fragment, bottom-up. This is the type change that
@@ -78,7 +84,7 @@ expandTerm :: ParsedSurfaceTerm -> Either ExpansionError ExpandedSurfaceTerm
 expandTerm (loc :< term) = case term of
   ParsedTermSugar (LamPatF pats body) -> do
     pats' <- traverse (traverse expandPattern) pats
-    traverse_ checkLambdaPattern pats'
+    traverse_ (uncurry checkPattern) pats'
     body' <- expandTerm body
     pure $ buildMultiLambda loc pats' body'
   ParsedTermSugar (LetSugarF defs body) -> do
@@ -95,24 +101,34 @@ expandTerm (loc :< term) = case term of
   where
     expandAlternative (pattern', body) = do
       pattern'' <- expandPattern pattern'
-      checkPlainPattern loc pattern''
+      checkPattern loc pattern''
       (pattern'',) <$> expandTerm body
 
--- |A lambda parameter may be wrapped in refinement annotations, but the
--- pattern underneath must be plain: 'buildMultiLambda' only lowers
--- annotations at the top, and 'Telomare.Desugar' would drop any others.
-checkLambdaPattern :: (LocTag, PatternA) -> Either ExpansionError ()
-checkLambdaPattern (loc, p) = case project p of
-  PatternAnnotatedF inner _ -> checkLambdaPattern (loc, inner)
-  _                         -> checkPlainPattern loc p
-
--- |Reject a pattern that contains a refinement annotation anywhere.
-checkPlainPattern :: LocTag -> PatternA -> Either ExpansionError ()
-checkPlainPattern loc p = when (hasAnnotation p) . Left $ MisplacedPatternAnnotation loc
+-- |What a pattern may not do while the scoping of its guards is undecided:
+-- bind one name twice (which might later mean equality), or mention in a
+-- guard a name the same pattern binds (a guard runs before the pattern's
+-- variables are bound, so the name would silently mean an outer one).
+checkPattern :: LocTag -> PatternA -> Either ExpansionError ()
+checkPattern loc p = do
+  traverse_ (Left . DuplicatePatternVariable loc) (duplicates binders)
+  traverse_ (Left . GuardUsesOwnBinder loc)
+    [ n | g <- guards p, n <- Set.toList (freeVars g), n `elem` binders ]
   where
-    hasAnnotation = cata $ \case
-      PatternAnnotatedF _ _ -> True
-      other                 -> or other
+    binders = locatedNameText <$> patternBinders p
+    duplicates = \case
+      []     -> []
+      n : ns -> [n | n `elem` ns] <> duplicates (filter (/= n) ns)
+    guards = cata $ \case
+      PatternAnnotatedF inner (AnnotatedEST g) -> inner <> [g]
+      other                                    -> concat other
+
+-- |The names a term uses without binding them.
+freeVars :: ExpandedSurfaceTerm -> Set String
+freeVars (_ :< t) = case t of
+  UnprocessedParsedTermL (VarF name) -> Set.singleton name
+  other -> foldMapScoped
+    (\bound sub -> freeVars sub `Set.difference` Set.fromList (locatedNameText <$> bound))
+    other
 
 -- |Patterns carry embedded terms in their annotations (@(v : T)@), which
 -- the parser leaves raw too.
@@ -189,8 +205,9 @@ lambdaVarNames = zipWith nameFor [0 :: Int ..]
 --
 -- A refinement annotation @(p : T)@ binds the checked value, so
 -- @\\(x : T) -> body@ becomes @\\v -> let x = CheckF T v in body@, the same
--- as writing @let x : T = v in body@. 'checkLambdaPattern' guarantees
--- annotations only occur at the top of a parameter.
+-- as writing @let x : T = v in body@. Annotations further in are guards of
+-- the parameter's destructuring case, whose fallback aborts, so a lambda
+-- parameter's guard that fails aborts as a refinement does.
 --
 -- This avoids putting a function-valued lambda inside a case body, which
 -- would cause the case-rewrite to type-mismatch against the (Pair-typed)
@@ -204,7 +221,7 @@ buildMultiLambda lt patterns body =
   where
     applyDestructure ((loc, p), varName) inner =
       let bound = lt :< embedL (VarF varName)
-          abort = abortTerm CaseAbort loc (loc :< StringUPF "buildMultiLambda: pattern not reached")
+          abort = abortTerm CaseAbort loc (loc :< StringUPF "lambda argument does not match its pattern")
       in case project p of
            PatternVarF _ -> inner
            PatternAnnotatedF innerPat (AnnotatedEST typeExpr) ->

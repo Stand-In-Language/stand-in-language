@@ -8,7 +8,7 @@ import Prelude
 -- OBSERVED: could not size recursion #0 at unbounded-input-recursion:27:34:
 --   its test depends on input that nothing bounds, so no finite iteration
 --   count can be proven for it. Constrain that input with a refinement
---   (`x : someValidator`) or an `assert` before recursing on it.
+--   (`x : somePredicate`) before recursing on it.
 -- WORKAROUND: bound the input first, with a refinement on the `let` binding.
 --   `valid` asserts the character is under 33, which tells the sizing pass the
 --   recursion can peel at most 33 layers -- see the commented lines below.
@@ -19,7 +19,7 @@ countDown = { \i -> i
             }
 
 -- WORKAROUND (compiles): refine the input before recursing on it.
--- valid = \x -> assert (not ($33 left x)) "input too large"
+-- valid = \x -> not ($33 left x)
 
 main = \input -> let userInput = left input
                      firstChar = left userInput

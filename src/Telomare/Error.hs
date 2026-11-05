@@ -149,7 +149,7 @@ renderSizingFailure failure = case sizingFailureKind failure of
     "could not size " <> renderSizingSite failure <> ":\n"
       <> "  its test depends on input that nothing bounds, so no finite iteration\n"
       <> "  count can be proven for it. Constrain that input with a refinement\n"
-      <> "  (`x : someValidator`) or an `assert` before recursing on it."
+      <> "  (`x : somePredicate`) before recursing on it."
 
 data EvalError = RTE RunTimeError
     | CertificationError EALError

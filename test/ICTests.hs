@@ -453,10 +453,10 @@ main = do
         , expectTest "an abort under a defer has not fired"
             (d 7 (AbortB userO (p z z))) (Right (d 7 (AbortB userO (p z z))))
         , expectTest "a passing refinement check yields its value"
-            (refinementCheckB userO (p (d 31 z) z) (p z z)) (Right (p z z))
-        , expectTest "a failing refinement check aborts with the check's result"
-            (refinementCheckB userO (p (d 32 (LeftB EnvB)) z) (p z z))
-            (Left (AbortRunTime userO msgPair))
+            (refinementCheckB userO (p (d 32 (LeftB EnvB)) z) (p z z)) (Right (p z z))
+        , expectTest "a failing refinement check aborts with the value under a pair"
+            (refinementCheckB userO (p (d 31 z) z) (p z z))
+            (Left (AbortRunTime userO (PairB msgPair msgPair)))
         ]
     , testGroup "church numerals"
         [ expectTest "two applications of successor"
@@ -553,7 +553,7 @@ main = do
         , driverAdmits "main = \\input -> (map (\\a -> 0) [d2c 1 id [1]], 0)"
           -- the same shapes under main's input lambda, sized against
           -- input a refinement bounds
-        , driverAdmits ("validPlayer = \\x -> assert (not (toBool ($3 left x))) \"bad\"\n"
+        , driverAdmits ("validPlayer = \\x -> not (toBool ($3 left x))\n"
                      <> "main = \\input -> let p : validPlayer = left input\n"
                      <> "                 in (concat [concat [\"a\", \"b\"], (d2c p succ 0, 0)], 0)")
         ]
@@ -565,7 +565,7 @@ main = do
           -- a pass-through step: no level is shared by every chain length
           -- at the post-sizing levels, but a uniform one exists a level up
         , derivedAgrees "main = \\input -> (map (\\a -> 0) [d2c 1 id [1]], 0)"
-        , derivedAgrees ("validPlayer = \\x -> assert (not (toBool ($3 left x))) \"bad\"\n"
+        , derivedAgrees ("validPlayer = \\x -> not (toBool ($3 left x))\n"
                       <> "main = \\input -> let p : validPlayer = left input\n"
                       <> "                 in (concat [concat [\"a\", \"b\"], (d2c p succ 0, 0)], 0)")
         , testCase "a sized program that is not the certified one is not derived" $

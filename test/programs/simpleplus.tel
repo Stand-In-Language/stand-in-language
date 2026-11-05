@@ -2,10 +2,9 @@ import Prelude
 
 validDigit = \x -> and (toBool ($47 left x)) (not (toBool ($57 left x)))
 
-validInput = \x -> assert (and (validDigit (left x))
-                               (and (validDigit (left (right (right x))))
-                                    (not (toBool ($3 right x)))))
-                          "invalid input"
+validInput = \x -> and (validDigit (left x))
+                       (and (validDigit (left (right (right x))))
+                            (not (toBool ($3 right x))))
 
 toI = \x -> $48 left x
 

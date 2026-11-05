@@ -1,6 +1,6 @@
 import Prelude
 
-isZero = \x -> assert (not (toBool x)) "not zero"
+isZero = \x -> not (toBool x)
 
 -- f checks its argument only where left input is Zero, which is exactly
 -- where y is Zero, so the check can never fail

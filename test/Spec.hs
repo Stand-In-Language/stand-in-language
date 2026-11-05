@@ -1,7 +1,9 @@
-{-# LANGUAGE CApiFFI #-}
+{-# LANGUAGE CApiFFI    #-}
+{-# LANGUAGE LambdaCase #-}
 module Main where
 
 import Data.Bifunctor
+import Data.List (isSuffixOf)
 import qualified System.IO.Strict as Strict
 import Telomare.Driver
 import Telomare.EAL (certifyMain, ealLiftedMain, inferEALWithLifting)
@@ -273,11 +275,12 @@ unitTests parse = do
                                                   (pure (foldr (PairB . i2B) ZeroB [1,2,3]))
 
   describe "refinement" $ do
-    unitTestStaticChecks "main : (\\x -> assert (not x) \"fail\") = 1" (== Left (StaticCheckError "user abort: fail (from refinement check at 2:6)"))
-    unitTestStaticChecks "main : (\\x -> assert (not (left x)) \"fail\") = 1" (not . null)
-    unitTestStaticChecks "main : (\\x -> assert 1 \"fail\") = 1" (not . null)
-    unitTestStaticChecks "main : (\\f -> assert (not (f 2)) \"boop\") = \\x -> left x" (== Left (StaticCheckError "user abort: boop (from refinement check at 2:6)"))
-    unitTestStaticChecks "main : (\\f -> assert (not (f 2)) \"boop\") = \\x -> left (left x)" (not . null)
+    unitTestStaticChecks "main : (\\x -> not x) = 1" (== Left (StaticCheckError "check failed on 1 (from refinement check at 2:6)"))
+    unitTestStaticChecks "main : (\\x -> not (left x)) = 1" (not . null)
+    unitTestStaticChecks "main : (\\x -> 1) = 1" (not . null)
+    -- the failing value is a function, which a message can only show as data
+    unitTestStaticChecks "main : (\\f -> not (f 2)) = \\x -> left x" (\case { Left (StaticCheckError m) -> "(from refinement check at 2:6)" `isSuffixOf` m; _ -> False })
+    unitTestStaticChecks "main : (\\f -> not (f 2)) = \\x -> left (left x)" (not . null)
 
   describe "abort origins" $ do
     unitTestStaticChecks "main = abort \"boom\"" (== Left (StaticCheckError "user abort: boom (from abort at 2:8)"))
@@ -338,9 +341,9 @@ unitTests parse = do
     unitTestMainPlus <- buildMainTest testMainPlus
     unitTestMainPlus ZeroB "0 0" ("0 plus 0 is 0", Right ZeroB)
     unitTestMainPlus ZeroB "9 9" ("9 plus 9 is 18", Right ZeroB)
-    unitTestMainPlus ZeroB "9 a" ("runtime error:\nAborted, user abort: invalid input (from refinement check at 17:38)", Left "Aborted, user abort: invalid input (from refinement check at 17:38)")
+    unitTestMainPlus ZeroB "9 a" ("runtime error:\nAborted, check failed on \"9 a\" (from refinement check at 16:38)", Left "Aborted, check failed on \"9 a\" (from refinement check at 16:38)")
     -- a check is lazy: one whose value is never used does not abort
-    unitTestUnused <- buildMainTest "main = \\input -> let x : (\\v -> assert (not (toBool (left v))) \"bad\") = left input\n                 in (\"ok\", 0)"
+    unitTestUnused <- buildMainTest "main = \\input -> let x : (\\v -> not (toBool (left v))) = left input\n                 in (\"ok\", 0)"
     unitTestUnused ZeroB "" ("ok", Right ZeroB)
     unitTestUnused ZeroB "a" ("ok", Right ZeroB)
     -- sizing must count the recursion for the input that runs it 8 times

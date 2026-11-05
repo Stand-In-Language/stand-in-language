@@ -95,7 +95,8 @@ extractInputRestrictions = cleanup . f Nothing where
           Nothing                  -> Nothing
           Just (StrictAccum stb _) -> pure $ StrictAccum (sta <> stb) x
     -- an abort never yields a value, so a gate path ending in one is ruled
-    -- out: a refinement check @if r then abort r else c@ restricts @r@ to Zero
+    -- out: a refinement check @if r then c else abort (1, c)@ restricts @r@ to
+    -- a pair
     AbortFW _ -> Nothing
     _ -> Nothing
   cleanup = \case
@@ -104,7 +105,7 @@ extractInputRestrictions = cleanup . f Nothing where
 
 -- |At each refinement check met during a symbolic run, run its check
 -- function over the symbolic values and report the result: a residual
--- over the input, Zero where the check passes. The check's value goes on
+-- over the input, Zero where the check fails. The check's value goes on
 -- unchanged.
 checkResultStepM :: Monoid w => (AbortOrigin -> InputSizingExpr -> w)
   -> (InputSizingExprF InputSizingExpr -> StrictAccum w InputSizingExpr)
@@ -126,7 +127,7 @@ checkRestrictions o r = extractInputRestrictions . cata stripBarrier
       DeferredFW (BarrierF inner) -> inner
       other -> embed other
 
--- |@if r then abort r else c@ over an evaluated check result @r@ and value
+-- |@if r then c else abort (1, c)@ over an evaluated check result @r@ and value
 -- @c@: what a refinement check reduces to once its check function has run.
 --
 -- An undecided @r@ leaves a barrier-wrapped gate switch with @r@ itself as
@@ -137,11 +138,11 @@ checkRestrictions o r = extractInputRestrictions . cata stripBarrier
 -- branches, one of which stays an abort.
 refinementGate :: AbortOrigin -> InputSizingExpr -> InputSizingExpr -> InputSizingExpr
 refinementGate o r c = case r of
-  BasicEE ZeroSF       -> c
+  BasicEE ZeroSF       -> aborted
   a@(AbortEE _)        -> a
-  BasicEE (PairSF _ _) -> aborted
-  _                    -> deferredEE . BarrierF $ GateSwitchEE c aborted r
-  where aborted = refinementCheckStep . AbortFW $ AbortF o r
+  BasicEE (PairSF _ _) -> c
+  _                    -> deferredEE . BarrierF $ GateSwitchEE aborted c r
+  where aborted = refinementCheckStep . AbortFW . AbortF o $ PairB (PairB ZeroB ZeroB) c
 
 -- |Evaluates a refinement check function against symbolic input, leaving
 -- input-dependent gates as barrier-wrapped residuals for
@@ -320,7 +321,7 @@ data CheckFire = CheckFire
   { firePath   :: InputPath
     -- ^ What the run knew of the input when the check ran.
   , fireResult :: UnsizedExpr
-    -- ^ The check's result there: Zero where it passes, a decision over
+    -- ^ The check's abort message there: Zero where it passes, a decision over
     -- input positions where that depends on the input.
   }
 
@@ -342,7 +343,8 @@ data CheckAnalysis = CheckAnalysis
 -- steps.
 --
 -- Running every check with every value that can reach it, the run sees
--- each check's result: a check's abort branch carries it as its message
+-- where each check fails: a check's abort carries a message that is Zero
+-- where it passes and the failing value under a pair where it fails
 -- ('refinementCheckB'), so an abort that fires with something other than
 -- Zero on some path ('mayBeNonZero') is a check that may fail there.
 --

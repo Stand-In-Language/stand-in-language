@@ -347,6 +347,21 @@ The keywords are `let`, `in`, `if`, `then`, `else`, `case`, `of`, `import`,
 `qualified`, and `as`. Naturals must fit in the implementation's `Int` range;
 oversized literals are parse errors rather than wrapping.
 
+An annotation `(p : P)` attaches a predicate to a pattern: it holds where `P`
+applied to the matched value gives anything but Zero. In a `case` alternative a
+failing predicate falls through to the next alternative. A definition
+`x : P = e` and a lambda parameter `\(x : P) -> e` have no alternative to fall
+to, so a failing predicate aborts with the value that failed it. A pattern may
+not bind a name twice, and a predicate may not mention a name its own pattern
+binds.
+
+```telomare
+classify = \n -> case n of
+  (x : \v -> dEqual v 0) -> "zero"
+  (x : \v -> dEqual v 1) -> "one"
+  _                      -> "many"
+```
+
 | Source form | Parsed representation | Immediate expansion result |
 | --- | --- | --- |
 | `\p1 p2 -> e` | `LamPatF` | nested `LamF`, with cases for patterns |

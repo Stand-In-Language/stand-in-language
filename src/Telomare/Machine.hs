@@ -569,12 +569,16 @@ chainLinks (SizedRecursion sm) tok = case Map.lookup tok sm of
   Just (Just n) -> n
   _noSize       -> 1
 
--- | What a refinement wrapper around @c@ with check function @tc@ compiles
--- to once sizing is done: @let r = tc c in (if r then abort r else id) c@.
+-- | What a refinement wrapper around @c@ with predicate @tc@ compiles
+-- to once sizing is done: @let r = tc c in (if r then id else abort (1, c)) c@:
+-- the check passes where the predicate gives anything but Zero, and a failing
+-- check aborts with the value that failed it, as @abort@ does with a message.
 -- The outer defer (env @(tc, c)@) computes @r@ once and hands @(r, c)@ to
 -- the gate, whose branches have the strict gate-switch shape (see
 -- 'sizedRecursionChain'): a passing check builds an aborted value and
--- drops it.
+-- drops it, so the aborted value's message is itself gated: Zero where the
+-- check passes, which is how the check analysis ('Telomare.Size.analyzeChecks')
+-- tells a failing run from a passing one.
 --
 -- The gate picks a function to apply to @c@ rather than picking @c@
 -- itself, for sizing: when @r@ is a superposition, so is the function, and
@@ -595,8 +599,9 @@ refinementCheckB o tc c = SetEnvB $ PairB performTC (PairB tc c) where
   performTC = deferB removeRefinementWrappersTC . SetEnvB $
     PairB (deferB refinementGateInd gate) (PairB innerTC (RightB EnvB))
   -- env: (r, c)
+  failure = GateSwitchEE (PairB (PairB ZeroB ZeroB) (RightB EnvB)) ZeroB (LeftB EnvB)
   gate = SetEnvB $ PairB
-    (GateSwitchEE (deferB refinementPassInd EnvB) (AbortB o (LeftB EnvB)) (LeftB EnvB))
+    (GateSwitchEE (AbortB o failure) (deferB refinementPassInd EnvB) (LeftB EnvB))
     (RightB EnvB)
 
 -- | The origin of a compiled refinement check's outer body

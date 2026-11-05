@@ -1,6 +1,6 @@
 import Prelude
 
-isPair = \x -> assert (toBool x) "zero"
+isPair = \x -> toBool x
 
 -- f checks its argument only where left input is Zero, which is exactly
 -- where y is Zero, so the check fails whenever it runs
