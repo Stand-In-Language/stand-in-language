@@ -397,6 +397,9 @@ mayFailChecks budget input zeros prog = Map.keysSet . checkFires <$> analyzeChec
 mayBeNonZero :: InputPath -> UnsizedExpr -> Bool
 mayBeNonZero path = \case
   ZeroB -> False
+  -- an abort in the message is the one that counts ('abortStepM'): the run
+  -- was stopped by an earlier abort, recorded where it fired, not this one
+  AbortEE _ -> False
   IndexedEE (IVarF v) -> pathDecides path v /= Just True
   SuperEE (EitherPF n l r) -> case n >>= pathDecides path of
     Just True  -> mayBeNonZero path l

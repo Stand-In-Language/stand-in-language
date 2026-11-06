@@ -210,7 +210,7 @@ unitTests parse = do
   describe "EAL certification" $ do
     -- programs the compile gate must accept
     unitTestCertifies "main = \\x -> (x,0)"
-    unitTestCertifies "main = succ 0"
+    unitTestCertifies "main = succByte 0"
     unitTestCertifies "main = or 0"
     -- the theta-shaped term is a value (the self-application sits
     -- unapplied under a lambda), so certification accepts it
@@ -291,13 +291,12 @@ unitTests parse = do
   describe "unitTest2" $ do
     unitTest2 "main = 0" "0"
     unitTest2 fiveApp "5"
-    unitTest2 "main = plus $3 $2 succ 0" "5"
-    unitTest2 "main = times $3 $2 succ 0" "6"
-    unitTest2 "main = pow $3 $2 succ 0" "9"
-    unitTest2 "main = d2c 3 succ 0" "3"
-    -- unitTest2 "main = (d2cG $4 3) succ 0" "3"
-    unitTest2 "main = plus (d2c 5) (d2c 4) succ 0" "9"
-    unitTest2 "main = foldr (\\a b -> plus (d2c a) (d2c b) succ 0) 1 [2,4,6]" "13"
+    unitTest2 "main = plus $3 $2 succByte 0" "5"
+    unitTest2 "main = times $3 $2 succByte 0" "6"
+    unitTest2 "main = pow $3 $2 succByte 0" "9"
+    unitTest2 "main = d2c 3 succByte 0" "3"
+    unitTest2 "main = plus (d2c 5) (d2c 4) succByte 0" "9"
+    unitTest2 "main = foldr (\\a b -> plus (d2c a) (d2c b) succByte 0) 1 [2,4,6]" "13"
     unitTest2 "main = dEqual 0 0" "1"
     unitTest2 "main = dEqual 1 0" "0"
     unitTest2 "main = dEqual 0 1" "0"
@@ -319,18 +318,18 @@ unitTests parse = do
     unitTest2 "main = take $0 [1,2,3]" "0"
     unitTest2 "main = take $1 [1,2,3]" "2"
     unitTest2 "main = take $5 [1,2,3]" "(1,(2,4))"
-    unitTest2 "main = c2d (minus $4 $3)" "1"
-    unitTest2 "main = c2d (minus $4 $4)" "0"
-    unitTest2 "main = dMinus 4 3" "1"
-    unitTest2 "main = dMinus 4 4" "0"
+    unitTest2 "main = c2Byte (minus $4 $3)" "1"
+    unitTest2 "main = c2Byte (minus $4 $4)" "0"
+    unitTest2 "main = minusByte 4 3" "1"
+    unitTest2 "main = minusByte 4 4" "0"
     unitTest2 "main = (if 0 then (\\x -> (x,0)) else (\\x -> ((x,0),0))) 1" "3"
     unitTest2 "main = range 2 5" "(2,(3,5))"
     unitTest2 "main = range 6 6" "0"
-    unitTest2 "main = filter (\\x -> dMinus x 3) (range 1 8)"
+    unitTest2 "main = filter (\\x -> d2c 3 left x) (range 1 8)"
       "(4,(5,(6,8)))"
-    unitTest2 "main = (\\a b -> if 0 then a b else b) (\\b -> times $2 b) $1 succ 0" "1"
-    unitTest2 "main = c2d (factorial 0)" "1"
-    unitTest2 "main = c2d (factorial 4)" "24"
+    unitTest2 "main = (\\a b -> if 0 then a b else b) (\\b -> times $2 b) $1 succByte 0" "1"
+    unitTest2 "main = c2Byte (factorial 0)" "1"
+    unitTest2 "main = c2Byte (factorial 4)" "24"
 
   describe "main function tests" $ do
     testMain <- runIO $ Strict.readFile "test/programs/testchar.tel"
@@ -364,8 +363,8 @@ fiveApp = "main = let fiveApp = $5\n" <> "       in fiveApp (\\x -> (x,0)) 0"
 nestedNamedFunctionsIssue :: String
 nestedNamedFunctionsIssue = concat
   [ "main = let bindTest = \\tlb -> let f1 = \\f -> f tlb\n"
-  , "                                  f2 = \\f -> succ (f1 f)\n"
-  , "                               in f2 succ\n"
+  , "                                  f2 = \\f -> succByte (f1 f)\n"
+  , "                               in f2 succByte\n"
   , "       in bindTest 0"
   ]
 

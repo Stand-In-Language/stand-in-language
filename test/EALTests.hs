@@ -219,7 +219,7 @@ main = do
         -- pre-sizing, the recursion oracle's work is unbounded: its body
         -- (and every body referencing it) must not be marked speculatable,
         -- while sizing-free bodies in the same program still are
-        case parse "main = d2c 1 succ 0" of
+        case parse "main = d2c 1 succByte 0" of
           Left e -> assertFailure ("parse failed: " <> e)
           Right g -> do
             let cgs = rights (Map.elems (ealGuidance (inferEALWithLifting g)))
@@ -228,19 +228,19 @@ main = do
               (not (all cgSpeculatable cgs))
             assertBool "some body is speculation-safe"
               (any cgSpeculatable cgs)
-    , testCase "simple main test" $ unitTestEAL "main = succ 0"
+    , testCase "simple main test" $ unitTestEAL "main = succByte 0"
     , testCase "lambda church application certifies" $
         -- BENCHMARK FLIPPED: the iterated function's application sites
         -- each dispatch their own fresh derivation, so the bang classes
         -- that used to collide are per-site, and pair conduits carry the
         -- boxes contraction demands
-        unitTestEAL "main = (\\f x -> f (f (f x))) ((\\f x -> f (f x)) succ) 0"
+        unitTestEAL "main = (\\f x -> f (f (f x))) ((\\f x -> f (f x)) succByte) 0"
     , testCase "church literal composition certifies" $
         -- BENCHMARK FLIPPED, past the flow analyzer: $3 applied to $2
         -- iterates the iterator, which needs each composition rung at its
         -- own level — per-apply-site dispatch expresses that where both
         -- the old occurs check and a monomorphic flow analysis could not
-        case parse "main = $3 $2 succ 0" of
+        case parse "main = $3 $2 succByte 0" of
           Left e -> assertFailure ("parse failed: " <> e)
           Right g -> case ealLiftedMain (inferEALWithLifting g) of
             Right r -> assertBool "bounded level" (ealMaxLevel r <= 6)
@@ -259,7 +259,7 @@ main = do
         -- same join, each resolved only at its own tag's dispatch
         unitTestEAL
           ("main = let compose = \\f g x -> f (g x)\n" <>
-           "           h = compose succ succ\n" <>
+           "           h = compose succByte succByte\n" <>
            "           g = if 1 then h else left\n" <>
            "       in g 1")
     , testCase "real Prelude programs certify (listEqual)" $
@@ -300,13 +300,13 @@ main = do
             "expected dependency failure for main, got " <> show other
     , testCase "sizing preserves church application acceptance" $ do
         (pre, post) <- sizedVerdicts
-          "main = (\\f x -> f (f (f x))) ((\\f x -> f (f x)) succ) 0"
+          "main = (\\f x -> f (f (f x))) ((\\f x -> f (f x)) (\\x -> (x,0))) 0"
         case (pre, post) of
           (Right a, Right b) -> ealMaxLevel b @?= ealMaxLevel a
           other -> assertFailure $
             "expected acceptance on both sides of sizing, got " <> show other
     , testCase "sizing preserves church-literal acceptance" $ do
-        (pre, post) <- sizedVerdicts "main = $3 $2 succ 0"
+        (pre, post) <- sizedVerdicts "main = $3 $2 (\\x -> (x,0)) 0"
         case (pre, post) of
           (Right a, Right b) -> ealMaxLevel b @?= ealMaxLevel a
           other -> assertFailure $
@@ -315,14 +315,14 @@ main = do
         -- BENCHMARK FLIPPED on both sides: per-tag captures type the
         -- oracle scaffolding pre-sizing and the strict level-flat chain
         -- post-sizing
-        (pre, post) <- sizedVerdicts "main = d2c 3 succ 0"
+        (pre, post) <- sizedVerdicts "main = d2c 3 succByte 0"
         case (pre, post) of
           (Right _, Right b) -> assertBool "bounded level" (ealMaxLevel b <= 8)
           other -> assertFailure $
             "expected acceptance on both sides of sizing, got " <> show other
     , testCase "function-wrapped recursive call certifies" $ do
         (pre, post) <- sizedVerdicts
-          "main = let g = {id, \\recur l -> succ (recur (right l)), \\l -> 0} in g [1]"
+          "main = let g = {id, \\recur l -> succByte (recur (right l)), \\l -> 0} in g [1]"
         case (pre, post) of
           (Right _, Right b) -> assertBool "bounded level" (ealMaxLevel b <= 8)
           other -> assertFailure $
@@ -374,7 +374,7 @@ main = do
         -- adopt deliberately if wanted; (2) the blame names the deep
         -- Prelude site where the code-headed result is built, not the
         -- gate where the arms disagree.
-        case parse "main = (if 0 then (\\x -> times $2 x) else $1) succ 0" of
+        case parse "main = (if 0 then (\\x -> times $2 x) else $1) (\\x -> (x,0)) 0" of
           Left e -> assertFailure ("parse failed: " <> e)
           Right g -> case ealLiftedMain (inferEALWithLifting g) of
             Left (EALTypeMismatch _ _) -> pure ()
@@ -382,9 +382,9 @@ main = do
               "pinned verdict changed - decide the right one: " <> show other
     , testCase "same-arity gate join certifies" $
         -- Pinned 2026-09-15 as a genuine false rejection: both arms take
-        -- two arguments and terminate (`id succ 0` and `$1 succ 0` are
+        -- two arguments and terminate (`id succByte 0` and `$1 succByte 0` are
         -- both 1), yet per-site dispatch climbed its depth cap. FLIPPED
         -- 2026-10-13 by the per-occurrence skeleton: dispatch only
         -- unifies, so there is no derivation to run away.
-        unitTestEAL "main = (if 0 then (\\x -> x) else $1) succ 0"
+        unitTestEAL "main = (if 0 then (\\x -> x) else $1) succByte 0"
     ]

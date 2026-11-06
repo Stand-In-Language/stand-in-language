@@ -8,7 +8,7 @@ validInput = \x -> and (validDigit (left x))
 
 toI = \x -> $48 left x
 
-doAdd = \x y -> c2d (plus (d2c (toI x)) (d2c (toI y)))
+doAdd = \x y -> c2Byte (plus (d2c (toI x)) (d2c (toI y)))
 
 main = \input -> case input of
                       (s, _) ->
@@ -16,8 +16,8 @@ main = \input -> case input of
                             x = left inString
                             y = left (right (right inString))
                             r = doAdd x y
-                            dr = if dMinus r 9
-                                  then concat ["1", $49 succ (dMinus r 10)]
-                                  else $49 succ r
-                        in (concat [succ x, " plus ", succ y, " is ", dr], 0)
+                            dr = if d2c 9 left r
+                                  then concat ["1", $49 succByte (d2c 10 left r)]
+                                  else $49 succByte r
+                        in (concat [succByte x, " plus ", succByte y, " is ", dr], 0)
                       _ -> ("enter two digits separated by a space", 1) 

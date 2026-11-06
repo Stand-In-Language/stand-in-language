@@ -756,6 +756,10 @@ indexedInputStep zeroes handleOther =
   StuckFW (RightSF (IndexedEE (IVarF n))) -> res $ n * 2 + 2
   StuckFW (LeftSF (IndexedEE AnyF)) -> indexedEE AnyF
   StuckFW (RightSF (IndexedEE AnyF)) -> indexedEE AnyF
+  -- an unknown run as code (e.g. an unsized recursion inside a refinement
+  -- check) gives an unknown result, as in 'indexedInputStepM'
+  StuckFW (SetEnvSF (IndexedEE AnyF)) -> indexedEE AnyF
+  FillFunction (IndexedEE AnyF) _ -> indexedEE AnyF
   IndexedFW (IVarF n) -> res n
   -- stuck values
   i@(IndexedFW _) -> embed i

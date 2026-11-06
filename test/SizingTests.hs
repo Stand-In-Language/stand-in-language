@@ -94,10 +94,11 @@ sizingSpec = do
       case result of
         Left err -> expectationFailure $ "failed to compile simpleplus.tel:\n" <> err
         Right report ->
-          -- Two `d2c` calls converting a decimal digit, and the prelude's own
-          -- recursions. If these move, sizing precision moved with them.
+          -- The `d2c` calls simpleplus makes, `Num 255`'s walk over a byte
+          -- (the 256), and the prelude's own recursions. If these move,
+          -- sizing precision moved with them.
           (snd <$> Map.toAscList (unSizedRecursion (sizingReportCounts report)))
-            `shouldBe` [Just 11, Just 7, Just 10, Just 10]
+            `shouldBe` [Just 256, Just 7, Just 10, Just 10, Just 10, Just 11]
 
     it "sizes a recursion past a gate on a superposition whose sides go opposite ways" $ do
       -- y is 8 exactly where the gate on x picks the recursion, so 8
@@ -119,13 +120,15 @@ sizingSpec = do
           renderSizingCertificate report `shouldSatisfy` isInfixOf "65536"
 
   describe "where refinement checks go" $ do
-    it "runs simpleplus.tel's input check before main, and erases the Prelude's" $ do
+    it "runs simpleplus.tel's input check before main, and erases the Prelude's Bool checks" $ do
       -- the Prelude's Bool checks always pass where simpleplus calls them;
       -- its input check depends on the input alone, matters wherever it
       -- fails (its value is in the output), and the case on the input means
-      -- it cannot fail on the input-less first call
+      -- it cannot fail on the input-less first call. succByte's Num check
+      -- stays in main: validDigit bounds only a digit's left spine, so
+      -- `succByte x` fails on an input character that is not a numeral
       kinds <- remainingChecks "test/programs/simpleplus.tel" "simpleplus"
-      kinds `shouldBe` Right ([], [RefinementAbort])
+      kinds `shouldBe` Right ([RefinementAbort], [RefinementAbort])
 
     it "erases a check that holds because two uses of one input agree" $ do
       -- deciding it means remembering, in the branch that runs the check,

@@ -480,19 +480,19 @@ main = do
         ]
     , testGroup "compiled program corpus (IC vs reference evaluator)"
         [ corpus "main = 0"
-        , corpus "main = succ 0"
-        , corpus "main = (\\f x -> f (f (f x))) ((\\f x -> f (f x)) succ) 0"
-        , corpus "main = plus $3 $2 succ 0"
-        , corpus "main = times $3 $2 succ 0"
+        , corpus "main = succByte 0"
+        , corpus "main = (\\f x -> f (f (f x))) ((\\f x -> f (f x)) succByte) 0"
+        , corpus "main = plus $3 $2 succByte 0"
+        , corpus "main = times $3 $2 succByte 0"
         , corpus "main = dEqual 2 1"
         , corpus "main = dEqual 2 2"
         , corpus "main = listLength [1,2,3]"
         , corpus "main = listPlus [1,2] [3,4]"
         , corpus "main = listEqual \"ab\" \"ab\""
         , corpus "main = map left [1,2]"
-        , corpus "main = foldr (\\a b -> plus (d2c a) (d2c b) succ 0) 1 [2,4,6]"
+        , corpus "main = foldr (\\a b -> plus (d2c a) (d2c b) succByte 0) 1 [2,4,6]"
         , corpus "main = take $5 [1,2,3]"
-        , corpus "main = c2d (minus $4 $3)"
+        , corpus "main = c2Byte (minus $4 $3)"
         , corpus ("main = let f = \\a b -> (a,b)\n"
                <> "           g = if 1 then f 1 else left\n"
                <> "       in g 1")
@@ -539,11 +539,11 @@ main = do
         [ driverAdmits ("main = \\input -> (let t = \\f x -> f (f x)\n"
                      <> "                    in t (\\b -> t id 0) 0, 0)")
         , driverAdmits "main = \\input -> (concat [\"a\", \"b\"], 0)"
-        , driverAdmits ("main = \\input -> (concat [succ (left input), \" is \"]"
+        , driverAdmits ("main = \\input -> (concat [succByte (left input), \" is \"]"
                      <> ", 0)")
           -- a recursive function inside its own step argument, directly
           -- and through a wrapper with no recursion of its own
-        , driverAdmits "main = \\input -> (d2c 1 (\\x -> d2c 1 succ x) 0, 0)"
+        , driverAdmits "main = \\input -> (d2c 1 (\\x -> d2c 1 succByte x) 0, 0)"
         , driverAdmits ("main = \\input -> (foldr (\\a b -> foldr (\\x l -> (x,l)) b a)"
                      <> " 0 [[1],[2]], 0)")
         , driverAdmits "main = \\input -> (concat [concat [\"a\", \"b\"], \"c\"], 0)"
@@ -555,23 +555,23 @@ main = do
           -- input a refinement bounds
         , driverAdmits ("validPlayer = \\x -> not (toBool ($3 left x))\n"
                      <> "main = \\input -> let p : validPlayer = left input\n"
-                     <> "                 in (concat [concat [\"a\", \"b\"], (d2c p succ 0, 0)], 0)")
+                     <> "                 in (concat [concat [\"a\", \"b\"], (d2c p succByte 0, 0)], 0)")
         ]
     , testGroup "post-sizing guidance derived from the unsized certificate"
-        [ derivedAgrees "main = \\input -> (d2c 2 succ 0, 0)"
-        , derivedAgrees "main = \\input -> (map succ [1,2], 0)"
-        , derivedAgrees "main = \\input -> (d2c 1 (\\x -> d2c 1 succ x) 0, 0)"
+        [ derivedAgrees "main = \\input -> (d2c 2 (\\x -> (x,0)) 0, 0)"
+        , derivedAgrees "main = \\input -> (map (\\x -> (x,0)) [1,2], 0)"
+        , derivedAgrees "main = \\input -> (d2c 1 (\\x -> d2c 1 succByte x) 0, 0)"
         , derivedAgrees "main = \\input -> (concat [concat [\"a\", \"b\"], \"c\"], 0)"
           -- a pass-through step: no level is shared by every chain length
           -- at the post-sizing levels, but a uniform one exists a level up
         , derivedAgrees "main = \\input -> (map (\\a -> 0) [d2c 1 id [1]], 0)"
         , derivedAgrees ("validPlayer = \\x -> not (toBool ($3 left x))\n"
                       <> "main = \\input -> let p : validPlayer = left input\n"
-                      <> "                 in (concat [concat [\"a\", \"b\"], (d2c p succ 0, 0)], 0)")
+                      <> "                 in (concat [concat [\"a\", \"b\"], (d2c p succByte 0, 0)], 0)")
         , testCase "a sized program that is not the certified one is not derived" $
-            case ( parse "main = \\input -> (d2c 2 succ 0, 0)"
+            case ( parse "main = \\input -> (d2c 2 succByte 0, 0)"
                  , compileMainReporting MainSizing
-                     (parseAuxModule "main = \\input -> (d2c 3 succ 0, 0)" : prelude)
+                     (parseAuxModule "main = \\input -> (d2c 3 succByte 0, 0)" : prelude)
                      "AuxModule" ) of
               (Right t3, Right other) ->
                 case deriveSizedGuidance (chainLinks (sizingReportCounts (cpSizing other))) (const False)
@@ -588,14 +588,14 @@ main = do
             -- equation cycle; the exact solver (2026-10-13) certifies it,
             -- with boxes passing through the applications of the boxed
             -- numeral results
-            case parse "main = $3 $2 succ 0" of
+            case parse "main = $3 $2 succByte 0" of
               Left e -> assertFailure $ "parse failed: " <> e
               Right t3 -> do
                 case ealLiftedMain (inferEALWithLifting t3) of
                   Right _ -> pure ()
                   Left e -> assertFailure $
                     "expected EAL acceptance, got " <> show e
-                case compiled "main = $3 $2 succ 0" of
+                case compiled "main = $3 $2 succByte 0" of
                   Left e  -> assertFailure $ "compilation failed: " <> e
                   Right t -> icEval t @?= eval t
         , testCase "EAL-rejected and diverging: runtime runs out of fuel" $

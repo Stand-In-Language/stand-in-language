@@ -1,13 +1,29 @@
+-- helper functions section --
 id = \x -> x
 
--- a refinement predicate: anything but Zero means the value is a Bool,
--- Zero or (0, 0)
+d2c = \n f b -> { id
+                , \recur i  -> f (recur (left i))
+                , \i -> b
+                } n
+
+-- refinement section --
 Bool = \vv -> if vv
               then if (left vv)
                    then 0
                    else if (right vv) then 0 else 1
               else 1
 
+NonZero = \x -> case x of
+	0 -> 0
+	_ -> 1
+
+Num = \l -> let test = \recur tv -> if (right tv)
+				                            then 0
+                                    else recur (left tv)
+                base = \b -> if b then 0 else 1
+            in d2c l test base
+
+-- normal prelude functions --
 toBool = \b -> if b then 1 else 0
 
 ite = \(i : Bool) t e -> if i then t else e
@@ -18,35 +34,33 @@ or = \(a : Bool) (b : Bool) -> if a then 1 else b
 
 not = \(x : Bool) -> if x then 0 else 1
 
-succ = \x -> (x,0)
+succByte = \x -> let nextX : Num 255 = (x,0) in nextX
 
-d2c = \n f b -> { id
-                , \recur i  -> f (recur (left i))
-                , \i -> b
-                } n
+c2Byte = \c -> c succByte 0
 
-c2d = \c -> c succ 0
 
-dPlus = \a b -> d2c b succ a
+plusByte = \x -> d2c x succByte
 
 plus = \m n f x -> m f (n f x)
 
-dTimes = \a b -> d2c b (\x -> dPlus a x) 0
-
 times = \m n f -> m (n f)
 
-dPow = \a b -> d2c b (dTimes a) (succ 0)
+timesByte = \a b -> d2c b (plusByte a) 0
 
 pow = \m n -> n m
 
-dMinus = \a b -> d2c b (\x -> left x) a
+powByte = \a b -> d2c b (timesByte a) 1
 
-minus = \a b -> d2c (b (\x -> left x) (c2d a))
+minus = \a b -> d2c (b (\x -> left x) (a succByte 0))
 
-range = \a b -> { \i -> dMinus b i
-                , \recur i -> (i, recur (i,0))
-                , \i -> 0
-                } a
+numDec = \(x : NonZero) -> left x
+
+minusByte = \a b -> d2c b numDec a
+
+range = \a b -> { minusByte b
+		, \recur i -> (i, recur (succByte i))
+		, \i -> 0
+		} a
 
 map = \f -> { id
             , \recur l -> (f (left l), recur (right l))
@@ -79,15 +93,14 @@ dEqual = \a b -> let equalsOne = \x -> if x then (not (toBool (left x))) else 0
                  in if a then equalsOne (d2c (left a) (\x -> left x) b)
                          else not (toBool b)
 
-dDiv = \a b -> if (dEqual b 0)
-               then abort "Undefined"
-               else
-                 { \p       -> dMinus (left p) (right p)
-                 , \recur p -> succ (recur (dMinus (left p) (right p), right p))
-                 , \p       -> if (dEqual (left p) (right p)) then succ 0 else 0
-                 } (a, b)
+dDiv = \a (b : NonZero) ->
+	let dSub = \a b -> d2c b left a
+	in { \p -> dSub (left p) (right p)
+	   , \recur p -> succByte (recur (dSub (left p) (right p), right p))
+	   , \p -> if (dEqual (left p) (right p)) then 1 else 0
+	   } (a, b)
 
-listLength = foldr (\a b -> succ b) 0
+listLength = foldr (\a b -> succByte b) 0
 
 listEqual = \a b -> let pairsEqual = zipWith dEqual a b
                         lengthEqual = dEqual (listLength a) (listLength b)
@@ -109,18 +122,18 @@ take = \n l -> let lengthed = n (\x -> (0,x)) 0
 
 factorial = \n -> foldr (\a b -> times (d2c a) b) $1 (range 1 (n,0))
 
-dFactorial = \n -> factorial n succ 0
+dFactorial = \n -> c2Byte (factorial n)
 
-quicksort = { \l -> right l
-            , \recur l -> let t = left l
-                              test = \x -> toBool (dMinus x t)
-                              p1 = filter test (right l)
-                              p2 = filter (\x -> not (test x)) (right l)
-                          in listPlus (recur p2) (t,(recur p1))
-            , id
-            }
-
--- abort is a builtin, so each call can report where it was made
+quicksort =
+  let dSub = \a b -> d2c b left a
+  in { \l -> right l
+     , \recur l -> let t = left l
+                       test = \x -> toBool (dSub x t)
+                       p1 = filter test (right l)
+                       p2 = filter (\x -> not (test x)) (right l)
+                   in listPlus (recur p2) (t,(recur p1))
+     , id
+     }
 
 -- useful for making sure main input isn't unbounded
 truncate = \n ->
@@ -141,12 +154,12 @@ max = \a b -> { \p -> and (toBool (left p)) (toBool (right p))
 
 fakeRecur = \n t r b -> n (\rec i -> if t i then r rec i else b i) b
 
-dMod = \a b -> dMinus a (dTimes b (dDiv a b))
+modByte = \a b -> minusByte a (timesByte b (dDiv a b))
 
 gcd = \a b ->
   { \p -> not (dEqual (right p) 0)
-  , \recur p -> recur (right p, dMod (left p) (right p))
+  , \recur p -> recur (right p, modByte (left p) (right p))
   , \p -> left p
   } (a,b)
 
-lcm = \a b -> dDiv (dTimes a b) (gcd a b)
+lcm = \a b -> dDiv (timesByte a b) (gcd a b)
