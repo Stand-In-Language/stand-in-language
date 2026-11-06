@@ -2159,16 +2159,29 @@ inferEALLiftedWith uniform (DeferMap dm) mainTerm = case runMain dm mainTerm of
     -- until the program certifies or there is none left to add (each
     -- round adds one at least, of finitely many). A round costs a whole
     -- analysis, but substituting everything multiplies the system:
-    -- tictactoe runs out of memory shallow or deep and certifies narrow
-    narrowed = narrowFrom mempty
-    narrowFrom allowed err =
-      let new = pointedAt (errorBodies err) `Set.difference` allowed
+    -- tictactoe runs out of memory shallow or deep and certifies narrow.
+    --
+    -- Smallest first: a round adds only the definitions pointed at whose
+    -- code reaches at most a limit of bodies, and the limit doubles when
+    -- none is that small. The definition a conflict needs copies of is
+    -- typically a small leaf every bigger definition pointed at reaches
+    -- (@toBool@, used inside an iterated refinement and passed to @map@),
+    -- and copying a bigger one copies all it reaches besides: a whole
+    -- round of what a failure points at made tictactoe with a refined
+    -- board ~100 times the system, where @toBool@ alone certifies. Each
+    -- round adds a definition or raises the limit, so this still ends.
+    narrowed = narrowFrom 1 mempty
+    narrowFrom limit allowed err =
+      let pointed = pointedAt (errorBodies err) `Set.difference` allowed
+          new = Set.filter ((<= limit) . reachSize) pointed
           allowed' = allowed <> new
           (dmS, originS, mainS, _) = specializeLets (Just allowed') True dm mainTerm
-      in if Set.null new then Nothing
+      in if Set.null pointed then Nothing
+         else if Set.null new then narrowFrom (limit * 2) allowed err
          else case runMain dmS mainS of
            Right (r, layouts, bodyLevels) -> Just (r, layouts, bodyLevels, originS)
-           Left err' -> narrowFrom allowed' (located dmS mainS err')
+           Left err' -> narrowFrom limit allowed' (located dmS mainS err')
+    reachSize = maybe 0 (Set.size . reachOf)
     -- what substituting everything deep substitutes, and where
     (_, _, _, SpecInfo everything readsIn) = specializeLets Nothing True dm mainTerm
     -- the bodies each body reaches, itself included (a lazy
