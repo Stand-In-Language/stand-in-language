@@ -35,7 +35,8 @@ data PatternNode
 
 -- |Every pair, literal, variable and guard of a pattern, in left-to-right
 -- preorder, with the path to it from the root. A guard comes after the
--- nodes of the pattern it annotates.
+-- nodes of the pattern it annotates, and the paths to variables under a
+-- guard pass through a refinement check of it.
 -- e.g. PatternPair (PatternVar "x") (PatternPair (PatternInt 0) PatternIgnore)
 --      will return [(id, PairNode), (HLeft, VarNode "x"), (HRight, PairNode), (HLeft . HRight, IntNode 0)]
 patternNodes :: PatternA -> [(Path, PatternNode)]
@@ -46,7 +47,13 @@ patternNodes = cata alg where
     PatternStringF str    -> [(id, StringNode str)]
     PatternVarF name      -> [(id, VarNode name)]
     PatternIgnoreF        -> []
-    PatternAnnotatedF x (AnnotatedEST g) -> x <> [(id, GuardNode g)]
+    PatternAnnotatedF x (AnnotatedEST g) -> (refineVar g <$> x) <> [(id, GuardNode g)]
+  -- A variable under a guard is bound through a refinement check of the
+  -- guarded term. The match already tested the guard, so the check cannot
+  -- fail, but it lets sizing bound the variable as a let refinement would.
+  refineVar g (path, VarNode name) = (path . refined g, VarNode name)
+  refineVar _ node                 = node
+  refined g t@(anno :< _) = anno :< UnprocessedParsedTermH (CheckF RefinementAbort (lowerCases g) t)
 
 -- |Realize a pattern's literal skeleton as a term, with variables and
 -- ignores as zeroes. Polymorphic in the case witness and pattern parameter
@@ -94,13 +101,15 @@ caseToNestedIfs caseLoc scrutinee@(anno :< _) alternatives = case scrutinee of
 -- literals, and that its guards hold. Pair nodes and guard results are
 -- arbitrary values, so each is coerced to a Bool
 -- before it reaches @and@, whose arguments are refined to Bool. Integers are
--- compared with @dEqual@ and strings, whole, with @listEqual@.
+-- compared with @dEqual@ and strings, whole, with @listEqual@. The literal
+-- goes first: both helpers recurse on their first argument, and the
+-- scrutinee may be unbounded input.
 matchChecks :: LocTag -> DesugaredSurfaceTerm -> [(Path, PatternNode)] -> [DesugaredSurfaceTerm]
 matchChecks anno x = concatMap check where
   check (path, node) = case node of
     PairNode       -> [truthy (path x)]
-    IntNode i      -> [equal "__case_dEqual" (path x) (anno :< IntUPF i)]
-    StringNode str -> [equal "__case_listEqual" (path x) (anno :< StringUPF str)]
+    IntNode i      -> [equal "__case_dEqual" (anno :< IntUPF i) (path x)]
+    StringNode str -> [equal "__case_listEqual" (anno :< StringUPF str) (path x)]
     VarNode _      -> []
     GuardNode g    -> [truthy (AppP (lowerCases g) (path x))]
   truthy :: DesugaredSurfaceTerm -> DesugaredSurfaceTerm

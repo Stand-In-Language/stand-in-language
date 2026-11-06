@@ -17,11 +17,25 @@ NonZero = \x -> case x of
 	0 -> 0
 	_ -> 1
 
+One = \x -> case x of
+  1 -> 1
+  _ -> 0
+
 Num = \l -> let test = \recur tv -> if (right tv)
 				                            then 0
                                     else recur (left tv)
                 base = \b -> if b then 0 else 1
             in d2c l test base
+
+List = \t x -> foldr (\a b -> and (t a) b) 1 x
+
+-- recursion is driven by s alone, so x may be unbounded input
+Vector = \s t x ->
+  let step = \acc -> let rest = right acc
+                         ok = and (left acc) (and (toBool rest) (t (left rest)))
+                     in (ok, right rest)
+      final = d2c s step (1, x)
+  in and (left final) (not (toBool (right final)))
 
 -- normal prelude functions --
 toBool = \b -> if b then 1 else 0
@@ -37,7 +51,6 @@ not = \(x : Bool) -> if x then 0 else 1
 succByte = \x -> let nextX : Num 255 = (x,0) in nextX
 
 c2Byte = \c -> c succByte 0
-
 
 plusByte = \x -> d2c x succByte
 
@@ -56,6 +69,11 @@ minus = \a b -> d2c (b (\x -> left x) (a succByte 0))
 numDec = \(x : NonZero) -> left x
 
 minusByte = \a b -> d2c b numDec a
+
+-- comparisons recurse on b alone, so a may be unbounded input
+gt = \a b -> toBool (d2c b left a)
+
+leq = \a b -> not (gt a b)
 
 range = \a b -> { minusByte b
 		, \recur i -> (i, recur (succByte i))
@@ -102,9 +120,15 @@ dDiv = \a (b : NonZero) ->
 
 listLength = foldr (\a b -> succByte b) 0
 
-listEqual = \a b -> let pairsEqual = zipWith dEqual a b
-                        lengthEqual = dEqual (listLength a) (listLength b)
-                    in foldr and 1 (lengthEqual,pairsEqual)
+-- recursion is driven by the first list alone, so the second may be unbounded
+-- input (case patterns put the literal first)
+listEqual = \a b -> let walk = { \p -> left p
+                               , \recur p -> and (and (toBool (right p))
+                                                      (dEqual (left (left p)) (left (right p))))
+                                                 (recur (right (left p), right (right p)))
+                               , \p -> not (toBool (right p))
+                               }
+                    in walk (a, b)
 
 listPlus = \a b -> foldr (\x l -> (x,l)) b a
 
