@@ -10,14 +10,16 @@ import qualified Data.Set as Set
 import qualified System.IO.Strict as Strict
 import Telomare.Driver (CompiledProgram (..), SizingOption (..),
                         compileMainReporting, compileUnitTest, erasedChecks,
-                        evalLoopCore, keepAccum, plainEval, programIteration,
-                        programPlan)
+                        evalLoopCore, iterationFunctions, keepAccum, plainEval,
+                        programIteration, programPlan)
 import Telomare.EAL (CodeGuidance (..), EALLiftedResult (..),
                      deriveSizedGuidance, ealCaptureLayouts, inferEALCompiled,
                      inferEALFaithful, inferEALWithLifting)
-import Telomare.Eval.IC (ICMeter (..), ICPlan (..), admitIC, evalIC)
+import Telomare.Eval.IC (ICMeter (..), ICPlan (..), admitIC, evalIC,
+                         evalICNative)
 import Telomare.Expand (expandModule, renderExpansionError)
 import Telomare.IC
+import Telomare.IC.Native (icEvalNative)
 import Telomare.IR.Base (AbortKind (..), AbortOrigin (..), BasicExpr,
                          pattern AbortB, pattern EnvB, pattern GateB,
                          pattern GateSwitchEE, pattern LeftB, pattern PairB,
@@ -90,6 +92,7 @@ expectTest :: String -> CompiledExpr -> Either RunTimeError CompiledExpr
            -> TestTree
 expectTest name t v = testCase name $ do
   icEval t @?= v
+  icEvalNative t @?= v
   eval t @?= v
 
 -- | The IC runtime must agree with the reference evaluator, whatever the
@@ -101,6 +104,7 @@ diffTest name t = icDiff name t (const (pure ()))
 icDiff :: String -> CompiledExpr -> (CompiledExpr -> Assertion) -> TestTree
 icDiff name t extra = testCase name $ do
   icEval t @?= eval t
+  icEvalNative t @?= eval t
   extra t
 
 main :: IO ()
@@ -129,7 +133,9 @@ main = do
     corpus :: String -> TestTree
     corpus src = testCase src $ case compiled src of
       Left e  -> assertFailure $ "compilation failed: " <> e
-      Right t -> icEval t @?= eval t
+      Right t -> do
+        icEval t @?= eval t
+        icEvalNative t @?= eval t
     -- what `telomare --ic` does: compile through the driver (whose gate
     -- certifies the program before sizing), read IC admission off the
     -- compiled program (a second certification, after sizing), run the
@@ -148,6 +154,9 @@ main = do
             (_, viaRef) <- evalLoopCore plainEval (programIteration cp)
                              keepAccum "" []
             viaIC @?= viaRef
+            (_, viaNative) <- evalLoopCore (evalICNative plan (iterationFunctions (programIteration cp))) (programIteration cp)
+                                keepAccum "" []
+            viaNative @?= viaRef
     -- the driver's post-sizing guidance is derived from the unsized
     -- program's size-independent certificate, and it is the guidance
     -- inferring the sized program again gives: the same bodies, the same

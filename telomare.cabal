@@ -15,12 +15,18 @@ build-type:          Simple
 -- suites open at run time has to be listed here or it simply will not be
 -- there. That is the whole reason the Telomare programs appear below.
 extra-source-files:  CHANGELOG.md
+                     cbits/tel_ic.h
                      README.md
                      *.tel
                      test/programs/**/*.tel
 
 library
   hs-source-dirs:      src
+  c-sources:           cbits/tel_ic.c
+  include-dirs:        cbits
+  includes:            tel_ic.h
+  install-includes:    tel_ic.h
+  cc-options:          -O2 -Wno-unused-function
   exposed-modules:     Telomare.Artifact
                      , Telomare.Certificate
                      , Telomare.Desugar
@@ -28,6 +34,7 @@ library
                      , Telomare.Error
                      , Telomare.Driver
                      , Telomare.IC
+                     , Telomare.IC.Native
                      , Telomare.Eval.IC
                      , Telomare.Eval.Reference
                      , Telomare.Fast

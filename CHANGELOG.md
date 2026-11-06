@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+* `telomare --ic` reduces the net in C (`cbits/tel_ic.c`, `Telomare.IC.Native`),
+  over flat arrays of words, compiling main once per session: tic-tac-toe's
+  session goes from about 19s to under 1s. That net builds only the branch an
+  `if` chooses. `--ic --meter` still runs `Telomare.IC`, so its counts are not
+  those of a plain `--ic` run.
 * Refinements and case guards share one meaning: `(p : P)` holds where `P`
   gives anything but Zero. A failing guard in a `case` falls through to the next
   alternative; a failing definition or lambda parameter refinement aborts with
