@@ -119,6 +119,21 @@ two failures it is — a budget that was too small, or an input that nothing
 bounds. Only the first is fixable by raising the budget. See
 `test/programs/limits/` for a worked example of each.
 
+## The net's C runtime
+
+A plain `telomare --ic` reduces the net in C (`cbits/tel_ic.c`, driven by
+`Telomare.IC.Native`). It builds the same templates as `Telomare.IC`, but an
+`if` builds only the branch it chooses, and main is compiled once per session,
+so only the input changes between iterations. `--ic --meter` still runs
+`Telomare.IC`, whose per-rule counts it reports, so those counts are not a plain
+`--ic` run's. On tic-tac-toe's five-move session the output is the same, at
+about 0.9s instead of 19s and 2,120,988 interactions instead of 3,970,174.
+
+The C's dispatch and rules are printed from a table on the `bend` branch, where
+the table is proven to be that port's rules (`bend/NetProof.bend`,
+`table_is_rules`). The rest of the C, and `Telomare.IC.Native`, are checked by
+tests rather than proofs.
+
 ## Compiling once
 
 Sizing is the slow part — about 70 seconds for `tictactoe.tel` — and it gives
