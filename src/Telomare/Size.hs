@@ -65,7 +65,9 @@ instance Monoid InputRestrictions where
 extractInputRestrictions :: InputSizingExpr -> InputRestrictions
 extractInputRestrictions = cleanup . f Nothing where
   f expected = f' expected . project
-  irIntersection (InputRestrictions za pa) (InputRestrictions zb pb) = InputRestrictions (za <> zb) (pa <> pb)
+  -- an input taking either branch is restricted only by what both require
+  irIntersection (InputRestrictions za pa) (InputRestrictions zb pb) =
+    InputRestrictions (Set.intersection za zb) (Set.intersection pa pb)
   f' :: Maybe Bool -> InputSizingExprF InputSizingExpr -> Maybe (StrictAccum InputRestrictions InputSizingExpr)
   f' expected = \case
     z@(BasicFW ZeroSF) -> case expected of
@@ -80,6 +82,10 @@ extractInputRestrictions = cleanup . f Nothing where
       _          -> Just (StrictAccum mempty ZeroB) -- is this ok?
     -- a function value is neither impossible nor restricting
     d@(StuckFW (DeferSF _ _)) | isNothing expected -> pure . pure $ embed d
+    -- nor is an unknown value (what the analysis could not follow, such as
+    -- a recursion whose test reads the input): it may be either, so a path
+    -- through it is possible and says nothing about the input
+    a@(IndexedFW AnyF) -> pure . pure $ embed a
     GateSwitch l r s ->
       let nl = f expected l
           nr = f expected r
@@ -107,21 +113,21 @@ extractInputRestrictions = cleanup . f Nothing where
 -- function over the symbolic values and report the result: a residual
 -- over the input, Zero where the check fails. The check's value goes on
 -- unchanged.
-checkResultStepM :: Monoid w => (AbortOrigin -> InputSizingExpr -> w)
+checkResultStepM :: Monoid w => Int -> (AbortOrigin -> InputSizingExpr -> w)
   -> (InputSizingExprF InputSizingExpr -> StrictAccum w InputSizingExpr)
   -> InputSizingExprF InputSizingExpr -> StrictAccum w InputSizingExpr
-checkResultStepM report handleOther x = f x where
+checkResultStepM fuel report handleOther x = f x where
   f = \case
     UnsizedFW (RefinementWrapperF o tc c) ->
-      StrictAccum (report o (transformNoDefer refinementCheckStep $ appB tc c)) c
+      StrictAccum (report o (transformNoDefer (refinementCheckStep fuel) $ appB tc c)) c
     _ -> handleOther x
 
 -- |What a check result says about the input: the zeros and pairs it
 -- needs in order to pass.
-checkRestrictions :: AbortOrigin -> InputSizingExpr -> InputRestrictions
-checkRestrictions o r = extractInputRestrictions . cata stripBarrier
+checkRestrictions :: Int -> AbortOrigin -> InputSizingExpr -> InputRestrictions
+checkRestrictions fuel o r = extractInputRestrictions . cata stripBarrier
   -- only whether the check passes matters here, not the value it guards
-  $ refinementGate o r ZeroB
+  $ refinementGate fuel o r ZeroB
   where
     stripBarrier = \case
       DeferredFW (BarrierF inner) -> inner
@@ -136,13 +142,13 @@ checkRestrictions o r = extractInputRestrictions . cata stripBarrier
 -- nested checks would multiply the copies. Left whole, @c@ appears once,
 -- and whatever is done to the guarded value later goes into just its two
 -- branches, one of which stays an abort.
-refinementGate :: AbortOrigin -> InputSizingExpr -> InputSizingExpr -> InputSizingExpr
-refinementGate o r c = case r of
+refinementGate :: Int -> AbortOrigin -> InputSizingExpr -> InputSizingExpr -> InputSizingExpr
+refinementGate fuel o r c = case r of
   BasicEE ZeroSF       -> aborted
   a@(AbortEE _)        -> a
   BasicEE (PairSF _ _) -> c
   _                    -> deferredEE . BarrierF $ GateSwitchEE aborted c r
-  where aborted = refinementCheckStep . AbortFW . AbortF o $ PairB (PairB ZeroB ZeroB) c
+  where aborted = refinementCheckStep fuel . AbortFW . AbortF o $ PairB (PairB ZeroB ZeroB) c
 
 -- |Evaluates a refinement check function against symbolic input, leaving
 -- input-dependent gates as barrier-wrapped residuals for
@@ -153,9 +159,9 @@ refinementGate o r c = case r of
 -- check reduces to its value or an abort, an undecided one to a gate
 -- switch with an abort branch, so its restrictions apply only on the gate
 -- paths where the nested check actually runs.
-refinementCheckStep :: InputSizingExprF InputSizingExpr -> InputSizingExpr
-refinementCheckStep = basicStep (stuckStep (abortStep (gateSwitchStep (sameBranchStep (deferredEvalStep (indexedInputStep Set.empty handleOther)))))) where
-  step = refinementCheckStep
+refinementCheckStep :: Int -> InputSizingExprF InputSizingExpr -> InputSizingExpr
+refinementCheckStep fuel = basicStep (stuckStep (abortStep (gateSwitchStep (sameBranchStep (deferredEvalStep (indexedInputStep Set.empty handleOther)))))) where
+  step = refinementCheckStep fuel
   barrier = deferredEE . BarrierF
   -- an undecided gate yields one of its branches, so anything always done to
   -- its result can be done to each branch instead, keeping the result
@@ -187,8 +193,12 @@ refinementCheckStep = basicStep (stuckStep (abortStep (gateSwitchStep (sameBranc
       | l == r && abortFree s -> l
     other -> handleOther' other
   handleOther = \case
+    -- a gate on an unknown is an unknown, rather than a residual whose
+    -- branches both run: an undecided recursion test must stop unfolding
+    FillFunction GateB a@(IndexedEE AnyF) -> a
     FillFunction GateB i@(IndexedEE _) -> deferredEE . BarrierF . embed $ FillFunction GateB i
-    UnsizedFW (RefinementWrapperF o tc c) -> refinementGate o (app tc c) c
+    UnsizedFW (RefinementWrapperF o tc c) -> refinementGate fuel o (app tc c) c
+    UnsizedFW u -> unfoldRecursion fuel u
     other -> error $ "refinementCheckStep eval unexpected:\n" <> prettyPrint other
   -- 'appB' over already-evaluated operands: tc is a closure, so twiddle it
   -- into (function, (input, env)) before applying
@@ -205,24 +215,56 @@ term3ToUnsizedExpr = runIdentity . cata conv where
 
 -- get simple input limits derived from refinements
 -- returns a set of guaranteed Zeros, where the Integer is the encoded path from root of intput
-getInputLimits :: UnsizedExpr -> InputRestrictions
-getInputLimits = symbolicChecks checkRestrictions
+-- the Int is the unfolding budget for recursions inside checks ('unfoldRecursion')
+getInputLimits :: Int -> UnsizedExpr -> InputRestrictions
+getInputLimits fuel = symbolicChecks fuel (checkRestrictions fuel)
+
+-- |One step of an unsized recursion during 'symbolicChecks', unfolded as
+-- sizing unfolds it ('unsizedStepM'''), so a check counting a constant
+-- (@Num 2@, @Vector 9@, @d2c 57 left x@) restricts the input it reads.
+-- Where the recursion's test reads the input instead, or it runs past the
+-- fuel (the sizing budget, 'maxSizingSize', as for sizing itself), its
+-- result is unknown.
+unfoldRecursion :: Int -> UnsizedRecursionF InputSizingExpr -> InputSizingExpr
+unfoldRecursion fuel = \case
+  UnsizedStubF tok (BasicEE (PairSF (BasicEE (PairSF tw rest)) _))
+    | BasicEE (PairSF (StuckEE (DeferSF sid tf)) e) <- tw ->
+        let nt = PairB (StuckEE . DeferSF sid . unsizedEE $ RecursionTestF tok tf) e
+        in PairB (deferB unsizedStepMrfa (unsizedStepBody tok 1)) (PairB nt rest)
+  SizeStepStubF tok n (BasicEE (PairSF _ trb))
+    | n <= fuel -> PairB (deferB unsizedStepMrfa (unsizedStepBody tok (n + 1))) trb
+  SizeStageF _ x -> x
+  RecursionTestF _ x | decided x -> x
+  _ -> indexedEE AnyF
+  where
+    decided = \case
+      ZeroB     -> True
+      PairB _ _ -> True
+      _         -> False
 
 -- |Run a term over a symbolic input, reporting the result of every
 -- refinement check it meets ('checkResultStepM'). A gate on the input
 -- itself is not split, but read as an unknown value, as is an unsized
--- recursion.
-symbolicChecks :: Monoid w => (AbortOrigin -> InputSizingExpr -> w) -> UnsizedExpr -> w
-symbolicChecks report = getAccum . transformNoDeferM evalStep . convertIS where
+-- recursion whose test reads the input ('unfoldRecursion'). Converted
+-- before evaluation, every recursion would be unknown, inside check
+-- functions too.
+symbolicChecks :: Monoid w => Int -> (AbortOrigin -> InputSizingExpr -> w) -> UnsizedExpr -> w
+symbolicChecks fuel report = getAccum . transformNoDeferM evalStep . convertIS where
   convertU = \case
-    UnsizedFW (UnsizedStubF _ _) -> pure $ indexedEE AnyF
+    UnsizedFW u@(UnsizedStubF _ _) -> unsizedEE <$> sequence u
     UnsizedFW (RecursionTestF _ x) -> x
     UnsizedFW rw@(RefinementWrapperF _ _ _) -> unsizedEE <$> sequence rw
     x -> error $ "symbolicChecks convert, unhandled:\n" <> prettyPrint (runIdentity $ sequence x)
   convertIS :: UnsizedExpr -> InputSizingExpr
   convertIS = runIdentity . cata (convertBasic (convertStuck (convertAbort (convertIndexed convertU))))
   unexpectedI x = error $ "symbolicChecks eval, unexpected:\n" <> prettyPrint x
-  evalStep = basicStepM (stuckStepM (abortStepM (indexedInputStepM Set.empty (indexedInputIgnoreSwitchStepM (checkResultStepM report unexpectedI)))))
+  recursionStep handleOther = \case
+    UnsizedFW u | isRecursion u -> pure $ unfoldRecursion fuel u
+    x -> handleOther x
+  isRecursion = \case
+    RefinementWrapperF {} -> False
+    _                     -> True
+  evalStep = basicStepM (stuckStepM (abortStepM (indexedInputStepM Set.empty (indexedInputIgnoreSwitchStepM (checkResultStepM fuel report (recursionStep unexpectedI))))))
 
 capMain :: (Base g ~ f, BasicBase f, StuckBase f, Recursive g, Corecursive g) => g -> g -> g
 capMain i c = appB c i
@@ -255,7 +297,7 @@ sizeTermM sizingSettings x = tidyUp . transformNoDeferM evalStep $ mx where
     , sizingFailureLoc = Nothing
     }
   failConvert unhandled = (>>= Left) $ ("sizeTermM convert, unhandled:\n" <>) .  prettyPrint <$> sequence unhandled
-  inputRestrictions = (\ir -> debugTrace ("sizeTermM zeros are\n" <> show ir) ir) $ getInputLimits cm'
+  inputRestrictions = (\ir -> debugTrace ("sizeTermM zeros are\n" <> show ir) ir) $ getInputLimits (maxSizingSize sizingSettings) cm'
   zeros = zeroes inputRestrictions
   convertNakedEnvs = \case
     StuckFW EnvSF -> ZeroB
