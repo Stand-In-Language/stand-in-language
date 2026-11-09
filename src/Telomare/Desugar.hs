@@ -7,7 +7,11 @@
 --
 -- Raw parse-level sugar (multi-pattern lambdas, list assignments) is
 -- expanded before this stage runs, by 'Telomare.Expand'.
-module Telomare.Desugar where
+module Telomare.Desugar
+  ( desugarTerm
+  , patternToTerm
+  , optimizeBuiltinFunctions
+  ) where
 
 import Control.Comonad.Cofree (Cofree (..))
 import qualified Control.Comonad.Trans.Cofree as C
@@ -15,6 +19,7 @@ import Data.Bifunctor (first, second)
 import Data.Function (on)
 import Data.Functor.Foldable (Recursive (..))
 import Data.List (nubBy)
+import Data.Maybe (catMaybes)
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Telomare.IR.Base
@@ -25,35 +30,56 @@ import Telomare.IR.Surface
 -- composition of 'HLeft' and 'HRight'.
 type Path = DesugaredSurfaceTerm -> DesugaredSurfaceTerm
 
--- |The parts of a pattern that case lowering inspects.
-data PatternNode
-  = PairNode -- ^ The term must be a pair here
-  | IntNode Int
-  | StringNode String
-  | VarNode LocatedName
-  | GuardNode ExpandedSurfaceTerm -- ^ The predicate must hold of the term here
+-- |The exact structure a pattern requires of a matched value. A value
+-- matches a literal only if it is the literal's encoding, node for node.
+data Shape
+  = AnyShape -- ^ A variable or ignore: anything matches
+  | ZeroShape
+  | PairShape Shape Shape
+  | IntShape Int -- ^ A positive integer literal
+  | StringShape String -- ^ A non-empty string literal
 
--- |Every pair, literal, variable and guard of a pattern, in left-to-right
--- preorder, with the path to it from the root. A guard comes after the
--- nodes of the pattern it annotates, and the paths to variables under a
--- guard pass through a refinement check of it.
--- e.g. PatternPair (PatternVar "x") (PatternPair (PatternInt 0) PatternIgnore)
---      will return [(id, PairNode), (HLeft, VarNode "x"), (HRight, PairNode), (HLeft . HRight, IntNode 0)]
+-- |The pattern's structure. Zero and the empty string are both encoded as
+-- zero.
+patternShape :: PatternA -> Shape
+patternShape = cata $ \case
+  PatternPairF x y      -> PairShape x y
+  PatternIntF 0         -> ZeroShape
+  PatternIntF i         -> IntShape i
+  PatternStringF ""     -> ZeroShape
+  PatternStringF str    -> StringShape str
+  PatternVarF _         -> AnyShape
+  PatternIgnoreF        -> AnyShape
+  PatternAnnotatedF x _ -> x
+
+-- |The parts of a pattern that bind or test beyond its structure.
+data PatternNode
+  = VarNode LocatedName
+  | GuardNode DesugaredSurfaceTerm -- ^ The predicate must hold of the term here
+
+-- |Every variable and guard of a pattern, in left-to-right preorder, with
+-- the path to it from the root. A guard comes after the nodes of the
+-- pattern it annotates, and the paths to variables under a guard pass
+-- through a refinement check of it.
+-- e.g. PatternPair (PatternVar "x") (PatternPair (PatternInt 0) (PatternVar "y"))
+--      will return [(HLeft, VarNode "x"), (HRight . HRight, VarNode "y")]
 patternNodes :: PatternA -> [(Path, PatternNode)]
 patternNodes = cata alg where
   alg = \case
-    PatternPairF x y      -> (id, PairNode) : (first (. HLeft) <$> x) <> (first (. HRight) <$> y)
-    PatternIntF i         -> [(id, IntNode i)]
-    PatternStringF str    -> [(id, StringNode str)]
-    PatternVarF name      -> [(id, VarNode name)]
-    PatternIgnoreF        -> []
-    PatternAnnotatedF x (AnnotatedEST g) -> (refineVar g <$> x) <> [(id, GuardNode g)]
+    PatternPairF x y -> (first (. HLeft) <$> x) <> (first (. HRight) <$> y)
+    PatternVarF name -> [(id, VarNode name)]
+    PatternAnnotatedF x (AnnotatedEST g) ->
+      let guard = lowerCases g
+      in (refineVar guard <$> x) <> [(id, GuardNode guard)]
+    PatternIntF _    -> []
+    PatternStringF _ -> []
+    PatternIgnoreF   -> []
   -- A variable under a guard is bound through a refinement check of the
   -- guarded term. The match already tested the guard, so the check cannot
   -- fail, but it lets sizing bound the variable as a let refinement would.
   refineVar g (path, VarNode name) = (path . refined g, VarNode name)
   refineVar _ node                 = node
-  refined g t@(anno :< _) = anno :< UnprocessedParsedTermH (CheckF RefinementAbort (lowerCases g) t)
+  refined g t@(anno :< _) = anno :< UnprocessedParsedTermH (CheckF RefinementAbort g t)
 
 -- |Realize a pattern's literal skeleton as a term, with variables and
 -- ignores as zeroes. Polymorphic in the case witness and pattern parameter
@@ -72,60 +98,65 @@ patternToTerm anno = cata alg where
 -- alternative in order, aborting when none matches. A scrutinee that is not
 -- already a variable is bound once, to a name source code cannot write, so
 -- the checks and bindings refer to it rather than copying it.
+--
+-- Matching depends on no definitions from source: literals are compared by
+-- the 'caseHelpers' that 'addBuiltins' binds.
 caseToNestedIfs :: LocTag -- ^ Where the case is, for its abort
                 -> DesugaredSurfaceTerm -- ^ Term to be pattern matched
                 -> [(PatternA, DesugaredSurfaceTerm)] -- ^ Alternatives
                 -> DesugaredSurfaceTerm
 caseToNestedIfs caseLoc scrutinee@(anno :< _) alternatives = case scrutinee of
   VarP _ -> lower scrutinee
-  _      -> AppP (LamP (locatedName generated scrutineeName)
-                       (lower (generated :< UnprocessedParsedTermL (VarF scrutineeName))))
-                 scrutinee
+  _      -> app generated (lam generated scrutineeName (lower (var generated scrutineeName)))
+                scrutinee
   where
     generated = GeneratedLoc "case scrutinee" (Just anno)
     scrutineeName = "__case_scrutinee"
     lower x = foldr (alternative x) nonExhaustive alternatives
     nonExhaustive =
-      ITEP (anno :< IntUPF 1)
-           (abortTerm CaseAbort caseLoc (caseLoc :< StringUPF "Non-exhaustive patterns in case"))
-           (anno :< IntUPF 0)
+      ite caseLoc (int caseLoc 1)
+          (abortTerm CaseAbort caseLoc (caseLoc :< StringUPF "Non-exhaustive patterns in case"))
+          (int caseLoc 0)
     -- An alternative without checks always matches, so later ones are dropped.
     alternative x (p, result@(resultAnno :< _)) next =
       let nodes = patternNodes p
           bound = bindPatternVars x nodes result
-      in case matchChecks resultAnno x nodes of
+      in case matchChecks resultAnno x (patternShape p) nodes of
         []     -> bound
-        checks -> ITEP (allOf resultAnno checks) bound next
+        checks -> ite resultAnno (allOf resultAnno checks) bound next
 
--- |Bool-valued checks that the term has the pattern's pair structure and
--- literals, and that its guards hold. Pair nodes and guard results are
--- arbitrary values, so each is coerced to a Bool
--- before it reaches @and@, whose arguments are refined to Bool. Integers are
--- compared with @dEqual@ and strings, whole, with @listEqual@. The literal
--- goes first: both helpers recurse on their first argument, and the
--- scrutinee may be unbounded input.
-matchChecks :: LocTag -> DesugaredSurfaceTerm -> [(Path, PatternNode)] -> [DesugaredSurfaceTerm]
-matchChecks anno x = concatMap check where
-  check (path, node) = case node of
-    PairNode       -> [truthy (path x)]
-    IntNode i      -> [equal "__case_dEqual" (anno :< IntUPF i) (path x)]
-    StringNode str -> [equal "__case_listEqual" (anno :< StringUPF str) (path x)]
-    VarNode _      -> []
-    GuardNode g    -> [truthy (AppP (lowerCases g) (path x))]
-  truthy :: DesugaredSurfaceTerm -> DesugaredSurfaceTerm
-  truthy t = ITEP t (anno :< IntUPF 1) (anno :< IntUPF 0)
-  equal :: String -> DesugaredSurfaceTerm -> DesugaredSurfaceTerm -> DesugaredSurfaceTerm
-  equal helper a = AppP (AppP (VarP helper) a)
+-- |Checks, each nonzero when it passes, that the term has the pattern's
+-- structure and then that its guards hold. Structure comes first, so a
+-- guard only sees a term the rest of the pattern matches.
+matchChecks :: LocTag -> DesugaredSurfaceTerm -> Shape -> [(Path, PatternNode)]
+            -> [DesugaredSurfaceTerm]
+matchChecks anno x shape nodes =
+  catMaybes [shapeCheck anno x shape]
+    <> [ app anno g (path x) | (path, GuardNode g) <- nodes ]
 
--- |The conjunction of non-empty Bool-valued checks.
+-- |A check that the term has the shape, or Nothing when any term does. A
+-- pair is tested before its parts, which are tested left to right. The
+-- literal goes first to a helper: the helpers recurse on their first
+-- argument, and the scrutinee may be unbounded input.
+shapeCheck :: LocTag -> DesugaredSurfaceTerm -> Shape -> Maybe DesugaredSurfaceTerm
+shapeCheck anno = check where
+  check t = \case
+    AnyShape      -> Nothing
+    ZeroShape     -> Just $ isZero anno t
+    PairShape l r -> Just $
+      case catMaybes [check (left anno t) l, check (right anno t) r] of
+        []    -> t
+        parts -> ite anno t (allOf anno parts) (int anno 0)
+    IntShape i    -> Just $ app anno (app anno (var anno intEqualName) (int anno i)) t
+    StringShape s -> Just $ app anno (app anno (var anno stringEqualName) (anno :< StringUPF s)) t
+
+-- |The conjunction of non-empty checks, nonzero exactly when all of them
+-- are: each check guards the rest.
 allOf :: LocTag -> [DesugaredSurfaceTerm] -> DesugaredSurfaceTerm
 allOf anno = \case
-  [c]    -> c
-  [a, b] -> AppP (AppP (rewriteOuterTag anno $ VarP "__case_and") a) b
-  cs     -> AppP (AppP (AppP (rewriteOuterTag anno $ VarP "__case_foldl")
-                             (VarP "__case_and"))
-                       (anno :< IntUPF 1))
-                 (anno :< ListUPF cs)
+  [c]      -> c
+  (c : cs) -> ite anno c (allOf anno cs) (int anno 0)
+  []       -> int anno 1
 
 -- |Bind each pattern variable in the case result to its part of the term,
 -- as an applied lambda. The leftmost occurrence of a repeated variable wins.
@@ -136,13 +167,79 @@ bindPatternVars x nodes result = foldr bind result vars where
   bind :: (LocatedName, DesugaredSurfaceTerm) -> DesugaredSurfaceTerm -> DesugaredSurfaceTerm
   bind (name, value) body = AppP (LamP name body) value
 
+intEqualName, stringEqualName :: String
+intEqualName = "__case_intEqual"
+stringEqualName = "__case_stringEqual"
+
+-- |Exact equality with a literal, for case matching: each helper takes the
+-- literal first and recurses on it alone. An integer @n@ is encoded as
+-- @n - 1@ paired with zero, so its helper walks the left spine of both
+-- terms and requires every right of the other to be zero. A string is a
+-- zero-terminated list of character codes, compared code by code.
+caseHelpers :: [(String, ExpandedSurfaceTerm)]
+caseHelpers =
+  [ (intEqualName, walkLiteral intEqualName (\loc p -> isZero loc (right loc (right loc p))) left)
+  , (stringEqualName, walkLiteral stringEqualName sameHead right)
+  ]
+  where
+    sameHead loc p = app loc (app loc (var loc intEqualName) (left loc (left loc p)))
+                             (left loc (right loc p))
+    -- With the literal and the other term paired as @p@: while the literal
+    -- is a pair, the other must be one whose head matches, and the walk
+    -- continues on the next parts of both; once the literal is zero, so must
+    -- the other be.
+    walkLiteral name headMatches next =
+      lam loc "literal" . lam loc "term" $
+        app loc walk (pair loc (var loc "literal") (var loc "term"))
+      where
+        loc = GeneratedLoc ("case helper " <> name) Nothing
+        walk = loc :< UnprocessedParsedTermH (RecursionF test step base)
+        test = lam loc "p" (left loc (var loc "p"))
+        step = lam loc "recur" . lam loc "p" $
+          let p = var loc "p"
+          in ite loc (right loc p)
+                 (ite loc (headMatches loc p)
+                      (app loc (var loc "recur") (pair loc (next loc (left loc p)) (next loc (right loc p))))
+                      (int loc 0))
+                 (int loc 0)
+        base = lam loc "p" (isZero loc (right loc (var loc "p")))
+
+-- Builders for generated terms, each placed at the given location.
+
+type Term c p = Cofree (UnprocessedParsedTermF c p) LocTag
+
+ite :: LocTag -> Term c p -> Term c p -> Term c p -> Term c p
+ite anno c t e = anno :< UnprocessedParsedTermH (ITEF c t e)
+
+-- |One when the term is zero, else zero.
+isZero :: LocTag -> Term c p -> Term c p
+isZero anno t = ite anno t (int anno 0) (int anno 1)
+
+left, right :: LocTag -> Term c p -> Term c p
+left anno t = anno :< UnprocessedParsedTermH (HLeftF t)
+right anno t = anno :< UnprocessedParsedTermH (HRightF t)
+
+pair :: LocTag -> Term c p -> Term c p -> Term c p
+pair anno a b = anno :< UnprocessedParsedTermB (PairSF a b)
+
+app :: LocTag -> Term c p -> Term c p -> Term c p
+app anno f x = anno :< UnprocessedParsedTermL (AppF f x)
+
+lam :: LocTag -> String -> Term c p -> Term c p
+lam anno name body = anno :< UnprocessedParsedTermL (LamF (locatedName anno name) body)
+
+var :: LocTag -> String -> Term c p
+var anno name = anno :< UnprocessedParsedTermL (VarF name)
+
+int :: LocTag -> Int -> Term c p
+int anno n = anno :< IntUPF n
+
 -- |Run every post-sugar rewrite and remove the case capability from the term
 -- type before resolution.
 desugarTerm :: ExpandedSurfaceTerm -> DesugaredSurfaceTerm
 desugarTerm = lowerCases
             . optimizeBuiltinFunctions
             . addBuiltins
-            . addCaseHelperAliases
 
 lowerCases :: ExpandedSurfaceTerm -> DesugaredSurfaceTerm
 lowerCases = cata go where
@@ -155,31 +252,6 @@ lowerCases = cata go where
     anno C.:< ListUPF terms            -> anno :< ListUPF terms
     anno C.:< IntUPF n                 -> anno :< IntUPF n
     anno C.:< StringUPF s              -> anno :< StringUPF s
-
--- |Capture the helper definitions used by generated case code in the
--- outer resolved let. The aliases cannot be written in source, so nested
--- bindings cannot capture the generated references.
-addCaseHelperAliases :: ExpandedSurfaceTerm -> ExpandedSurfaceTerm
-addCaseHelperAliases _term@(loc :< LetUPF bindings body) =
-  loc :< LetUPF (aliases <> bindings) body
-  where
-    aliases =
-      [ ( locatedName (GeneratedLoc ("case helper " <> name) (Just loc)) alias
-        , loc :< UnprocessedParsedTermL (VarF name)
-        )
-      | (name, alias) <- [ ("and", "__case_and")
-                         , ("foldl", "__case_foldl")
-                         , ("dEqual", "__case_dEqual")
-                         , ("listEqual", "__case_listEqual")
-                         ]
-      , name `elem` (letBindingName <$> bindings)
-      ]
-addCaseHelperAliases term = term
-
-
-rewriteOuterTag :: anno -> Cofree a anno -> Cofree a anno
-rewriteOuterTag anno (_ :< x) = anno :< x
-
 
 -- |A builtin function, given by its direct form once saturated. The
 -- location is the one of the application that saturates it.
@@ -257,15 +329,15 @@ optimizeBuiltinFunctions = go (Set.fromList (fst <$> builtins))
            then Set.insert text
            else Set.delete text
 
--- |Bind @zero@ and the 'builtins' around the term.
+-- |Bind @zero@, the 'builtins' and the 'caseHelpers' around the term.
 addBuiltins :: ExpandedSurfaceTerm -> ExpandedSurfaceTerm
-addBuiltins term = GeneratedLoc "addBuiltins" Nothing :< LetUPF (zero : (define <$> builtins)) term
+addBuiltins term = GeneratedLoc "addBuiltins" Nothing :< LetUPF bindings term
   where
+    bindings = zero : (define <$> builtins) <> (helper <$> caseHelpers)
     zero = (locatedName (BuiltinLoc "zero") "zero", BuiltinLoc "zero" :< IntUPF 0)
     define (name, builtin) = (locatedName loc name, definition) where
       loc = BuiltinLoc name
-      var n = loc :< UnprocessedParsedTermL (VarF n)
-      lam n body = loc :< UnprocessedParsedTermL (LamF (locatedName loc n) body)
       definition = case builtin of
-        Unary f  -> lam "x" (f loc (var "x"))
-        Binary f -> lam "x" (lam "y" (f loc (var "x") (var "y")))
+        Unary f  -> lam loc "x" (f loc (var loc "x"))
+        Binary f -> lam loc "x" (lam loc "y" (f loc (var loc "x") (var loc "y")))
+    helper (name, definition) = (locatedName (GeneratedLoc "case helper" Nothing) name, definition)

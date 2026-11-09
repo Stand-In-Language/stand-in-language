@@ -43,7 +43,7 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Debug.Trace (trace)
 import GHC.Generics (Generic1, Generically1 (..))
-import Telomare.Desugar (desugarTerm, rewriteOuterTag)
+import Telomare.Desugar (desugarTerm)
 import Telomare.Error
 import Telomare.IR.Base
 import Telomare.IR.Builder
@@ -78,9 +78,7 @@ freeVarsDeep :: ExpandedSurfaceTerm -> Set String
 freeVarsDeep = cata alg where
   alg (VarAFP _ n)           = Set.singleton n
   alg (LamAFP _ n body)      = Set.delete (locatedNameText n) body
-  alg (_ C.:< CaseUPF scrut alts) = scrut <> foldMap (\(p, body) -> patternRefs p <> body) alts <> caseRefs
-    where
-      caseRefs = Set.fromList ["and", "listEqual", "foldl"]
+  alg (_ C.:< CaseUPF scrut alts) = scrut <> foldMap (\(p, body) -> patternRefs p <> body) alts
   alg e                    = F.fold e
 
   patternRefs :: PatternA -> Set String
@@ -92,11 +90,6 @@ freeVarsDeep = cata alg where
 -- |Keep only bindings transitively reachable from @root@. Unreachable
 -- bindings are skipped by 'process' and 'compile', giving large speedups
 -- when a snippet only uses a small slice of a large Prelude+UDT environment.
---
--- 'freeVarsDeep' also accounts for names that 'desugarTerm' injects into
--- case alternatives before 'process': @and@, @listEqual@ and
--- @foldl@. Without these the pruned LetUPF would fail with
--- MissingDefinitions after case expansion.
 pruneBindings :: ExpandedSurfaceTerm
               -> [(String, ExpandedSurfaceTerm)]
               -> [(String, ExpandedSurfaceTerm)]
@@ -146,6 +139,10 @@ debruijinize = fmap closeLams . flip (runReaderT . cata f) [] where
     (_, Closed n') | n' == n -> True
     (_, LetBinding _ n') | n' == n -> True
     _ -> False
+
+-- |Replace the annotation at the root of a term.
+rewriteOuterTag :: anno -> Cofree a anno -> Cofree a anno
+rewriteOuterTag anno (_ :< x) = anno :< x
 
 -- | Compile Term2 to Term3 with trimmed lambda captures — lambda lifting
 -- in Telomare's env-machine sense. A lambda's closure used to capture the

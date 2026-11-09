@@ -100,6 +100,18 @@ unitTestsCase = testGroup "Unit tests on case expressions"
   , testCase "int pattern rejects a near miss" $ do
       res <- runTelomareStr $ caseExprNearMissStr "(\"ab\",3)" "(\"ab\",4)"
       res @?= "False\ndone"
+  , testCase "int pattern rejects a value matching only its left spine" $ do
+      res <- runTelomareStr $ caseExprNearMissStr "(0,1)" "1"
+      res @?= "False\ndone"
+  , testCase "int pattern rejects a nonzero right deeper in its spine" $ do
+      res <- runTelomareStr $ caseExprNearMissStr "(((0,0),1),0)" "3"
+      res @?= "False\ndone"
+  , testCase "string pattern rejects a character matching only its left spine" $ do
+      res <- runTelomareStr $ caseExprNearMissStr "((96,1),0)" "\"a\""
+      res @?= "False\ndone"
+  , testCase "case needs no Prelude definitions" $ do
+      res <- runTelomareStr caseExprNoPreludeStr
+      res @?= "matched\ndone"
   , testCase "nested cases on computed scrutinees" $ do
       res <- runTelomareStr caseExprNestedStr
       res @?= "inin\ndone"
@@ -117,6 +129,18 @@ caseExprNestedStr = unlines
   , "                                         (z, 0) -> z)"
   , "              _ -> \"wrong inner\""
   , "          _ -> \"wrong outer\""
+  , "  in \\input -> (caseTest, 0)"
+  ]
+
+-- |Int, string and pair patterns in a program that imports nothing.
+caseExprNoPreludeStr :: String
+caseExprNoPreludeStr = unlines
+  [ "main ="
+  , "  let caseTest ="
+  , "        case (3, (\"ab\", 0)) of"
+  , "          (3, (\"ac\", _)) -> \"wrong string\""
+  , "          (2, _) -> \"wrong int\""
+  , "          (3, (\"ab\", x)) -> \"matched\""
   , "  in \\input -> (caseTest, 0)"
   ]
 
