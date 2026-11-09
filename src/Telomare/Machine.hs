@@ -359,13 +359,43 @@ exactSuperStepM step handleOther x = f x where
     StuckFW (LeftSF (SuperEE (EitherPF n a b))) -> branch n (pbStep LeftSF a) (pbStep LeftSF b)
     StuckFW (RightSF (SuperEE (EitherPF n a b))) -> branch n (pbStep RightSF a) (pbStep RightSF b)
     StuckFW (SetEnvSF (SuperEE (EitherPF n a b))) -> branch n (pbStep SetEnvSF a) (pbStep SetEnvSF b)
-    FillFunction GateB (SuperEE (EitherPF n a b)) ->
-      branch n (step $ FillFunction GateB a) (step $ FillFunction GateB b)
+    FillFunction GateB s@(SuperEE (EitherPF n a b)) -> asks (`dataDecisionDepth` s) >>= \case
+      Just depth | depth > deepDecision -> pure . superEE $ EitherPF Nothing doLeft doRight
+      _ -> branch n (step $ FillFunction GateB a) (step $ FillFunction GateB b)
     FillFunction (SuperEE (EitherPF n sca scb)) e ->
       branch n (pbStep SetEnvSF . BasicEE $ PairSF sca e) (pbStep SetEnvSF . BasicEE $ PairSF scb e)
     -- stuck values
     x'@(SuperFW (EitherPF _ _ _)) -> pure $ embed x'
     _ -> handleOther x
+
+-- |How many input positions deep a superposition may decide a gate before
+-- the gate is taken as an unknown choice ('exactSuperStepM').
+deepDecision :: Int
+deepDecision = 8
+
+-- |How deep a superposition's choices go on a path, when every outcome of
+-- it there is plain data: Zero or a pair, so a gate on it only selects a
+-- branch. Choices the path decides are followed, not counted. Nothing when
+-- an outcome is something else, such as an aborted value, or the walk runs
+-- past its budget. A gate on a deep such superposition is one decision of
+-- many input positions, as an equality test with a literal makes;
+-- following each of its outcomes apart would run what follows once per
+-- position the test read.
+dataDecisionDepth :: (Base g ~ f, BasicBase f, SuperBase f, Recursive g, Corecursive g)
+                  => InputPath -> g -> Maybe Int
+dataDecisionDepth path = fmap fst . go (4096 :: Int) where
+  go budget v
+    | budget <= 0 = Nothing
+    | otherwise = case v of
+        SuperEE (EitherPF (Just m) l r) | Just pick <- pathDecides path m ->
+          go (budget - 1) (if pick then l else r)
+        SuperEE (EitherPF _ l r) -> do
+          (dl, budget') <- go (budget - 1) l
+          (dr, budget'') <- go budget' r
+          pure (1 + max dl dr, budget'')
+        ZeroB     -> Just (0, budget - 1)
+        PairB _ _ -> Just (0, budget - 1)
+        _         -> Nothing
 
 -- |@EitherPF n a b@, kept as small as exactness allows. What @n@ decides
 -- of the branches' own superpositions is taken, and the choice is pushed
