@@ -147,6 +147,29 @@ sizingSpec = do
       kinds <- remainingChecks "test/programs/notinput.tel" "notinput"
       kinds `shouldBe` Right ([], [RefinementAbort])
 
+  describe "a refinement bounds what its checked value flows into" $ do
+    it "sizes a recursion by the check in its own case alternative" $ do
+      result <- compileAtFullBudget "test/programs/branch-refinement.tel" "branch-refinement"
+      case result of
+        Left err -> expectationFailure $ "expected this program to size:\n" <> err
+        Right _  -> pure ()
+
+    it "does not bound one alternative's input by another's check" $ do
+      -- the checks used to bound the whole input, as if every input passed
+      -- every check main met
+      result <- compileAtFullBudget "test/programs/branch-refinement-leak.tel" "branch-refinement-leak"
+      case result of
+        Right _ -> expectationFailure "expected this program to fail sizing"
+        Left err -> err `shouldSatisfy` isInfixOf "depends on input that nothing bounds"
+
+    it "does not bound by a check whose passing branch it cannot follow" $ do
+      -- the unknown branch used to be read as impossible, bounding `left s`
+      -- to Zero, and the program miscompiled
+      result <- compileAtFullBudget "test/programs/unknown-check-branch.tel" "unknown-check-branch"
+      case result of
+        Right _ -> expectationFailure "expected this program to fail sizing"
+        Left err -> err `shouldSatisfy` isInfixOf "depends on input that nothing bounds"
+
 -- |The kinds of the refinement checks a compiled program's main still
 -- makes, and those its input prologue makes.
 remainingChecks :: FilePath -> String -> IO (Either String ([AbortKind], [AbortKind]))

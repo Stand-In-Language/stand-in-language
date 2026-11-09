@@ -1,0 +1,13 @@
+import Prelude
+
+-- The quit alternative's check says nothing of the input the last
+-- alternative recurses on, so this program cannot be sized.
+
+Quit = \x -> case x of
+  "q" -> 1
+  _ -> 0
+
+main = \input -> case input of
+  0 -> ("start", 1)
+  ((s : Quit), _) -> ("quit", 0)
+  (s, _) -> ((d2c (left s) succByte 0, 0), 1)

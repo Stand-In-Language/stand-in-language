@@ -1,0 +1,12 @@
+import Prelude
+
+-- A check passing on either branch of a gate, one of which the analysis
+-- cannot follow, bounds neither: `left s` may be a pair when the check
+-- passes, so the recursion on it cannot be sized.
+
+P = \x -> if left x then toBool (d2c 3 left (right x)) else 1
+
+main = \input -> case input of
+  0 -> ("start", 1)
+  ((s : P), _) -> ((d2c (left s) succByte 0, 0), 1)
+  _ -> ("other", 1)

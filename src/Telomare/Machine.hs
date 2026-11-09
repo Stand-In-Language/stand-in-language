@@ -168,6 +168,7 @@ gateIndexedResult :: (Base g ~ f, IndexedInputBase f, Recursive g, Corecursive g
 gateIndexedResult handleOther = \case
   -- IndexedEE (IVarF n) -> GateResult True False Nothing -- wait, why lb but no rb?
   IndexedEE (IVarF _n) -> GateResult True True Nothing
+  IndexedEE (BoundedF _ _) -> GateResult True True Nothing
   x -> handleOther x
 
 {-# INLINABLE mergeShallow #-}
@@ -421,6 +422,7 @@ indexedSuperStepM :: (Base a ~ f, Traversable f, BasicBase f, StuckBase f, Super
   => (f a -> m a) -> f a -> m a
 indexedSuperStepM handleOther = \case
   FillFunction GateB (IndexedEE (IVarF n)) -> pure . superEE $ EitherPF (pure n) doLeft doRight
+  FillFunction GateB (IndexedEE (BoundedF _ n)) -> pure . superEE $ EitherPF (pure n) doLeft doRight
 
   x -> handleOther x
 
@@ -630,6 +632,9 @@ unsizedTestIndexed zeroes handleOther ri = \case
     else if Set.member n zeroes
     then debugTrace ("unsizedTestIndexed resolved to zero for var " <> show n) ZeroB
     else iv
+  bv@(IndexedEE (BoundedF zs n)) -> if isUnbounded zs n
+    then AbortB sizingOrigin . dataB . AbortUnsizeable . i2B . fromEnum $ ri
+    else bv
   x -> handleOther ri x
 
 unsizedTestSuper :: (Base g ~ f, BasicBase f, SuperBase f, AbortBase f, Recursive g, Corecursive g, PrettyPrintable g)
@@ -707,6 +712,7 @@ stuckSizingStepM handleOther x = case x of
       ZeroB                -> True
       PairB _ _            -> True
       IndexedEE (IVarF _)  -> True
+      IndexedEE (BoundedF _ _) -> True
       _                    -> False
     notPair = \case
       ZeroB                  -> True
@@ -827,6 +833,8 @@ indexedInputStepM zeroes handleOther x = f x where
   f = \case
     StuckFW (LeftSF (IndexedEE (IVarF n))) -> pure . res $ n * 2 + 1
     StuckFW (RightSF (IndexedEE (IVarF n))) -> pure . res $ n * 2 + 2
+    StuckFW (LeftSF (IndexedEE (BoundedF zs n))) -> pure . boundedInput zs $ n * 2 + 1
+    StuckFW (RightSF (IndexedEE (BoundedF zs n))) -> pure . boundedInput zs $ n * 2 + 2
     StuckFW (LeftSF (IndexedEE AnyF)) -> pure $ indexedEE AnyF
     StuckFW (RightSF (IndexedEE AnyF)) -> pure $ indexedEE AnyF
     StuckFW (SetEnvSF (IndexedEE AnyF)) -> pure $ indexedEE AnyF
@@ -898,6 +906,15 @@ deferredEvalStep' handleOther = \case
     d@(DeferredFW _) -> embed d
 
     x -> handleOther x
+
+-- |An input position under the zeros a refinement check requires ('BoundedF'):
+-- Zero where one is required, unbounded where none is required at or below
+-- it, and bounded otherwise.
+boundedInput :: (Base g ~ f, BasicBase f, IndexedInputBase f, Recursive g, Corecursive g) => Set Integer -> Integer -> g
+boundedInput zs n
+  | Set.member n zs = ZeroB
+  | isUnbounded zs n = indexedEE $ IVarF n
+  | otherwise = indexedEE $ BoundedF zs n
 
 -- is a variable limited in value or unbounded?
 isUnbounded :: Set Integer -> Integer -> Bool

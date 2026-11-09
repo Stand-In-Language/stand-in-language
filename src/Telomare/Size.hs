@@ -8,9 +8,10 @@
 {-# LANGUAGE UndecidableInstances #-}
 
 -- |The sizing pass: telomare's totality checker. 'sizeTermM' abstractly
--- interprets the program over a symbolic input ('initialInput', bounded by
--- the refinement-derived 'InputRestrictions' from 'getInputLimits') and
--- infers, per unsized recursion site, an iteration count that holds for
+-- interprets the program over a symbolic input, unbounded but where a
+-- refinement check bounds a value the computation after it reads
+-- ('narrowChecked'), and infers, per unsized recursion site, an iteration
+-- count that holds for
 -- every input - then bakes those counts into the term as church towers.
 -- A program that cannot be sized does not compile ('SizingFailure').
 module Telomare.Size where
@@ -22,7 +23,7 @@ import Data.Foldable
 import Data.Functor.Foldable
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (isNothing)
+import Data.Maybe (fromMaybe, isJust, isNothing)
 -- import Data.SBV ((.<), (.>))
 import Control.Exception (Exception)
 import Control.Exception.Base (throw)
@@ -108,19 +109,6 @@ extractInputRestrictions = cleanup . f Nothing where
   cleanup = \case
     Just (StrictAccum s _) -> s
     _ -> mempty
-
--- |At each refinement check met during a symbolic run, run its check
--- function over the symbolic values and report the result: a residual
--- over the input, Zero where the check fails. The check's value goes on
--- unchanged.
-checkResultStepM :: Monoid w => Int -> (AbortOrigin -> InputSizingExpr -> w)
-  -> (InputSizingExprF InputSizingExpr -> StrictAccum w InputSizingExpr)
-  -> InputSizingExprF InputSizingExpr -> StrictAccum w InputSizingExpr
-checkResultStepM fuel report handleOther x = f x where
-  f = \case
-    UnsizedFW (RefinementWrapperF o tc c) ->
-      StrictAccum (report o (transformNoDefer (refinementCheckStep fuel) $ appB tc c)) c
-    _ -> handleOther x
 
 -- |What a check result says about the input: the zeros and pairs it
 -- needs in order to pass.
@@ -213,13 +201,8 @@ term3ToUnsizedExpr = runIdentity . cata conv where
     Term3CheckingWrapper o tc c -> unsizedEE <$> (RefinementWrapperF o <$> tc <*> c)
     _z -> error "term3ToUnsizedExpr could not convert"
 
--- get simple input limits derived from refinements
--- returns a set of guaranteed Zeros, where the Integer is the encoded path from root of intput
--- the Int is the unfolding budget for recursions inside checks ('unfoldRecursion')
-getInputLimits :: Int -> UnsizedExpr -> InputRestrictions
-getInputLimits fuel = symbolicChecks fuel (checkRestrictions fuel)
-
--- |One step of an unsized recursion during 'symbolicChecks', unfolded as
+-- |One step of an unsized recursion inside a refinement check
+-- ('refinementCheckStep'), unfolded as
 -- sizing unfolds it ('unsizedStepM'''), so a check counting a constant
 -- (@Num 2@, @Vector 9@, @d2c 57 left x@) restricts the input it reads.
 -- Where the recursion's test reads the input instead, or it runs past the
@@ -242,30 +225,6 @@ unfoldRecursion fuel = \case
       PairB _ _ -> True
       _         -> False
 
--- |Run a term over a symbolic input, reporting the result of every
--- refinement check it meets ('checkResultStepM'). A gate on the input
--- itself is not split, but read as an unknown value, as is an unsized
--- recursion whose test reads the input ('unfoldRecursion'). Converted
--- before evaluation, every recursion would be unknown, inside check
--- functions too.
-symbolicChecks :: Monoid w => Int -> (AbortOrigin -> InputSizingExpr -> w) -> UnsizedExpr -> w
-symbolicChecks fuel report = getAccum . transformNoDeferM evalStep . convertIS where
-  convertU = \case
-    UnsizedFW u@(UnsizedStubF _ _) -> unsizedEE <$> sequence u
-    UnsizedFW (RecursionTestF _ x) -> x
-    UnsizedFW rw@(RefinementWrapperF _ _ _) -> unsizedEE <$> sequence rw
-    x -> error $ "symbolicChecks convert, unhandled:\n" <> prettyPrint (runIdentity $ sequence x)
-  convertIS :: UnsizedExpr -> InputSizingExpr
-  convertIS = runIdentity . cata (convertBasic (convertStuck (convertAbort (convertIndexed convertU))))
-  unexpectedI x = error $ "symbolicChecks eval, unexpected:\n" <> prettyPrint x
-  recursionStep handleOther = \case
-    UnsizedFW u | isRecursion u -> pure $ unfoldRecursion fuel u
-    x -> handleOther x
-  isRecursion = \case
-    RefinementWrapperF {} -> False
-    _                     -> True
-  evalStep = basicStepM (stuckStepM (abortStepM (indexedInputStepM Set.empty (indexedInputIgnoreSwitchStepM (checkResultStepM fuel report (recursionStep unexpectedI))))))
-
 capMain :: (Base g ~ f, BasicBase f, StuckBase f, Recursive g, Corecursive g) => g -> g -> g
 capMain i c = appB c i
 
@@ -275,12 +234,6 @@ instance Show UnexpectedGrammarException where
   show (UGException e) = "UnexpectedGrammarException: " <> e
 
 instance Exception UnexpectedGrammarException
-
-initialInput :: (Base a ~ f, BasicBase f, IndexedInputBase f, Recursive a, Corecursive a) => InputRestrictions -> a
-initialInput irs = f 0 where
-  f n = if any (`decendant` n) $ pairs irs
-    then PairB (f $ n * 2 + 1) (f $ n * 2 + 2)
-    else indexedEE $ IVarF n
 
 -- |Size every recursion site, returning the iteration counts alongside the
 -- compiled term. The counts are the numbers the compiler already relies on to
@@ -297,8 +250,9 @@ sizeTermM sizingSettings x = tidyUp . transformNoDeferM evalStep $ mx where
     , sizingFailureLoc = Nothing
     }
   failConvert unhandled = (>>= Left) $ ("sizeTermM convert, unhandled:\n" <>) .  prettyPrint <$> sequence unhandled
-  inputRestrictions = (\ir -> debugTrace ("sizeTermM zeros are\n" <> show ir) ir) $ getInputLimits (maxSizingSize sizingSettings) cm'
-  zeros = zeroes inputRestrictions
+  -- no input is bounded but by the checks its values pass ('narrowChecked')
+  zeros = Set.empty
+  fuel = maxSizingSize sizingSettings
   convertNakedEnvs = \case
     StuckFW EnvSF -> ZeroB
     other -> embed other
@@ -308,8 +262,8 @@ sizeTermM sizingSettings x = tidyUp . transformNoDeferM evalStep $ mx where
     then capMain (indexedEE $ IVarF 0) x
     else x
   cm = removeRefinementWrappers cm'
-  mx = removeRefinementWrappers $ if doCap sizingSettings
-    then capMain (initialInput inputRestrictions) x
+  mx = if doCap sizingSettings
+    then capMain (indexedEE $ IVarF 0) x
     else transformNoDefer convertNakedEnvs x
   tidyUp (StrictAccum sr@(SizedRecursion sm) r) = debugTrace ("sizes are: " <> show sm <> "\nand result is:\n" <> prettyPrint r) $ case foldAborted r of
     Just (UnsizableSR i) -> debugTrace "sizeTermM hit unsizable" Left $ unlocated i UnboundedInput
@@ -349,7 +303,67 @@ sizeTermM sizingSettings x = tidyUp . transformNoDeferM evalStep $ mx where
   unsizedTest ri = unsizedTestIndexed zeros (unsizedTestSuper (unsizedTest ri) (const id)) ri
   unsizedTest' ri = (\v -> debugTrace ("unsizedTest evaluated to value of\n" <> prettyPrint v) v) . unsizedTest ri
   unhandledError err = throw $ UGException ("sizeTermM unhandled case\n" <> prettyPrint err)
-  evalStep = basicStepM (stuckStepM (abortStepM (indexedInputStepM zeros (indexedSuperStepM (superStepM gateResult evalStep (unsizedStepM''' (maxSizingSize sizingSettings) zeros (\ri -> pure . unsizedTest' ri) (`StrictAccum` ()) (stuckSizingStepM unhandledError)))))))
+  -- a check is sized as compiled, over every value that reaches it, and what
+  -- follows it runs on the value narrowed to what passing it requires
+  -- ('narrowChecked'). A check that fails wherever it runs is its abort, and
+  -- one that cannot be sized its verdict. Otherwise the inputs it fails on
+  -- abort there, needing no count after it, so its aborts are left behind:
+  -- carried on, they would multiply through everything after the check.
+  checkStep handleOther = \case
+    UnsizedFW (RefinementWrapperF o tc c) -> do
+      checked <- transformNoDeferM evalStep (refinementCheckB o tc c)
+      pure $ case checked of
+        AbortEE _ -> checked
+        _ | isJust (foldAborted checked) -> checked
+          | otherwise -> fromMaybe c (narrowChecked fuel o tc c)
+    other -> handleOther other
+  evalStep = basicStepM (stuckStepM (abortStepM (indexedInputStepM zeros (indexedSuperStepM (superStepM gateResult evalStep (checkStep (unsizedStepM''' fuel zeros (\ri -> pure . unsizedTest' ri) (`StrictAccum` ()) (stuckSizingStepM unhandledError))))))))
+
+-- |The value a refinement check passes on, narrowed to what passing it
+-- requires. The check runs over the value symbolically ('refinementCheckStep'),
+-- and each input position the value holds is replaced by the shape the
+-- check's restrictions allow ('narrowTo'). Sizing goes on with the narrowed
+-- value, so a check bounds exactly the computation its value flows into:
+-- only the inputs that pass it reach there, since the others abort at it.
+-- Nothing when there is nothing to narrow.
+narrowChecked :: Int -> AbortOrigin -> UnsizedExpr -> UnsizedExpr -> Maybe UnsizedExpr
+narrowChecked fuel o tc c
+  | not (readsInput c) = Nothing
+  | InputRestrictions zs ps <- restrictions, Set.null zs && Set.null ps = Nothing
+  | otherwise = Just $ narrowTo restrictions c
+  where
+    restrictions = checkRestrictions fuel o . transformNoDefer (refinementCheckStep fuel)
+      $ appB (toCheckValue tc) (toCheckValue c)
+    readsInput = cata $ \case
+      IndexedFW (IVarF _)      -> True
+      IndexedFW (BoundedF _ _) -> True
+      other                    -> or other
+
+-- |A value of the sizing run, as the check evaluator reads it. It has no
+-- superpositions: one is an unknown there. A bounded input position reads as
+-- the position, which only loses what bounds it.
+toCheckValue :: UnsizedExpr -> InputSizingExpr
+toCheckValue = runIdentity . cata (convertBasic (convertStuck (convertAbort other))) where
+  other = \case
+    IndexedFW (BoundedF _ n) -> pure . indexedEE $ IVarF n
+    IndexedFW i -> indexedEE <$> sequence i
+    UnsizedFW u -> unsizedEE <$> sequence u
+    _superposition -> pure $ indexedEE AnyF
+
+-- |Each input position in a value, narrowed to what the restrictions allow
+-- it: a pair where a pair is required at or below it, and otherwise the
+-- position under the zeros required of it ('boundedInput'), which a bounded
+-- position adds to its own.
+narrowTo :: InputRestrictions -> UnsizedExpr -> UnsizedExpr
+narrowTo (InputRestrictions zs ps) = cata $ \case
+  IndexedFW (IVarF n)       -> shape zs n
+  IndexedFW (BoundedF zs' n) -> shape (zs <> zs') n
+  other                     -> embed other
+  where
+    shape z n
+      | not (Set.member n z) && any (`decendant` n) ps =
+          PairB (shape z $ n * 2 + 1) (shape z $ n * 2 + 2)
+      | otherwise = boundedInput z n
 
 removeRefinementWrappers :: (Base g ~ f, BasicBase f, StuckBase f, AbortBase f, UnsizedBase f, Recursive g, Corecursive g) => g -> g
 removeRefinementWrappers = cata f where

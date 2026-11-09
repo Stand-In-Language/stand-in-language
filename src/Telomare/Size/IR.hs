@@ -16,6 +16,7 @@ import Data.Functor.Foldable
 import Data.Map (Map)
 import qualified Data.Map as Map
 import qualified Data.Map.Strict as Map.Strict
+import Data.Set (Set)
 import Data.Validity (Validity (..), trivialValidation)
 import GHC.Generics (Generic)
 
@@ -229,29 +230,38 @@ instance PrettyPrintable1 VoidF where
 
 data IndexedInputF f
   = IVarF Integer
+  -- | An input position a refinement check bounded, with the zeros it
+  -- requires (positions of the whole input). It reads as 'IVarF' with these
+  -- zeros, but only where the checked value flows: the input elsewhere is
+  -- unbounded ('Telomare.Size.narrowChecked').
+  | BoundedF (Set Integer) Integer
   | AnyF
   deriving (Eq, Ord, Show, Functor, Foldable, Generic)
 
 instance Traversable IndexedInputF where
   {-# INLINE traverse #-}
   traverse _ = \case
-    IVarF n -> pure $ IVarF n
-    AnyF    -> pure AnyF
+    IVarF n      -> pure $ IVarF n
+    BoundedF z n -> pure $ BoundedF z n
+    AnyF         -> pure AnyF
 
 instance Eq1 IndexedInputF where
   liftEq _test a b = case (a, b) of
-    (IVarF x, IVarF y) -> x == y
-    (AnyF, AnyF)       -> True
-    _                  -> False
+    (IVarF x, IVarF y)             -> x == y
+    (BoundedF zx x, BoundedF zy y) -> x == y && zx == zy
+    (AnyF, AnyF)                   -> True
+    _                              -> False
 
 instance Show1 IndexedInputF where
   liftShowsPrec _showsPrec _showList _prec x = case x of
-    IVarF n -> shows $ "IVarF " <> show n
-    AnyF    -> shows "IgnoreThis"
+    IVarF n      -> shows $ "IVarF " <> show n
+    BoundedF z n -> shows $ "BoundedF " <> show z <> " " <> show n
+    AnyF         -> shows "IgnoreThis"
 
 instance PrettyPrintable1 IndexedInputF where
   showP1 = \case
     IVarF n -> pure $ "I" <> show n
+    BoundedF _ n -> pure $ "B" <> show n
     AnyF -> pure "-"
 
 data DeferredEvalF f

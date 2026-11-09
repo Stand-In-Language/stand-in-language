@@ -1,0 +1,17 @@
+import Prelude
+
+-- Each alternative's check bounds only its own alternative: the digit
+-- alternative's recursion is sized by Digit, though the last alternative
+-- takes any input at all and the quit alternative a different one.
+
+Quit = \x -> case x of
+  "q" -> 1
+  _ -> 0
+
+Digit = Vector 1 (\c -> and (gt c (left "0")) (leq c (left "9")))
+
+main = \input -> case input of
+  0 -> ("start", 1)
+  ((s : Quit), _) -> ("quit", 0)
+  ((s : Digit), _) -> ((d2c (d2c (left "0") left (left s)) succByte (left "a"), 0), 1)
+  _ -> ("other", 1)
