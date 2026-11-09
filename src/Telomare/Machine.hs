@@ -178,6 +178,12 @@ mergeShallow n a b
   -- stops there ('stuckSizingStepM')
   | stuck a   = b
   | stuck b   = a
+  -- nor has a path the program aborts on: what follows an aborted value only
+  -- passes it on, so it needs no count, and kept as an alternative the abort
+  -- multiplies through all that follows (a case with no default yields it
+  -- beside every value it matches)
+  | programAbort a = b
+  | programAbort b = a
   | same      = debugTrace ("mergeShallow found same pair\n" <> prettyPrint a <> "\nand\n" <> prettyPrint b) a
   | otherwise = superEE $ EitherPF n a b
   where
@@ -191,9 +197,12 @@ mergeShallow n a b
     stuck = \case
       AbortEE (AbortF o m) | sizing o, AbortStuck <- messageData m -> True
       _                                                            -> False
+    programAbort = \case
+      AbortEE (AbortF o _) -> not (sizing o)
+      _                    -> False
 
 {-# INLINABLE foldGateResult #-}
-foldGateResult :: forall g f. (Base g ~ f, SuperBase f, BasicBase f, StuckBase f, Recursive g, Corecursive g) => Maybe Integer -> GateResult g -> g
+foldGateResult :: forall g f. (Base g ~ f, SuperBase f, BasicBase f, StuckBase f, AbortBase f, Recursive g, Corecursive g) => Maybe Integer -> GateResult g -> g
 foldGateResult n (GateResult doL doR o) =
   let branchPart = case (doL, doR) of
         (True, True) -> pure . superEE $ EitherPF n doLeft doRight
@@ -201,6 +210,9 @@ foldGateResult n (GateResult doL doR o) =
         (_, True)    -> pure doRight
         _            -> Nothing
   in case (o, branchPart) of
+    -- a gate on a value the program aborts on selects nothing worth sizing
+    -- ('mergeShallow')
+    (Just (AbortEE (AbortF ao _)), Just bp) | abortKind ao /= SizingAbort -> bp
     (Just o', Just bp) -> superEE $ EitherPF Nothing o' bp
     (Just x, _)        -> x
     (_, Just x)        -> x
