@@ -5,8 +5,8 @@
 
 module Main where
 
-import RefinementTests (assertExprWith, evalWithBindings, loadBindings,
-                        refinementTests)
+import RefinementTests (assertErrorWith, assertExprWith, evalWithBindings,
+                        loadBindings, refinementTests)
 
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -31,6 +31,9 @@ evalExprString input = do
 assertExpr :: String -> String -> Assertion
 assertExpr = assertExprWith evalExprString
 
+assertError :: String -> String -> Assertion
+assertError = assertErrorWith evalExprString
+
 genInt :: Gen Int
 genInt = choose (0, 100)
 
@@ -51,10 +54,10 @@ unitTestsNatArithmetic :: TestTree
 unitTestsNatArithmetic = testGroup "Unit tests on natural arithmetic expresions"
   [ testCase "test addition" $ assertExpr "plusByte 1 2" (show (1 + 2 :: Integer))
   , testCase "test subtraction" $ assertExpr "minusByte 5 3" (show (5 - 3 :: Integer))
-  , testCase "test substraction lower limit" $ assertExpr "minusByte 0 1" "0"
+  , testCase "test subtraction below zero fails numDec's check" $ assertError "minusByte 0 1" "check failed on 0"
   , testCase "test multiplication" $ assertExpr "timesByte 3 4" (show (3 * 4 :: Integer))
   , testCase "test division" $ assertExpr "dDiv 8 2" (show (8 `div` 2 :: Integer))
-  , testCase "test division by zero" $ assertExpr "dDiv 1 0" "check failed on 0"
+  , testCase "test division by zero" $ assertError "dDiv 1 0" "check failed on 0"
   , testCase "test equality" $ assertExpr "dEqual 3 3" "1"
   , testCase "test inequality" $ assertExpr "dEqual 3 4" "0"
   , testCase "test modulo" $ assertExpr "modByte 10 3" (show (10 `mod` 3 :: Integer))
