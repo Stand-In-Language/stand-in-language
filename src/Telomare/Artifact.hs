@@ -47,7 +47,7 @@ import qualified Data.Map as Map
 import System.FilePath (takeExtension)
 
 import Telomare.EAL (CapShape (..), CodeGuidance (..), EALResult (..),
-                     Step (..))
+                     Step (..), VariableBudget (..))
 import Telomare.IR.Base
 import Telomare.IR.Core
 import Telomare.IR.Loc
@@ -74,6 +74,8 @@ data Artifact = Artifact
   , artifactVerdict     :: Either String EALResult
   -- ^The post-sizing whole-program EAL verdict (a refusal carried
   -- rendered): the IC runtime's admission, decided at compile time.
+  , artifactBudget      :: VariableBudget
+  -- ^The EAL variable budget that verdict was reached under (`--eal-budget`).
   }
 
 artifactMagic :: BL.ByteString
@@ -82,7 +84,7 @@ artifactMagic = BL.pack [0x54, 0x45, 0x4C, 0x43] -- "TELC"
 -- |Bumped whenever the encoding changes, which invalidates older files rather
 -- than misreading them.
 artifactVersion :: Int
-artifactVersion = 8
+artifactVersion = 9
 
 telcExtension :: String
 telcExtension = ".telc"
@@ -119,6 +121,7 @@ encodeArtifact a = runPut $ do
   putMaybe putCompiled (artifactPrologue a)
   putMap putDigest putGuidance (artifactGuidance a)
   putVerdict (artifactVerdict a)
+  putInt' (budgetVariables (artifactBudget a))
 
 decodeArtifact :: BL.ByteString -> Either String Artifact
 decodeArtifact bytes = case runGetOrFail getArtifact bytes of
@@ -145,8 +148,10 @@ getArtifact = do
           prologue <- getMaybe getCompiled
           guidance <- getMap getDigest getGuidance
           verdict <- getVerdict
+          budget <- VariableBudget <$> getInt'
           pure . Right $
             Artifact entry sourceHash report certificate expr prologue guidance verdict
+              budget
 
 writeArtifact :: FilePath -> Artifact -> IO ()
 writeArtifact path = BL.writeFile path . encodeArtifact

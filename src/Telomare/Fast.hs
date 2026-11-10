@@ -59,6 +59,7 @@ module Telomare.Fast
   , runFastWithInput
     -- * Compiling without sizing
   , compileFast
+  , compileFastWithin
   , term3ToFast
   , ownerMap
   ) where
@@ -76,7 +77,7 @@ import qualified Data.Map as Map
 import Data.Maybe (fromMaybe)
 import System.IO (hFlush, isEOF, stdout)
 
-import Telomare.EAL (certifyMain)
+import Telomare.EAL (VariableBudget, certifyMainWithin, defaultVariableBudget)
 import Telomare.Error
 import Telomare.Expand (expandModule, renderExpansionError)
 import Telomare.IR.Base
@@ -483,14 +484,22 @@ runFastWithInput fuel inputs prog = runEval fuel $ do
 compileFast :: [(String, String)] -- ^All modules as (Module_Name, Module_Content)
             -> String -- ^Name of the module holding `main`
             -> Either String FastExpr
-compileFast modulesStrings entry =
+compileFast = compileFastWithin defaultVariableBudget
+
+-- |`compileFast`, certifying under a chosen variable budget
+-- ('Telomare.EAL.VariableBudget').
+compileFastWithin :: VariableBudget
+                  -> [(String, String)] -- ^All modules as (Module_Name, Module_Content)
+                  -> String -- ^Name of the module holding `main`
+                  -> Either String FastExpr
+compileFastWithin budget modulesStrings entry =
   case [ "Error in module " <> moduleName <> ":\n" <> err
        | (moduleName, Left err) <- parsed ] of
     errs@(_ : _) -> Left $ unlines errs
     [] -> do
       let modules = [(n, m) | (n, Right m) <- parsed]
       runtimeTerm <- resolved $ main2Term3 modules entry
-      _ <- first (renderEvalError . CertificationError) $ certifyMain runtimeTerm
+      _ <- first (renderEvalError . CertificationError) $ certifyMainWithin budget runtimeTerm
       term3ToFast (ownerMap modules) runtimeTerm
   where
     parsed = fmap parseAndExpand modulesStrings
