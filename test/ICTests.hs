@@ -148,6 +148,18 @@ main = do
             (_, viaRef) <- evalLoopCore plainEval (programIteration cp)
                              keepAccum "" []
             viaIC @?= viaRef
+    -- what `telomare --ic` does with a program it must refuse: it
+    -- compiles (the gate before sizing certifies it), and admission
+    -- refuses it, for the given reason
+    driverRefuses :: String -> String -> TestTree
+    driverRefuses why src = testCase src $
+      case compileMainReporting MainSizing (parseAuxModule src : prelude)
+             "AuxModule" of
+        Left e   -> assertFailure $ "compilation failed: " <> show e
+        Right cp -> case programPlan cp of
+          Left refusal -> assertBool ("refused for " <> show why <> ": " <> refusal)
+            (why `isInfixOf` refusal)
+          Right _ -> assertFailure "admitted"
     -- the driver's post-sizing guidance is derived from the unsized
     -- program's size-independent certificate, and it is the guidance
     -- inferring the sized program again gives: the same bodies, the same
@@ -556,6 +568,17 @@ main = do
         , driverAdmits ("validPlayer = \\x -> not (toBool ($3 left x))\n"
                      <> "main = \\input -> let p : validPlayer = left input\n"
                      <> "                 in (concat [concat [\"a\", \"b\"], (d2c p succByte 0, 0)], 0)")
+        ]
+    , testGroup "programs --ic refuses"
+        -- fact: each list item becomes a Church numeral inside foldr
+        -- (times (d2c a) b), a chain whose levels grow with n, which the
+        -- faithful certificate cannot cover ('inferEALFaithful'); after
+        -- sizing, a function carried inside pair data of unknown depth is
+        -- refused as code vs data. Master at 1cfcb3de refused it too, at
+        -- once; since the variable budget the refusal takes about 2
+        -- minutes and 6 GB, where it used to run out of memory
+        [ driverRefuses "code vs data" ("b = \\x -> if x then \"1\" else \"0\"\n"
+            <> "main = \\input -> (concat [ b (dEqual (dFactorial 5) 120) ], 0)")
         ]
     , testGroup "post-sizing guidance derived from the unsized certificate"
         [ derivedAgrees "main = \\input -> (d2c 2 (\\x -> (x,0)) 0, 0)"

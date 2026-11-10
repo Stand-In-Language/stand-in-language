@@ -236,6 +236,8 @@ data EALState = EALState
   , esUniformChains :: Bool
     -- ^ type every link of a sized recursion chain like the link it holds
     --   ('chainLink'), so one derivation covers chains of every length
+  , esBudget        :: !VariableBudget
+    -- ^ the most variables this analysis may make ('withinBudget')
   }
 
 initEALState :: EALState
@@ -258,6 +260,7 @@ initEALState = EALState
   , esTemplates = mempty
   , esFrame = Nothing
   , esUniformChains = False
+  , esBudget = defaultVariableBudget
   }
 
 -- | One body's walk, captured as a reusable constraint template. The walk
@@ -391,8 +394,36 @@ ealCaptureLayouts lr = Map.fromList
 freshInt :: EALM Int
 freshInt = do
   st <- State.get
+  withinBudget (esNextVar st + 1)
   State.put st { esNextVar = esNextVar st + 1 }
   pure (esNextVar st)
+
+-- | The most variables one analysis makes before giving up. Copying
+-- definitions into their uses ('specializeLets') multiplies the system,
+-- deep copying most: on @fact@ under @--ic@ (dFactorial 5) the deep
+-- reading of the sized program made 27 million variables and ran out of
+-- memory past 16 GB, where the readings before it had refused. A refusal
+-- within bounds is the better answer.
+--
+-- A verdict depends on the budget: a program refused because a reading
+-- gave up may certify under a larger one. So whatever keeps a verdict
+-- keeps the budget it was reached under
+-- ('Telomare.Driver.cpBudget', and the artifact written from it).
+newtype VariableBudget = VariableBudget { budgetVariables :: Int }
+  deriving (Eq, Ord, Show)
+
+-- | 2^23 (about 8.4 million): about 4 times the largest analysis in the
+-- test suites and tictactoe, which makes 2.2 million; about 5 GB at its
+-- peak. @telomare --eal-budget@ raises it, for machines with more memory.
+defaultVariableBudget :: VariableBudget
+defaultVariableBudget = VariableBudget (2 ^ (23 :: Int))
+
+withinBudget :: Int -> EALM ()
+withinBudget vars = do
+  VariableBudget limit <- State.gets esBudget
+  when (vars > limit) . throwError $
+    EALSolverGaveUp ("the constraint system grew past " <> show limit
+                     <> " variables (--eal-budget raises the limit)")
 
 freshB :: EALM BVar
 freshB = BVar <$> freshInt
@@ -468,12 +499,23 @@ constrainB b nc0 = do
     r <- findB b
     ci <- classInfo r
     rc <- mergeClasses ci nc
-    if rc /= ci
+    if not (sameClass rc ci)
       then do
         State.modify $ \st ->
           st { esClasses = Map.insert r rc (esClasses st) }
         pure True
       else pure False
+
+-- | Whether two classes constrain boxing alike, whatever their blames say.
+-- A blame is only read when an error is rendered: comparing two would
+-- force their texts, and a text can be costly to build (a cycle's names
+-- the equations touching it, see 'cycleStep').
+sameClass :: ClassInfo -> ClassInfo -> Bool
+sameClass a b = case (a, b) of
+  (Unrestricted, Unrestricted)       -> True
+  (ForcedZero _, ForcedZero _)       -> True
+  (ForcedLevel m _, ForcedLevel n _) -> m == n
+  _different                         -> False
 
 -- | Combine two constraints on the same class; throws 'EALBoxConflict' if
 -- one forces boxing and the other forbids it. On ties this prefers its
@@ -1272,6 +1314,7 @@ recordDefer fi b = State.modify $ \st ->
 instantiateTemplate :: BVar -> BodyTemplate -> EALM Iface
 instantiateTemplate newBase t = do
   base <- State.gets esNextVar
+  withinBudget (base + btSize t)
   let shift = base - btBase t
       sh i = if i >= btBase t then i + shift else i
       shB (BVar i) = BVar (sh i)
@@ -1607,18 +1650,30 @@ cycleStep eqs = do
                    stronglyConnComp [ (n, n, IntMap.findWithDefault [] n edges)
                                     | n <- nodes ] ]
       sccOf = IntMap.fromList [ (m, i) | (i, ms) <- zip [0 :: Int ..] cyclic, m <- ms ]
+      -- what a cycle's blame names: its members, and the equations
+      -- touching it, gathered in one pass over the equations. Read only
+      -- when an error is rendered, but made here, so a blame neither
+      -- searches every equation nor holds on to them all
+      membersOf = IntMap.fromList (zip [0 ..] cyclic)
+      touchingOf = IntMap.map reverse $ IntMap.fromListWith (<>)
+        [ (i, [(eqLhs e, eqRhs e, take 24 (let Blame _ s = eqBlame e in s))])
+        | e <- live
+        , i <- IntSet.toList . IntSet.fromList $
+                 mapMaybe (`IntMap.lookup` sccOf) (eqRhs e : eqLhs e) ]
+      cycleNoteOf i = " [cycle " <> show (IntMap.findWithDefault [] i membersOf)
+        <> " through " <> show (IntMap.findWithDefault [] i touchingOf) <> "]"
   c1 <- foldM (\acc ms -> case ms of
                   (m : rest) -> foldM (\a m' -> (a ||) <$> unionBChanged m m') acc rest
                   [] -> pure acc)
           False cyclic
+  -- built now, not when a blame is read: unbuilt, it would keep this
+  -- round's equations alive in every blame made from them
+  unless (null cyclic) $ touchingOf `seq` pure ()
   c2 <- foldM (\acc (EqR lhs rhs blame) -> case IntMap.lookup rhs sccOf of
           Nothing -> pure acc
           Just i ->
             let (members, others) = partition (\l -> IntMap.lookup l sccOf == Just i) lhs
-                ms = cyclic !! i
-                touching = [ (eqLhs e, eqRhs e, take 24 (let Blame _ s = eqBlame e in s))
-                           | e <- live, any (`elem` ms) (eqRhs e : eqLhs e) ]
-                cycleNote = " [cycle " <> show ms <> " through " <> show touching <> "]"
+                cycleNote = cycleNoteOf i
             in case members of
               [] -> pure acc
               [_] -> foldM (\a l -> (a ||) <$> constrainB (BVar l)
@@ -2080,12 +2135,14 @@ syntacticGuidance bodies fi body = CodeGuidance
 -- failure of main to the bodies that fail on their own: structure only
 -- (walk, dispatch, presolve), since the standalone system is never
 -- solved and its levels are never reported.
-summarizeBody :: Bool -> Map (Digest SHA256) (FunctionIndex, Term3Lifting)
+summarizeBody :: VariableBudget -> Bool
+              -> Map (Digest SHA256) (FunctionIndex, Term3Lifting)
               -> FunctionIndex -> Term3Lifting
               -> Either EALError CodeGuidance
-summarizeBody uniform bodies fi body =
+summarizeBody budget uniform bodies fi body =
   State.evalState (runExceptT go)
-    (initEALState { esBodies = bodies, esUniformChains = uniform }) where
+    (initEALState { esBodies = bodies, esUniformChains = uniform
+                  , esBudget = budget }) where
     go = do
       _ <- walkTop False ("env of lifted body " <> show fi) body
       pure (syntacticGuidance bodies fi body)
@@ -2126,12 +2183,14 @@ shapeOfSigma (Sigma _ t) = walkTau t >>= \case
 -- their own, and why) and to blame main's own failure on a failing
 -- dependency.
 inferEALLifted :: DeferMap -> Term3Lifting -> EALLiftedResult
-inferEALLifted = inferEALLiftedWith False
+inferEALLifted = inferEALLiftedWith defaultVariableBudget False
 
--- | 'inferEALLifted', optionally typing sized recursion chains uniformly
+-- | 'inferEALLifted' under a variable budget ('withinBudget') for each
+-- reading, optionally typing sized recursion chains uniformly
 -- ('esUniformChains').
-inferEALLiftedWith :: Bool -> DeferMap -> Term3Lifting -> EALLiftedResult
-inferEALLiftedWith uniform (DeferMap dm) mainTerm = case runMain dm mainTerm of
+inferEALLiftedWith :: VariableBudget -> Bool -> DeferMap -> Term3Lifting
+                   -> EALLiftedResult
+inferEALLiftedWith budget uniform (DeferMap dm) mainTerm = case runMain dm mainTerm of
   Right (r, layouts, bodyLevels) -> certified r layouts bodyLevels
   -- the let-polymorphic reading (see 'specializeLets'): narrow first, as
   -- it keeps the system near its unspecialized size, then shallow, and
@@ -2206,7 +2265,7 @@ inferEALLiftedWith uniform (DeferMap dm) mainTerm = case runMain dm mainTerm of
     -- layouts left at their defaults (nothing here is a certificate; a
     -- consumer only reads guidance under a certified main)
     bodyResults = Map.mapWithKey summarize dm
-    summarize _h (fi, body) = withDeps body $ summarizeBody uniform dm fi body
+    summarize _h (fi, body) = withDeps body $ summarizeBody budget uniform dm fi body
     resultOf d = case Map.lookup d bodyResults of
       Just r  -> r
       Nothing -> Left $ EALDependencyFailed d
@@ -2221,7 +2280,7 @@ inferEALLiftedWith uniform (DeferMap dm) mainTerm = case runMain dm mainTerm of
         []    -> k
     runMain = runMainAs uniform
     runMainAs u bodies term = State.evalState (runExceptT (goMain term))
-      (initEALState { esBodies = bodies, esUniformChains = u })
+      (initEALState { esBodies = bodies, esUniformChains = u, esBudget = budget })
     -- the failure to narrow by. A uniform chain types its links as one, so
     -- a conflict a shared definition causes can surface first inside code
     -- every chain reaches, which points at every definition; the per-link
@@ -2250,7 +2309,11 @@ inferEALLiftedWith uniform (DeferMap dm) mainTerm = case runMain dm mainTerm of
 
 -- | The composed pipeline: lift, then infer over the lifted form.
 inferEALWithLifting :: Term3 -> EALLiftedResult
-inferEALWithLifting = uncurry inferEALLifted . deferLift
+inferEALWithLifting = inferEALWithLiftingWithin defaultVariableBudget
+
+-- | 'inferEALWithLifting' under a chosen variable budget.
+inferEALWithLiftingWithin :: VariableBudget -> Term3 -> EALLiftedResult
+inferEALWithLiftingWithin budget = uncurry (inferEALLiftedWith budget False) . deferLift
 
 -- | Infer over a sized, runnable term: the candidate post-sizing gate
 -- position. Sizing has already resolved Unsized recursion to concrete
@@ -2258,7 +2321,11 @@ inferEALWithLifting = uncurry inferEALLifted . deferLift
 -- actually run — the pre-sizing verdict is about the recursion scaffolding
 -- as well.
 inferEALCompiled :: CompiledExpr -> EALLiftedResult
-inferEALCompiled = inferEALWithLifting . compiled2Term3
+inferEALCompiled = inferEALCompiledWithin defaultVariableBudget
+
+-- | 'inferEALCompiled' under a chosen variable budget.
+inferEALCompiledWithin :: VariableBudget -> CompiledExpr -> EALLiftedResult
+inferEALCompiledWithin budget = inferEALWithLiftingWithin budget . compiled2Term3
 
 -- * Size-independent certification
 
@@ -2277,7 +2344,12 @@ inferEALCompiled = inferEALWithLifting . compiled2Term3
 -- levels growing with n — a step passing its argument through, as in
 -- @d2c 1 id@ — has a derivation for each n but no uniform one.
 inferEALFaithful :: Term3 -> EALLiftedResult
-inferEALFaithful = uncurry (inferEALLiftedWith True) . uncurry faithfulProgram . deferLift
+inferEALFaithful = inferEALFaithfulWithin defaultVariableBudget
+
+-- | 'inferEALFaithful' under a chosen variable budget.
+inferEALFaithfulWithin :: VariableBudget -> Term3 -> EALLiftedResult
+inferEALFaithfulWithin budget =
+  uncurry (inferEALLiftedWith budget True) . uncurry faithfulProgram . deferLift
 
 -- | Post-sizing guidance read off 'inferEALFaithful''s certificate of the
 -- unsized program, instead of inferring the sized program again. The
@@ -2374,13 +2446,32 @@ refinementCheckL o anno tc c = case deferLift (compiled2Term3 template) of
 -- bounded work), but a main that can never consume input is a mistake
 -- worth naming at compile time, as the type checker used to.
 certifyMain :: Term3 -> Either EALError EALResult
-certifyMain t = do
-  r <- ealLiftedMain (inferEALWithLifting t)
+certifyMain = certifyMainWithin defaultVariableBudget
+
+-- | 'certifyMain' under a chosen variable budget.
+certifyMainWithin :: VariableBudget -> Term3 -> Either EALError EALResult
+certifyMainWithin budget t = do
+  let lr = inferEALWithLiftingWithin budget t
+  r <- first (gaveUpBeneath lr) (ealLiftedMain lr)
   if allDataShape (ealMainShape r)
     then Left $ EALTypeMismatch
            (GeneratedLoc "EAL certification" Nothing)
            "main is data through and through; a program must be a function of its input"
     else pure r
+
+-- | Why main failed, for a user. A main that fails because a body it
+-- depends on gave up is refused with that give-up, not with the body's
+-- hash: a larger budget may change the verdict, and the give-up says so,
+-- and how to raise it ('withinBudget'). Bodies reference only hashes of
+-- subterms, so following dependency failures down ends.
+gaveUpBeneath :: EALLiftedResult -> EALError -> EALError
+gaveUpBeneath lr err = case rootOf err of
+  gaveUp@(EALSolverGaveUp _) -> gaveUp
+  _otherRoot                 -> err
+  where
+    rootOf (EALDependencyFailed d)
+      | Just (Left e) <- Map.lookup d (ealGuidance lr) = rootOf e
+    rootOf e = e
 
 -- | One-line human rendering of a whole-program verdict, for the REPL
 -- and diagnostics.

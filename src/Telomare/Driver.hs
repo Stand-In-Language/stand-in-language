@@ -19,9 +19,11 @@ import Control.Lens (Identity (runIdentity))
 import Data.Functor.Foldable (cata, embed)
 import Debug.Trace
 import Telomare.Desugar (desugarTerm)
-import Telomare.EAL (CodeGuidance (..), EALLiftedResult, EALResult, certifyMain,
+import Telomare.EAL (CodeGuidance (..), EALLiftedResult, EALResult,
+                     VariableBudget, certifyMainWithin, defaultVariableBudget,
                      deriveSizedGuidance, ealGuidance, ealLiftedMain,
-                     inferEALCompiled, inferEALFaithful)
+                     inferEALCompiled, inferEALCompiledWithin,
+                     inferEALFaithfulWithin)
 import Telomare.Error
 import Telomare.Eval.IC (ICMeter, ICPlan (..), evalIC, renderRefusal)
 import Telomare.Eval.Meter (Meter, evalMeter)
@@ -132,12 +134,16 @@ data CompiledProgram = CompiledProgram
     -- ignores it; IC admission ('programPlan') is exactly this field.
     -- A refusal is carried rendered: it is for showing, and keeping it
     -- structured would mean serializing blame chains into artifacts.
+  , cpBudget   :: VariableBudget
+    -- ^ The variable budget the EAL fields were reached under: a refusal
+    -- because a reading gave up may not stand under a larger one.
   }
 
 -- |Package a sized program with its post-sizing EAL product, inferred
 -- over the sized program.
 certifiedProgram :: SizingReport -> CompiledExpr -> CompiledProgram
-certifiedProgram report sized = programWith report Nothing sized (inferEALCompiled sized)
+certifiedProgram report sized =
+  programWith defaultVariableBudget report Nothing sized (inferEALCompiled sized)
 
 -- |Package a sized program with its post-sizing EAL product, derived from
 -- the size-independent certificate of the program it was sized from
@@ -145,17 +151,18 @@ certifiedProgram report sized = programWith report Nothing sized (inferEALCompil
 -- a relabelling, where inferring the sized program again costs most of a
 -- compile — and inferred over the sized program otherwise. The input
 -- prologue is a program of its own, certified on its own.
-certifiedProgramFrom :: (AbortOrigin -> Bool) -> Term3 -> SizingReport
+certifiedProgramFrom :: VariableBudget -> (AbortOrigin -> Bool) -> Term3 -> SizingReport
                      -> Maybe CompiledExpr -> CompiledExpr -> CompiledProgram
-certifiedProgramFrom erased t3 report prologue sized = programWith report prologue sized $
-  case deriveSizedGuidance (chainLinks (sizingReportCounts report)) erased t3
-         (inferEALFaithful t3) sized of
-    Right lr         -> lr
-    Left _notCovered -> inferEALCompiled sized
+certifiedProgramFrom budget erased t3 report prologue sized =
+  programWith budget report prologue sized $
+    case deriveSizedGuidance (chainLinks (sizingReportCounts report)) erased t3
+           (inferEALFaithfulWithin budget t3) sized of
+      Right lr         -> lr
+      Left _notCovered -> inferEALCompiledWithin budget sized
 
-programWith :: SizingReport -> Maybe CompiledExpr -> CompiledExpr -> EALLiftedResult
-            -> CompiledProgram
-programWith report prologue sized lr = CompiledProgram
+programWith :: VariableBudget -> SizingReport -> Maybe CompiledExpr -> CompiledExpr
+            -> EALLiftedResult -> CompiledProgram
+programWith budget report prologue sized lr = CompiledProgram
   { cpSizing = report
   , cpExpr = sized
   , cpPrologue = prologue
@@ -164,9 +171,10 @@ programWith report prologue sized lr = CompiledProgram
       r <- verdictOf lr
       traverse_ (first ("input prologue: " <>) . verdictOf) prologueCert
       pure r
+  , cpBudget = budget
   }
   where
-    prologueCert = inferEALCompiled <$> prologue
+    prologueCert = inferEALCompiledWithin budget <$> prologue
     guidanceOf l = Map.fromList [ (h, g) | (h, Right g) <- Map.toList (ealGuidance l) ]
     verdictOf l = first (const (renderRefusal l)) (ealLiftedMain l)
 
@@ -188,19 +196,34 @@ compileMainReporting :: SizingOption
                      -> ExpandedModules
                      -> String
                      -> Either EvalError CompiledProgram
-compileMainReporting so modules term =
-  first RE (main2Term3 modules term) >>= compileMainProgram so
+compileMainReporting = compileMainReportingWithin defaultVariableBudget
+
+-- |`compileMainReporting` with every EAL analysis under a chosen variable
+-- budget ('Telomare.EAL.VariableBudget').
+compileMainReportingWithin :: VariableBudget
+                           -> SizingOption
+                           -> ExpandedModules
+                           -> String
+                           -> Either EvalError CompiledProgram
+compileMainReportingWithin budget so modules term =
+  first RE (main2Term3 modules term) >>= compileMainProgramWithin budget so
 
 -- |`compileMainReporting` from main's resolved term.
 compileMainProgram :: SizingOption -> Term3 -> Either EvalError CompiledProgram
-compileMainProgram so t3 = do
-  _ <- first CertificationError $ certifyMain t3
+compileMainProgram = compileMainProgramWithin defaultVariableBudget
+
+-- |`compileMainProgram` with every EAL analysis under a chosen variable
+-- budget.
+compileMainProgramWithin :: VariableBudget -> SizingOption -> Term3
+                         -> Either EvalError CompiledProgram
+compileMainProgramWithin budget so t3 = do
+  _ <- first CertificationError $ certifyMainWithin budget t3
   (report, sized) <- compileReporting so pure t3
   -- the checks on main's input alone move into the prologue, which runs
   -- before main; they and the checks that can never fail are erased from
   -- main, and main's certificate derived for the program without them
   let (erased, prologue) = checkPlan sized
-  pure $ certifiedProgramFrom erased t3 report prologue (eraseChecks erased sized)
+  pure $ certifiedProgramFrom budget erased t3 report prologue (eraseChecks erased sized)
 
 -- |The checks the compiler erases from a sized main: those that can never
 -- fail, and those its input prologue makes ('Telomare.Size.checkPlan').
@@ -289,10 +312,20 @@ compileModulesWith :: SizingOption
                    -> [(String, String)]
                    -> String
                    -> Either String CompiledProgram
-compileModulesWith so modulesStrings s =
+compileModulesWith = compileModulesWithin defaultVariableBudget
+
+-- |`compileModulesWith` with every EAL analysis under a chosen variable
+-- budget: what `telomare --eal-budget` compiles with.
+compileModulesWithin :: VariableBudget
+                     -> SizingOption
+                     -> [(String, String)]
+                     -> String
+                     -> Either String CompiledProgram
+compileModulesWithin budget so modulesStrings s =
   case [ "Error in module " <> moduleName <> ":\n" <> err
        | (moduleName, Left err) <- parsed ] of
-    [] -> first renderEvalError $ compileMainReporting so [ (n, m) | (n, Right m) <- parsed ] s
+    [] -> first renderEvalError $
+            compileMainReportingWithin budget so [ (n, m) | (n, Right m) <- parsed ] s
     errs -> Left $ unlines errs
   where
     parsed :: [(String, Either String ExpandedModule)]
