@@ -16,8 +16,8 @@ import Telomare.Artifact (Artifact (..), isArtifactPath, nodeCount,
                           writeArtifact)
 import Telomare.Certificate (renderStaticReport)
 import Telomare.Driver (CompiledProgram (..), compileModules, evalLoop,
-                        evalLoopIC, evalLoopMetered, programIteration,
-                        programPlan)
+                        evalLoopIC, evalLoopICNative, evalLoopMetered,
+                        programIteration, programPlan)
 import Telomare.Eval.IC (ICPlan, renderICMeter)
 import Telomare.Eval.Meter (renderMeter)
 import Telomare.Fast (compileFast, defaultFastFuel, renderFastMeter,
@@ -214,7 +214,7 @@ withICPlan cp k = either die k (programPlan cp)
 runCompiled :: Runtime -> Action -> CompiledProgram -> IO ()
 runCompiled runtime action cp = case (action, runtime) of
   (Run, Reference) -> evalLoop (programIteration cp)
-  (Run, ICNet) -> withICPlan cp $ \plan -> void (evalLoopIC [] plan (programIteration cp))
+  (Run, ICNet) -> withICPlan cp $ \plan -> void (evalLoopICNative [] plan (programIteration cp))
   (Meter, Reference) -> do
     measured <- evalLoopMetered [] (programIteration cp)
     reportMeter $ renderMeter measured <> "\n"

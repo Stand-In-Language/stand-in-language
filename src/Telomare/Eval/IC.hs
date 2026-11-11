@@ -22,7 +22,8 @@ import Data.Ord (Down (..))
 import Telomare.EAL (CapShape, EALLiftedResult (..), ealCaptureLayouts,
                      inferEALCompiled, renderEALVerdict)
 import Telomare.Error (EALError (..), renderEALError)
-import Telomare.IC (defaultFuel, icRunReport)
+import Telomare.IC (defaultFuel, icOutcome, icRunReport)
+import Telomare.IC.Native (icNativeSession)
 import Telomare.IR.Core (CompiledExpr, RunTimeError)
 
 -- | What admission grants a session: the right to run on the net at all,
@@ -96,3 +97,15 @@ evalIC plan term =
   let (outcome, spent, events) =
         icRunReport (icPlanLayouts plan) defaultFuel term
   in (ICMeter spent events, outcome)
+
+-- | The evaluator of a session on the C runtime ('Telomare.IC.Native'), under an
+-- admission's plan: it compiles the session's functions (main and its input
+-- prologue) once. Its interactions are the C net's, which builds only an
+-- @if@'s chosen branch; it keeps no per-rule counters.
+evalICNative :: ICPlan -> [CompiledExpr] -> CompiledExpr
+             -> (ICMeter, Either RunTimeError CompiledExpr)
+evalICNative plan funs = \term ->
+  let (r, spent) = session defaultFuel term
+  in (ICMeter spent Map.empty, icOutcome r)
+  where
+    session = icNativeSession (icPlanLayouts plan) funs

@@ -23,7 +23,8 @@ import Telomare.EAL (CodeGuidance (..), EALLiftedResult, EALResult, certifyMain,
                      deriveSizedGuidance, ealGuidance, ealLiftedMain,
                      inferEALCompiled, inferEALFaithful)
 import Telomare.Error
-import Telomare.Eval.IC (ICMeter, ICPlan (..), evalIC, renderRefusal)
+import Telomare.Eval.IC (ICMeter, ICPlan (..), evalIC, evalICNative,
+                         renderRefusal)
 import Telomare.Eval.Meter (Meter, evalMeter)
 import Telomare.Eval.Reference ()
 import Telomare.Expand (expandDefs, expandModule, expandTerm,
@@ -401,6 +402,15 @@ evalLoopMetered manualInput expr = fst <$> evalLoopCore evalMeter expr printAccu
 evalLoopIC :: [String] -> ICPlan -> Iteration -> IO ICMeter
 evalLoopIC manualInput plan expr =
   fst <$> evalLoopCore (evalIC plan) expr printAccum "" manualInput
+
+-- |`evalLoopIC` on the C runtime, which is what a plain --ic run uses.
+evalLoopICNative :: [String] -> ICPlan -> Iteration -> IO ICMeter
+evalLoopICNative manualInput plan expr =
+  fst <$> evalLoopCore (evalICNative plan (iterationFunctions expr)) expr printAccum "" manualInput
+
+-- |What an iteration applies to its input.
+iterationFunctions :: Iteration -> [CompiledExpr]
+iterationFunctions (Iteration prologue expr) = expr : foldMap pure prologue
 
 -- |Same as `evalLoop`, but keeping what was displayed.
 evalLoop_ :: Iteration -> IO String
