@@ -15,12 +15,13 @@ import Telomare.Artifact (Artifact (..), isArtifactPath, nodeCount,
                           readArtifact, sourcesHash, telcExtension,
                           writeArtifact)
 import Telomare.Certificate (renderStaticReport)
-import Telomare.Driver (CompiledProgram (..), compileModules, evalLoop,
-                        evalLoopIC, evalLoopMetered, programIteration,
-                        programPlan)
+import Telomare.Driver (CompiledProgram (..), SizingOption (MainSizing),
+                        compileModulesWithin, evalLoop, evalLoopIC,
+                        evalLoopMetered, programIteration, programPlan)
+import Telomare.EAL (VariableBudget (..), defaultVariableBudget)
 import Telomare.Eval.IC (ICPlan, renderICMeter)
 import Telomare.Eval.Meter (renderMeter)
-import Telomare.Fast (compileFast, defaultFastFuel, renderFastMeter,
+import Telomare.Fast (compileFastWithin, defaultFastFuel, renderFastMeter,
                       runFastLoop)
 import Telomare.IR.Loc (locatedNameText)
 import Telomare.IR.Surface (ImportDecl (parsedImportModule), ModuleItem (..))
@@ -65,6 +66,8 @@ data TelomareOpts = TelomareOpts
   { telomareFile   :: String
   , telomareAction :: Action
   , telomareMode   :: Mode
+  , telomareBudget :: Maybe VariableBudget
+  -- ^`--eal-budget`: Nothing for the default.
   }
 
 telomareOpts :: O.Parser TelomareOpts
@@ -72,7 +75,16 @@ telomareOpts = TelomareOpts
   <$> O.argument O.str (O.metavar "TELOMARE-FILE")
   <*> action
   <*> mode
+  <*> budget
   where
+    budget = O.optional . fmap VariableBudget $ O.option positive
+      ( O.long "eal-budget" <> O.metavar "N"
+        <> O.help ("Most variables one EAL certification may make before it gives \
+                   \up and refuses (default " <> show (budgetVariables defaultVariableBudget)
+                   <> "). A verdict depends on it, so a compiled program \
+                   \records it") )
+    positive = O.auto >>= \n ->
+      if n > 0 then pure n else O.readerError "the budget must be positive"
     action = compileTo
          O.<|> O.flag' Certificate
                ( O.long "certificate"
@@ -145,11 +157,12 @@ main = do
   topts <- O.execParser opts
   let file = telomareFile topts
       action = telomareAction topts
+      budget = fromMaybe defaultVariableBudget (telomareBudget topts)
   if isArtifactPath file
-    then runArtifact file action (telomareMode topts)
+    then runArtifact file action (telomareMode topts) (telomareBudget topts)
     else case telomareMode topts of
-      Fast fuel -> runFast file action fuel
-      mode      -> runSized (runtimeOf mode) file action
+      Fast fuel -> runFast budget file action fuel
+      mode      -> runSized budget (runtimeOf mode) file action
 
 die :: String -> IO a
 die message = hPutStrLn stderr message >> exitFailure
@@ -165,8 +178,8 @@ reportMeter rendered = do
 -- The runtime choice still applies, and costs nothing extra — the EAL
 -- admission the IC runtime needs was decided at compile time and stored,
 -- so `--ic` on an artifact is a field read, not an inference.
-runArtifact :: FilePath -> Action -> Mode -> IO ()
-runArtifact path action mode = do
+runArtifact :: FilePath -> Action -> Mode -> Maybe VariableBudget -> IO ()
+runArtifact path action mode requested = do
   case mode of
     Fast _ ->
       hPutStrLn stderr "note: --fast does not apply to an already-compiled program"
@@ -175,12 +188,20 @@ runArtifact path action mode = do
     Left err -> die $ path <> ": " <> err
     Right artifact -> do
       warnIfStale path artifact
+      -- the verdict was decided at compile time, under the budget then
+      case requested of
+        Just b | b /= artifactBudget artifact ->
+          hPutStrLn stderr $ "note: this program's EAL verdict was reached under \
+            \--eal-budget " <> show (budgetVariables (artifactBudget artifact))
+            <> " when it was compiled; recompile it to use another"
+        _sameOrNone -> pure ()
       let cp = CompiledProgram
             { cpSizing = artifactReport artifact
             , cpExpr = artifactExpr artifact
             , cpPrologue = artifactPrologue artifact
             , cpGuidance = artifactGuidance artifact
             , cpVerdict = artifactVerdict artifact
+            , cpBudget = artifactBudget artifact
             }
       case action of
         Compile _   -> die $ path <> " is already compiled"
@@ -225,11 +246,11 @@ runCompiled runtime action cp = case (action, runtime) of
 
 -- |The usual route. Sizing costs minutes on Prelude-heavy programs, so every
 -- action here works from one compile.
-runSized :: Runtime -> FilePath -> Action -> IO ()
-runSized runtime file action = do
+runSized :: VariableBudget -> Runtime -> FilePath -> Action -> IO ()
+runSized budget runtime file action = do
   let entryModule = takeBaseName file
   allModules <- getModulesFor file
-  case compileModules allModules entryModule of
+  case compileModulesWithin budget MainSizing allModules entryModule of
     Left err -> die err
     Right cp -> case action of
       Run -> runCompiled runtime Run cp
@@ -249,6 +270,7 @@ runSized runtime file action = do
               , artifactPrologue = cpPrologue cp
               , artifactGuidance = cpGuidance cp
               , artifactVerdict = cpVerdict cp
+              , artifactBudget = cpBudget cp
               }
         writeArtifact path artifact
         hPutStrLn stderr $ "wrote " <> path
@@ -257,14 +279,14 @@ runSized runtime file action = do
 
 -- |Without sizing. The program runs on demand under a fuel cap; no iteration
 -- count exists, so the certificate reports structure only.
-runFast :: FilePath -> Action -> Maybe Int -> IO ()
-runFast file action fuel = do
+runFast :: VariableBudget -> FilePath -> Action -> Maybe Int -> IO ()
+runFast budget file action fuel = do
   let entryModule = takeBaseName file
   allModules <- getModulesFor file
   case action of
     Compile _ -> die "--compile sizes the program, so it cannot be combined with --fast"
     Certificate -> putStr $ staticReport Nothing Nothing allModules entryModule
-    _ -> case compileFast allModules entryModule of
+    _ -> case compileFastWithin budget allModules entryModule of
       Left err -> die err
       Right prog -> do
         measured <- runFastLoop fuel prog

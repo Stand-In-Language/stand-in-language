@@ -16,7 +16,9 @@ import Test.Hspec
 import Telomare.Artifact (Artifact (..), decodeArtifact, encodeArtifact,
                           nodeCount, sourcesHash)
 import Telomare.Certificate (renderStaticReport)
-import Telomare.Driver (CompiledProgram (..), compileModules, programPlan)
+import Telomare.Driver (CompiledProgram (..), SizingOption (MainSizing),
+                        compileModules, compileModulesWithin, programPlan)
+import Telomare.EAL (VariableBudget (..), defaultVariableBudget)
 import Telomare.Fast (FastError (..), FastMeter (..), compileFast,
                       runFastWithInput)
 import Telomare.IR.Base
@@ -44,6 +46,7 @@ runModeSpec = do
                 , artifactPrologue = cpPrologue cp
                 , artifactGuidance = cpGuidance cp
                 , artifactVerdict = cpVerdict cp
+                , artifactBudget = cpBudget cp
                 }
           case decodeArtifact (encodeArtifact artifact) of
             Left err -> expectationFailure $ "failed to decode:\n" <> err
@@ -64,6 +67,9 @@ runModeSpec = do
               -- runtime from an artifact must not need a second inference.
               artifactGuidance back `shouldBe` cpGuidance cp
               artifactVerdict back `shouldBe` cpVerdict cp
+              -- And the budget that verdict was reached under, which it
+              -- depends on.
+              artifactBudget back `shouldBe` cpBudget cp
 
     it "evaluates to what the program it came from evaluates to" $ do
       modules <- loadWith "tc_ultra_minimal.tel" "tc_ultra_minimal"
@@ -72,6 +78,7 @@ runModeSpec = do
         Right cp -> do
           let artifact = Artifact "tc_ultra_minimal" (sourcesHash modules)
                 (cpSizing cp) "" (cpExpr cp) (cpPrologue cp) (cpGuidance cp) (cpVerdict cp)
+                (cpBudget cp)
           case decodeArtifact (encodeArtifact artifact) of
             Left err -> expectationFailure $ "failed to decode:\n" <> err
             Right back -> do
@@ -81,7 +88,7 @@ runModeSpec = do
               -- fresh compile's does.
               let backProgram = CompiledProgram (artifactReport back)
                     (artifactExpr back) (artifactPrologue back) (artifactGuidance back)
-                    (artifactVerdict back)
+                    (artifactVerdict back) (artifactBudget back)
               void (programPlan backProgram)
                 `shouldBe` void (programPlan cp)
 
@@ -96,6 +103,26 @@ runModeSpec = do
       sourcesHash changed `shouldNotBe` sourcesHash modules
       -- Order must not matter: modules are discovered in import order.
       sourcesHash (reverse modules) `shouldBe` sourcesHash modules
+
+  describe "the EAL budget" $ do
+    it "refuses, and says how to raise it, when certification needs more" $ do
+      modules <- loadWith "test/programs/simpleplus.tel" "simpleplus"
+      let refusal = compileModulesWithin (VariableBudget 1000) MainSizing modules "simpleplus"
+      isLeftContaining "gave up" refusal `shouldBe` True
+      isLeftContaining "--eal-budget" refusal `shouldBe` True
+
+    it "is kept with the verdict, and in the artifact" $ do
+      modules <- loadWith "test/programs/simpleplus.tel" "simpleplus"
+      let raised = VariableBudget (2 * budgetVariables defaultVariableBudget)
+      case compileModulesWithin raised MainSizing modules "simpleplus" of
+        Left err -> expectationFailure $ "failed to compile simpleplus.tel:\n" <> err
+        Right cp -> do
+          cpBudget cp `shouldBe` raised
+          let artifact = Artifact "simpleplus" (sourcesHash modules)
+                (cpSizing cp) "" (cpExpr cp) (cpPrologue cp) (cpGuidance cp) (cpVerdict cp)
+                (cpBudget cp)
+          fmap artifactBudget (decodeArtifact (encodeArtifact artifact))
+            `shouldBe` Right raised
 
   -- Transcript agreement between the fast and sized runtimes is checked
   -- corpus-wide in "ConformanceTests".
