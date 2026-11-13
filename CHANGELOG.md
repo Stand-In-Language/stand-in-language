@@ -123,14 +123,15 @@
   and `shell.nix` read the pins from `flake.lock` instead of going through
   flake-compat, and are no longer built or cached by `push-cachix`.
   `apps.telomare-lsp` now carries the version stamp like `apps.lsp`. The
-  default dev shell is the minimum that builds the project (GHC and
-  cabal-install); `nix develop .#full` adds haskell-language-server, hlint,
-  stylish-haskell and ghcid; both export `name`, which corepkgs' structured
+  dev shell has GHC, cabal-install, haskell-language-server, hlint,
+  stylish-haskell and ghcid, as before (for a while the tools were in a
+  separate `.#full` shell, which editors that load the environment through
+  direnv never got); it exports `name`, which corepkgs' structured
   attributes leave unexported, so direnv hands it to prompts that show the
   environment's name (haskell-language-server needs its closure in
   one Cabal-syntax 3.14 scope; `nix/haskell.nix` carries that override until
   ekala-project/haskell-pkgs#4 or its corepkgs equivalent lands), and hoogle
-  is no longer built for either. `nix run .#push-cachix` publishes every
+  is no longer built for it. `nix run .#push-cachix` publishes every
   declared development shell with its environment closure, every check and
   every app, and uses the cachix and nix on PATH (the snapshot's cachix does
   not build, its amazonka 2.0 predates GHC 9.8, and corepkgs' Nix is a
