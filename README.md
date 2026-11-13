@@ -138,7 +138,8 @@ IC storage certificate
 A program that tells many input shapes apart can be too big to check: the
 check has a budget, and when it runs out it says that no limit was worked
 out instead of guessing. `simpleplus.tel` and `tictactoe.tel`, which read
-characters as unary numbers, are too big today.
+characters as unary numbers, are too big today. `--ic --compile` works the
+certificate out once and keeps it in the `.telc` file.
 
 When sizing fails, the error names the recursion, where it is, and which of the
 two failures it is — a budget that was too small, or an input that nothing
