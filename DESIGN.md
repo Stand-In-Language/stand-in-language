@@ -618,6 +618,11 @@ Design points the implementation commits to:
   apart one layer at a time, only when a consumer needs its shape (`revealData`);
   copying or erasing it is one interaction. So a run depends on its input only
   through the shapes the program looks at.
+- **Constants count cell by cell**: a compiled subterm made only of pairs and zeros
+  (an error message, a string literal, a number) is one `ICConst` node, so building,
+  copying or erasing it is one interaction. The value is held once, with the code;
+  the template table counts its cells as if built node by node (`icConstants`), so
+  no storage figure gets smaller by holding it whole.
 
 **[decision] The storage certificate is the runtime's own net, run for every input
 at once** (`Telomare.IC.Space`, `--ic --certificate`). The input is an `ICData` node

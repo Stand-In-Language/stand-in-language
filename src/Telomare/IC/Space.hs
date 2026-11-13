@@ -292,7 +292,8 @@ renderSpace = \case
              <> "and pending pairs the interactions waiting to fire.")
     <> [""]
     <> para ("Not counted: the input itself, which the net holds whole until the "
-             <> "program takes it apart; the template table, the same on every "
+             <> "program takes it apart; the template table (code, and constants counted "
+             <> "cell by cell), the same on every "
              <> "iteration (" <> commas (resAgents (certTemplates c)) <> " agents, "
              <> commas (resPorts (certTemplates c)) <> " port entries); reading back "
              <> "the result; and the Haskell runtime's own memory (GC, the process).")

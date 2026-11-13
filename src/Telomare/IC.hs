@@ -86,7 +86,7 @@ import Control.Monad.State.Strict (State)
 import qualified Control.Monad.State.Strict as State
 import Crypto.Hash (Digest, SHA256)
 import Data.Foldable (toList)
-import Data.Functor.Foldable (project)
+import Data.Functor.Foldable (cata, project)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
 import Data.Map (Map)
@@ -242,6 +242,9 @@ data ICState = ICState
     -- means every strategy keeps to its generic default
   , icResident  :: !Resources   -- ^ what the net holds now
   , icPeak      :: !Resources   -- ^ the most it has held, per component
+  , icConstants :: !Resources
+    -- ^ the cells of every constant compiled to one 'ICConst' node, as if
+    -- built node by node; held once, with the code, not in the net
   }
 
 -- | The net's storage, counted in its own units: resident agents, stored
@@ -278,19 +281,33 @@ residentResources st = Resources
   (sum (IntMap.size . nodePorts <$> icNodes st))
   (length (icActive st) + Seq.length (icParked st))
 
--- | The template table: agents and port entries of every compiled body.
+-- | The template table: agents and port entries of every compiled body,
+-- plus every constant held whole, counted as the nodes and wires it would
+-- take built node by node ('icConstants').
 templateStorage :: ICState -> Resources
 templateStorage st = Resources
-  (sum (IntMap.size . tplNodes <$> tpls))
-  (sum [ IntMap.size (nodePorts nd) | t <- tpls, nd <- IntMap.elems (tplNodes t) ])
+  (sum (IntMap.size . tplNodes <$> tpls) + resAgents consts)
+  (sum [ IntMap.size (nodePorts nd) | t <- tpls, nd <- IntMap.elems (tplNodes t) ]
+     + resPorts consts)
   0
-  where tpls = IntMap.elems (icTemplates st)
+  where
+    tpls = IntMap.elems (icTemplates st)
+    consts = icConstants st
+
+-- | What a data value takes built node by node: a node per cell, three
+-- port entries per pair and one per zero.
+dataStorage :: BasicExpr -> Resources
+dataStorage = cata $ \case
+  PairSF a b -> Resources (resAgents a + resAgents b + 1)
+                          (resPorts a + resPorts b + 3) 0
+  _zero      -> Resources 1 1 0
 
 type ICM = ExceptT ICError (State ICState)
 
 emptyState :: Map (Digest SHA256) CapShape -> Int -> ICState
 emptyState guidance fuel = ICState IntMap.empty 0 0 [] Seq.empty Map.empty
   IntMap.empty 0 Map.empty fuel 0 Map.empty guidance noResources noResources
+  noResources
 
 -- * Primitive net operations
 
@@ -547,7 +564,14 @@ compileTerm :: KeyedExpr -> ICM Port
 compileTerm t = case unwrap t of
   CompiledExprB ZeroSF -> value ICZero
   CompiledExprB (PairSF a b)
-    | isData plain -> value (ICConst (messageData plain))
+    | isData plain -> do
+        let d = messageData plain
+        -- held once, with the code: the table counts its cells
+        State.modify' $ \st -> st { icConstants =
+          let Resources n m _ = icConstants st
+              Resources n' m' _ = dataStorage d
+          in Resources (n + n') (m + m') 0 }
+        value (ICConst d)
     | otherwise -> do
         p <- newNode ICPair
         connect (Port p 1) =<< compileTerm a
