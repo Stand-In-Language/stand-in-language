@@ -11,6 +11,7 @@ module RefinementTests
   , loadBindings
   , evalWithBindings
   , assertExprWith
+  , assertErrorWith
   ) where
 
 import Control.Comonad.Cofree (Cofree ((:<)))
@@ -70,13 +71,29 @@ evalPreludeExpr input = do
   evalWithBindings preludeBindings input
 
 -- |Assert that @input@ evaluates to @expected@ under the given evaluator.
+-- An evaluation error always fails: a test that expects one uses
+-- 'assertErrorWith'.
 assertExprWith :: (String -> IO (Either String String)) -> String -> String -> Assertion
 assertExprWith evalStr input expected = do
   res <- evalStr input
   case res of
-    Left err  -> unless (expected `isInfixOf` err) . assertFailure
-                  $ "Evaluation failed: " <> err
+    Left err  -> assertFailure $ "Evaluation failed: " <> err
     Right val -> val @?= expected
+
+-- |Assert that evaluating @input@ fails with an error containing
+-- @msgFragment@.
+assertErrorWith :: (String -> IO (Either String String)) -> String -> String -> Assertion
+assertErrorWith evalStr input msgFragment = do
+  res <- evalStr input
+  case res of
+    Left err ->
+      unless (msgFragment `isInfixOf` err)
+        . assertFailure
+        $ "Expected an error containing '" <> msgFragment <> "', got: " <> err
+    Right val ->
+      assertFailure
+        $ "Expected an error containing '" <> msgFragment
+        <> "' but evaluation succeeded with: " <> val
 
 assertEvalEquals :: String -> String -> Assertion
 assertEvalEquals = assertExprWith evalPreludeExpr
