@@ -11,8 +11,8 @@
 -- interprets the program over a symbolic input, unbounded but where a
 -- refinement check bounds a value the computation after it reads
 -- ('narrowChecked'), and infers, per unsized recursion site, an iteration
--- count that holds for
--- every input - then bakes those counts into the term as church towers.
+-- count that holds for every input, then installs finite approximant
+-- chains in the term.
 -- A program that cannot be sized does not compile ('SizingFailure').
 module Telomare.Size where
 

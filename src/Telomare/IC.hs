@@ -14,7 +14,7 @@
 -- correct. The EAL pass is therefore this runtime's admission certificate:
 -- the only analysis output the runtime's *correctness* depends on is that
 -- verdict (no levels, no sharing plan). Templates are keyed by the same
--- content hash that keys the DeferMap ('Telomare.Resolver.deferLift'), so
+-- content hash that keys the DeferMap ('Telomare.Resolve.deferLift'), so
 -- per-hash 'Telomare.EAL.CodeGuidance' addresses templates directly;
 -- guidance-driven choices must remain advisory (strategy, never meaning).
 --
@@ -31,7 +31,7 @@
 -- ref is copying a pointer (the code table exists at runtime), and only the
 -- instantiated body's wiring is ever duplicated structurally.
 --
--- The semantics mirror the reference evaluator ('Telomare.Possible'
+-- The semantics mirror the reference evaluator ('Telomare.Machine'
 -- 'basicStep'\/'stuckStep'\/'abortStep') rule for rule:
 --
 --   * @SetEnv (Pair (Defer d) e)@ instantiates d's template with env e.
@@ -85,7 +85,8 @@ import Control.Monad.Except
 import Control.Monad.State.Strict (State)
 import qualified Control.Monad.State.Strict as State
 import Crypto.Hash (Digest, SHA256)
-import Data.Functor.Foldable (project)
+import Data.Foldable (toList)
+import Data.Functor.Foldable (cata, project)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
 import Data.Map (Map)
@@ -94,13 +95,14 @@ import Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
 import Debug.Trace (trace)
 import Telomare.EAL (CapShape (..), Step (..), showSteps)
+import qualified Telomare.EnvUsage as Usage
 import Telomare.IR.Base (AbortOrigin, AbortableF (..), BasicExpr,
                          BasicExprF (..), FunctionIndex, StuckF (..), dataB,
                          firedAbort, forget, isData, messageData,
                          pattern AbortB, pattern GateB, pattern PairB,
                          pattern StuckEE, pattern StuckFW, pattern ZeroB)
 import Telomare.IR.Core (CompiledExpr, CompiledExprF (..), RunTimeError (..))
-import Telomare.Machine (doLeft, doRight, leftGateInd, rightGateInd)
+import Telomare.Machine (appB, doLeft, doRight, leftGateInd, rightGateInd)
 import Telomare.Resolve (DeferKeys (..), KeyedExpr, keyDefers)
 
 -- | Temporary debugging switch: trace every interaction and instantiation.
@@ -158,6 +160,20 @@ data ICKind
                        --   the net fires it eagerly, so stuckness must be a
                        --   value that erasure discards and only demanded
                        --   output reports.
+  | ICData DataSrc     -- ^ 1 port: a data value held whole, not yet taken
+                       --   apart: an iteration's input, or a part of one.
+                       --   Copying and erasing it take one interaction; a
+                       --   consumer that needs its shape first turns it into
+                       --   the Zero or Pair it is ('revealData').
+  deriving (Eq, Show)
+
+-- | What an 'ICData' node holds: a known value when the net runs, or, when
+-- 'Telomare.IC.Space' walks the net for every input at once, the part of the
+-- input at a path (the whole input is path 0; the parts of the pair at path
+-- @p@ are at @2p+1@ and @2p+2@).
+data DataSrc
+  = DataKnown BasicExpr
+  | DataPart Integer
   deriving (Eq, Show)
 
 data Port = Port
@@ -224,20 +240,81 @@ data ICState = ICState
     -- ^ per-hash capture layouts from the EAL pass ('ealCaptureLayouts'),
     -- consumed by the guided closure duplication and erasure rules; empty
     -- means every strategy keeps to its generic default
+  , icResident  :: !Resources   -- ^ what the net holds now
+  , icPeak      :: !Resources   -- ^ the most it has held, per component
+  , icConstants :: !Resources
+    -- ^ the cells of every constant compiled to one 'ICConst' node, as if
+    -- built node by node; held once, with the code, not in the net
   }
+
+-- | The net's storage, counted in its own units: resident agents, stored
+-- port entries (a wire is two entries, one per end; a dangling half is
+-- one) and pending pairs (eager and parked, stale entries included until
+-- they are popped). The counters change at exactly the primitive
+-- mutations, so they are measurements, not estimates. Templates live in
+-- their own table and are not part of the net ('templateStorage').
+data Resources = Resources
+  { resAgents :: !Int
+  , resPorts  :: !Int
+  , resWork   :: !Int
+  } deriving (Eq, Show)
+
+noResources :: Resources
+noResources = Resources 0 0 0
+
+-- | Componentwise maximum: each component's own peak. The components need
+-- not peak at the same moment.
+maxResources :: Resources -> Resources -> Resources
+maxResources (Resources a p w) (Resources a' p' w') =
+  Resources (max a a') (max p p') (max w w')
+
+-- | Count a change in what the net holds, raising the peak if needed.
+account :: (Resources -> Resources) -> ICState -> ICState
+account f st =
+  let now = f (icResident st)
+  in st { icResident = now, icPeak = maxResources now (icPeak st) }
+
+-- | A recount from scratch, for checking the incremental counters.
+residentResources :: ICState -> Resources
+residentResources st = Resources
+  (IntMap.size (icNodes st))
+  (sum (IntMap.size . nodePorts <$> icNodes st))
+  (length (icActive st) + Seq.length (icParked st))
+
+-- | The template table: agents and port entries of every compiled body,
+-- plus every constant held whole, counted as the nodes and wires it would
+-- take built node by node ('icConstants').
+templateStorage :: ICState -> Resources
+templateStorage st = Resources
+  (sum (IntMap.size . tplNodes <$> tpls) + resAgents consts)
+  (sum [ IntMap.size (nodePorts nd) | t <- tpls, nd <- IntMap.elems (tplNodes t) ]
+     + resPorts consts)
+  0
+  where
+    tpls = IntMap.elems (icTemplates st)
+    consts = icConstants st
+
+-- | What a data value takes built node by node: a node per cell, three
+-- port entries per pair and one per zero.
+dataStorage :: BasicExpr -> Resources
+dataStorage = cata $ \case
+  PairSF a b -> Resources (resAgents a + resAgents b + 1)
+                          (resPorts a + resPorts b + 3) 0
+  _zero      -> Resources 1 1 0
 
 type ICM = ExceptT ICError (State ICState)
 
 emptyState :: Map (Digest SHA256) CapShape -> Int -> ICState
 emptyState guidance fuel = ICState IntMap.empty 0 0 [] Seq.empty Map.empty
-  IntMap.empty 0 Map.empty fuel 0 Map.empty guidance
+  IntMap.empty 0 Map.empty fuel 0 Map.empty guidance noResources noResources
+  noResources
 
 -- * Primitive net operations
 
 newNode :: ICKind -> ICM Int
 newNode k = do
   n <- State.gets icNextNode
-  State.modify' $ \st -> st
+  State.modify' $ \st -> account (\r -> r { resAgents = resAgents r + 1 }) st
     { icNextNode = n + 1
     , icNodes = IntMap.insert n (Node k IntMap.empty) (icNodes st) }
   pure n
@@ -259,10 +336,15 @@ peer (Port n s) = do
       "unwired port " <> show n <> "/" <> show s
 
 setHalf :: Port -> Port -> ICM ()
-setHalf (Port n s) q = State.modify' $ \st -> st
-  { icNodes = IntMap.adjust
-      (\nd -> nd { nodePorts = IntMap.insert s q (nodePorts nd) })
-      n (icNodes st) }
+setHalf (Port n s) q = State.modify' $ \st ->
+  case IntMap.lookup n (icNodes st) of
+    Nothing -> st
+    Just nd ->
+      let ports = nodePorts nd
+          st' = st { icNodes = IntMap.insert n
+                       nd { nodePorts = IntMap.insert s q ports } (icNodes st) }
+      in if IntMap.member s ports then st'
+         else account (\r -> r { resPorts = resPorts r + 1 }) st'
 
 -- | Wire two ports together. A principal-principal wiring between
 -- interacting kinds is enqueued as an active pair — except an
@@ -278,9 +360,9 @@ connect p q = do
       kb <- kindOf b
       when (interactive ka && interactive kb) $
         if instantiating ka kb
-          then State.modify' $ \st ->
+          then State.modify' $ \st -> pending
             st { icParked = icParked st Seq.|> (a, b) }
-          else State.modify' $ \st ->
+          else State.modify' $ \st -> pending
             st { icActive = (a, b) : icActive st }
     _notPrincipals -> pure ()
   where
@@ -288,6 +370,7 @@ connect p q = do
       ICRoot -> False
       ICExt  -> False
       _      -> True
+    pending = account (\r -> r { resWork = resWork r + 1 })
     instantiating a b = case (a, b) of
       (ICApply, ICRef {}) -> True
       (ICRef {}, ICApply) -> True
@@ -295,7 +378,11 @@ connect p q = do
 
 deleteNode :: Int -> ICM ()
 deleteNode n = State.modify' $ \st ->
-  st { icNodes = IntMap.delete n (icNodes st) }
+  case IntMap.lookup n (icNodes st) of
+    Nothing -> st
+    Just nd -> account (\r -> r { resAgents = resAgents r - 1
+                                , resPorts = resPorts r - IntMap.size (nodePorts nd) })
+      st { icNodes = IntMap.delete n (icNodes st) }
 
 freshLabel :: ICM Label
 freshLabel = do
@@ -326,13 +413,15 @@ spend name = do
 -- the steps directly applied to the occurrence, innermost first — the
 -- order they descend the env value.
 envUsage :: CompiledExpr -> Map [Step] Int
-envUsage = go [] where
-  go proj t = case project t of
-    StuckFW EnvSF         -> Map.singleton proj 1
-    StuckFW (LeftSF x)    -> go (SL : proj) x
-    StuckFW (RightSF x)   -> go (SR : proj) x
-    StuckFW (DeferSF _ _) -> Map.empty
-    x                     -> foldr (Map.unionWith (+) . go []) Map.empty x
+envUsage = fmap fst . Usage.usage envView
+
+envView :: CompiledExpr -> Usage.UsageView Step () CompiledExpr
+envView t = case project t of
+  StuckFW EnvSF         -> Usage.Occurrence ()
+  StuckFW (LeftSF x)    -> Usage.Projection SL x
+  StuckFW (RightSF x)   -> Usage.Projection SR x
+  StuckFW (DeferSF _ _) -> Usage.Closed
+  x                     -> Usage.Children (toList x)
 
 -- | The projection path this term applies directly to Env, when it is
 -- nothing but a projection chain over Env; Nothing as soon as anything
@@ -340,12 +429,7 @@ envUsage = go [] where
 -- counts, so producer and consumer of the env wiring agree by
 -- construction.
 envPathOf :: CompiledExpr -> Maybe [Step]
-envPathOf = go [] where
-  go proj t = case project t of
-    StuckFW EnvSF       -> Just proj
-    StuckFW (LeftSF x)  -> go (SL : proj) x
-    StuckFW (RightSF x) -> go (SR : proj) x
-    _notEnvChain        -> Nothing
+envPathOf = Usage.envPath envView
 
 -- | Run a net-building action against a fresh empty net, restoring the
 -- current one afterwards; returns the built nodes and their label count.
@@ -354,14 +438,17 @@ isolatedNet act = do
   saved <- State.get
   State.modify' $ \st -> st
     { icNodes = IntMap.empty, icNextNode = 0, icNextLabel = 0
-    , icActive = [], icParked = Seq.empty, icEnvQueue = Map.empty }
+    , icActive = [], icParked = Seq.empty, icEnvQueue = Map.empty
+    , icResident = noResources, icPeak = noResources }
   r <- act
   built <- State.get
+  -- a scratch net becomes a template; it never counts as part of the net
   State.modify' $ \st -> st
     { icNodes = icNodes saved, icNextNode = icNextNode saved
     , icNextLabel = icNextLabel saved
     , icActive = icActive saved, icParked = icParked saved
-    , icEnvQueue = icEnvQueue saved }
+    , icEnvQueue = icEnvQueue saved
+    , icResident = icResident saved, icPeak = icPeak saved }
   pure (r, icNodes built, icNextLabel built)
 
 -- | The content hash of a defer value: its 'DeferMap' key, computed by
@@ -477,7 +564,14 @@ compileTerm :: KeyedExpr -> ICM Port
 compileTerm t = case unwrap t of
   CompiledExprB ZeroSF -> value ICZero
   CompiledExprB (PairSF a b)
-    | isData plain -> value (ICConst (messageData plain))
+    | isData plain -> do
+        let d = messageData plain
+        -- held once, with the code: the table counts its cells
+        State.modify' $ \st -> st { icConstants =
+          let Resources n m _ = icConstants st
+              Resources n' m' _ = dataStorage d
+          in Resources (n + n') (m + m') 0 }
+        value (ICConst d)
     | otherwise -> do
         p <- newNode ICPair
         connect (Port p 1) =<< compileTerm a
@@ -551,29 +645,54 @@ instantiate tid envSrc resultDst = do
 -- diverging dead application from starving the parked pair whose firing
 -- would place the eraser that kills it.
 reduce :: ICM ()
-reduce = State.gets icActive >>= \case
-  ((a, b) : rest) -> do
-    State.modify' $ \st -> st { icActive = rest }
-    withLivePair a b (fire a b)
-    reduce
-  [] -> State.gets (Seq.viewl . icParked) >>= \case
-    Seq.EmptyL -> pure ()
-    (a, b) Seq.:< rest -> do
-      State.modify' $ \st -> st { icParked = rest }
-      withLivePair a b (fireParked a b)
-      reduce
+reduce = nextPair >>= \case
+  Nothing -> pure ()
+  Just next -> popNext next >> fireNext next >> reduce
 
--- | Run the action only if both nodes still exist and still face each
--- other principally; queue entries go stale when other interactions
--- consume their nodes.
-withLivePair :: Int -> Int -> ICM () -> ICM ()
-withLivePair a b act = do
+-- | A pair the scheduler has chosen to fire: eager, or a parked
+-- instantiation.
+data Next = Eager Int Int | Parked Int Int
+  deriving (Eq, Show)
+
+-- | The pair 'reduce' fires next, left at the head of its queue: eager
+-- pairs first, newest first; parked ones only once no eager work remains,
+-- oldest first. Entries gone stale on the way, because other interactions
+-- consumed their nodes, are dropped here exactly as 'reduce' drops them.
+-- 'Telomare.IC.Space' schedules through this too, so its walk fires pairs
+-- in the runtime's order by construction.
+nextPair :: ICM (Maybe Next)
+nextPair = State.gets icActive >>= \case
+  ((a, b) : _) -> livePair a b >>= \case
+    True  -> pure (Just (Eager a b))
+    False -> popNext (Eager a b) >> nextPair
+  [] -> State.gets (Seq.viewl . icParked) >>= \case
+    Seq.EmptyL -> pure Nothing
+    (a, b) Seq.:< _ -> livePair a b >>= \case
+      True  -> pure (Just (Parked a b))
+      False -> popNext (Parked a b) >> nextPair
+
+-- | Take the chosen pair off the head of its queue.
+popNext :: Next -> ICM ()
+popNext = \case
+  Eager _ _ -> State.modify' $ \st -> popped st { icActive = drop 1 (icActive st) }
+  Parked _ _ -> State.modify' $ \st -> popped st { icParked = Seq.drop 1 (icParked st) }
+  where popped = account (\r -> r { resWork = resWork r - 1 })
+
+fireNext :: Next -> ICM ()
+fireNext = \case
+  Eager a b  -> fire a b
+  Parked a b -> fireParked a b
+
+-- | Whether both nodes still exist and still face each other principally;
+-- queue entries go stale when other interactions consume their nodes.
+livePair :: Int -> Int -> ICM Bool
+livePair a b = do
   live <- State.gets $ \st ->
     IntMap.member a (icNodes st) && IntMap.member b (icNodes st)
-  when live $ do
+  if not live then pure False else do
     pa <- peer (Port a 0)
     pb <- peer (Port b 0)
-    when (pa == Port b 0 && pb == Port a 0) act
+    pure (pa == Port b 0 && pb == Port a 0)
 
 -- | Fire a parked instantiation. Parking exists to give erasure time to
 -- reach a dead application before its template is spliced in: by the
@@ -609,7 +728,53 @@ fireParked a b = do
     Nothing -> fire n m
 
 fire :: Int -> Int -> ICM ()
-fire a b = do
+fire a b = demandedData a b >>= \case
+  Just (n, DataKnown e) -> revealData n (knownParts e) >> fire a b
+  Just (_, DataPart p) -> throwError . ICInternal $
+    "a symbolic input part (path " <> show p <> ") reached a concrete run"
+  Nothing -> fireRule a b
+
+-- | The data node of this pair whose shape its consumer needs before the
+-- pair can fire. Erasing or copying data needs no shape.
+demandedData :: Int -> Int -> ICM (Maybe (Int, DataSrc))
+demandedData a b = do
+  ka <- kindOf a
+  kb <- kindOf b
+  pure $ case (ka, kb) of
+    (ICData s, k) | demandsShape k -> Just (a, s)
+    (k, ICData s) | demandsShape k -> Just (b, s)
+    _noDemand                      -> Nothing
+  where
+    demandsShape = \case
+      ICSetEnv     -> True
+      ICApply      -> True
+      ICScrut      -> True
+      ICLeft       -> True
+      ICRight      -> True
+      ICSplit      -> True
+      _noShape     -> False
+
+-- | The parts of a known data value: Nothing for Zero.
+knownParts :: BasicExpr -> Maybe (DataSrc, DataSrc)
+knownParts = \case
+  PairB a b -> Just (DataKnown a, DataKnown b)
+  _zero     -> Nothing
+
+-- | Take a data node apart one layer, in place: it becomes the Zero or the
+-- Pair it is, and a pair's parts become data nodes of their own. Its
+-- principal wire is untouched, so the consumer that demanded it then fires
+-- by the ordinary rules. Not an interaction: the rule that follows is.
+revealData :: Int -> Maybe (DataSrc, DataSrc) -> ICM ()
+revealData n parts = do
+  note "data-reveal"
+  State.modify' $ \st -> st { icNodes = IntMap.adjust
+    (\nd -> nd { nodeKind = maybe ICZero (const ICPair) parts }) n (icNodes st) }
+  forM_ parts $ \(l, r) -> forM_ [(1, l), (2, r)] $ \(slot, src) -> do
+    c <- newNode (ICData src)
+    connect (Port n slot) (Port c 0)
+
+fireRule :: Int -> Int -> ICM ()
+fireRule a b = do
   ka <- kindOf a
   kb <- kindOf b
   dbg $ "fire " <> show a <> ":" <> show ka <> " ~ " <> show b <> ":" <> show kb
@@ -629,6 +794,7 @@ valueKind = \case
   ICGate    -> True
   ICAborted _ -> True
   ICStuckV _ -> True
+  ICData _  -> True
   _notValue -> False
 
 
@@ -711,22 +877,8 @@ rule n nk m mk = case (nk, mk) of
     deleteNode n >> deleteNode m
     instantiate tid e r
   (ICApply, ICGate) -> Just $ awaitShape "apply-gate" n m ICScrut
-  (ICApply, ICAborted _) -> Just $ do
-    spend "apply-aborted"
-    e <- peer (Port n 1)
-    r <- peer (Port n 2)
-    deleteNode n
-    era <- newNode ICEra
-    connect (Port era 0) e
-    connect (Port m 0) r
-  (ICApply, ICStuckV _) -> Just $ do
-    spend "apply-stuck"
-    e <- peer (Port n 1)
-    r <- peer (Port n 2)
-    deleteNode n
-    era <- newNode ICEra
-    connect (Port era 0) e
-    connect (Port m 0) r
+  (ICApply, ICAborted _) -> Just $ passApplication "apply-aborted" n m
+  (ICApply, ICStuckV _) -> Just $ passApplication "apply-stuck" n m
   (ICApply, _) | valueKind mk -> Just $ do
     shape <- describeValue 6 m
     e <- peer (Port n 1)
@@ -739,12 +891,8 @@ rule n nk m mk = case (nk, mk) of
       ("applied value is " <> show mk <> ", not a function: " <> shape)
       r (e : comps)
   -- gate scrutinee arrived: yield the matching selector defer
-  (ICScrut, ICZero) -> Just $ do
-    spend "scrut-zero"
-    r <- peer (Port n 1)
-    deleteNode n >> deleteNode m
-    sel <- newNode (ICRef leftSelTpl leftSelFi)
-    connect (Port sel 0) r
+  (ICScrut, ICZero) -> Just $
+    selectZero "scrut-zero" n m leftSelTpl leftSelFi
   (ICScrut, ICPair) -> Just $ do
     spend "scrut-pair"
     la <- peer (Port m 1)
@@ -755,8 +903,7 @@ rule n nk m mk = case (nk, mk) of
     er <- newNode ICEra
     connect (Port el 0) la
     connect (Port er 0) rb
-    sel <- newNode (ICRef rightSelTpl rightSelFi)
-    connect (Port sel 0) r
+    deliverSelector rightSelTpl rightSelFi r
   (ICScrut, ICAborted _) -> Just $ passThrough "scrut-aborted" n 1 m
   (ICScrut, ICStuckV _) -> Just $ passThrough "scrut-stuck" n 1 m
   (ICScrut, _) | valueKind mk -> Just $ do
@@ -769,20 +916,12 @@ rule n nk m mk = case (nk, mk) of
   (ICLeft, ICPair) -> Just $ projectPair "left-pair" n m 1 2
   (ICLeft, ICAborted _) -> Just $ passThrough "left-aborted" n 1 m
   (ICLeft, ICStuckV _) -> Just $ passThrough "left-stuck" n 1 m
-  (ICLeft, _) | valueKind mk -> Just $ do
-    r <- peer (Port n 1)
-    deleteNode n >> deleteNode m
-    stuckAt "left-nonpair"
-      ("projection target is " <> show mk <> ", not a pair") r []
+  (ICLeft, _) | valueKind mk -> Just $ projectNonPair "left-nonpair" n m mk
   (ICRight, ICZero) -> Just $ passThrough "right-zero" n 1 m
   (ICRight, ICPair) -> Just $ projectPair "right-pair" n m 2 1
   (ICRight, ICAborted _) -> Just $ passThrough "right-aborted" n 1 m
   (ICRight, ICStuckV _) -> Just $ passThrough "right-stuck" n 1 m
-  (ICRight, _) | valueKind mk -> Just $ do
-    r <- peer (Port n 1)
-    deleteNode n >> deleteNode m
-    stuckAt "right-nonpair"
-      ("projection target is " <> show mk <> ", not a pair") r []
+  (ICRight, _) | valueKind mk -> Just $ projectNonPair "right-nonpair" n m mk
   -- env splitting: both components of a pair delivered in one interaction,
   -- with nothing duplicated and nothing erased. Every other case behaves
   -- exactly as a Left and a Right projection of the same value would.
@@ -1073,6 +1212,7 @@ describeValue depth n
         sb <- describeValue (depth - 1) (portNode b)
         pure $ "(" <> sa <> "," <> sb <> ")"
       ICRef t _ -> pure $ "ref" <> show t
+      ICData _ -> pure "data"
       ICDup l  -> do
         src <- peer (Port n 0)
         s <- describeValue (depth - 1) (portNode src)
@@ -1088,7 +1228,40 @@ passThrough name n slot m = do
   deleteNode n
   connect (Port m 0) r
 
--- | An applied gate or abort must inspect its operand's shape: replace the
+-- | A poisoned application head survives; its unused argument is erased.
+passApplication :: String -> Int -> Int -> ICM ()
+passApplication name n m = do
+  spend name
+  e <- peer (Port n 1)
+  r <- peer (Port n 2)
+  deleteNode n
+  era <- newNode ICEra
+  connect (Port era 0) e
+  connect (Port m 0) r
+
+-- | Hand a reserved selector defer to the waiting port.
+deliverSelector :: TemplateId -> FunctionIndex -> Port -> ICM ()
+deliverSelector tid fi r = do
+  sel <- newNode (ICRef tid fi)
+  connect (Port sel 0) r
+
+-- | A gate awaiting its operand's shape met Zero: both nodes go
+-- and the matching selector defer takes their place.
+selectZero :: String -> Int -> Int -> TemplateId -> FunctionIndex -> ICM ()
+selectZero name n m tid fi = do
+  spend name
+  r <- peer (Port n 1)
+  deleteNode n >> deleteNode m
+  deliverSelector tid fi r
+
+-- | A projection met a value that is not a pair.
+projectNonPair :: String -> Int -> Int -> ICKind -> ICM ()
+projectNonPair name n m mk = do
+  r <- peer (Port n 1)
+  deleteNode n >> deleteNode m
+  stuckAt name ("projection target is " <> show mk <> ", not a pair") r []
+
+-- | An applied gate must inspect its operand's shape: replace the
 -- apply with a shape-awaiting node facing the operand.
 awaitShape :: String -> Int -> Int -> ICKind -> ICM ()
 awaitShape name n m k = do
@@ -1133,6 +1306,9 @@ readback (Port n _) = kindOf n >>= \case
   ICAborted o -> peer (Port n 1) >>= \msg -> kindOf (portNode msg) >>= \case
     ICAborted _ -> readback msg
     _           -> AbortB o . dataB <$> readbackData msg
+  ICData (DataKnown e) -> pure (dataB e)
+  ICData (DataPart p) -> throwError . ICInternal $
+    "readback: symbolic input part at path " <> show p
   -- a stuck value survived into demanded output: only now is it an error
   ICStuckV msg -> throwError $ ICStuck msg
   k -> throwError . ICStuck $ "result contains a non-value: " <> show k
@@ -1145,6 +1321,7 @@ readbackData (Port n _) = kindOf n >>= \case
                   <*> (readbackData =<< peer (Port n 2))
   ICZero    -> pure ZeroB
   ICConst d -> pure d
+  ICData (DataKnown e) -> pure e
   _nonData  -> pure ZeroB
 
 -- * Entry points
@@ -1221,11 +1398,85 @@ icOutcome = \case
 icEval :: CompiledExpr -> Either RunTimeError CompiledExpr
 icEval = icOutcome . icEvalIC
 
+-- | What one run cost, measured: the interactions spent against fuel, the
+-- per-event counters (interaction rules and compile-time notes alike),
+-- the net's peak storage (construction included) and the template table.
+data ICCost = ICCost
+  { costInteractions :: !Int
+  , costEvents       :: Map String Int
+  , costPeak         :: !Resources
+  , costTemplates    :: !Resources
+  } deriving (Eq, Show)
+
+icCost :: ICState -> ICCost
+icCost st = ICCost (icSpent st) (icStats st) (icPeak st) (templateStorage st)
+
 -- | One guided run, reported for a driver: the outcome under the reference
--- contract, the interactions spent against fuel, and the per-event
--- counters (interaction rules and compile-time notes alike).
+-- contract and what the run cost. A run that fails still reports what it
+-- cost up to the failure.
 icRunReport :: Map (Digest SHA256) CapShape -> Int -> CompiledExpr
-            -> (Either RunTimeError CompiledExpr, Int, Map String Int)
+            -> (Either RunTimeError CompiledExpr, ICCost)
 icRunReport guidance fuel term =
   let (r, st) = icRunState guidance fuel term
-  in (icOutcome r, icSpent st, icStats st)
+  in (icOutcome r, icCost st)
+
+-- * Iterations: main applied to an input
+
+-- | Build the net of one driver iteration, @main@ applied to a data input
+-- ('Telomare.Machine.appB'), with the input as one node of the given kind;
+-- returns the root. The term is compiled with a Zero standing in for the
+-- input, and that node then takes the input's kind: a Zero, or the whole
+-- input held as one 'ICData' node. Either way the input is one node, so
+-- the net is built identically whatever the input is — which is what lets
+-- 'Telomare.IC.Space' run the same construction for every input at once.
+buildApplied :: CompiledExpr -> ICKind -> ICM Int
+buildApplied mainTerm kind = do
+  let term = appB mainTerm ZeroB
+  unless (Map.null (envUsage term)) . throwError $
+    ICStuck "unbound Env at top level"
+  setupSelectors
+  root <- newNode ICRoot
+  p <- compileTerm (keyDefers term)
+  connect (Port root 0) p
+  -- appB main i = SetEnv (SetEnv (Pair twiddle (Pair i main)))
+  outer <- expect ICSetEnv 1 =<< peer (Port root 0)
+  inner <- expect ICSetEnv 1 =<< peer (Port outer 0)
+  frame <- expect ICPair 0 =<< peer (Port inner 0)
+  args <- expect ICPair 0 =<< peer (Port frame 2)
+  slot <- expect ICZero 0 =<< peer (Port args 1)
+  State.modify' $ \st -> st { icNodes = IntMap.adjust
+    (\nd -> nd { nodeKind = kind }) slot (icNodes st) }
+  pure root
+  where
+    expect k s (Port n s') = kindOf n >>= \k' ->
+      if k' == k && s' == s then pure n else throwError . ICInternal $
+        "buildApplied: expected " <> show k <> " at slot " <> show s
+          <> ", found " <> show k' <> " at slot " <> show s'
+
+-- | How a concrete input enters the net: Zero as itself, anything else
+-- held whole until a consumer takes it apart.
+inputKind :: BasicExpr -> ICKind
+inputKind = \case
+  ZeroB -> ICZero
+  input -> ICData (DataKnown input)
+
+-- | Run @main@ on one input, the way the driver's loop runs an iteration:
+-- 'icRunState' of @appB main input@, except that the input is not built
+-- into the net node by node but enters as one node and is taken apart only
+-- as far as the program looks at it.
+icRunApplied :: Map (Digest SHA256) CapShape -> Int -> CompiledExpr -> BasicExpr
+             -> (Either ICError CompiledExpr, ICState)
+icRunApplied guidance fuel mainTerm input =
+  State.runState (runExceptT go) (emptyState guidance fuel)
+  where
+    go = do
+      root <- buildApplied mainTerm (inputKind input)
+      reduce
+      readback =<< peer (Port root 0)
+
+-- | 'icRunReport' for one iteration ('icRunApplied').
+icRunAppliedReport :: Map (Digest SHA256) CapShape -> Int -> CompiledExpr
+                   -> BasicExpr -> (Either RunTimeError CompiledExpr, ICCost)
+icRunAppliedReport guidance fuel mainTerm input =
+  let (r, st) = icRunApplied guidance fuel mainTerm input
+  in (icOutcome r, icCost st)

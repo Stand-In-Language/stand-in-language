@@ -5,8 +5,8 @@
 # so `callCabal2nix` cannot run at evaluation time. nix/telomare.nix
 # replaces `src` with the flake's source.
 { mkDerivation, aeson, base, binary, bytestring, containers
-, cryptonite, data-fix, deepseq, Diff, directory, dlist, filepath
-, free, genvalidity, haskeline, hspec, lens, lib, lsp, lsp-types
+, cryptonite, data-fix, deepseq, Diff, directory, filepath, free
+, genvalidity, haskeline, hspec, lens, lib, lsp, lsp-types
 , megaparsec, memory, mtl, optparse-applicative, pretty-show
 , process, QuickCheck, recursion-schemes, stm, strict, tasty
 , tasty-hunit, tasty-quickcheck, text, time, transformers
@@ -19,7 +19,7 @@ mkDerivation {
   isLibrary = true;
   isExecutable = true;
   libraryHaskellDepends = [
-    base binary bytestring containers cryptonite data-fix deepseq dlist
+    base binary bytestring containers cryptonite data-fix deepseq
     filepath free genvalidity lens megaparsec memory mtl
     recursion-schemes transformers utf8-string validity
   ];
