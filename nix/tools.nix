@@ -235,9 +235,12 @@ let
         build_target ".#checks.${system}.$check_name"
       done
 
-      # Include every declared shell and the environment used by nix develop.
-      # In particular, the full shell carries HLS and the editor tools.
-      for shell_name in ${lib.escapeShellArgs devShellNames}; do
+      # Include every declared shell and the environment used by nix develop,
+      # HLS and the editor tools included. The names go through an array:
+      # there is one shell, and ShellCheck rejects a loop over one word
+      # (SC2043).
+      shell_names=(${lib.escapeShellArgs devShellNames})
+      for shell_name in "''${shell_names[@]}"; do
         shell_target=".#devShells.${system}.$shell_name"
         build_target "$shell_target"
         printf 'Building nix develop environment closure for %s\n' "$shell_name"

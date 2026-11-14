@@ -39,13 +39,15 @@ This project is in active development. Do expect bugs and general trouble, and p
    the base system. The flake names both caches in its `nixConfig`, so
    accepting that when Nix asks does the same job. (Maintainers fill the
    `telomare` cache with `nix run .#push-cachix`, which publishes the package,
-   its checks and apps, and both development shells, and uses the `cachix`
+   its checks and apps, and the development shell, and uses the `cachix`
    and `nix` already on your PATH.)
 4. Enter a Nix shell. This will setup an environment where all external dependencies will be available (such as `cabal` for building):
    ```sh
    $ nix develop # or nix develop -c zsh
-   $ nix develop .#full # the same plus haskell-language-server, hlint, stylish-haskell and ghcid
    ```
+   The shell also has haskell-language-server, hlint, stylish-haskell and
+   ghcid, so an editor that takes its environment from the project (through
+   direnv's `use flake`, say) finds the language server.
    (`nix develop` takes its interactive bash from whatever your flake registry
    calls `nixpkgs`; that is Nix's doing, not this flake's, which has no nixpkgs
    input.)
